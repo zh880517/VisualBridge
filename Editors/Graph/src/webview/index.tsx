@@ -65,7 +65,9 @@ interface GraphDynamicPort {
 
 interface GraphSubgraphNode extends GraphNodeBase {
   readonly kind: "subgraph";
+  readonly nodeTypeId?: string;
   readonly subgraphId: string;
+  readonly dynamicPorts: readonly GraphDynamicPort[];
 }
 
 type GraphNodeModel = GraphAtomicNode | GraphSubgraphNode;
@@ -154,6 +156,7 @@ interface NodeTypeDefinition {
   readonly menuPath?: readonly string[];
   readonly tags?: readonly string[];
   readonly traits?: readonly string[];
+  readonly subgraph?: { readonly graphTypeIds?: readonly string[] };
   readonly ports: readonly PortDefinition[];
   readonly dynamicPortGroups?: readonly DynamicPortGroupDefinition[];
   readonly properties: readonly PropertyDefinition[];
@@ -165,15 +168,49 @@ interface DataTypeDefinition {
   readonly accepts: readonly string[];
 }
 
+interface NodeSelector {
+  readonly nodeTypeIds?: readonly string[];
+  readonly tags?: readonly string[];
+  readonly traits?: readonly string[];
+}
+
+interface NodeCountConstraint {
+  readonly id: string;
+  readonly selector: NodeSelector;
+  readonly minInstances?: number;
+  readonly maxInstances?: number;
+}
+
+interface InitialNodeDefinition {
+  readonly nodeTypeId: string;
+  readonly title?: string;
+}
+
+interface GraphTypeDefinition {
+  readonly id: string;
+  readonly aliases: readonly string[];
+  readonly title: string;
+  readonly description?: string;
+  readonly usage: "root" | "subgraph" | "any";
+  readonly allowedNodeSelectors?: readonly NodeSelector[];
+  readonly properties: readonly PropertyDefinition[];
+  readonly nodeConstraints: readonly NodeCountConstraint[];
+  readonly initialNodes: readonly InitialNodeDefinition[];
+  readonly allowSubgraphs: boolean;
+  readonly allowedSubgraphTypeIds?: readonly string[];
+}
+
 interface GraphCatalog {
-  readonly formatVersion: 1;
+  readonly formatVersion: 2;
   readonly catalogId: string;
   readonly dataTypes: readonly DataTypeDefinition[];
+  readonly graphTypes: readonly GraphTypeDefinition[];
   readonly nodeTypes: readonly NodeTypeDefinition[];
 }
 
 interface GraphDefinition {
   readonly id: string;
+  readonly graphTypeId?: string;
   readonly title: string;
   readonly properties: Readonly<Record<string, JsonValue>>;
   readonly interfacePorts: readonly PortDefinition[];
@@ -182,7 +219,7 @@ interface GraphDefinition {
 }
 
 interface GraphDocument {
-  readonly formatVersion: 2;
+  readonly formatVersion: 3;
   readonly documentId: string;
   readonly rootGraphId: string;
   readonly graphs: readonly GraphDefinition[];
@@ -241,6 +278,7 @@ type GraphOperation =
     }
   | { readonly type: "graph.addEdge"; readonly graphId: string; readonly edge: GraphEdgeModel }
   | { readonly type: "graph.removeEdge"; readonly graphId: string; readonly edgeId: string }
+  | { readonly type: "graph.assignType"; readonly graphId: string; readonly graphTypeId: string }
   | {
       readonly type: "graph.updateGraph";
       readonly graphId: string;
@@ -288,6 +326,11 @@ interface GraphEdgeData extends Record<string, unknown> {
 
 type GraphFlowEdge = Edge<GraphEdgeData, "default">;
 type Selection = { readonly kind: "node" | "edge"; readonly id: string };
+
+interface SubgraphTypeOption {
+  readonly graphType: GraphTypeDefinition;
+  readonly nodeType: NodeTypeDefinition;
+}
 
 type HostMessage =
   | {
@@ -600,7 +643,7 @@ function InlineNodePropertiesJson({ data, pending }: { readonly data: GraphNodeD
 }
 
 function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; readonly pending: boolean }): React.JSX.Element | null {
-  if (data.model.kind !== "node" || data.nodeType === undefined) {
+  if (data.nodeType === undefined) {
     return null;
   }
   const groups = data.nodeType.dynamicPortGroups ?? [];
@@ -610,9 +653,7 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
   return (
     <div className="graph-dynamic-port-groups nodrag nowheel" onDoubleClick={(event) => event.stopPropagation()}>
       {groups.map((group) => {
-        const ports = data.model.kind === "node"
-          ? data.model.dynamicPorts.filter((port) => group.id === port.groupId || group.aliases.includes(port.groupId))
-          : [];
+        const ports = data.model.dynamicPorts.filter((port) => group.id === port.groupId || group.aliases.includes(port.groupId));
         const canAdd = group.maxItems === undefined || ports.length < group.maxItems;
         return (
           <section key={group.id} className="graph-dynamic-port-group" title={group.description}>
@@ -666,12 +707,9 @@ function DynamicPortRow({
   readonly port: GraphDynamicPort;
   readonly pending: boolean;
 }): React.JSX.Element {
-  const model = data.model.kind === "node" ? data.model : undefined;
+  const model = data.model;
   const [title, setTitle] = useState(port.title);
   useEffect(() => setTitle(port.title), [port.title]);
-  if (model === undefined) {
-    return <div />;
-  }
   const groupPorts = model.dynamicPorts.filter(
     (candidate) => group.id === candidate.groupId || group.aliases.includes(candidate.groupId),
   );
@@ -886,6 +924,7 @@ function GraphEditorApp(): React.JSX.Element {
   const [status, setStatus] = useState({ message: "正在加载 Graph Document…", error: false });
   const [contextMenu, setContextMenu] = useState<{ readonly x: number; readonly y: number; readonly nodeId: string }>();
   const [picker, setPicker] = useState<{ readonly mode: "add" } | { readonly mode: "replace"; readonly nodeId: string }>();
+  const [subgraphPickerOpen, setSubgraphPickerOpen] = useState(false);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
 
   const activeGraph = useMemo(
@@ -917,6 +956,7 @@ function GraphEditorApp(): React.JSX.Element {
     setPending(true);
     setContextMenu(undefined);
     setPicker(undefined);
+    setSubgraphPickerOpen(false);
     setStatus({ message: "正在应用修改…", error: false });
     vscode.postMessage({
       type: "applyOperations",
@@ -1093,7 +1133,9 @@ function GraphEditorApp(): React.JSX.Element {
 
   const addNodeType = useCallback((nodeTypeId: string): void => {
     const currentGraph = documentRef.current?.graphs.find((graph) => graph.id === activeGraphIdRef.current);
-    const nodeType = catalogRef.current.nodeTypes.find((candidate) => candidate.id === nodeTypeId);
+    const nodeType = catalogRef.current.nodeTypes.find(
+      (candidate) => candidate.id === nodeTypeId && candidate.subgraph === undefined,
+    );
     if (currentGraph === undefined || nodeType === undefined) {
       return;
     }
@@ -1112,33 +1154,55 @@ function GraphEditorApp(): React.JSX.Element {
     }]);
   }, [nodePosition, postOperations]);
 
-  const addSubgraph = useCallback((): void => {
+  const addSubgraph = useCallback((graphTypeId?: string, nodeTypeId?: string): void => {
     const currentGraph = documentRef.current?.graphs.find((graph) => graph.id === activeGraphIdRef.current);
     if (currentGraph === undefined) {
       return;
     }
     const subgraphId = newId("subgraph");
     const index = documentRef.current?.graphs.length ?? 1;
+    const catalog = catalogRef.current;
+    const graphType = graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(catalog, graphTypeId);
+    const nodeType = nodeTypeId === undefined
+      ? undefined
+      : catalog.nodeTypes.find((candidate) => candidate.id === nodeTypeId && candidate.subgraph !== undefined);
+    const initialNodes: GraphAtomicNode[] = graphType?.initialNodes.flatMap((initialNode, initialIndex) => {
+      const initialType = resolveNodeTypeDefinition(catalog, initialNode.nodeTypeId);
+      return initialType === undefined || initialType.subgraph !== undefined
+        ? []
+        : [{
+            kind: "node",
+            id: newId("node"),
+            nodeTypeId: initialType.id,
+            title: initialNode.title ?? initialType.title,
+            position: { x: 80 + (initialIndex % 3) * 260, y: 80 + Math.floor(initialIndex / 3) * 180 },
+            properties: createDefaultProperties(initialType),
+            dynamicPorts: [],
+          }];
+    }) ?? [];
     postOperations([{
       type: "graph.addSubgraph",
       graphId: currentGraph.id,
       node: {
         kind: "subgraph",
         id: newId("node"),
+        ...(nodeType === undefined ? {} : { nodeTypeId: nodeType.id }),
         subgraphId,
-        title: `Subgraph ${index}`,
+        title: nodeType?.title ?? `Subgraph ${index}`,
         position: nodePosition(),
-        properties: {},
+        properties: nodeType === undefined ? {} : createDefaultProperties(nodeType),
+        dynamicPorts: [],
       },
       subgraph: {
         id: subgraphId,
-        title: `Subgraph ${index}`,
-        properties: {},
+        ...(graphType === undefined ? {} : { graphTypeId: graphType.id }),
+        title: graphType?.title ?? `Subgraph ${index}`,
+        properties: graphType === undefined ? {} : createDefaultGraphProperties(graphType),
         interfacePorts: [
           { id: "flowIn", title: "In", kind: "flow", direction: "input", maxConnections: 1 },
           { id: "flowOut", title: "Out", kind: "flow", direction: "output", maxConnections: 1 },
         ],
-        nodes: [],
+        nodes: initialNodes,
         edges: [],
       },
     }]);
@@ -1170,6 +1234,7 @@ function GraphEditorApp(): React.JSX.Element {
       if (event.key === "Escape") {
         setContextMenu(undefined);
         setPicker(undefined);
+        setSubgraphPickerOpen(false);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -1183,7 +1248,7 @@ function GraphEditorApp(): React.JSX.Element {
     event.preventDefault();
     updateSelection({ kind: "node", id: node.id });
     setContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id });
-    if (node.data.model.kind === "node") {
+    if (node.data.model.nodeTypeId !== undefined) {
       setReplacementCandidates((current) => {
         const next = { ...current };
         delete next[node.id];
@@ -1209,7 +1274,8 @@ function GraphEditorApp(): React.JSX.Element {
   const path = graphDocument === undefined ? [] : findGraphPath(graphDocument, activeGraphId);
   const pickerTypes = picker?.mode === "replace"
     ? catalog.nodeTypes.filter((nodeType) => replacementCandidates[picker.nodeId]?.includes(nodeType.id) ?? false)
-    : catalog.nodeTypes;
+    : catalog.nodeTypes.filter((nodeType) => activeGraph !== undefined && isNodeTypeAvailable(activeGraph, nodeType, catalog, "atomic"));
+  const subgraphOptions = activeGraph === undefined ? [] : getSubgraphOptions(activeGraph, catalog);
 
   return (
     <div className="graph-app" onClick={() => setContextMenu(undefined)}>
@@ -1217,7 +1283,14 @@ function GraphEditorApp(): React.JSX.Element {
         <button type="button" onClick={(event) => { event.stopPropagation(); setPicker({ mode: "add" }); }} disabled={activeGraph === undefined || pending || catalog.nodeTypes.length === 0}>
           添加节点
         </button>
-        <button type="button" onClick={addSubgraph} disabled={activeGraph === undefined || pending}>添加子图</button>
+        <button
+          type="button"
+          onClick={() => catalog.graphTypes.length === 0 ? addSubgraph() : setSubgraphPickerOpen(true)}
+          disabled={activeGraph === undefined || pending || (catalog.graphTypes.length > 0 && subgraphOptions.length === 0)}
+          title={catalog.graphTypes.length > 0 && subgraphOptions.length === 0 ? "当前 Graph Type 没有可用的子图类型" : undefined}
+        >
+          添加子图
+        </button>
         <button type="button" className="secondary" onClick={deleteSelection} disabled={selected === undefined || pending}>
           删除所选
         </button>
@@ -1289,6 +1362,7 @@ function GraphEditorApp(): React.JSX.Element {
                   <GraphInspector
                     key={activeGraph.id}
                     graph={activeGraph}
+                    isRoot={activeGraph.id === graphDocument.rootGraphId}
                     catalog={catalog}
                     pending={pending}
                     postOperations={postOperations}
@@ -1304,7 +1378,7 @@ function GraphEditorApp(): React.JSX.Element {
         const candidates = replacementCandidates[contextMenu.nodeId];
         return (
           <div className="graph-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
-            {node?.kind === "node" && (
+            {node?.nodeTypeId !== undefined && (
               <button
                 type="button"
                 disabled={candidates === undefined || candidates.length === 0}
@@ -1338,6 +1412,14 @@ function GraphEditorApp(): React.JSX.Element {
         />
       )}
 
+      {subgraphPickerOpen && (
+        <SubgraphTypePicker
+          options={subgraphOptions}
+          onCancel={() => setSubgraphPickerOpen(false)}
+          onSelect={(graphTypeId, nodeTypeId) => addSubgraph(graphTypeId, nodeTypeId)}
+        />
+      )}
+
       <footer className={`graph-status${status.error ? " error" : ""}`}><span>{status.message}</span></footer>
     </div>
   );
@@ -1345,49 +1427,111 @@ function GraphEditorApp(): React.JSX.Element {
 
 function GraphInspector({
   graph,
+  isRoot,
   catalog,
   pending,
   postOperations,
   reportStatus,
 }: {
   readonly graph: GraphDefinition;
+  readonly isRoot: boolean;
   readonly catalog: GraphCatalog;
   readonly pending: boolean;
   readonly postOperations: (operations: readonly GraphOperation[]) => void;
   readonly reportStatus: (status: { message: string; error: boolean }) => void;
 }): React.JSX.Element {
   const [title, setTitle] = useState(graph.title);
-  const serializedProperties = JSON.stringify(graph.properties, undefined, 2);
-  const [propertiesText, setPropertiesText] = useState(serializedProperties);
+  const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(catalog, graph.graphTypeId);
+  const assignableTypes = catalog.graphTypes.filter((candidate) => candidate.usage === "any" || candidate.usage === (isRoot ? "root" : "subgraph"));
+  const [selectedGraphTypeId, setSelectedGraphTypeId] = useState(assignableTypes[0]?.id ?? "");
   useEffect(() => setTitle(graph.title), [graph.title]);
-  useEffect(() => setPropertiesText(serializedProperties), [serializedProperties]);
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    let properties: unknown;
-    try {
-      properties = JSON.parse(propertiesText);
-    } catch (errorValue) {
-      reportStatus({ message: `Graph 属性 JSON 无法解析：${String(errorValue)}`, error: true });
+    postOperations([{ type: "graph.updateGraph", graphId: graph.id, title, properties: graph.properties }]);
+  };
+  const propertyNodeType: NodeTypeDefinition = {
+    id: graphType?.id ?? "untyped.graph",
+    aliases: [],
+    title: graphType?.title ?? "Untyped Graph",
+    category: "Graph",
+    ports: [],
+    properties: graphType?.properties ?? [],
+  };
+  const propertyData: GraphNodeData = {
+    flavor: "node",
+    graphId: graph.id,
+    model: {
+      kind: "node",
+      id: graph.id,
+      nodeTypeId: propertyNodeType.id,
+      title: graph.title,
+      position: { x: 0, y: 0 },
+      properties: graph.properties,
+      dynamicPorts: [],
+    },
+    nodeType: propertyNodeType,
+    ports: [],
+    typeTitle: propertyNodeType.title,
+    commitNode: (_, nextTitle, properties) => postOperations([{
+      type: "graph.updateGraph",
+      graphId: graph.id,
+      title: nextTitle === graph.title ? title : nextTitle,
+      properties,
+    }]),
+    commitOperations: postOperations,
+    reportStatus,
+  };
+  const assignType = (): void => {
+    const nextType = resolveGraphTypeDefinition(catalog, selectedGraphTypeId);
+    if (nextType === undefined) {
       return;
     }
-    if (!isJsonObject(properties)) {
-      reportStatus({ message: "Graph 属性必须是 JSON 对象。", error: true });
-      return;
-    }
-    postOperations([{ type: "graph.updateGraph", graphId: graph.id, title, properties }]);
+    const initialOperations: GraphOperation[] = nextType.initialNodes.flatMap((initialNode, index) => {
+      const nodeType = resolveNodeTypeDefinition(catalog, initialNode.nodeTypeId);
+      return nodeType === undefined || nodeType.subgraph !== undefined
+        ? []
+        : [{
+            type: "graph.addNode" as const,
+            graphId: graph.id,
+            node: {
+              kind: "node",
+              id: newId("node"),
+              nodeTypeId: nodeType.id,
+              title: initialNode.title ?? nodeType.title,
+              position: { x: 80 + (index % 3) * 260, y: 80 + Math.floor(index / 3) * 180 },
+              properties: createDefaultProperties(nodeType),
+              dynamicPorts: [],
+            },
+          }];
+    });
+    postOperations([{ type: "graph.assignType", graphId: graph.id, graphTypeId: nextType.id }, ...initialOperations]);
   };
   return (
     <aside className="graph-inspector">
       <h2>Graph Inspector</h2>
       <ReadonlyField label="Graph ID" value={graph.id} />
+      {graphType !== undefined
+        ? <ReadonlyField label="Graph Type" value={`${graphType.title} · ${graphType.id}`} />
+        : graph.graphTypeId !== undefined
+          ? <ReadonlyField label="Graph Type" value={`Unknown · ${graph.graphTypeId}`} />
+          : (
+            <section className="graph-assign-type">
+              <label className="graph-field">
+                <span>Graph Type</span>
+                <select value={selectedGraphTypeId} onChange={(event) => setSelectedGraphTypeId(event.target.value)}>
+                  {assignableTypes.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.title}</option>)}
+                </select>
+              </label>
+              <button type="button" disabled={pending || graph.nodes.length > 0 || selectedGraphTypeId.length === 0} onClick={assignType}>设置 Graph Type</button>
+              {graph.nodes.length > 0 && <p className="graph-empty">已有节点的旧 Graph 需要后续安全迁移，不能直接设置类型。</p>}
+            </section>
+          )}
       <form onSubmit={submit}>
         <InputField label="名称" value={title} onChange={setTitle} />
-        <label className="graph-field">
-          <span>Graph 属性（JSON）</span>
-          <textarea value={propertiesText} onChange={(event) => setPropertiesText(event.target.value)} spellCheck={false} />
-        </label>
-        <button type="submit" disabled={pending}>应用 Graph 修改</button>
+        <button type="submit" disabled={pending || title === graph.title}>应用名称修改</button>
       </form>
+      <h3>Graph 属性</h3>
+      <InlineNodeProperties data={propertyData} pending={pending} />
       <h3>公开接口</h3>
       <div className="graph-interface-list">
         {graph.interfacePorts.map((port) => (
@@ -1557,6 +1701,48 @@ function NodeTypePicker({
   );
 }
 
+function SubgraphTypePicker({
+  options,
+  onCancel,
+  onSelect,
+}: {
+  readonly options: readonly SubgraphTypeOption[];
+  readonly onCancel: () => void;
+  readonly onSelect: (graphTypeId: string, nodeTypeId: string) => void;
+}): React.JSX.Element {
+  const [query, setQuery] = useState("");
+  const normalized = query.trim().toLowerCase();
+  const filtered = options.filter(({ graphType, nodeType }) =>
+    [graphType.title, graphType.id, nodeType.title, nodeType.id, ...(nodeType.menuPath ?? [])]
+      .join(" ")
+      .toLowerCase()
+      .includes(normalized),
+  );
+  return (
+    <div className="graph-modal-backdrop" onMouseDown={onCancel}>
+      <section className="graph-node-picker" role="dialog" aria-modal="true" aria-label="添加类型化子图" onMouseDown={(event) => event.stopPropagation()}>
+        <header><h2>添加类型化子图</h2><button type="button" className="secondary" onClick={onCancel}>关闭</button></header>
+        <input autoFocus placeholder="搜索 Graph Type 或调用节点类型…" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <div className="graph-node-type-list">
+          {filtered.map(({ graphType, nodeType }) => (
+            <button
+              key={`${graphType.id}:${nodeType.id}`}
+              type="button"
+              className="graph-node-type-option"
+              onClick={() => onSelect(graphType.id, nodeType.id)}
+            >
+              <strong>{nodeType.title}</strong>
+              <span>创建 {graphType.title}</span>
+              <code>{nodeType.id} → {graphType.id}</code>
+            </button>
+          ))}
+          {filtered.length === 0 && <p className="graph-empty">没有兼容的类型化子图。</p>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function ReadonlyField({ label, value }: { readonly label: string; readonly value: string }): React.JSX.Element {
   return <label className="graph-field"><span>{label}</span><input value={value} readOnly /></label>;
 }
@@ -1595,9 +1781,7 @@ function toFlowNodes(
   reportStatus: GraphNodeData["reportStatus"],
 ): GraphFlowNode[] {
   const nodes: GraphFlowNode[] = graph.nodes.map((node) => {
-    const nodeType = node.kind === "node"
-      ? catalog.nodeTypes.find((candidate) => candidate.id === node.nodeTypeId || candidate.aliases.includes(node.nodeTypeId))
-      : undefined;
+    const nodeType = node.nodeTypeId === undefined ? undefined : resolveNodeTypeDefinition(catalog, node.nodeTypeId);
     return {
       id: node.id,
       type: "visualBridgeNode",
@@ -1608,7 +1792,7 @@ function toFlowNodes(
         model: node,
         ...(nodeType === undefined ? {} : { nodeType }),
         ports: portsForNode(document, graph, node, nodeType),
-        typeTitle: node.kind === "subgraph" ? "Embedded Subgraph" : nodeType?.title ?? `Unknown · ${node.nodeTypeId}`,
+        typeTitle: nodeType?.title ?? (node.kind === "subgraph" ? "Embedded Subgraph" : `Unknown · ${node.nodeTypeId}`),
         commitNode,
         commitOperations,
         reportStatus,
@@ -1671,12 +1855,10 @@ function canonicalCanvasPortId(
     return endpoint.portId;
   }
   const node = graph.nodes.find((candidate) => candidate.id === endpoint.nodeId);
-  if (node?.kind !== "node") {
+  if (node?.nodeTypeId === undefined) {
     return endpoint.portId;
   }
-  const nodeType = catalog.nodeTypes.find(
-    (candidate) => candidate.id === node.nodeTypeId || candidate.aliases.includes(node.nodeTypeId),
-  );
+  const nodeType = resolveNodeTypeDefinition(catalog, node.nodeTypeId);
   return nodeType?.ports.find(
     (port) => port.id === endpoint.portId || (port.aliases?.includes(endpoint.portId) ?? false),
   )?.id ?? endpoint.portId;
@@ -1689,37 +1871,53 @@ function portsForNode(
   nodeType: NodeTypeDefinition | undefined,
 ): readonly PortDefinition[] {
   if (node.kind === "subgraph") {
-    return document.graphs.find((candidate) => candidate.id === node.subgraphId)?.interfacePorts ?? [];
+    const interfacePorts = document.graphs.find((candidate) => candidate.id === node.subgraphId)?.interfacePorts ?? [];
+    if (nodeType !== undefined) {
+      return [...typedNodePorts(node, nodeType), ...interfacePorts];
+    }
+    const interfaceIds = new Set(interfacePorts.map((port) => port.id));
+    return [...interfacePorts, ...inferUnknownNodePorts(graph, node.id).filter((port) => !interfaceIds.has(port.id))];
   }
   if (nodeType !== undefined) {
-    return [
-      ...nodeType.ports,
-      ...node.dynamicPorts.flatMap((dynamicPort) => {
-        const group = resolveDynamicPortGroupDefinition(nodeType, dynamicPort.groupId);
-        return group === undefined
-          ? []
-          : [{
-              id: dynamicPort.id,
-              aliases: [],
-              title: dynamicPort.title,
-              kind: group.port.kind,
-              direction: group.port.direction,
-              ...(group.port.dataTypeId === undefined ? {} : { dataTypeId: group.port.dataTypeId }),
-              ...(group.port.maxConnections === undefined ? {} : { maxConnections: group.port.maxConnections }),
-            }];
-      }),
-    ];
+    return typedNodePorts(node, nodeType);
   }
+  return inferUnknownNodePorts(graph, node.id);
+}
+
+function inferUnknownNodePorts(graph: GraphDefinition, nodeId: string): readonly PortDefinition[] {
   const used = new Map<string, PortDefinition>();
   graph.edges.forEach((edge) => {
-    if (edge.source.kind === "node" && edge.source.nodeId === node.id) {
+    if (edge.source.kind === "node" && edge.source.nodeId === nodeId) {
       used.set(`output:${edge.source.portId}`, { id: edge.source.portId, title: edge.source.portId, kind: edge.kind, direction: "output", ...(edge.kind === "data" ? { dataTypeId: "any" } : {}) });
     }
-    if (edge.target.kind === "node" && edge.target.nodeId === node.id) {
+    if (edge.target.kind === "node" && edge.target.nodeId === nodeId) {
       used.set(`input:${edge.target.portId}`, { id: edge.target.portId, title: edge.target.portId, kind: edge.kind, direction: "input", ...(edge.kind === "data" ? { dataTypeId: "any" } : {}) });
     }
   });
   return [...used.values()];
+}
+
+function typedNodePorts(
+  node: GraphNodeModel,
+  nodeType: NodeTypeDefinition,
+): readonly PortDefinition[] {
+  return [
+    ...nodeType.ports,
+    ...node.dynamicPorts.flatMap((dynamicPort) => {
+      const group = resolveDynamicPortGroupDefinition(nodeType, dynamicPort.groupId);
+      return group === undefined
+        ? []
+        : [{
+            id: dynamicPort.id,
+            aliases: [],
+            title: dynamicPort.title,
+            kind: group.port.kind,
+            direction: group.port.direction,
+            ...(group.port.dataTypeId === undefined ? {} : { dataTypeId: group.port.dataTypeId }),
+            ...(group.port.maxConnections === undefined ? {} : { maxConnections: group.port.maxConnections }),
+          }];
+    }),
+  ];
 }
 
 function resolveDynamicPortGroupDefinition(
@@ -1751,9 +1949,7 @@ function findCanvasPort(
   if (node === undefined) {
     return undefined;
   }
-  const nodeType = node.kind === "node"
-    ? catalog.nodeTypes.find((candidate) => candidate.id === node.nodeTypeId || candidate.aliases.includes(node.nodeTypeId))
-    : undefined;
+  const nodeType = node.nodeTypeId === undefined ? undefined : resolveNodeTypeDefinition(catalog, node.nodeTypeId);
   return portsForNode(document, graph, node, nodeType).find((port) => port.id === portId);
 }
 
@@ -1801,6 +1997,86 @@ function createDefaultProperties(nodeType: NodeTypeDefinition): Readonly<Record<
   return Object.fromEntries(nodeType.properties.flatMap((property) =>
     property.defaultValue === undefined ? [] : [[property.id, cloneJsonValue(property.defaultValue)]],
   ));
+}
+
+function createDefaultGraphProperties(graphType: GraphTypeDefinition): Readonly<Record<string, JsonValue>> {
+  return Object.fromEntries(graphType.properties.flatMap((property) =>
+    property.defaultValue === undefined ? [] : [[property.id, cloneJsonValue(property.defaultValue)]],
+  ));
+}
+
+function resolveNodeTypeDefinition(catalog: GraphCatalog, nodeTypeId: string): NodeTypeDefinition | undefined {
+  return catalog.nodeTypes.find((nodeType) => nodeType.id === nodeTypeId || nodeType.aliases.includes(nodeTypeId));
+}
+
+function resolveGraphTypeDefinition(catalog: GraphCatalog, graphTypeId: string): GraphTypeDefinition | undefined {
+  return catalog.graphTypes.find((graphType) => graphType.id === graphTypeId || graphType.aliases.includes(graphTypeId));
+}
+
+function matchesNodeSelectorDefinition(nodeType: NodeTypeDefinition, selector: NodeSelector): boolean {
+  const nodeTypeMatch = selector.nodeTypeIds === undefined
+    || selector.nodeTypeIds.some((id) => id === nodeType.id || nodeType.aliases.includes(id));
+  const tagMatch = selector.tags === undefined
+    || selector.tags.some((tag) => nodeType.tags?.includes(tag) ?? false);
+  const traitMatch = selector.traits === undefined
+    || selector.traits.every((trait) => nodeType.traits?.includes(trait) ?? false);
+  return nodeTypeMatch && tagMatch && traitMatch;
+}
+
+function isNodeTypeAvailable(
+  graph: GraphDefinition,
+  nodeType: NodeTypeDefinition,
+  catalog: GraphCatalog,
+  flavor: "atomic" | "subgraph",
+): boolean {
+  if ((flavor === "atomic") === (nodeType.subgraph !== undefined)) {
+    return false;
+  }
+  const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(catalog, graph.graphTypeId);
+  if (
+    graphType?.allowedNodeSelectors !== undefined
+    && !graphType.allowedNodeSelectors.some((selector) => matchesNodeSelectorDefinition(nodeType, selector))
+  ) {
+    return false;
+  }
+  return graphType?.nodeConstraints.every((constraint) => {
+    if (constraint.maxInstances === undefined || !matchesNodeSelectorDefinition(nodeType, constraint.selector)) {
+      return true;
+    }
+    const count = graph.nodes.filter((node) => {
+      const currentType = node.nodeTypeId === undefined ? undefined : resolveNodeTypeDefinition(catalog, node.nodeTypeId);
+      return currentType !== undefined && matchesNodeSelectorDefinition(currentType, constraint.selector);
+    }).length;
+    return count < constraint.maxInstances;
+  }) ?? true;
+}
+
+function getSubgraphOptions(
+  graph: GraphDefinition,
+  catalog: GraphCatalog,
+): readonly SubgraphTypeOption[] {
+  const parentType = graph.graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(catalog, graph.graphTypeId);
+  if (parentType !== undefined && !parentType.allowSubgraphs) {
+    return [];
+  }
+  const graphTypes = catalog.graphTypes.filter((graphType) => {
+    if (graphType.usage === "root") {
+      return false;
+    }
+    return parentType?.allowedSubgraphTypeIds === undefined
+      || parentType.allowedSubgraphTypeIds.some((id) => resolveGraphTypeDefinition(catalog, id)?.id === graphType.id);
+  });
+  return catalog.nodeTypes.flatMap((nodeType) => {
+    if (nodeType.subgraph === undefined || !isNodeTypeAvailable(graph, nodeType, catalog, "subgraph")) {
+      return [];
+    }
+    return graphTypes.flatMap((graphType) => (
+      nodeType.subgraph?.graphTypeIds === undefined
+      || nodeType.subgraph.graphTypeIds.some((id) => resolveGraphTypeDefinition(catalog, id)?.id === graphType.id)
+        ? [{ graphType, nodeType }]
+        : []
+    ));
+  });
 }
 
 function newId(prefix: string): string {
@@ -1857,7 +2133,7 @@ function isJsonValue(value: unknown): value is JsonValue {
 }
 
 function emptyCatalog(): GraphCatalog {
-  return { formatVersion: 1, catalogId: "empty", dataTypes: [], nodeTypes: [] };
+  return { formatVersion: 2, catalogId: "empty", dataTypes: [], graphTypes: [], nodeTypes: [] };
 }
 
 function readMetadata(): { projectId: string; documentType: string; relativePath: string } {

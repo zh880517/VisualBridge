@@ -1,6 +1,6 @@
-# VisualBridge Graph V2
+# VisualBridge Graph V3
 
-Graph V2 is the first semantic VisualBridge document editor. It provides catalog-driven node types, flow and data ports, embedded subgraphs, validation, and VS Code editing behavior. Unity, runtime compilation, and debug communication are not connected yet.
+Graph V3 adds Catalog-defined Graph Types, instance constraints, initial nodes, and typed embedded subgraphs to the semantic editor. Unity, runtime compilation, and debug communication are not connected yet.
 
 ## Project declaration
 
@@ -29,10 +29,25 @@ The catalog path is relative to the marker. Without a valid catalog, existing un
 
 ```json
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "catalogId": "example.logic",
   "dataTypes": [
     { "id": "number", "title": "Number", "accepts": [] }
+  ],
+  "graphTypes": [
+    {
+      "id": "example.main-flow",
+      "aliases": [],
+      "title": "Main Flow",
+      "usage": "root",
+      "allowedNodeSelectors": [{ "tags": ["common"] }],
+      "properties": [],
+      "nodeConstraints": [
+        { "id": "entry", "selector": { "traits": ["flowEntry"] }, "minInstances": 1, "maxInstances": 1 }
+      ],
+      "initialNodes": [{ "nodeTypeId": "example.flow.entry" }],
+      "allowSubgraphs": true
+    }
   ],
   "nodeTypes": [
     {
@@ -88,16 +103,18 @@ The catalog path is relative to the marker. Without a valid catalog, existing un
 
 ## Editing behavior
 
-- Add nodes from searchable catalog types and add embedded subgraphs. Search includes title, stable ID, menu path, tags, and traits.
+- New documents select a root-compatible Graph Type; a single candidate is selected automatically. Initial node templates make required entries available immediately.
+- Add nodes from the current Graph Type's searchable, allowed catalog types. Types at a count maximum and typed-subgraph call types are excluded from the atomic-node picker.
+- Add typed embedded subgraphs by selecting a compatible call-node type and target Graph Type. The call node renders its static fields/data ports together with the child graph's public interfaces.
 - Render declared flow and data ports; flow edges are solid and data edges are dashed.
 - Permit connection cycles. Data edges never determine execution order.
 - Double-click a subgraph to enter it and use the breadcrumb to return.
 - Add, rename, and remove public subgraph interfaces. Removing an interface also removes its internal and parent connections.
 - Edit node titles and catalog-defined fields directly on each node. Catalog hints provide text, multiline, number/range, checkbox, select, JSON, reference, and read-only presentations. Advanced JSON editing remains available inside the node for unknown or additional fields.
 - Add, edit, reorder, and remove instance-level dynamic ports directly on a node. Reordering preserves endpoint IDs; deleting a port removes its related edges in the same operation.
-- Edit the current Graph's title, JSON properties, and public interfaces in a Graph-only Inspector that can collapse to the right edge.
+- Edit the current Graph's title, Graph Type-defined fields, advanced JSON properties, and public interfaces in a Graph-only Inspector that can collapse to the right edge. Assigned Graph Type is read-only.
 - Keep node type display-only; it is never edited as a text field.
-- Right-click an atomic node to replace its type. Only lossless candidates are offered.
+- Right-click an atomic or typed-subgraph node to replace its type. Only same-kind, lossless candidates that preserve Graph Type constraints are offered.
 - Show structural and semantic diagnostics in the Webview and VS Code Problems.
 
 Every persistent action is a Graph Operation applied through `WorkspaceEdit`, retaining VS Code dirty state and Undo/Redo. Node drag emits one operation when the drag ends. External disk changes still require overwrite or discard-and-refresh confirmation.

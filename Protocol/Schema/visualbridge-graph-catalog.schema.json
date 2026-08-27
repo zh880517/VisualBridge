@@ -3,9 +3,9 @@
   "$id": "https://visualbridge.dev/schema/visualbridge-graph-catalog.schema.json",
   "title": "VisualBridge Graph Catalog",
   "type": "object",
-  "required": ["formatVersion", "catalogId", "dataTypes", "nodeTypes"],
+  "required": ["formatVersion", "catalogId", "dataTypes", "graphTypes", "nodeTypes"],
   "properties": {
-    "formatVersion": { "const": 1 },
+    "formatVersion": { "const": 2 },
     "catalogId": { "$ref": "#/$defs/identifier" },
     "dataTypes": {
       "type": "array",
@@ -23,6 +23,10 @@
         },
         "additionalProperties": false
       }
+    },
+    "graphTypes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/graphType" }
     },
     "nodeTypes": {
       "type": "array",
@@ -218,6 +222,112 @@
       },
       "additionalProperties": false
     },
+    "nodeSelector": {
+      "type": "object",
+      "properties": {
+        "nodeTypeIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "tags": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "traits": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/identifier" }
+        }
+      },
+      "anyOf": [
+        { "required": ["nodeTypeIds"] },
+        { "required": ["tags"] },
+        { "required": ["traits"] }
+      ],
+      "additionalProperties": false
+    },
+    "nodeConstraint": {
+      "type": "object",
+      "required": ["id", "selector"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "selector": { "$ref": "#/$defs/nodeSelector" },
+        "minInstances": { "type": "integer", "minimum": 0 },
+        "maxInstances": { "type": "integer", "minimum": 0 }
+      },
+      "anyOf": [
+        { "required": ["minInstances"] },
+        { "required": ["maxInstances"] }
+      ],
+      "additionalProperties": false
+    },
+    "initialNode": {
+      "type": "object",
+      "required": ["nodeTypeId"],
+      "properties": {
+        "nodeTypeId": { "$ref": "#/$defs/identifier" },
+        "title": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "graphType": {
+      "type": "object",
+      "required": ["id", "title", "properties"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "aliases": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "default": []
+        },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "usage": { "enum": ["root", "subgraph", "any"], "default": "any" },
+        "source": { "$ref": "#/$defs/nodeSource" },
+        "allowedNodeSelectors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nodeSelector" }
+        },
+        "properties": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/property" }
+        },
+        "nodeConstraints": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nodeConstraint" },
+          "default": []
+        },
+        "initialNodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/initialNode" },
+          "default": []
+        },
+        "allowSubgraphs": { "type": "boolean", "default": true },
+        "allowedSubgraphTypeIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "allowSubgraphs": { "const": false } }, "required": ["allowSubgraphs"] },
+          "then": { "not": { "required": ["allowedSubgraphTypeIds"] } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "subgraphNodeContract": {
+      "type": "object",
+      "properties": {
+        "graphTypeIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" }
+        }
+      },
+      "additionalProperties": false
+    },
     "nodeType": {
       "type": "object",
       "required": ["id", "title", "category", "ports", "properties"],
@@ -246,6 +356,7 @@
           "default": []
         },
         "source": { "$ref": "#/$defs/nodeSource" },
+        "subgraph": { "$ref": "#/$defs/subgraphNodeContract" },
         "ports": {
           "type": "array",
           "items": { "$ref": "#/$defs/port" }

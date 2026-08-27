@@ -478,6 +478,8 @@ Unity Bridge 是通用 Unity Package，负责 Unity 和 VisualBridge 之间的�
 - 发送调试事件和运行时变量。
 - 根据请求打开 VS Code 中的 Authoring Document。
 
+Graph 完成前不实现上述 Unity 代码。后续 Catalog Exporter 必须把 Graph/Node Type 的显式稳定 ID、Graph 用途、允许节点 selector、实例数量约束、初始节点以及 typed subgraph 目标类型导出为确定性 Catalog；C# 全名只作为 `source` 追踪信息，不能充当持久身份。Exporter 不执行业务 `OnCreate()` 获取默认值，也不得用旧格式覆盖更高版本 Catalog。
+
 不同业务模块通过 Unity Adapter 注册具体 Catalog Generator、Importer、Compiler 和 Debug Mapping。
 
 ### 编译边界
@@ -879,6 +881,8 @@ Domain Reload 会中断连接。Unity Bridge 重新登记实例，VS Code 和 MC
 - 项目 `.ts` 不直接加载到 VS Code Extension Host。
 - 自定义 Webview TypeScript/TSX 仍需要构建为 JavaScript/CSS。
 - 内置 Graph Canvas 使用 React 与 React Flow；React Flow 的节点和连线数据由 Graph Document 派生，用户交互必须转换为 Graph Operation 后才能写入源文档。
+- Graph Catalog V2 声明 Graph Type、允许节点、直接节点数量约束和 typed subgraph 调用契约；Graph Document V3 为根图和每个内嵌图保存独立 `graphTypeId`。
+- Graph Type 一经设置暂不允许任意修改；节点和子图创建、删除及安全替换必须保持数量约束，子图调用节点的静态数据端口与子图公开接口共同形成父图端口契约。
 - 声明式扩展优先，项目 Provider 处理复杂逻辑。
 - Unity Editor 与本机工具使用 Project Discovery File 和 Loopback WebSocket。
 - Player 使用网络 WebSocket并复用上层协议。

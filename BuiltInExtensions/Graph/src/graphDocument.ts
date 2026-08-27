@@ -5,7 +5,10 @@ import type {
 } from "@visualbridge/core";
 import {
   isDataTypeAssignable,
+  isNodeTypeAllowed,
+  matchesNodeSelector,
   resolveDynamicPortGroup,
+  resolveGraphType,
   resolvePortDefinition,
   resolvePropertyDefinition,
   resolveNodeType,
@@ -15,9 +18,10 @@ import {
   type GraphPortDirection,
   type GraphPortKind,
   type GraphPropertyDefinition,
+  type GraphTypeDefinition,
 } from "./graphCatalog";
 
-export const GRAPH_DOCUMENT_FORMAT_VERSION = 2;
+export const GRAPH_DOCUMENT_FORMAT_VERSION = 3;
 export const GRAPH_EDITOR_ID = "graph";
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -49,10 +53,13 @@ export interface GraphDynamicPort {
 
 export interface GraphSubgraphNode extends GraphNodeBase {
   readonly kind: "subgraph";
+  readonly nodeTypeId?: string;
   readonly subgraphId: string;
+  readonly dynamicPorts: readonly GraphDynamicPort[];
 }
 
 export type GraphNode = GraphAtomicNode | GraphSubgraphNode;
+type GraphTypedNode = GraphAtomicNode | (GraphSubgraphNode & { readonly nodeTypeId: string });
 
 export interface GraphNodeEndpoint {
   readonly kind: "node";
@@ -85,6 +92,7 @@ export interface GraphInterfacePort {
 
 export interface GraphDefinition {
   readonly id: string;
+  readonly graphTypeId?: string;
   readonly title: string;
   readonly properties: Readonly<Record<string, JsonValue>>;
   readonly interfacePorts: readonly GraphInterfacePort[];
@@ -156,6 +164,11 @@ export type GraphOperation =
   | { readonly type: "graph.addEdge"; readonly graphId: string; readonly edge: GraphEdge }
   | { readonly type: "graph.removeEdge"; readonly graphId: string; readonly edgeId: string }
   | {
+      readonly type: "graph.assignType";
+      readonly graphId: string;
+      readonly graphTypeId: string;
+    }
+  | {
       readonly type: "graph.updateGraph";
       readonly graphId: string;
       readonly title: string;
@@ -179,13 +192,71 @@ export interface GraphResolvedPort {
   readonly maxConnections?: number;
 }
 
-export function createEmptyGraphDocument(documentId: string, rootGraphId: string): GraphDocument {
+export function createEmptyGraphDocument(
+  documentId: string,
+  rootGraphId: string,
+  graphTypeId?: string,
+  catalog?: GraphCatalog,
+  createNodeId?: () => string,
+): GraphDocument {
+  const graph = createGraphDefinition(rootGraphId, "Root", graphTypeId, catalog, createNodeId);
   return {
     formatVersion: GRAPH_DOCUMENT_FORMAT_VERSION,
     documentId,
     rootGraphId,
-    graphs: [{ id: rootGraphId, title: "Root", properties: {}, interfacePorts: [], nodes: [], edges: [] }],
+    graphs: [graph],
   };
+}
+
+export function createGraphDefinition(
+  graphId: string,
+  title: string,
+  graphTypeId?: string,
+  catalog?: GraphCatalog,
+  createNodeId?: () => string,
+): GraphDefinition {
+  const resolvedCatalog = catalog ?? EMPTY_CATALOG;
+  const graphType = graphTypeId === undefined || catalog === undefined
+    ? undefined
+    : resolveGraphType(resolvedCatalog, graphTypeId);
+  const properties = createDefaultPropertyValues(graphType?.properties ?? []);
+  const nodes = graphType === undefined || createNodeId === undefined
+    ? []
+    : graphType.initialNodes.flatMap((initialNode, index) => {
+        const nodeType = resolveNodeType(resolvedCatalog, initialNode.nodeTypeId);
+        return nodeType === undefined || nodeType.subgraph !== undefined
+          ? []
+          : [{
+              kind: "node" as const,
+              id: createNodeId(),
+              nodeTypeId: nodeType.id,
+              title: initialNode.title ?? nodeType.title,
+              position: { x: 80 + (index % 3) * 260, y: 80 + Math.floor(index / 3) * 180 },
+              properties: createDefaultPropertyValues(nodeType.properties),
+              dynamicPorts: [],
+            }];
+      });
+  return {
+    id: graphId,
+    ...(graphType === undefined ? {} : { graphTypeId: graphType.id }),
+    title,
+    properties,
+    interfacePorts: [],
+    nodes,
+    edges: [],
+  };
+}
+
+export function createDefaultPropertyValues(
+  definitions: readonly GraphPropertyDefinition[],
+): Readonly<Record<string, JsonValue>> {
+  const properties: Record<string, JsonValue> = {};
+  definitions.forEach((property) => {
+    if (property.defaultValue !== undefined) {
+      properties[property.id] = cloneJsonValue(property.defaultValue);
+    }
+  });
+  return properties;
 }
 
 export function parseGraphDocument(text: string): DocumentParseResult<GraphDocument> {
@@ -207,6 +278,7 @@ export function serializeGraphDocument(document: GraphDocument): string {
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((graph) => ({
         id: graph.id,
+        ...(graph.graphTypeId === undefined ? {} : { graphTypeId: graph.graphTypeId }),
         title: graph.title,
         properties: sortJsonObject(graph.properties),
         interfacePorts: [...graph.interfacePorts]
@@ -239,10 +311,17 @@ export function serializeGraphDocument(document: GraphDocument): string {
             : {
                 kind: node.kind,
                 id: node.id,
+                ...(node.nodeTypeId === undefined ? {} : { nodeTypeId: node.nodeTypeId }),
                 subgraphId: node.subgraphId,
                 title: node.title,
                 position: { ...node.position },
                 properties: sortJsonObject(node.properties),
+                dynamicPorts: node.dynamicPorts.map((port) => ({
+                  id: port.id,
+                  groupId: port.groupId,
+                  title: port.title,
+                  value: sortJsonValue(port.value),
+                })),
               }),
         edges: [...graph.edges]
           .sort((left, right) => left.id.localeCompare(right.id))
@@ -309,8 +388,16 @@ export function validateGraphDocument(
   }
 
   const graphById = new Map(document.graphs.map((graph) => [graph.id, graph]));
+  const ownerByGraphId = new Map<string, { readonly graph: GraphDefinition; readonly node: GraphSubgraphNode }>();
+  document.graphs.forEach((graph) => graph.nodes.forEach((node) => {
+    if (node.kind === "subgraph") {
+      ownerByGraphId.set(node.subgraphId, { graph, node });
+    }
+  }));
   document.graphs.forEach((graph, graphIndex) => {
     const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+    const graphPath = `graphs[${graphIndex}]`;
+    const graphType = validateGraphType(graph, graphPath, document, ownerByGraphId, catalog, diagnostics);
     if (catalog !== undefined) {
       const dataTypeIds = new Set(["any", ...catalog.dataTypes.map((dataType) => dataType.id)]);
       graph.interfacePorts.forEach((port, portIndex) => {
@@ -326,8 +413,12 @@ export function validateGraphDocument(
     graph.nodes.forEach((node, nodeIndex) => {
       if (node.kind === "node") {
         validateAtomicNode(node, `graphs[${graphIndex}].nodes[${nodeIndex}]`, catalog, diagnostics);
+      } else {
+        validateSubgraphNode(node, `${graphPath}.nodes[${nodeIndex}]`, graphById, catalog, diagnostics);
       }
+      validateNodeAllowed(node, `${graphPath}.nodes[${nodeIndex}]`, graphType, catalog, diagnostics);
     });
+    validateNodeConstraints(graph, graphPath, graphType, catalog, diagnostics);
     graph.edges.forEach((edge, edgeIndex) => {
       validateSemanticEdge(
         graph,
@@ -354,7 +445,14 @@ export function getGraphNodePorts(
     const nodeType = resolveNodeType(catalog ?? EMPTY_CATALOG, node.nodeTypeId);
     return nodeType === undefined ? [] : getAtomicNodePorts(node, nodeType);
   }
-  return document.graphs.find((graph) => graph.id === node.subgraphId)?.interfacePorts ?? [];
+  const interfacePorts = document.graphs.find((graph) => graph.id === node.subgraphId)?.interfacePorts ?? [];
+  if (node.nodeTypeId === undefined) {
+    return interfacePorts;
+  }
+  const nodeType = resolveNodeType(catalog ?? EMPTY_CATALOG, node.nodeTypeId);
+  return nodeType === undefined
+    ? interfacePorts
+    : [...getTypedNodePorts(node as GraphSubgraphNode & { readonly nodeTypeId: string }, nodeType), ...interfacePorts];
 }
 
 export function getReplacementCandidates(
@@ -365,13 +463,17 @@ export function getReplacementCandidates(
 ): readonly GraphNodeTypeDefinition[] {
   const graph = document.graphs.find((candidate) => candidate.id === graphId);
   const node = graph?.nodes.find((candidate) => candidate.id === nodeId);
-  if (graph === undefined || node?.kind !== "node") {
+  if (graph === undefined || node === undefined || node.nodeTypeId === undefined) {
     return [];
   }
+  const typedNode = node as GraphTypedNode;
   const currentTypeId = resolveNodeType(catalog, node.nodeTypeId)?.id ?? node.nodeTypeId;
   return catalog.nodeTypes.filter(
     (targetType) => targetType.id !== currentTypeId
-      && replacementIssue(document, graph, node, targetType, catalog) === undefined,
+      && (targetType.subgraph !== undefined) === (node.kind === "subgraph")
+      && isNodeTypeAllowedForGraph(graph, targetType, catalog)
+      && replacementRespectsNodeConstraints(graph, typedNode, targetType, catalog)
+      && replacementIssue(document, graph, typedNode, targetType, catalog) === undefined,
   );
 }
 
@@ -381,7 +483,7 @@ function parseGraphDocumentValue(value: unknown): DocumentParseResult<GraphDocum
   }
   const diagnostics: DocumentDiagnostic[] = [];
   checkKeys(value, ["formatVersion", "documentId", "rootGraphId", "graphs"], "$", diagnostics);
-  if (value.formatVersion !== GRAPH_DOCUMENT_FORMAT_VERSION) {
+  if (value.formatVersion !== 2 && value.formatVersion !== GRAPH_DOCUMENT_FORMAT_VERSION) {
     diagnostics.push(error(
       "graph.unsupportedVersion",
       "formatVersion",
@@ -417,8 +519,11 @@ function readGraphs(value: unknown, diagnostics: DocumentDiagnostic[]): readonly
       diagnostics.push(error("graph.invalidGraph", path, "Expected an object."));
       return [];
     }
-    checkKeys(entry, ["id", "title", "properties", "interfacePorts", "nodes", "edges"], path, diagnostics);
+    checkKeys(entry, ["id", "graphTypeId", "title", "properties", "interfacePorts", "nodes", "edges"], path, diagnostics);
     const id = readIdentifier(entry.id, `${path}.id`, diagnostics);
+    const graphTypeId = entry.graphTypeId === undefined
+      ? undefined
+      : readIdentifier(entry.graphTypeId, `${path}.graphTypeId`, diagnostics);
     const title = readString(entry.title, `${path}.title`, diagnostics);
     const properties = readProperties(entry.properties, `${path}.properties`, diagnostics);
     const interfacePorts = readInterfacePorts(entry.interfacePorts, `${path}.interfacePorts`, diagnostics);
@@ -426,7 +531,7 @@ function readGraphs(value: unknown, diagnostics: DocumentDiagnostic[]): readonly
     const edges = readEdges(entry.edges, `${path}.edges`, diagnostics);
     return id === undefined || title === undefined || properties === undefined
       ? []
-      : [{ id, title, properties, interfacePorts, nodes, edges }];
+      : [{ id, ...(graphTypeId === undefined ? {} : { graphTypeId }), title, properties, interfacePorts, nodes, edges }];
   });
 }
 
@@ -445,7 +550,7 @@ function readNodes(value: unknown, basePath: string, diagnostics: DocumentDiagno
     if (kind === "node") {
       checkKeys(entry, ["kind", "id", "nodeTypeId", "title", "position", "properties", "dynamicPorts"], path, diagnostics);
     } else if (kind === "subgraph") {
-      checkKeys(entry, ["kind", "id", "subgraphId", "title", "position", "properties"], path, diagnostics);
+      checkKeys(entry, ["kind", "id", "nodeTypeId", "subgraphId", "title", "position", "properties", "dynamicPorts"], path, diagnostics);
     }
     const id = readIdentifier(entry.id, `${path}.id`, diagnostics);
     const title = readString(entry.title, `${path}.title`, diagnostics);
@@ -461,8 +566,16 @@ function readNodes(value: unknown, basePath: string, diagnostics: DocumentDiagno
         : readDynamicPorts(entry.dynamicPorts, `${path}.dynamicPorts`, diagnostics);
       return nodeTypeId === undefined ? [] : [{ kind, id, nodeTypeId, title, position, properties, dynamicPorts }];
     }
+    const nodeTypeId = entry.nodeTypeId === undefined
+      ? undefined
+      : readIdentifier(entry.nodeTypeId, `${path}.nodeTypeId`, diagnostics);
     const subgraphId = readIdentifier(entry.subgraphId, `${path}.subgraphId`, diagnostics);
-    return subgraphId === undefined ? [] : [{ kind, id, subgraphId, title, position, properties }];
+    const dynamicPorts = entry.dynamicPorts === undefined
+      ? []
+      : readDynamicPorts(entry.dynamicPorts, `${path}.dynamicPorts`, diagnostics);
+    return subgraphId === undefined
+      ? []
+      : [{ kind, id, ...(nodeTypeId === undefined ? {} : { nodeTypeId }), subgraphId, title, position, properties, dynamicPorts }];
   });
 }
 
@@ -675,6 +788,12 @@ function parseOperation(value: unknown, index: number, diagnostics: DocumentDiag
       const edgeId = readIdentifier(value.edgeId, `${path}.edgeId`, diagnostics);
       return graphId === undefined || edgeId === undefined ? undefined : { type: value.type, graphId, edgeId };
     }
+    case "graph.assignType": {
+      const graphTypeId = readIdentifier(value.graphTypeId, `${path}.graphTypeId`, diagnostics);
+      return graphId === undefined || graphTypeId === undefined
+        ? undefined
+        : { type: value.type, graphId, graphTypeId };
+    }
     case "graph.updateGraph": {
       const title = readString(value.title, `${path}.title`, diagnostics);
       const properties = readProperties(value.properties, `${path}.properties`, diagnostics);
@@ -719,8 +838,14 @@ function applyOperation(
       if (allNodes(document).some((node) => node.id === operation.node.id)) {
         return error("graph.nodeAlreadyExists", path, `Node '${operation.node.id}' already exists.`);
       }
-      if (catalog !== undefined && resolveNodeType(catalog, operation.node.nodeTypeId) === undefined) {
-        return error("graph.unknownNodeType", `${path}.node.nodeTypeId`, `Node type '${operation.node.nodeTypeId}' is not in the catalog.`);
+      if (catalog !== undefined) {
+        const nodeType = resolveNodeType(catalog, operation.node.nodeTypeId);
+        if (nodeType === undefined) {
+          return error("graph.unknownNodeType", `${path}.node.nodeTypeId`, `Node type '${operation.node.nodeTypeId}' is not in the catalog.`);
+        }
+        if (nodeType.subgraph !== undefined) {
+          return error("graph.subgraphTypeRequiresSubgraph", `${path}.node.nodeTypeId`, `Node type '${nodeType.id}' must be created as a subgraph.`);
+        }
       }
       graph.nodes.push(cloneNode(operation.node));
       return undefined;
@@ -733,6 +858,12 @@ function applyOperation(
       }
       if (operation.node.subgraphId !== operation.subgraph.id) {
         return error("graph.subgraphIdMismatch", path, "Subgraph node and embedded graph IDs must match.");
+      }
+      if (catalog !== undefined && operation.node.nodeTypeId !== undefined) {
+        const nodeType = resolveNodeType(catalog, operation.node.nodeTypeId);
+        if (nodeType?.subgraph === undefined) {
+          return error("graph.invalidSubgraphNodeType", `${path}.node.nodeTypeId`, `Node type '${operation.node.nodeTypeId}' is not a subgraph node type.`);
+        }
       }
       graph.nodes.push(cloneNode(operation.node));
       document.graphs.push(cloneGraph(operation.subgraph));
@@ -769,8 +900,8 @@ function applyOperation(
     }
     case "graph.replaceNodeType": {
       const node = graph.nodes.find((candidate) => candidate.id === operation.nodeId);
-      if (node?.kind !== "node") {
-        return error("graph.nodeNotFound", path, `Atomic node '${operation.nodeId}' does not exist in graph '${graph.id}'.`);
+      if (node === undefined || node.nodeTypeId === undefined) {
+        return error("graph.nodeNotFound", path, `Typed node '${operation.nodeId}' does not exist in graph '${graph.id}'.`);
       }
       if (catalog === undefined) {
         return error("graph.catalogRequired", path, "A Graph Catalog is required to replace node types.");
@@ -779,7 +910,10 @@ function applyOperation(
       if (targetType === undefined) {
         return error("graph.unknownNodeType", `${path}.nodeTypeId`, `Node type '${operation.nodeTypeId}' is not in the catalog.`);
       }
-      const issue = replacementIssue(document, graph, node, targetType, catalog);
+      if ((targetType.subgraph !== undefined) !== (node.kind === "subgraph")) {
+        return error("graph.incompatibleReplacement", path, "Atomic and subgraph node types cannot replace each other.");
+      }
+      const issue = replacementIssue(document, graph, node as GraphTypedNode, targetType, catalog);
       if (issue !== undefined) {
         return error("graph.incompatibleReplacement", path, issue);
       }
@@ -795,8 +929,8 @@ function applyOperation(
     }
     case "graph.addDynamicPort": {
       const node = graph.nodes.find((candidate) => candidate.id === operation.nodeId);
-      if (node?.kind !== "node") {
-        return error("graph.nodeNotFound", path, `Atomic node '${operation.nodeId}' does not exist in graph '${graph.id}'.`);
+      if (node === undefined || node.nodeTypeId === undefined) {
+        return error("graph.nodeNotFound", path, `Typed node '${operation.nodeId}' does not exist in graph '${graph.id}'.`);
       }
       const nodeType = catalog === undefined ? undefined : resolveNodeType(catalog, node.nodeTypeId);
       if (nodeType === undefined) {
@@ -824,8 +958,8 @@ function applyOperation(
     }
     case "graph.updateDynamicPort": {
       const node = graph.nodes.find((candidate) => candidate.id === operation.nodeId);
-      if (node?.kind !== "node") {
-        return error("graph.nodeNotFound", path, `Atomic node '${operation.nodeId}' does not exist in graph '${graph.id}'.`);
+      if (node === undefined || node.nodeTypeId === undefined) {
+        return error("graph.nodeNotFound", path, `Typed node '${operation.nodeId}' does not exist in graph '${graph.id}'.`);
       }
       const port = node.dynamicPorts.find((candidate) => candidate.id === operation.portId);
       if (port === undefined) {
@@ -845,8 +979,8 @@ function applyOperation(
     }
     case "graph.removeDynamicPort": {
       const node = graph.nodes.find((candidate) => candidate.id === operation.nodeId);
-      if (node?.kind !== "node") {
-        return error("graph.nodeNotFound", path, `Atomic node '${operation.nodeId}' does not exist in graph '${graph.id}'.`);
+      if (node === undefined || node.nodeTypeId === undefined) {
+        return error("graph.nodeNotFound", path, `Typed node '${operation.nodeId}' does not exist in graph '${graph.id}'.`);
       }
       const portIndex = node.dynamicPorts.findIndex((candidate) => candidate.id === operation.portId);
       if (portIndex < 0) {
@@ -858,8 +992,8 @@ function applyOperation(
     }
     case "graph.reorderDynamicPorts": {
       const node = graph.nodes.find((candidate) => candidate.id === operation.nodeId);
-      if (node?.kind !== "node") {
-        return error("graph.nodeNotFound", path, `Atomic node '${operation.nodeId}' does not exist in graph '${graph.id}'.`);
+      if (node === undefined || node.nodeTypeId === undefined) {
+        return error("graph.nodeNotFound", path, `Typed node '${operation.nodeId}' does not exist in graph '${graph.id}'.`);
       }
       const existingIds = new Set(node.dynamicPorts.map((port) => port.id));
       const requestedIds = new Set(operation.portIds);
@@ -907,6 +1041,25 @@ function applyOperation(
         return error("graph.edgeNotFound", path, `Edge '${operation.edgeId}' does not exist in graph '${graph.id}'.`);
       }
       graph.edges.splice(edgeIndex, 1);
+      return undefined;
+    }
+    case "graph.assignType": {
+      if (graph.graphTypeId !== undefined) {
+        return error("graph.graphTypeAlreadyAssigned", path, `Graph '${graph.id}' already has type '${graph.graphTypeId}'.`);
+      }
+      if (catalog === undefined) {
+        return error("graph.catalogRequired", path, "A Graph Catalog is required to assign a Graph Type.");
+      }
+      const graphType = resolveGraphType(catalog, operation.graphTypeId);
+      if (graphType === undefined) {
+        return error("graph.unknownGraphType", `${path}.graphTypeId`, `Graph type '${operation.graphTypeId}' is not in the catalog.`);
+      }
+      graph.graphTypeId = graphType.id;
+      graphType.properties.forEach((property) => {
+        if (!hasPropertyValue(graph.properties, property) && property.defaultValue !== undefined) {
+          graph.properties[property.id] = cloneJsonValue(property.defaultValue);
+        }
+      });
       return undefined;
     }
     case "graph.updateGraph":
@@ -986,19 +1139,17 @@ function validateStructure(document: GraphDocument): DocumentDiagnostic[] {
       }
       nodeIds.add(node.id);
       localNodeIds.add(node.id);
-      if (node.kind === "node") {
-        const dynamicPortIds = new Set<string>();
-        node.dynamicPorts.forEach((port, portIndex) => {
-          if (dynamicPortIds.has(port.id)) {
-            diagnostics.push(error(
-              "graph.duplicateDynamicPortId",
-              `graphs[${graphIndex}].nodes[${nodeIndex}].dynamicPorts[${portIndex}].id`,
-              `Duplicate dynamic port id '${port.id}' on node '${node.id}'.`,
-            ));
-          }
-          dynamicPortIds.add(port.id);
-        });
-      }
+      const dynamicPortIds = new Set<string>();
+      node.dynamicPorts.forEach((port, portIndex) => {
+        if (dynamicPortIds.has(port.id)) {
+          diagnostics.push(error(
+            "graph.duplicateDynamicPortId",
+            `graphs[${graphIndex}].nodes[${nodeIndex}].dynamicPorts[${portIndex}].id`,
+            `Duplicate dynamic port id '${port.id}' on node '${node.id}'.`,
+          ));
+        }
+        dynamicPortIds.add(port.id);
+      });
       if (node.kind === "subgraph") {
         if (node.subgraphId === document.rootGraphId) {
           diagnostics.push(error("graph.rootGraphOwned", `graphs[${graphIndex}].nodes[${nodeIndex}].subgraphId`, "The root graph cannot be embedded."));
@@ -1035,7 +1186,7 @@ function validateStructure(document: GraphDocument): DocumentDiagnostic[] {
 }
 
 function validateAtomicNode(
-  node: GraphAtomicNode,
+  node: GraphAtomicNode | (GraphSubgraphNode & { readonly nodeTypeId: string }),
   path: string,
   catalog: GraphCatalog | undefined,
   diagnostics: DocumentDiagnostic[],
@@ -1050,6 +1201,9 @@ function validateAtomicNode(
   }
   if (nodeType.id !== node.nodeTypeId) {
     diagnostics.push(warning("graph.nodeTypeAlias", `${path}.nodeTypeId`, `Node type '${node.nodeTypeId}' is an alias of '${nodeType.id}'.`));
+  }
+  if (node.kind === "node" && nodeType.subgraph !== undefined) {
+    diagnostics.push(error("graph.subgraphTypeUsedForAtomicNode", `${path}.nodeTypeId`, `Node type '${nodeType.id}' must own an embedded subgraph.`));
   }
   const propertyOwners = new Map<string, string>();
   Object.entries(node.properties).forEach(([propertyId, value]) => {
@@ -1127,6 +1281,251 @@ function validateAtomicNode(
         `${path}.dynamicPorts`,
         `Dynamic port group '${group.id}' has ${count} items but allows ${group.maxItems}.`,
       ));
+    }
+  });
+}
+
+function validateGraphType(
+  graph: GraphDefinition,
+  path: string,
+  document: GraphDocument,
+  ownerByGraphId: ReadonlyMap<string, { readonly graph: GraphDefinition; readonly node: GraphSubgraphNode }>,
+  catalog: GraphCatalog | undefined,
+  diagnostics: DocumentDiagnostic[],
+): GraphTypeDefinition | undefined {
+  if (catalog === undefined || catalog.graphTypes.length === 0) {
+    return undefined;
+  }
+  if (graph.graphTypeId === undefined) {
+    diagnostics.push(warning("graph.missingGraphType", `${path}.graphTypeId`, "Graph Type is not assigned. Existing data is preserved."));
+    return undefined;
+  }
+  const graphType = resolveGraphType(catalog, graph.graphTypeId);
+  if (graphType === undefined) {
+    diagnostics.push(warning("graph.unknownGraphType", `${path}.graphTypeId`, `Unknown Graph Type '${graph.graphTypeId}'. Existing data is preserved.`));
+    return undefined;
+  }
+  if (graphType.id !== graph.graphTypeId) {
+    diagnostics.push(warning("graph.graphTypeAlias", `${path}.graphTypeId`, `Graph Type '${graph.graphTypeId}' is an alias of '${graphType.id}'.`));
+  }
+  const isRoot = graph.id === document.rootGraphId;
+  if ((isRoot && graphType.usage === "subgraph") || (!isRoot && graphType.usage === "root")) {
+    diagnostics.push(error(
+      "graph.invalidGraphTypeUsage",
+      `${path}.graphTypeId`,
+      `Graph Type '${graphType.id}' cannot be used as ${isRoot ? "a root graph" : "an embedded subgraph"}.`,
+    ));
+  }
+  validateDeclaredProperties(graph.properties, graphType.properties, `${path}.properties`, `Graph Type '${graphType.id}'`, diagnostics);
+  const owner = ownerByGraphId.get(graph.id);
+  if (owner !== undefined) {
+    const parentType = owner.graph.graphTypeId === undefined ? undefined : resolveGraphType(catalog, owner.graph.graphTypeId);
+    if (parentType !== undefined) {
+      if (
+        parentType.allowSubgraphs
+        &&
+        parentType.allowedSubgraphTypeIds !== undefined
+        && !parentType.allowedSubgraphTypeIds.some((id) => resolveGraphType(catalog, id)?.id === graphType.id)
+      ) {
+        diagnostics.push(error(
+          "graph.subgraphTypeNotAllowed",
+          `${path}.graphTypeId`,
+          `Parent Graph Type '${parentType.id}' does not allow subgraph type '${graphType.id}'.`,
+        ));
+      }
+    }
+  }
+  return graphType;
+}
+
+function validateSubgraphNode(
+  node: GraphSubgraphNode,
+  path: string,
+  graphById: ReadonlyMap<string, GraphDefinition>,
+  catalog: GraphCatalog | undefined,
+  diagnostics: DocumentDiagnostic[],
+): void {
+  if (catalog === undefined || node.nodeTypeId === undefined) {
+    if (catalog !== undefined && catalog.graphTypes.length > 0) {
+      diagnostics.push(warning("graph.untypedSubgraphNode", `${path}.nodeTypeId`, "Subgraph call has no node type. Existing data is preserved."));
+    }
+    return;
+  }
+  const nodeType = resolveNodeType(catalog, node.nodeTypeId);
+  if (nodeType === undefined) {
+    diagnostics.push(warning("graph.unknownNodeType", `${path}.nodeTypeId`, `Unknown node type '${node.nodeTypeId}'. Original data is preserved.`));
+    return;
+  }
+  if (nodeType.subgraph === undefined) {
+    diagnostics.push(error("graph.atomicTypeUsedForSubgraph", `${path}.nodeTypeId`, `Node type '${nodeType.id}' is not a subgraph call type.`));
+    return;
+  }
+  validateAtomicNode(node as GraphSubgraphNode & { readonly nodeTypeId: string }, path, catalog, diagnostics);
+  const childGraph = graphById.get(node.subgraphId);
+  const childType = childGraph?.graphTypeId === undefined ? undefined : resolveGraphType(catalog, childGraph.graphTypeId);
+  if (
+    childType !== undefined
+    && nodeType.subgraph.graphTypeIds !== undefined
+    && !nodeType.subgraph.graphTypeIds.some((id) => resolveGraphType(catalog, id)?.id === childType.id)
+  ) {
+    diagnostics.push(error(
+      "graph.subgraphCallTypeMismatch",
+      `${path}.nodeTypeId`,
+      `Subgraph node type '${nodeType.id}' cannot contain Graph Type '${childType.id}'.`,
+    ));
+  }
+  if (childGraph !== undefined) {
+    const occupiedPortIds = new Set<string>();
+    getTypedNodePorts(node as GraphSubgraphNode & { readonly nodeTypeId: string }, nodeType).forEach((port) => {
+      occupiedPortIds.add(port.id);
+      const definition = resolvePortDefinition(nodeType, port.id);
+      definition?.aliases.forEach((alias) => occupiedPortIds.add(alias));
+    });
+    childGraph.interfacePorts.forEach((port, index) => {
+      if (occupiedPortIds.has(port.id)) {
+        diagnostics.push(error(
+          "graph.subgraphPortIdCollision",
+          `${path}.subgraphId`,
+          `Subgraph interface port '${port.id}' collides with a static or dynamic port on '${nodeType.id}' (interface index ${index}).`,
+        ));
+      }
+    });
+  }
+}
+
+function validateNodeAllowed(
+  node: GraphNode,
+  path: string,
+  graphType: GraphTypeDefinition | undefined,
+  catalog: GraphCatalog | undefined,
+  diagnostics: DocumentDiagnostic[],
+): void {
+  if (node.kind === "subgraph" && graphType !== undefined && !graphType.allowSubgraphs) {
+    diagnostics.push(error(
+      "graph.subgraphsNotAllowed",
+      `${path}.subgraphId`,
+      `Graph Type '${graphType.id}' does not allow subgraphs.`,
+    ));
+  }
+  if (node.kind === "subgraph" && graphType !== undefined && node.nodeTypeId === undefined) {
+    diagnostics.push(error(
+      "graph.typedSubgraphNodeRequired",
+      `${path}.nodeTypeId`,
+      `Graph Type '${graphType.id}' requires embedded subgraphs to use a Catalog subgraph node type.`,
+    ));
+  }
+  if (graphType?.allowedNodeSelectors === undefined || catalog === undefined) {
+    return;
+  }
+  const nodeType = node.nodeTypeId === undefined ? undefined : resolveNodeType(catalog, node.nodeTypeId);
+  if (nodeType !== undefined && isNodeTypeAllowed(graphType, nodeType)) {
+    return;
+  }
+  diagnostics.push(error(
+    "graph.nodeTypeNotAllowed",
+    `${path}.nodeTypeId`,
+    nodeType === undefined
+      ? `Graph Type '${graphType.id}' cannot verify an untyped or unknown node.`
+      : `Graph Type '${graphType.id}' does not allow node type '${nodeType.id}'.`,
+  ));
+}
+
+function isNodeTypeAllowedForGraph(
+  graph: GraphDefinition,
+  nodeType: GraphNodeTypeDefinition,
+  catalog: GraphCatalog,
+): boolean {
+  const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphType(catalog, graph.graphTypeId);
+  return graphType === undefined || isNodeTypeAllowed(graphType, nodeType);
+}
+
+function replacementRespectsNodeConstraints(
+  graph: GraphDefinition,
+  node: GraphTypedNode,
+  targetType: GraphNodeTypeDefinition,
+  catalog: GraphCatalog,
+): boolean {
+  const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphType(catalog, graph.graphTypeId);
+  if (graphType === undefined) {
+    return true;
+  }
+  const sourceType = resolveNodeType(catalog, node.nodeTypeId);
+  return graphType.nodeConstraints.every((constraint) => {
+    const before = graph.nodes.filter((candidate) => {
+      const candidateType = candidate.nodeTypeId === undefined ? undefined : resolveNodeType(catalog, candidate.nodeTypeId);
+      return candidateType !== undefined && matchesNodeSelector(candidateType, constraint.selector);
+    }).length;
+    const after = before
+      - (sourceType !== undefined && matchesNodeSelector(sourceType, constraint.selector) ? 1 : 0)
+      + (matchesNodeSelector(targetType, constraint.selector) ? 1 : 0);
+    return (constraint.minInstances === undefined || after >= constraint.minInstances)
+      && (constraint.maxInstances === undefined || after <= constraint.maxInstances);
+  });
+}
+
+function validateNodeConstraints(
+  graph: GraphDefinition,
+  path: string,
+  graphType: GraphTypeDefinition | undefined,
+  catalog: GraphCatalog | undefined,
+  diagnostics: DocumentDiagnostic[],
+): void {
+  if (graphType === undefined || catalog === undefined) {
+    return;
+  }
+  graphType.nodeConstraints.forEach((constraint) => {
+    const count = graph.nodes.filter((node) => {
+      const nodeType = node.nodeTypeId === undefined ? undefined : resolveNodeType(catalog, node.nodeTypeId);
+      return nodeType !== undefined && matchesNodeSelector(nodeType, constraint.selector);
+    }).length;
+    const constraintPath = `${path}.nodeConstraints.${constraint.id}`;
+    if (constraint.minInstances !== undefined && count < constraint.minInstances) {
+      diagnostics.push(error(
+        "graph.tooFewNodeInstances",
+        constraintPath,
+        `Constraint '${constraint.id}' requires at least ${constraint.minInstances} matching nodes; found ${count}.`,
+      ));
+    }
+    if (constraint.maxInstances !== undefined && count > constraint.maxInstances) {
+      diagnostics.push(error(
+        "graph.tooManyNodeInstances",
+        constraintPath,
+        `Constraint '${constraint.id}' allows at most ${constraint.maxInstances} matching nodes; found ${count}.`,
+      ));
+    }
+  });
+}
+
+function validateDeclaredProperties(
+  properties: Readonly<Record<string, JsonValue>>,
+  definitions: readonly GraphPropertyDefinition[],
+  path: string,
+  owner: string,
+  diagnostics: DocumentDiagnostic[],
+): void {
+  const propertyOwners = new Map<string, string>();
+  Object.entries(properties).forEach(([propertyId, value]) => {
+    const definition = definitions.find((candidate) => candidate.id === propertyId || candidate.aliases.includes(propertyId));
+    if (definition === undefined) {
+      diagnostics.push(warning("graph.unknownGraphProperty", `${path}.${propertyId}`, `Property '${propertyId}' is not declared by ${owner} and is preserved.`));
+      return;
+    }
+    const previousPropertyId = propertyOwners.get(definition.id);
+    if (previousPropertyId !== undefined) {
+      diagnostics.push(error("graph.duplicateSemanticGraphProperty", `${path}.${propertyId}`, `Properties '${previousPropertyId}' and '${propertyId}' both resolve to '${definition.id}'.`));
+    } else {
+      propertyOwners.set(definition.id, propertyId);
+    }
+    if (definition.id !== propertyId) {
+      diagnostics.push(warning("graph.graphPropertyAlias", `${path}.${propertyId}`, `Property '${propertyId}' is an alias of '${definition.id}'.`));
+    }
+    if (!matchesPropertyType(value, definition)) {
+      diagnostics.push(error("graph.graphPropertyTypeMismatch", `${path}.${propertyId}`, `Property '${propertyId}' must be ${definition.valueType}.`));
+    }
+  });
+  definitions.forEach((property) => {
+    if (property.required && !hasPropertyValue(properties, property) && property.defaultValue === undefined) {
+      diagnostics.push(error("graph.missingRequiredGraphProperty", `${path}.${property.id}`, `Required property '${property.id}' is missing.`));
     }
   });
 }
@@ -1267,10 +1666,19 @@ function resolveEndpoint(
   }
   if (node.kind === "subgraph") {
     const subgraph = graphById.get(node.subgraphId);
-    const port = subgraph?.interfacePorts.find((candidate) => candidate.id === endpoint.portId);
+    const nodeType = catalog === undefined || node.nodeTypeId === undefined
+      ? undefined
+      : resolveNodeType(catalog, node.nodeTypeId);
+    const typedPort = nodeType === undefined ? undefined : resolveTypedNodePort(node as GraphSubgraphNode & { readonly nodeTypeId: string }, nodeType, endpoint.portId);
+    const port = typedPort ?? subgraph?.interfacePorts.find((candidate) => candidate.id === endpoint.portId);
     return port === undefined
-      ? { issue: `Subgraph port '${endpoint.portId}' does not exist.` }
-      : { port };
+      ? {
+          issue: node.nodeTypeId !== undefined && nodeType === undefined
+            ? `Subgraph node type '${node.nodeTypeId}' is unknown; port '${endpoint.portId}' cannot be verified.`
+            : `Subgraph port '${endpoint.portId}' does not exist.`,
+          ...(node.nodeTypeId !== undefined && nodeType === undefined ? { unknownNodeType: true } : {}),
+        }
+      : { port, usedAlias: port.id !== endpoint.portId };
   }
   if (catalog === undefined) {
     return { issue: `Catalog is unavailable for node type '${node.nodeTypeId}'.`, unknownNodeType: true };
@@ -1287,6 +1695,13 @@ function resolveEndpoint(
 
 function getAtomicNodePorts(
   node: GraphAtomicNode,
+  nodeType: GraphNodeTypeDefinition,
+): readonly GraphResolvedPort[] {
+  return getTypedNodePorts(node, nodeType);
+}
+
+function getTypedNodePorts(
+  node: GraphAtomicNode | (GraphSubgraphNode & { readonly nodeTypeId: string }),
   nodeType: GraphNodeTypeDefinition,
 ): readonly GraphResolvedPort[] {
   return [
@@ -1307,6 +1722,15 @@ function getAtomicNodePorts(
   ];
 }
 
+function resolveTypedNodePort(
+  node: GraphAtomicNode | (GraphSubgraphNode & { readonly nodeTypeId: string }),
+  nodeType: GraphNodeTypeDefinition,
+  portId: string,
+): GraphResolvedPort | undefined {
+  return resolvePortDefinition(nodeType, portId)
+    ?? getTypedNodePorts(node, nodeType).find((port) => port.id === portId);
+}
+
 function resolveAtomicNodePort(
   node: GraphAtomicNode,
   nodeType: GraphNodeTypeDefinition,
@@ -1319,10 +1743,32 @@ function resolveAtomicNodePort(
 function replacementIssue(
   document: GraphDocument,
   graph: GraphDefinition,
-  node: GraphAtomicNode,
+  node: GraphTypedNode,
   targetType: GraphNodeTypeDefinition,
   catalog: GraphCatalog,
 ): string | undefined {
+  const childGraph = node.kind === "subgraph"
+    ? document.graphs.find((candidate) => candidate.id === node.subgraphId)
+    : undefined;
+  if (node.kind === "subgraph") {
+    const childType = childGraph?.graphTypeId === undefined ? undefined : resolveGraphType(catalog, childGraph.graphTypeId);
+    if (
+      childType !== undefined
+      && targetType.subgraph?.graphTypeIds !== undefined
+      && !targetType.subgraph.graphTypeIds.some((id) => resolveGraphType(catalog, id)?.id === childType.id)
+    ) {
+      return `Subgraph node type '${targetType.title}' cannot contain Graph Type '${childType.id}'.`;
+    }
+    const interfacePortIds = new Set(childGraph?.interfacePorts.map((port) => port.id) ?? []);
+    const targetPortIds = new Set<string>();
+    getTypedNodePorts(node, targetType).forEach((port) => {
+      targetPortIds.add(port.id);
+      resolvePortDefinition(targetType, port.id)?.aliases.forEach((alias) => targetPortIds.add(alias));
+    });
+    if ([...interfacePortIds].some((portId) => targetPortIds.has(portId))) {
+      return `A static or dynamic port on '${targetType.title}' collides with the child graph interface.`;
+    }
+  }
   for (const propertyId of Object.keys(node.properties)) {
     const property = resolvePropertyDefinition(targetType, propertyId);
     if (property === undefined) {
@@ -1340,6 +1786,9 @@ function replacementIssue(
   }
   const dynamicGroupCounts = new Map<string, number>();
   for (const dynamicPort of node.dynamicPorts) {
+    if (resolvePortDefinition(targetType, dynamicPort.id) !== undefined) {
+      return `Dynamic port '${dynamicPort.id}' collides with a static port on '${targetType.title}'.`;
+    }
     const group = resolveDynamicPortGroup(targetType, dynamicPort.groupId);
     if (group === undefined) {
       return `Dynamic port group '${dynamicPort.groupId}' is not supported by '${targetType.title}'.`;
@@ -1357,14 +1806,17 @@ function replacementIssue(
   const connected = graph.edges.filter((edge) => edgeUsesNode(edge, node.id));
   const nodeById = new Map(graph.nodes.map((candidate) => [candidate.id, candidate]));
   const graphById = new Map(document.graphs.map((candidate) => [candidate.id, candidate]));
+  const replacementPort = (portId: string): GraphResolvedPort | undefined =>
+    resolveTypedNodePort(node, targetType, portId)
+    ?? childGraph?.interfacePorts.find((port) => port.id === portId);
   for (const edge of connected) {
     const sourceMatches = edge.source.kind === "node" && edge.source.nodeId === node.id;
     const targetMatches = edge.target.kind === "node" && edge.target.nodeId === node.id;
     const sourcePort = sourceMatches
-      ? resolveAtomicNodePort(node, targetType, edge.source.portId)
+      ? replacementPort(edge.source.portId)
       : resolveEndpoint(graph, edge.source, nodeById, graphById, catalog).port;
     const targetPort = targetMatches
-      ? resolveAtomicNodePort(node, targetType, edge.target.portId)
+      ? replacementPort(edge.target.portId)
       : resolveEndpoint(graph, edge.target, nodeById, graphById, catalog).port;
     if (sourcePort === undefined || sourcePort.kind !== edge.kind || sourcePort.direction !== "output") {
       return `Connected source port '${edge.source.portId}' is incompatible with '${targetType.title}'.`;
@@ -1381,7 +1833,7 @@ function replacementIssue(
       return `Connected data ports are incompatible with '${targetType.title}'.`;
     }
   }
-  for (const port of getAtomicNodePorts(node, targetType)) {
+  for (const port of getTypedNodePorts(node, targetType)) {
     if (port.maxConnections === undefined) {
       continue;
     }
@@ -1459,13 +1911,16 @@ interface MutableGraphDynamicPort {
 
 interface MutableGraphSubgraphNode extends MutableGraphNodeBase {
   kind: "subgraph";
+  nodeTypeId?: string;
   subgraphId: string;
+  dynamicPorts: MutableGraphDynamicPort[];
 }
 
 type MutableGraphNode = MutableGraphAtomicNode | MutableGraphSubgraphNode;
 
 interface MutableGraphDefinition {
   id: string;
+  graphTypeId?: string;
   title: string;
   properties: Record<string, JsonValue>;
   interfacePorts: MutableGraphInterfacePort[];
@@ -1501,6 +1956,7 @@ function cloneDocument(document: GraphDocument): MutableGraphDocument {
 function cloneGraph(graph: GraphDefinition): MutableGraphDefinition {
   return {
     id: graph.id,
+    ...(graph.graphTypeId === undefined ? {} : { graphTypeId: graph.graphTypeId }),
     title: graph.title,
     properties: cloneJsonObject(graph.properties),
     interfacePorts: graph.interfacePorts.map((port) => ({ ...port })),
@@ -1517,7 +1973,12 @@ function cloneNode(node: GraphNode): MutableGraphNode {
         properties: cloneJsonObject(node.properties),
         dynamicPorts: node.dynamicPorts.map((port) => ({ ...port, value: cloneJsonValue(port.value) })),
       }
-    : { ...node, position: { ...node.position }, properties: cloneJsonObject(node.properties) };
+    : {
+        ...node,
+        position: { ...node.position },
+        properties: cloneJsonObject(node.properties),
+        dynamicPorts: node.dynamicPorts.map((port) => ({ ...port, value: cloneJsonValue(port.value) })),
+      };
 }
 
 function cloneEdge(edge: GraphEdge): GraphEdge {
@@ -1554,16 +2015,16 @@ function edgeUsesNodePort(edge: GraphEdge, nodeId: string, portId: string): bool
 
 function edgeUsesAtomicNodeResolvedPort(
   edge: GraphEdge,
-  node: GraphAtomicNode,
+  node: GraphTypedNode,
   port: GraphResolvedPort,
   nodeType: GraphNodeTypeDefinition,
 ): boolean {
   const sourceMatches = edge.source.kind === "node"
     && edge.source.nodeId === node.id
-    && resolveAtomicNodePort(node, nodeType, edge.source.portId)?.id === port.id;
+    && resolveTypedNodePort(node, nodeType, edge.source.portId)?.id === port.id;
   const targetMatches = edge.target.kind === "node"
     && edge.target.nodeId === node.id
-    && resolveAtomicNodePort(node, nodeType, edge.target.portId)?.id === port.id;
+    && resolveTypedNodePort(node, nodeType, edge.target.portId)?.id === port.id;
   return sourceMatches || targetMatches;
 }
 
@@ -1619,7 +2080,7 @@ function diagnosticCounts(diagnostics: readonly DocumentDiagnostic[]): Map<strin
 }
 
 function diagnosticKey(diagnostic: DocumentDiagnostic): string {
-  return `${diagnostic.code}|${diagnostic.message}`;
+  return `${diagnostic.code}|${diagnostic.path}`;
 }
 
 function readPosition(value: unknown, path: string, diagnostics: DocumentDiagnostic[]): GraphPosition | undefined {
@@ -1770,8 +2231,9 @@ function formatError(errorValue: unknown): string {
 }
 
 const EMPTY_CATALOG: GraphCatalog = {
-  formatVersion: 1,
+  formatVersion: 2,
   catalogId: "empty",
   dataTypes: [],
+  graphTypes: [],
   nodeTypes: [],
 };

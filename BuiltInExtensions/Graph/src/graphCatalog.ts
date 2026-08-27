@@ -1,7 +1,7 @@
 import type { DocumentDiagnostic, DocumentParseResult } from "@visualbridge/core";
 import type { JsonValue } from "./graphDocument";
 
-export const GRAPH_CATALOG_FORMAT_VERSION = 1;
+export const GRAPH_CATALOG_FORMAT_VERSION = 2;
 
 export type GraphPortKind = "flow" | "data";
 export type GraphPortDirection = "input" | "output";
@@ -77,6 +77,43 @@ export interface GraphNodeSourceDefinition {
   readonly wrapperTypeName?: string;
 }
 
+export interface GraphNodeSelector {
+  readonly nodeTypeIds?: readonly string[];
+  readonly tags?: readonly string[];
+  readonly traits?: readonly string[];
+}
+
+export interface GraphNodeCountConstraint {
+  readonly id: string;
+  readonly selector: GraphNodeSelector;
+  readonly minInstances?: number;
+  readonly maxInstances?: number;
+}
+
+export interface GraphInitialNodeDefinition {
+  readonly nodeTypeId: string;
+  readonly title?: string;
+}
+
+export interface GraphTypeDefinition {
+  readonly id: string;
+  readonly aliases: readonly string[];
+  readonly title: string;
+  readonly description?: string;
+  readonly usage: "root" | "subgraph" | "any";
+  readonly source?: GraphNodeSourceDefinition;
+  readonly allowedNodeSelectors?: readonly GraphNodeSelector[];
+  readonly properties: readonly GraphPropertyDefinition[];
+  readonly nodeConstraints: readonly GraphNodeCountConstraint[];
+  readonly initialNodes: readonly GraphInitialNodeDefinition[];
+  readonly allowSubgraphs: boolean;
+  readonly allowedSubgraphTypeIds?: readonly string[];
+}
+
+export interface GraphSubgraphNodeDefinition {
+  readonly graphTypeIds?: readonly string[];
+}
+
 export interface GraphNodeTypeDefinition {
   readonly id: string;
   readonly aliases: readonly string[];
@@ -86,6 +123,7 @@ export interface GraphNodeTypeDefinition {
   readonly tags: readonly string[];
   readonly traits: readonly string[];
   readonly source?: GraphNodeSourceDefinition;
+  readonly subgraph?: GraphSubgraphNodeDefinition;
   readonly ports: readonly GraphPortDefinition[];
   readonly dynamicPortGroups: readonly GraphDynamicPortGroupDefinition[];
   readonly properties: readonly GraphPropertyDefinition[];
@@ -95,6 +133,7 @@ export interface GraphCatalog {
   readonly formatVersion: typeof GRAPH_CATALOG_FORMAT_VERSION;
   readonly catalogId: string;
   readonly dataTypes: readonly GraphDataTypeDefinition[];
+  readonly graphTypes: readonly GraphTypeDefinition[];
   readonly nodeTypes: readonly GraphNodeTypeDefinition[];
 }
 
@@ -103,6 +142,7 @@ export function createEmptyGraphCatalog(catalogId = "empty"): GraphCatalog {
     formatVersion: GRAPH_CATALOG_FORMAT_VERSION,
     catalogId,
     dataTypes: [],
+    graphTypes: [],
     nodeTypes: [],
   };
 }
@@ -120,8 +160,8 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
   }
 
   const diagnostics: DocumentDiagnostic[] = [];
-  checkKeys(value, ["formatVersion", "catalogId", "dataTypes", "nodeTypes"], "$", diagnostics);
-  if (value.formatVersion !== GRAPH_CATALOG_FORMAT_VERSION) {
+  checkKeys(value, ["formatVersion", "catalogId", "dataTypes", "graphTypes", "nodeTypes"], "$", diagnostics);
+  if (value.formatVersion !== 1 && value.formatVersion !== GRAPH_CATALOG_FORMAT_VERSION) {
     diagnostics.push(error(
       "graphCatalog.unsupportedVersion",
       "formatVersion",
@@ -132,8 +172,12 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
   const catalogId = readIdentifier(value.catalogId, "catalogId", diagnostics);
   const dataTypes = readDataTypes(value.dataTypes, diagnostics);
   const nodeTypes = readNodeTypes(value.nodeTypes, diagnostics);
+  const graphTypes = value.graphTypes === undefined
+    ? []
+    : readGraphTypes(value.graphTypes, diagnostics);
   validateUniqueIds(dataTypes, "dataTypes", "graphCatalog.duplicateDataTypeId", diagnostics);
   validateUniqueIds(nodeTypes, "nodeTypes", "graphCatalog.duplicateNodeTypeId", diagnostics);
+  validateUniqueIds(graphTypes, "graphTypes", "graphCatalog.duplicateGraphTypeId", diagnostics);
 
   const dataTypeIds = new Set(["any", ...dataTypes.map((dataType) => dataType.id)]);
   dataTypes.forEach((dataType, dataTypeIndex) => {
@@ -149,6 +193,7 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
   });
 
   validateAliases(nodeTypes, "nodeTypes", "graphCatalog.duplicateNodeTypeAlias", diagnostics);
+  validateAliases(graphTypes, "graphTypes", "graphCatalog.duplicateGraphTypeAlias", diagnostics);
   nodeTypes.forEach((nodeType, nodeTypeIndex) => {
     validateUniqueIds(nodeType.ports, `nodeTypes[${nodeTypeIndex}].ports`, "graphCatalog.duplicatePortId", diagnostics);
     validateAliases(
@@ -157,6 +202,15 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
       "graphCatalog.duplicatePortAlias",
       diagnostics,
     );
+    nodeType.subgraph?.graphTypeIds?.forEach((graphTypeId, graphTypeIndex) => {
+      if (!graphTypes.some((graphType) => graphType.id === graphTypeId || graphType.aliases.includes(graphTypeId))) {
+        diagnostics.push(error(
+          "graphCatalog.unknownSubgraphTargetType",
+          `nodeTypes[${nodeTypeIndex}].subgraph.graphTypeIds[${graphTypeIndex}]`,
+          `Graph type '${graphTypeId}' is not declared.`,
+        ));
+      }
+    });
     validateUniqueIds(
       nodeType.properties,
       `nodeTypes[${nodeTypeIndex}].properties`,
@@ -215,6 +269,99 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
         ));
       }
     });
+    if (nodeType.subgraph !== undefined) {
+      nodeType.ports.forEach((port, portIndex) => {
+        if (port.kind !== "data") {
+          diagnostics.push(error(
+            "graphCatalog.subgraphStaticFlowPort",
+            `nodeTypes[${nodeTypeIndex}].ports[${portIndex}].kind`,
+            "Typed subgraph static ports must be data ports; flow crosses the subgraph interface.",
+          ));
+        }
+      });
+      nodeType.dynamicPortGroups.forEach((group, groupIndex) => {
+        if (group.port.kind !== "data") {
+          diagnostics.push(error(
+            "graphCatalog.subgraphDynamicFlowPort",
+            `nodeTypes[${nodeTypeIndex}].dynamicPortGroups[${groupIndex}].port.kind`,
+            "Typed subgraph dynamic ports must be data ports; flow crosses the subgraph interface.",
+          ));
+        }
+      });
+    }
+  });
+
+  graphTypes.forEach((graphType, graphTypeIndex) => {
+    const basePath = `graphTypes[${graphTypeIndex}]`;
+    validateUniqueIds(graphType.properties, `${basePath}.properties`, "graphCatalog.duplicateGraphPropertyId", diagnostics);
+    validateAliases(graphType.properties, `${basePath}.properties`, "graphCatalog.duplicateGraphPropertyAlias", diagnostics);
+    validateUniqueIds(graphType.nodeConstraints, `${basePath}.nodeConstraints`, "graphCatalog.duplicateNodeConstraintId", diagnostics);
+    graphType.properties.forEach((property, propertyIndex) => {
+      if (property.dataTypeId !== undefined && !dataTypeIds.has(property.dataTypeId)) {
+        diagnostics.push(error(
+          "graphCatalog.unknownGraphPropertyDataType",
+          `${basePath}.properties[${propertyIndex}].dataTypeId`,
+          `Data type '${property.dataTypeId}' is not declared.`,
+        ));
+      }
+    });
+    graphType.allowedNodeSelectors?.forEach((selector, selectorIndex) => {
+      validateSelectorNodeTypes(selector, `${basePath}.allowedNodeSelectors[${selectorIndex}]`, nodeTypes, diagnostics);
+    });
+    graphType.nodeConstraints.forEach((constraint, constraintIndex) => {
+      validateSelectorNodeTypes(constraint.selector, `${basePath}.nodeConstraints[${constraintIndex}].selector`, nodeTypes, diagnostics);
+    });
+    graphType.initialNodes.forEach((initialNode, initialNodeIndex) => {
+      const nodeType = resolveNodeTypeFromList(nodeTypes, initialNode.nodeTypeId);
+      if (nodeType === undefined) {
+        diagnostics.push(error(
+          "graphCatalog.unknownInitialNodeType",
+          `${basePath}.initialNodes[${initialNodeIndex}].nodeTypeId`,
+          `Node type '${initialNode.nodeTypeId}' is not declared.`,
+        ));
+      } else if (nodeType.subgraph !== undefined) {
+        diagnostics.push(error(
+          "graphCatalog.initialSubgraphNodeNotSupported",
+          `${basePath}.initialNodes[${initialNodeIndex}].nodeTypeId`,
+          "Initial nodes must be atomic node types.",
+        ));
+      } else if (!isNodeTypeAllowed(graphType, nodeType)) {
+        diagnostics.push(error(
+          "graphCatalog.initialNodeNotAllowed",
+          `${basePath}.initialNodes[${initialNodeIndex}].nodeTypeId`,
+          `Initial node type '${nodeType.id}' is not allowed by Graph Type '${graphType.id}'.`,
+        ));
+      }
+    });
+    graphType.allowedSubgraphTypeIds?.forEach((graphTypeId, allowedIndex) => {
+      if (resolveGraphTypeFromList(graphTypes, graphTypeId) === undefined) {
+        diagnostics.push(error(
+          "graphCatalog.unknownAllowedSubgraphType",
+          `${basePath}.allowedSubgraphTypeIds[${allowedIndex}]`,
+          `Graph type '${graphTypeId}' is not declared.`,
+        ));
+      }
+    });
+    graphType.nodeConstraints.forEach((constraint, constraintIndex) => {
+      const initialCount = graphType.initialNodes.filter((initialNode) => {
+        const nodeType = resolveNodeTypeFromList(nodeTypes, initialNode.nodeTypeId);
+        return nodeType !== undefined && matchesNodeSelector(nodeType, constraint.selector);
+      }).length;
+      if (constraint.minInstances !== undefined && initialCount < constraint.minInstances) {
+        diagnostics.push(error(
+          "graphCatalog.initialNodesBelowMinimum",
+          `${basePath}.nodeConstraints[${constraintIndex}]`,
+          `Initial nodes satisfy ${initialCount} instances for '${constraint.id}', below minInstances ${constraint.minInstances}.`,
+        ));
+      }
+      if (constraint.maxInstances !== undefined && initialCount > constraint.maxInstances) {
+        diagnostics.push(error(
+          "graphCatalog.initialNodesAboveMaximum",
+          `${basePath}.nodeConstraints[${constraintIndex}]`,
+          `Initial nodes satisfy ${initialCount} instances for '${constraint.id}', above maxInstances ${constraint.maxInstances}.`,
+        ));
+      }
+    });
   });
 
   if (catalogId === undefined || diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
@@ -227,6 +374,7 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
       formatVersion: GRAPH_CATALOG_FORMAT_VERSION,
       catalogId,
       dataTypes,
+      graphTypes,
       nodeTypes,
     },
     diagnostics,
@@ -244,6 +392,34 @@ export function serializeGraphCatalog(catalog: GraphCatalog): string {
         title: dataType.title,
         accepts: [...dataType.accepts].sort(),
       })),
+    graphTypes: [...catalog.graphTypes]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((graphType) => ({
+        id: graphType.id,
+        aliases: [...graphType.aliases].sort(),
+        title: graphType.title,
+        ...(graphType.description === undefined ? {} : { description: graphType.description }),
+        usage: graphType.usage,
+        ...(graphType.source === undefined ? {} : { source: serializeNodeSource(graphType.source) }),
+        ...(graphType.allowedNodeSelectors === undefined ? {} : {
+          allowedNodeSelectors: graphType.allowedNodeSelectors.map(serializeNodeSelector),
+        }),
+        properties: graphType.properties.map(serializePropertyDefinition),
+        nodeConstraints: graphType.nodeConstraints.map((constraint) => ({
+          id: constraint.id,
+          selector: serializeNodeSelector(constraint.selector),
+          ...(constraint.minInstances === undefined ? {} : { minInstances: constraint.minInstances }),
+          ...(constraint.maxInstances === undefined ? {} : { maxInstances: constraint.maxInstances }),
+        })),
+        initialNodes: graphType.initialNodes.map((node) => ({
+          nodeTypeId: node.nodeTypeId,
+          ...(node.title === undefined ? {} : { title: node.title }),
+        })),
+        allowSubgraphs: graphType.allowSubgraphs,
+        ...(graphType.allowedSubgraphTypeIds === undefined ? {} : {
+          allowedSubgraphTypeIds: [...graphType.allowedSubgraphTypeIds].sort(),
+        }),
+      })),
     nodeTypes: [...catalog.nodeTypes]
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((nodeType) => ({
@@ -254,13 +430,11 @@ export function serializeGraphCatalog(catalog: GraphCatalog): string {
         menuPath: [...nodeType.menuPath],
         tags: [...nodeType.tags].sort(),
         traits: [...nodeType.traits].sort(),
-        ...(nodeType.source === undefined ? {} : {
-          source: {
-            providerId: nodeType.source.providerId,
-            ...(nodeType.source.assemblyName === undefined ? {} : { assemblyName: nodeType.source.assemblyName }),
-            typeName: nodeType.source.typeName,
-            ...(nodeType.source.wrapperTypeName === undefined ? {} : { wrapperTypeName: nodeType.source.wrapperTypeName }),
-          },
+        ...(nodeType.source === undefined ? {} : { source: serializeNodeSource(nodeType.source) }),
+        ...(nodeType.subgraph === undefined ? {} : {
+          subgraph: nodeType.subgraph.graphTypeIds === undefined
+            ? {}
+            : { graphTypeIds: [...nodeType.subgraph.graphTypeIds].sort() },
         }),
         ports: nodeType.ports.map((port) => ({
             id: port.id,
@@ -291,20 +465,41 @@ export function serializeGraphCatalog(catalog: GraphCatalog): string {
             },
             ...(group.maxItems === undefined ? {} : { maxItems: group.maxItems }),
           })),
-        properties: nodeType.properties.map((property) => ({
-            id: property.id,
-            aliases: [...property.aliases].sort(),
-            title: property.title,
-            ...(property.description === undefined ? {} : { description: property.description }),
-            valueType: property.valueType,
-            ...(property.dataTypeId === undefined ? {} : { dataTypeId: property.dataTypeId }),
-            required: property.required,
-            ...(property.defaultValue === undefined ? {} : { defaultValue: sortJsonValue(property.defaultValue) }),
-            ...(property.editor === undefined ? {} : { editor: serializePropertyEditor(property.editor) }),
-          })),
+        properties: nodeType.properties.map(serializePropertyDefinition),
       })),
   };
   return `${JSON.stringify(normalized, undefined, 2)}\n`;
+}
+
+function serializeNodeSource(source: GraphNodeSourceDefinition): GraphNodeSourceDefinition {
+  return {
+    providerId: source.providerId,
+    ...(source.assemblyName === undefined ? {} : { assemblyName: source.assemblyName }),
+    typeName: source.typeName,
+    ...(source.wrapperTypeName === undefined ? {} : { wrapperTypeName: source.wrapperTypeName }),
+  };
+}
+
+function serializePropertyDefinition(property: GraphPropertyDefinition): GraphPropertyDefinition {
+  return {
+    id: property.id,
+    aliases: [...property.aliases].sort(),
+    title: property.title,
+    ...(property.description === undefined ? {} : { description: property.description }),
+    valueType: property.valueType,
+    ...(property.dataTypeId === undefined ? {} : { dataTypeId: property.dataTypeId }),
+    required: property.required,
+    ...(property.defaultValue === undefined ? {} : { defaultValue: sortJsonValue(property.defaultValue) }),
+    ...(property.editor === undefined ? {} : { editor: serializePropertyEditor(property.editor) }),
+  };
+}
+
+function serializeNodeSelector(selector: GraphNodeSelector): GraphNodeSelector {
+  return {
+    ...(selector.nodeTypeIds === undefined ? {} : { nodeTypeIds: [...selector.nodeTypeIds].sort() }),
+    ...(selector.tags === undefined ? {} : { tags: [...selector.tags].sort() }),
+    ...(selector.traits === undefined ? {} : { traits: [...selector.traits].sort() }),
+  };
 }
 
 function serializePropertyEditor(editor: GraphPropertyEditorDefinition): GraphPropertyEditorDefinition {
@@ -327,6 +522,34 @@ export function resolveNodeType(
   return catalog.nodeTypes.find(
     (nodeType) => nodeType.id === nodeTypeId || nodeType.aliases.includes(nodeTypeId),
   );
+}
+
+export function resolveGraphType(
+  catalog: GraphCatalog,
+  graphTypeId: string,
+): GraphTypeDefinition | undefined {
+  return resolveGraphTypeFromList(catalog.graphTypes, graphTypeId);
+}
+
+export function matchesNodeSelector(
+  nodeType: GraphNodeTypeDefinition,
+  selector: GraphNodeSelector,
+): boolean {
+  const nodeTypeMatch = selector.nodeTypeIds === undefined
+    || selector.nodeTypeIds.some((id) => id === nodeType.id || nodeType.aliases.includes(id));
+  const tagMatch = selector.tags === undefined
+    || selector.tags.some((tag) => nodeType.tags.includes(tag));
+  const traitMatch = selector.traits === undefined
+    || selector.traits.every((trait) => nodeType.traits.includes(trait));
+  return nodeTypeMatch && tagMatch && traitMatch;
+}
+
+export function isNodeTypeAllowed(
+  graphType: GraphTypeDefinition,
+  nodeType: GraphNodeTypeDefinition,
+): boolean {
+  return graphType.allowedNodeSelectors === undefined
+    || graphType.allowedNodeSelectors.some((selector) => matchesNodeSelector(nodeType, selector));
 }
 
 export function resolveNodePort(
@@ -407,6 +630,172 @@ function readDataTypes(value: unknown, diagnostics: DocumentDiagnostic[]): reado
   });
 }
 
+function readGraphTypes(value: unknown, diagnostics: DocumentDiagnostic[]): readonly GraphTypeDefinition[] {
+  if (!Array.isArray(value)) {
+    diagnostics.push(error("graphCatalog.invalidGraphTypes", "graphTypes", "Expected an array."));
+    return [];
+  }
+  return value.flatMap((entry, index) => {
+    const path = `graphTypes[${index}]`;
+    if (!isRecord(entry)) {
+      diagnostics.push(error("graphCatalog.invalidGraphType", path, "Expected an object."));
+      return [];
+    }
+    checkKeys(entry, [
+      "id", "aliases", "title", "description", "usage", "source", "allowedNodeSelectors",
+      "properties", "nodeConstraints", "initialNodes", "allowSubgraphs", "allowedSubgraphTypeIds",
+    ], path, diagnostics);
+    const id = readIdentifier(entry.id, `${path}.id`, diagnostics);
+    const aliases = entry.aliases === undefined ? [] : readIdentifierArray(entry.aliases, `${path}.aliases`, diagnostics);
+    const title = readString(entry.title, `${path}.title`, diagnostics);
+    const description = entry.description === undefined ? undefined : readString(entry.description, `${path}.description`, diagnostics);
+    const usage = entry.usage === undefined
+      ? "any" as const
+      : readEnum(entry.usage, ["root", "subgraph", "any"] as const, `${path}.usage`, diagnostics);
+    const source = entry.source === undefined ? undefined : readNodeSource(entry.source, `${path}.source`, diagnostics);
+    const allowedNodeSelectors = entry.allowedNodeSelectors === undefined
+      ? undefined
+      : readNodeSelectors(entry.allowedNodeSelectors, `${path}.allowedNodeSelectors`, diagnostics);
+    const properties = readPropertyDefinitions(entry.properties ?? [], `${path}.properties`, diagnostics);
+    const nodeConstraints = entry.nodeConstraints === undefined
+      ? []
+      : readNodeConstraints(entry.nodeConstraints, `${path}.nodeConstraints`, diagnostics);
+    const initialNodes = entry.initialNodes === undefined
+      ? []
+      : readInitialNodes(entry.initialNodes, `${path}.initialNodes`, diagnostics);
+    const allowSubgraphs = entry.allowSubgraphs === undefined
+      ? true
+      : readBoolean(entry.allowSubgraphs, `${path}.allowSubgraphs`, diagnostics);
+    const allowedSubgraphTypeIds = entry.allowedSubgraphTypeIds === undefined
+      ? undefined
+      : readIdentifierArray(entry.allowedSubgraphTypeIds, `${path}.allowedSubgraphTypeIds`, diagnostics);
+    if (allowSubgraphs === false && allowedSubgraphTypeIds !== undefined) {
+      diagnostics.push(error(
+        "graphCatalog.unexpectedAllowedSubgraphTypes",
+        `${path}.allowedSubgraphTypeIds`,
+        "allowedSubgraphTypeIds is only valid when allowSubgraphs is true.",
+      ));
+    }
+    return id === undefined || title === undefined || usage === undefined || allowSubgraphs === undefined
+      ? []
+      : [{
+          id,
+          aliases,
+          title,
+          ...(description === undefined ? {} : { description }),
+          usage,
+          ...(source === undefined ? {} : { source }),
+          ...(allowedNodeSelectors === undefined ? {} : { allowedNodeSelectors }),
+          properties,
+          nodeConstraints,
+          initialNodes,
+          allowSubgraphs,
+          ...(allowedSubgraphTypeIds === undefined ? {} : { allowedSubgraphTypeIds }),
+        }];
+  });
+}
+
+function readNodeSelectors(
+  value: unknown,
+  basePath: string,
+  diagnostics: DocumentDiagnostic[],
+): readonly GraphNodeSelector[] {
+  if (!Array.isArray(value)) {
+    diagnostics.push(error("graphCatalog.invalidNodeSelectors", basePath, "Expected an array."));
+    return [];
+  }
+  return value.flatMap((entry, index) => {
+    const selector = readNodeSelector(entry, `${basePath}[${index}]`, diagnostics);
+    return selector === undefined ? [] : [selector];
+  });
+}
+
+function readNodeSelector(
+  value: unknown,
+  path: string,
+  diagnostics: DocumentDiagnostic[],
+): GraphNodeSelector | undefined {
+  if (!isRecord(value)) {
+    diagnostics.push(error("graphCatalog.invalidNodeSelector", path, "Expected an object."));
+    return undefined;
+  }
+  checkKeys(value, ["nodeTypeIds", "tags", "traits"], path, diagnostics);
+  const nodeTypeIds = value.nodeTypeIds === undefined ? undefined : readIdentifierArray(value.nodeTypeIds, `${path}.nodeTypeIds`, diagnostics);
+  const tags = value.tags === undefined ? undefined : readIdentifierArray(value.tags, `${path}.tags`, diagnostics);
+  const traits = value.traits === undefined ? undefined : readIdentifierArray(value.traits, `${path}.traits`, diagnostics);
+  if (
+    (nodeTypeIds === undefined || nodeTypeIds.length === 0)
+    && (tags === undefined || tags.length === 0)
+    && (traits === undefined || traits.length === 0)
+  ) {
+    diagnostics.push(error("graphCatalog.emptyNodeSelector", path, "A node selector must contain at least one value."));
+    return undefined;
+  }
+  return {
+    ...(nodeTypeIds === undefined ? {} : { nodeTypeIds }),
+    ...(tags === undefined ? {} : { tags }),
+    ...(traits === undefined ? {} : { traits }),
+  };
+}
+
+function readNodeConstraints(
+  value: unknown,
+  basePath: string,
+  diagnostics: DocumentDiagnostic[],
+): readonly GraphNodeCountConstraint[] {
+  if (!Array.isArray(value)) {
+    diagnostics.push(error("graphCatalog.invalidNodeConstraints", basePath, "Expected an array."));
+    return [];
+  }
+  return value.flatMap((entry, index) => {
+    const path = `${basePath}[${index}]`;
+    if (!isRecord(entry)) {
+      diagnostics.push(error("graphCatalog.invalidNodeConstraint", path, "Expected an object."));
+      return [];
+    }
+    checkKeys(entry, ["id", "selector", "minInstances", "maxInstances"], path, diagnostics);
+    const id = readIdentifier(entry.id, `${path}.id`, diagnostics);
+    const selector = readNodeSelector(entry.selector, `${path}.selector`, diagnostics);
+    const minInstances = entry.minInstances === undefined
+      ? undefined
+      : readNonNegativeInteger(entry.minInstances, `${path}.minInstances`, diagnostics);
+    const maxInstances = entry.maxInstances === undefined
+      ? undefined
+      : readNonNegativeInteger(entry.maxInstances, `${path}.maxInstances`, diagnostics);
+    if (minInstances === undefined && maxInstances === undefined) {
+      diagnostics.push(error("graphCatalog.emptyNodeConstraint", path, "A node constraint requires minInstances or maxInstances."));
+    }
+    if (minInstances !== undefined && maxInstances !== undefined && minInstances > maxInstances) {
+      diagnostics.push(error("graphCatalog.invalidNodeConstraintRange", path, "minInstances cannot be greater than maxInstances."));
+    }
+    return id === undefined || selector === undefined || (minInstances === undefined && maxInstances === undefined)
+      ? []
+      : [{ id, selector, ...(minInstances === undefined ? {} : { minInstances }), ...(maxInstances === undefined ? {} : { maxInstances }) }];
+  });
+}
+
+function readInitialNodes(
+  value: unknown,
+  basePath: string,
+  diagnostics: DocumentDiagnostic[],
+): readonly GraphInitialNodeDefinition[] {
+  if (!Array.isArray(value)) {
+    diagnostics.push(error("graphCatalog.invalidInitialNodes", basePath, "Expected an array."));
+    return [];
+  }
+  return value.flatMap((entry, index) => {
+    const path = `${basePath}[${index}]`;
+    if (!isRecord(entry)) {
+      diagnostics.push(error("graphCatalog.invalidInitialNode", path, "Expected an object."));
+      return [];
+    }
+    checkKeys(entry, ["nodeTypeId", "title"], path, diagnostics);
+    const nodeTypeId = readIdentifier(entry.nodeTypeId, `${path}.nodeTypeId`, diagnostics);
+    const title = entry.title === undefined ? undefined : readString(entry.title, `${path}.title`, diagnostics);
+    return nodeTypeId === undefined ? [] : [{ nodeTypeId, ...(title === undefined ? {} : { title }) }];
+  });
+}
+
 function readNodeTypes(value: unknown, diagnostics: DocumentDiagnostic[]): readonly GraphNodeTypeDefinition[] {
   if (!Array.isArray(value)) {
     diagnostics.push(error("graphCatalog.invalidNodeTypes", "nodeTypes", "Expected an array."));
@@ -419,7 +808,7 @@ function readNodeTypes(value: unknown, diagnostics: DocumentDiagnostic[]): reado
       diagnostics.push(error("graphCatalog.invalidNodeType", path, "Expected an object."));
       return [];
     }
-    checkKeys(entry, ["id", "aliases", "title", "category", "menuPath", "tags", "traits", "source", "ports", "dynamicPortGroups", "properties"], path, diagnostics);
+    checkKeys(entry, ["id", "aliases", "title", "category", "menuPath", "tags", "traits", "source", "subgraph", "ports", "dynamicPortGroups", "properties"], path, diagnostics);
     const id = readIdentifier(entry.id, `${path}.id`, diagnostics);
     const aliases = entry.aliases === undefined
       ? []
@@ -432,6 +821,7 @@ function readNodeTypes(value: unknown, diagnostics: DocumentDiagnostic[]): reado
     const tags = entry.tags === undefined ? [] : readIdentifierArray(entry.tags, `${path}.tags`, diagnostics);
     const traits = entry.traits === undefined ? [] : readIdentifierArray(entry.traits, `${path}.traits`, diagnostics);
     const source = entry.source === undefined ? undefined : readNodeSource(entry.source, `${path}.source`, diagnostics);
+    const subgraph = entry.subgraph === undefined ? undefined : readSubgraphNode(entry.subgraph, `${path}.subgraph`, diagnostics);
     const ports = readPorts(entry.ports, `${path}.ports`, diagnostics);
     const dynamicPortGroups = entry.dynamicPortGroups === undefined
       ? []
@@ -439,8 +829,24 @@ function readNodeTypes(value: unknown, diagnostics: DocumentDiagnostic[]): reado
     const properties = readPropertyDefinitions(entry.properties, `${path}.properties`, diagnostics);
     return id === undefined || title === undefined || category === undefined
       ? []
-      : [{ id, aliases, title, category, menuPath, tags, traits, ...(source === undefined ? {} : { source }), ports, dynamicPortGroups, properties }];
+      : [{ id, aliases, title, category, menuPath, tags, traits, ...(source === undefined ? {} : { source }), ...(subgraph === undefined ? {} : { subgraph }), ports, dynamicPortGroups, properties }];
   });
+}
+
+function readSubgraphNode(
+  value: unknown,
+  path: string,
+  diagnostics: DocumentDiagnostic[],
+): GraphSubgraphNodeDefinition | undefined {
+  if (!isRecord(value)) {
+    diagnostics.push(error("graphCatalog.invalidSubgraphNode", path, "Expected an object."));
+    return undefined;
+  }
+  checkKeys(value, ["graphTypeIds"], path, diagnostics);
+  const graphTypeIds = value.graphTypeIds === undefined
+    ? undefined
+    : readIdentifierArray(value.graphTypeIds, `${path}.graphTypeIds`, diagnostics);
+  return graphTypeIds === undefined ? {} : { graphTypeIds };
 }
 
 function readDynamicPortGroups(
@@ -795,6 +1201,37 @@ function validateAliases(
   });
 }
 
+function validateSelectorNodeTypes(
+  selector: GraphNodeSelector,
+  basePath: string,
+  nodeTypes: readonly GraphNodeTypeDefinition[],
+  diagnostics: DocumentDiagnostic[],
+): void {
+  selector.nodeTypeIds?.forEach((nodeTypeId, index) => {
+    if (resolveNodeTypeFromList(nodeTypes, nodeTypeId) === undefined) {
+      diagnostics.push(error(
+        "graphCatalog.unknownSelectorNodeType",
+        `${basePath}.nodeTypeIds[${index}]`,
+        `Node type '${nodeTypeId}' is not declared.`,
+      ));
+    }
+  });
+}
+
+function resolveNodeTypeFromList(
+  nodeTypes: readonly GraphNodeTypeDefinition[],
+  nodeTypeId: string,
+): GraphNodeTypeDefinition | undefined {
+  return nodeTypes.find((nodeType) => nodeType.id === nodeTypeId || nodeType.aliases.includes(nodeTypeId));
+}
+
+function resolveGraphTypeFromList(
+  graphTypes: readonly GraphTypeDefinition[],
+  graphTypeId: string,
+): GraphTypeDefinition | undefined {
+  return graphTypes.find((graphType) => graphType.id === graphTypeId || graphType.aliases.includes(graphTypeId));
+}
+
 function readIdentifierArray(
   value: unknown,
   path: string,
@@ -861,6 +1298,14 @@ function readBoolean(value: unknown, path: string, diagnostics: DocumentDiagnost
 function readPositiveInteger(value: unknown, path: string, diagnostics: DocumentDiagnostic[]): number | undefined {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
     diagnostics.push(error("graphCatalog.invalidPositiveInteger", path, "Expected a positive integer."));
+    return undefined;
+  }
+  return value;
+}
+
+function readNonNegativeInteger(value: unknown, path: string, diagnostics: DocumentDiagnostic[]): number | undefined {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    diagnostics.push(error("graphCatalog.invalidNonNegativeInteger", path, "Expected a non-negative integer."));
     return undefined;
   }
   return value;

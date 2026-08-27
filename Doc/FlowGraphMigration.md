@@ -57,9 +57,9 @@ Unity Package 未来应把 C# 声明导出为 `.vbgraphcatalog`，Catalog 是代
 | Catalog 节点搜索与创建 | 已完成 | 支持菜单路径、Tag、Trait 和来源元数据搜索 |
 | 节点字段内联编辑 | 已完成 | 支持 select、multiline、range、readonly 等显示提示 |
 | 节点类型安全替换、未知类型保留 | 已完成 | 校验与替换规则识别成员别名 |
-| 子图公开接口和内嵌导航 | 已完成 | 后续支持带静态字段的 typed subgraph |
-| Graph Inspector | 已完成 | 后续由 graph type 声明 Graph 字段 |
-| 入口唯一性、节点数量规则 | 缺失 | graph type 与 constraints 阶段实现 |
+| 子图公开接口和内嵌导航 | 已完成 | typed subgraph 同时保留调用节点类型和目标 Graph Type |
+| Graph Inspector | 已完成 | Graph Type 字段按 Catalog 定义直接编辑 |
+| 入口唯一性、节点数量规则 | 已完成 | 通用 selector + min/max，创建时生成初始节点 |
 | 实例级动态输出 | 已完成 | Catalog 组模板 + 实例稳定 ID + 原子增删改排序 |
 | 多选、复制、粘贴、Duplicate | 缺失 | 下一阶段实现批量 Operation |
 | 输入接线后默认值状态 | 缺失 | 保留字面值但标记为被连接覆盖 |
@@ -70,11 +70,13 @@ Unity Package 未来应把 C# 声明导出为 `.vbgraphcatalog`，Catalog 是代
 ## 实施顺序
 
 1. 已完成 Catalog 来源、Tag、Trait、菜单路径、成员别名和字段编辑提示；解析、验证、连线及替换逻辑使用语义身份。
-2. 下一批增加 graph type、入口/实例数量约束及 typed subgraph 契约。
+2. 已完成 Graph Type、入口/实例数量约束及 typed subgraph 契约；根图和子图具有独立类型，调用节点保留静态字段与数据端口。
 3. 已完成实例级动态端口组、稳定端口项和原子增删排序操作；排序不再改写连线身份。
-4. 完成连接覆盖状态、批量选择与复制粘贴。
+4. 下一批完成连接覆盖状态、批量选择与复制粘贴。
 5. 完成分层创建菜单、悬空连线创建、同类型选择和 MiniMap。
 6. 在 `Packages/com.kyl.visualbridge` 中实现 C# Catalog Exporter 与旧 FlowGraph 导入诊断。
 7. 最后设计 Runtime Compiler、执行协议和 Debug Overlay。
 
 Unity 导出器必须只依赖 Protocol/Catalog 契约，输出确定性 JSON；VS Code、MCP 与未来 Unity 编译器继续共享同一套稳定 ID、连接和属性规则。
+
+Unity 侧后续导出约束：Graph/Node Type 都必须使用显式稳定 ID，C# 全名只进入 `source`；`[FlowGraphTags]` 导出为允许节点 selector；`IFlowEntry` 导出 trait、数量约束和初始节点；`TSubGraphNode<TData,TGraph>` 导出为带 `subgraph.graphTypeIds` 的调用节点类型。不得执行 `OnCreate()` 取默认值，且新 exporter 不得覆盖更高版本 Catalog。
