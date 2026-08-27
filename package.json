@@ -1,0 +1,16 @@
+{
+  "name": "visualbridge-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "Core",
+    "BuiltInExtensions/Graph",
+    "Editors/Graph",
+    "Tools/VSCodeExtension"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @visualbridge/core && npm run build --workspace @visualbridge/graph && npm run build --workspace @visualbridge/graph-editor && npm run build --workspace visualbridge",
+    "check": "npm run check --workspace @visualbridge/core && npm run check --workspace @visualbridge/graph && npm run check --workspace @visualbridge/graph-editor && npm run check --workspace visualbridge",
+    "package:vscode": "npm run package:vsix --workspace visualbridge"
+  }
+}

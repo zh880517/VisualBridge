@@ -1,0 +1,9 @@
+.gitignore
+.vscodeignore
+artifacts/**
+assets/visualbridge-icon-source.png
+node_modules/**
+scripts/**
+src/**
+tsconfig.json
+dist/**/*.map

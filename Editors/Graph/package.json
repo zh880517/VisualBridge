@@ -1,0 +1,26 @@
+{
+  "name": "@visualbridge/graph-editor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "index.ts",
+  "types": "index.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "clean": "node ./scripts/clean.mjs",
+    "build": "npm run clean && npm run check && node ./scripts/build.mjs",
+    "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.11.5",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "esbuild": "^0.28.2"
+  }
+}

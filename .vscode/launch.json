@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run VisualBridge Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/Tools/VSCodeExtension"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/Tools/VSCodeExtension/dist/**/*.js"
+      ],
+      "preLaunchTask": "VisualBridge: Build VS Code Extension"
+    }
+  ]
+}

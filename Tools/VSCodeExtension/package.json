@@ -1,0 +1,109 @@
+{
+  "name": "visualbridge",
+  "displayName": "VisualBridge",
+  "description": "Semantic game-content authoring for VisualBridge projects.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "kyl",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zh880517/VisualBridge.git"
+  },
+  "type": "commonjs",
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "icon": "assets/icon.png",
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "workspaceContains:**/VisualBridge.project.vbjson"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "visualbridge.refreshProjects",
+        "title": "VisualBridge: Refresh Projects"
+      },
+      {
+        "command": "visualbridge.openDocument",
+        "title": "VisualBridge: Open Document",
+        "enablement": "visualbridge.hasProjects"
+      },
+      {
+        "command": "visualbridge.createGraphDocument",
+        "title": "VisualBridge: Create Graph Document",
+        "enablement": "visualbridge.hasProjects"
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "visualbridge.documentEditor",
+        "displayName": "VisualBridge Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.vbdoc"
+          },
+          {
+            "filenamePattern": "*.vbgraph"
+          },
+          {
+            "filenamePattern": "*.vbform"
+          },
+          {
+            "filenamePattern": "*.vbtable"
+          },
+          {
+            "filenamePattern": "*.vbconfig"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "visualbridge.documentEditor.option",
+        "displayName": "VisualBridge Editor",
+        "selector": [
+          {
+            "filenamePattern": "*"
+          }
+        ],
+        "priority": "option"
+      }
+    ],
+    "jsonValidation": [
+      {
+        "fileMatch": "**/VisualBridge.project.vbjson",
+        "url": "./dist/schemas/visualbridge-project.schema.json"
+      },
+      {
+        "fileMatch": "**/*.vbgraph",
+        "url": "./dist/schemas/visualbridge-graph.schema.json"
+      }
+    ]
+  },
+  "scripts": {
+    "clean": "node ./scripts/clean.mjs",
+    "prepare:package": "node ./scripts/prepare-package.mjs",
+    "build:graph-editor": "npm run build --workspace @visualbridge/graph-editor",
+    "sync:editor-assets": "node ./scripts/sync-editor-assets.mjs",
+    "sync:protocol": "node ./scripts/sync-protocol-assets.mjs",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "build": "npm run clean && npm run build:graph-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap && npm run check",
+    "watch": "npm run clean && npm run build:graph-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap --watch",
+    "package:vsix": "npm run build && npm run prepare:package && vsce package --no-dependencies --out artifacts/visualbridge.vsix"
+  },
+  "devDependencies": {
+    "@visualbridge/core": "*",
+    "@visualbridge/graph": "*",
+    "@visualbridge/graph-editor": "*",
+    "@types/node": "^24.13.1",
+    "@types/vscode": "^1.105.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.2",
+    "minimatch": "^10.2.6",
+    "typescript": "^7.0.2"
+  }
+}

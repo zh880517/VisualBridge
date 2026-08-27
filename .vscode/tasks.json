@@ -1,0 +1,13 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "VisualBridge: Build VS Code Extension",
+      "type": "npm",
+      "script": "build",
+      "path": "Tools/VSCodeExtension",
+      "problemMatcher": "$tsc",
+      "group": "build"
+    }
+  ]
+}

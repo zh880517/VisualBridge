@@ -37,6 +37,14 @@
 # Visual Studio cache directory
 .vs/
 
+# Node/TypeScript workspace outputs
+/node_modules/
+**/dist/
+**/artifacts/
+*.tsbuildinfo
+/.playwright-cli/
+/output/playwright/
+
 # Gradle cache directory
 .gradle/
 

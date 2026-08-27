@@ -1,0 +1,31 @@
+# Repository Guidelines
+
+## Project Structure & Module Organization
+
+VisualBridge is a monorepo for the platform implementation. `Core/` contains host-independent TypeScript domain logic; it must not reference VS Code, Webview DOM, or Unity APIs. `Protocol/` owns schemas, messages, and generated cross-language contracts. Reusable Webview UI belongs in `Editors/`, while built-in document types live in `BuiltInExtensions/`. Host integrations are under `Tools/VSCodeExtension/` and `Tools/VisualBridgeMcp/`. The Unity Package source is `Packages/com.kyl.visualbridge/`; `UnityProject/` is only its development host, with Unity assets under `UnityProject/Assets/`.
+
+Keep durable documentation in `Doc/`. Put task plans and temporary design notes in `Doc/Temp/`, then delete them when the task is complete. Read `Doc/VisualBridgeArchitecture.md` before changing module boundaries.
+
+## Build, Test, and Development Commands
+
+- `npm install` — install monorepo dependencies from the root lockfile.
+- `npm run check` — type-check VisualBridgeCore and the VS Code extension.
+- `npm run build` — compile Core and bundle the extension into `Tools/VSCodeExtension/dist/`.
+- `npm run package:vscode` — create a VSIX under `Tools/VSCodeExtension/artifacts/`.
+- `dotnet build .\UnityProject\Assembly-CSharp.csproj` — compile-check Unity runtime C# without opening Unity Editor.
+- `dotnet build .\UnityProject\Assembly-CSharp-Editor.csproj` — compile-check editor-only C#.
+- `git diff --check` — detect whitespace errors before review.
+
+Open the repository root in VS Code and press `F5` to launch an Extension Development Host. Unity-generated `.csproj` files must not be edited manually.
+
+## Coding Style & Naming Conventions
+
+Use UTF-8 and final newlines. Indent C# with four spaces and TypeScript/JSON with two. Use `PascalCase` for C# types and public members, `camelCase` for locals and parameters, and `PascalCase` for established repository directories. Keep files focused and prefer one public C# type per file. Preserve dependency direction: Protocol → Core → VS Code/MCP adapters; Unity consumes generated protocol contracts, not TypeScript Core code.
+
+## Testing Guidelines
+
+No repository test suite or coverage threshold exists yet. Unless explicitly requested, do not add Unity tests. Validate Unity changes with the relevant `dotnet build` command and report when generated project files or unavailable Unity assemblies limit verification.
+
+## Commit & Pull Request Guidelines
+
+History currently contains only initialization commits, so no formal convention is established. Use short imperative subjects such as `Add document operation registry`, and keep commits scoped to one concern. Pull requests should explain the affected modules, architecture impact, validation performed, and known limitations. Include screenshots for Webview changes and call out protocol or generated-contract changes explicitly.
