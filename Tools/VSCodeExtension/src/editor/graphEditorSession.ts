@@ -23,6 +23,7 @@ interface WebviewMessage {
   readonly operations?: unknown;
   readonly graphId?: unknown;
   readonly nodeId?: unknown;
+  readonly text?: unknown;
 }
 
 export class GraphEditorSession {
@@ -125,6 +126,16 @@ export class GraphEditorSession {
     }
     if (message.type === "requestReplacementCandidates") {
       await this.sendReplacementCandidates(message);
+      return;
+    }
+    if (message.type === "writeClipboard") {
+      if (typeof message.text === "string" && message.text.length <= 2_000_000) {
+        await vscode.env.clipboard.writeText(message.text);
+      }
+      return;
+    }
+    if (message.type === "readClipboard") {
+      await this.panel.webview.postMessage({ type: "clipboardData", text: await vscode.env.clipboard.readText() });
       return;
     }
     if (message.type !== "applyOperations") {

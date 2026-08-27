@@ -61,9 +61,10 @@ Unity Package 未来应把 C# 声明导出为 `.vbgraphcatalog`，Catalog 是代
 | Graph Inspector | 已完成 | Graph Type 字段按 Catalog 定义直接编辑 |
 | 入口唯一性、节点数量规则 | 已完成 | 通用 selector + min/max，创建时生成初始节点 |
 | 实例级动态输出 | 已完成 | Catalog 组模板 + 实例稳定 ID + 原子增删改排序 |
-| 多选、复制、粘贴、Duplicate | 缺失 | 下一阶段实现批量 Operation |
-| 输入接线后默认值状态 | 缺失 | 保留字面值但标记为被连接覆盖 |
-| 分层菜单、同类型选择、MiniMap | 部分/缺失 | 作为编辑效率阶段实现 |
+| 多选、复制、粘贴、Duplicate | 已完成 | 原子节点和内部边以批量 Operation 粘贴并生成新 ID；必需单例和子图暂不复制 |
+| 输入接线后默认值状态 | 已完成 | 保留字面值并标记为被连接覆盖，断开后恢复编辑 |
+| 分层菜单、同类型选择、MiniMap | 已完成 | `menuPath` 分层、全文搜索、规范类型同选和缩略图导航已落地 |
+| 悬空连线创建节点 | 已完成 | 按方向、端口种类、数据类型和 Graph Type 约束筛选并原子创建 |
 | C# Catalog 导出 | 缺失 | 最终在 Unity Package Editor 程序集中实现 |
 | Runtime、代码生成、执行预算、调试追踪 | 延期 | 等 Unity 连接阶段单独设计 |
 
@@ -72,11 +73,11 @@ Unity Package 未来应把 C# 声明导出为 `.vbgraphcatalog`，Catalog 是代
 1. 已完成 Catalog 来源、Tag、Trait、菜单路径、成员别名和字段编辑提示；解析、验证、连线及替换逻辑使用语义身份。
 2. 已完成 Graph Type、入口/实例数量约束及 typed subgraph 契约；根图和子图具有独立类型，调用节点保留静态字段与数据端口。
 3. 已完成实例级动态端口组、稳定端口项和原子增删排序操作；排序不再改写连线身份。
-4. 下一批完成连接覆盖状态、批量选择与复制粘贴。
-5. 完成分层创建菜单、悬空连线创建、同类型选择和 MiniMap。
-6. 在 `Packages/com.kyl.visualbridge` 中实现 C# Catalog Exporter 与旧 FlowGraph 导入诊断。
+4. 已完成连接覆盖状态、批量选择、复制粘贴与 Duplicate；持久修改继续通过 Graph Operation 批量提交。
+5. 已完成分层创建菜单、悬空连线创建、同类型选择和 MiniMap。
+6. Graph 作者功能验证完成后，再在 `Packages/com.kyl.visualbridge` 中实现 C# Catalog Exporter 与旧 FlowGraph 导入诊断；此前不得加入 Unity 实现。
 7. 最后设计 Runtime Compiler、执行协议和 Debug Overlay。
 
 Unity 导出器必须只依赖 Protocol/Catalog 契约，输出确定性 JSON；VS Code、MCP 与未来 Unity 编译器继续共享同一套稳定 ID、连接和属性规则。
 
-Unity 侧后续导出约束：Graph/Node Type 都必须使用显式稳定 ID，C# 全名只进入 `source`；`[FlowGraphTags]` 导出为允许节点 selector；`IFlowEntry` 导出 trait、数量约束和初始节点；`TSubGraphNode<TData,TGraph>` 导出为带 `subgraph.graphTypeIds` 的调用节点类型。不得执行 `OnCreate()` 取默认值，且新 exporter 不得覆盖更高版本 Catalog。
+Unity 侧后续导出约束：Graph/Node Type 都必须使用显式稳定 ID，C# 全名只进入 `source`；`[FlowGraphTags]` 导出为允许节点 selector；`IFlowEntry` 导出 trait、数量约束和初始节点；`TSubGraphNode<TData,TGraph>` 导出为带 `subgraph.graphTypeIds` 的调用节点类型。不得执行 `OnCreate()` 取默认值，且新 exporter 不得覆盖更高版本 Catalog。Unity 代码、测试、导入器与运行时实现均在 Graph 作者功能完成并单独确认后开始。

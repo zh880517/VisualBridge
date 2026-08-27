@@ -4,6 +4,7 @@ import {
   Controls,
   Handle,
   MarkerType,
+  MiniMap,
   Position,
   ReactFlow,
   ReactFlowProvider,
@@ -12,6 +13,7 @@ import {
   type Connection,
   type Edge,
   type EdgeChange,
+  type FinalConnectionState,
   type Node,
   type NodeChange,
   type NodeProps,
@@ -301,6 +303,7 @@ interface GraphNodeData extends Record<string, unknown> {
   readonly nodeType?: NodeTypeDefinition;
   readonly ports: readonly PortDefinition[];
   readonly typeTitle: string;
+  readonly overriddenPropertyIds: ReadonlySet<string>;
   readonly commitNode: (
     nodeId: string,
     title: string,
@@ -325,11 +328,38 @@ interface GraphEdgeData extends Record<string, unknown> {
 }
 
 type GraphFlowEdge = Edge<GraphEdgeData, "default">;
-type Selection = { readonly kind: "node" | "edge"; readonly id: string };
+interface Selection {
+  readonly nodeIds: readonly string[];
+  readonly edgeIds: readonly string[];
+}
+
+type NodePickerState =
+  | { readonly mode: "add" }
+  | { readonly mode: "replace"; readonly nodeId: string }
+  | {
+      readonly mode: "connect";
+      readonly fromNodeId: string;
+      readonly fromPortId: string;
+      readonly fromRole: "source" | "target";
+      readonly fromPort: PortDefinition;
+      readonly position: GraphPosition;
+    };
+
+interface ConnectionNodeOption {
+  readonly nodeType: NodeTypeDefinition;
+  readonly port: PortDefinition;
+}
 
 interface SubgraphTypeOption {
   readonly graphType: GraphTypeDefinition;
   readonly nodeType: NodeTypeDefinition;
+}
+
+interface GraphClipboardPayload {
+  readonly format: "visualbridge.graph-clipboard";
+  readonly version: 1;
+  readonly nodes: readonly GraphAtomicNode[];
+  readonly edges: readonly GraphEdgeModel[];
 }
 
 type HostMessage =
@@ -352,6 +382,7 @@ type HostMessage =
       readonly nodeId: string;
       readonly nodeTypeIds: readonly string[];
     }
+  | { readonly type: "clipboardData"; readonly text: string }
   | { readonly type: "operationRejected"; readonly message: string };
 
 interface VsCodeApi {
@@ -450,6 +481,9 @@ function InlineNodeProperty({
   const serializedPropertyIds = propertyIds.filter((propertyId) => Object.hasOwn(data.model.properties, propertyId));
   const serializedPropertyId = serializedPropertyIds[0];
   const value = serializedPropertyId === undefined ? undefined : data.model.properties[serializedPropertyId];
+  const overridden = data.overriddenPropertyIds.has(definition.id);
+  const displayTitle = `${definition.title}${overridden ? "（已连接）" : ""}`;
+  const fieldTitle = `${displayTitle}${definition.required ? " *" : ""}`;
   const commit = (nextValue: JsonValue | undefined): void => {
     if (
       (nextValue === undefined && serializedPropertyIds.length === 0)
@@ -472,11 +506,11 @@ function InlineNodeProperty({
     const selectedIndex = definition.editor.options.findIndex((option) => jsonValuesEqual(option.value, value));
     const selectedValue = selectedIndex < 0 ? "" : String(selectedIndex);
     return (
-      <label className="graph-node-property" title={definition.description}>
-        <span>{definition.title}{definition.required ? " *" : ""}</span>
+      <label className={`graph-node-property${overridden ? " overridden" : ""}`} title={overridden ? "输入端口已连接；当前字面值会保留，但不会作为有效输入。" : definition.description}>
+        <span>{fieldTitle}</span>
         <select
           value={selectedValue}
-          disabled={pending || definition.editor.readOnly}
+          disabled={pending || overridden || definition.editor.readOnly}
           onChange={(event) => {
             const option = definition.editor?.options[Number(event.target.value)];
             if (option !== undefined) {
@@ -494,12 +528,12 @@ function InlineNodeProperty({
   }
   if (definition.valueType === "boolean" || definition.editor?.kind === "checkbox") {
     return (
-      <label className="graph-node-property boolean" title={definition.description}>
-        <span>{definition.title}{definition.required ? " *" : ""}</span>
+      <label className={`graph-node-property boolean${overridden ? " overridden" : ""}`} title={overridden ? "输入端口已连接；当前字面值会保留，但不会作为有效输入。" : definition.description}>
+        <span>{fieldTitle}</span>
         <input
           type="checkbox"
           checked={value === true}
-          disabled={pending || definition.editor?.readOnly}
+          disabled={pending || overridden || definition.editor?.readOnly}
           onChange={(event) => commit(event.target.checked)}
         />
       </label>
@@ -508,10 +542,10 @@ function InlineNodeProperty({
   return (
     <InlineNodeScalarProperty
       key={`${data.model.id}:${definition.id}:${JSON.stringify(value)}`}
-      definition={definition}
+      definition={overridden ? { ...definition, title: displayTitle, description: "输入端口已连接；当前字面值会保留，但不会作为有效输入。" } : definition}
       value={value}
       editor={definition.editor}
-      pending={pending}
+      pending={pending || overridden}
       commit={commit}
       reportStatus={data.reportStatus}
     />
@@ -911,6 +945,7 @@ function GraphEditorApp(): React.JSX.Element {
   const documentVersionRef = useRef(0);
   const pendingRef = useRef(false);
   const selectedRef = useRef<Selection | undefined>(undefined);
+  const clipboardPasteIndexRef = useRef(0);
   const [graphDocument, setGraphDocument] = useState<GraphDocument>();
   const [catalog, setCatalog] = useState<GraphCatalog>(emptyCatalog());
   const [replacementCandidates, setReplacementCandidates] = useState<Readonly<Record<string, readonly string[]>>>({});
@@ -923,7 +958,7 @@ function GraphEditorApp(): React.JSX.Element {
   const [invalidDiagnostics, setInvalidDiagnostics] = useState<readonly DocumentDiagnostic[]>([]);
   const [status, setStatus] = useState({ message: "正在加载 Graph Document…", error: false });
   const [contextMenu, setContextMenu] = useState<{ readonly x: number; readonly y: number; readonly nodeId: string }>();
-  const [picker, setPicker] = useState<{ readonly mode: "add" } | { readonly mode: "replace"; readonly nodeId: string }>();
+  const [picker, setPicker] = useState<NodePickerState>();
   const [subgraphPickerOpen, setSubgraphPickerOpen] = useState(false);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
 
@@ -934,7 +969,7 @@ function GraphEditorApp(): React.JSX.Element {
 
   const updateSelection = useCallback((next: Selection | undefined): void => {
     const current = selectedRef.current;
-    if (current?.kind === next?.kind && current?.id === next?.id) {
+    if (selectionsEqual(current, next)) {
       return;
     }
     selectedRef.current = next;
@@ -975,6 +1010,93 @@ function GraphEditorApp(): React.JSX.Element {
       postOperations([{ type: "graph.updateNode", graphId: graph.id, nodeId, title, properties }]);
     }
   }, [postOperations]);
+
+  const createClipboardPayload = useCallback((): GraphClipboardPayload | undefined => {
+    const graph = documentRef.current?.graphs.find((candidate) => candidate.id === activeGraphIdRef.current);
+    const selection = selectedRef.current;
+    if (graph === undefined || selection === undefined) {
+      return undefined;
+    }
+    const selectedIds = new Set(selection.nodeIds);
+    const nodes = graph.nodes.flatMap((node) => {
+      if (node.kind !== "node" || !selectedIds.has(node.id)) {
+        return [];
+      }
+      const nodeType = resolveNodeTypeDefinition(catalogRef.current, node.nodeTypeId);
+      return nodeType !== undefined && isNodeTypeRequiredByGraph(graph, nodeType, catalogRef.current)
+        ? []
+        : [cloneGraphAtomicNode(node)];
+    });
+    const copiedIds = new Set(nodes.map((node) => node.id));
+    const edges = graph.edges.filter((edge) =>
+      edge.source.kind === "node"
+      && copiedIds.has(edge.source.nodeId)
+      && edge.target.kind === "node"
+      && copiedIds.has(edge.target.nodeId),
+    ).map(cloneGraphEdge);
+    return nodes.length === 0
+      ? undefined
+      : { format: "visualbridge.graph-clipboard", version: 1, nodes, edges };
+  }, []);
+
+  const pasteClipboardPayload = useCallback((payload: GraphClipboardPayload, requestedOffset?: number): void => {
+    const graph = documentRef.current?.graphs.find((candidate) => candidate.id === activeGraphIdRef.current);
+    if (graph === undefined || pendingRef.current) {
+      return;
+    }
+    const offset = requestedOffset ?? 40 * ++clipboardPasteIndexRef.current;
+    const nodeIdMap = new Map(payload.nodes.map((node) => [node.id, newId("node")]));
+    const nodes = payload.nodes.map((node) => ({
+      ...cloneGraphAtomicNode(node),
+      id: nodeIdMap.get(node.id)!,
+      position: { x: node.position.x + offset, y: node.position.y + offset },
+    }));
+    const edges = payload.edges.flatMap((edge) => {
+      if (edge.source.kind !== "node" || edge.target.kind !== "node") {
+        return [];
+      }
+      const sourceNodeId = nodeIdMap.get(edge.source.nodeId);
+      const targetNodeId = nodeIdMap.get(edge.target.nodeId);
+      return sourceNodeId === undefined || targetNodeId === undefined
+        ? []
+        : [{
+            ...cloneGraphEdge(edge),
+            id: newId("edge"),
+            source: { ...edge.source, nodeId: sourceNodeId },
+            target: { ...edge.target, nodeId: targetNodeId },
+          }];
+    });
+    updateSelection({ nodeIds: nodes.map((node) => node.id).sort(), edgeIds: edges.map((edge) => edge.id).sort() });
+    postOperations([
+      ...nodes.map((node) => ({ type: "graph.addNode" as const, graphId: graph.id, node })),
+      ...edges.map((edge) => ({ type: "graph.addEdge" as const, graphId: graph.id, edge })),
+    ]);
+  }, [postOperations, updateSelection]);
+
+  const copySelection = useCallback((): void => {
+    const payload = createClipboardPayload();
+    if (payload === undefined) {
+      setStatus({ message: "请选择可复制的原子节点；Graph Type 必需节点和子图暂不进入剪贴板。", error: true });
+      return;
+    }
+    const text = JSON.stringify(payload);
+    if (text.length > 2_000_000) {
+      setStatus({ message: "所选节点超过 Graph 剪贴板 2 MB 限制，请减少选择后重试。", error: true });
+      return;
+    }
+    clipboardPasteIndexRef.current = 0;
+    vscode.postMessage({ type: "writeClipboard", text });
+    setStatus({ message: `已复制 ${payload.nodes.length} 个节点和 ${payload.edges.length} 条内部连线。`, error: false });
+  }, [createClipboardPayload]);
+
+  const duplicateSelection = useCallback((): void => {
+    const payload = createClipboardPayload();
+    if (payload === undefined) {
+      setStatus({ message: "请选择可 Duplicate 的原子节点；Graph Type 必需节点和子图暂不复制。", error: true });
+      return;
+    }
+    pasteClipboardPayload(payload, 40);
+  }, [createClipboardPayload, pasteClipboardPayload]);
 
   useEffect(() => {
     const receiveMessage = (event: MessageEvent<HostMessage>): void => {
@@ -1018,6 +1140,15 @@ function GraphEditorApp(): React.JSX.Element {
         }
         return;
       }
+      if (message.type === "clipboardData") {
+        const payload = parseGraphClipboardPayload(message.text);
+        if (payload === undefined) {
+          setStatus({ message: "剪贴板中没有有效的 VisualBridge Graph 节点数据。", error: true });
+        } else {
+          pasteClipboardPayload(payload);
+        }
+        return;
+      }
       if (message.type === "graphInvalid") {
         documentRef.current = undefined;
         documentVersionRef.current = message.documentVersion;
@@ -1041,7 +1172,7 @@ function GraphEditorApp(): React.JSX.Element {
     window.addEventListener("message", receiveMessage);
     vscode.postMessage({ type: "ready" });
     return () => window.removeEventListener("message", receiveMessage);
-  }, [updateSelection]);
+  }, [pasteClipboardPayload, updateSelection]);
 
   useEffect(() => {
     if (graphDocument === undefined || activeGraph === undefined) {
@@ -1049,9 +1180,9 @@ function GraphEditorApp(): React.JSX.Element {
       setFlowEdges([]);
       return;
     }
-    setFlowNodes(toFlowNodes(graphDocument, activeGraph, catalog, selectedRef.current, commitNode, postOperations, setStatus));
-    setFlowEdges(activeGraph.edges.map((edge) => toFlowEdge(edge, selectedRef.current, activeGraph, catalog)));
-  }, [activeGraph, catalog, commitNode, graphDocument, postOperations]);
+    setFlowNodes(toFlowNodes(graphDocument, activeGraph, catalog, selected, commitNode, postOperations, setStatus));
+    setFlowEdges(activeGraph.edges.map((edge) => toFlowEdge(edge, selected, activeGraph, catalog)));
+  }, [activeGraph, catalog, commitNode, graphDocument, postOperations, selected]);
 
   const handleNodesChange = useCallback((changes: NodeChange<GraphFlowNode>[]): void => {
     setFlowNodes((current) => applyNodeChanges(changes, current));
@@ -1062,13 +1193,9 @@ function GraphEditorApp(): React.JSX.Element {
   }, []);
 
   const handleSelectionChange = useCallback((selection: { nodes: GraphFlowNode[]; edges: GraphFlowEdge[] }): void => {
-    const node = selection.nodes.find((candidate) => candidate.data.flavor === "node");
-    if (node !== undefined) {
-      updateSelection({ kind: "node", id: node.id });
-      return;
-    }
-    const edge = selection.edges[0];
-    updateSelection(edge === undefined ? undefined : { kind: "edge", id: edge.id });
+    const nodeIds = selection.nodes.filter((candidate) => candidate.data.flavor === "node").map((node) => node.id).sort();
+    const edgeIds = selection.edges.map((edge) => edge.id).sort();
+    updateSelection(nodeIds.length === 0 && edgeIds.length === 0 ? undefined : { nodeIds, edgeIds });
   }, [updateSelection]);
 
   const handleConnect = useCallback((connection: Connection): void => {
@@ -1102,18 +1229,90 @@ function GraphEditorApp(): React.JSX.Element {
     }]);
   }, [postOperations]);
 
-  const handleNodeDragStop = useCallback((_: MouseEvent | TouchEvent, node: GraphFlowNode): void => {
+  const handleConnectEnd = useCallback((
+    event: MouseEvent | TouchEvent,
+    connectionState: FinalConnectionState,
+  ): void => {
+    if (
+      connectionState.isValid === true
+      || connectionState.toNode !== null
+      || connectionState.fromNode === null
+      || connectionState.fromHandle === null
+      || connectionState.fromHandle.id === undefined
+      || connectionState.fromHandle.id === null
+      || flowInstance === undefined
+      || pendingRef.current
+    ) {
+      return;
+    }
+    const currentDocument = documentRef.current;
+    const currentGraph = currentDocument?.graphs.find((graph) => graph.id === activeGraphIdRef.current);
+    if (currentDocument === undefined || currentGraph === undefined) {
+      return;
+    }
+    const fromNodeId = connectionState.fromNode.id;
+    const fromPortId = connectionState.fromHandle.id;
+    const fromRole = connectionState.fromHandle.type;
+    const fromPort = findCanvasPort(
+      currentDocument,
+      currentGraph,
+      catalogRef.current,
+      fromNodeId,
+      fromPortId,
+      fromRole,
+    );
+    if (fromPort === undefined) {
+      return;
+    }
+    if (
+      fromPort.maxConnections !== undefined
+      && countCanvasPortConnections(currentGraph, catalogRef.current, fromNodeId, fromPortId, fromRole) >= fromPort.maxConnections
+    ) {
+      setStatus({ message: `端口“${fromPort.title}”已达到最大连接数。`, error: true });
+      return;
+    }
+    const clientPosition = eventClientPosition(event);
+    if (clientPosition === undefined) {
+      return;
+    }
+    const position = flowInstance.screenToFlowPosition(clientPosition);
+    setPicker({
+      mode: "connect",
+      fromNodeId,
+      fromPortId,
+      fromRole,
+      fromPort,
+      position: { x: Math.round(position.x), y: Math.round(position.y) },
+    });
+    setStatus({ message: "请选择要在连线末端创建的兼容节点。", error: false });
+  }, [flowInstance]);
+
+  const handleNodeDragStop = useCallback((
+    _: MouseEvent | TouchEvent,
+    node: GraphFlowNode,
+    draggedNodes: GraphFlowNode[],
+  ): void => {
     if (node.data.flavor !== "node") {
       return;
     }
     const currentGraph = documentRef.current?.graphs.find((graph) => graph.id === activeGraphIdRef.current);
-    const sourceNode = currentGraph?.nodes.find((candidate) => candidate.id === node.id);
-    if (currentGraph === undefined || sourceNode === undefined) {
+    if (currentGraph === undefined) {
       return;
     }
-    const position = { x: Math.round(node.position.x), y: Math.round(node.position.y) };
-    if (position.x !== sourceNode.position.x || position.y !== sourceNode.position.y) {
-      postOperations([{ type: "graph.moveNode", graphId: currentGraph.id, nodeId: node.id, position }]);
+    const movedNodes = draggedNodes.length === 0 ? [node] : draggedNodes;
+    const operations = movedNodes.flatMap((draggedNode) => {
+      if (draggedNode.data.flavor !== "node") {
+        return [];
+      }
+      const sourceNode = currentGraph.nodes.find((candidate) => candidate.id === draggedNode.id);
+      const position = { x: Math.round(draggedNode.position.x), y: Math.round(draggedNode.position.y) };
+      return sourceNode === undefined
+        || position.x === sourceNode.position.x && position.y === sourceNode.position.y
+        ? []
+        : [{ type: "graph.moveNode" as const, graphId: currentGraph.id, nodeId: draggedNode.id, position }];
+    });
+    if (operations.length > 0) {
+      postOperations(operations);
     }
   }, [postOperations]);
 
@@ -1153,6 +1352,43 @@ function GraphEditorApp(): React.JSX.Element {
       },
     }]);
   }, [nodePosition, postOperations]);
+
+  const addConnectedNode = useCallback((
+    connectionPicker: Extract<NodePickerState, { readonly mode: "connect" }>,
+    option: ConnectionNodeOption,
+  ): void => {
+    const currentGraph = documentRef.current?.graphs.find((graph) => graph.id === activeGraphIdRef.current);
+    if (currentGraph === undefined) {
+      return;
+    }
+    const nodeId = newId("node");
+    const edgeId = newId("edge");
+    const existingEndpoint = toGraphEndpoint(connectionPicker.fromNodeId, connectionPicker.fromPortId);
+    const newEndpoint: GraphNodeEndpoint = { kind: "node", nodeId, portId: option.port.id };
+    const edge: GraphEdgeModel = {
+      id: edgeId,
+      kind: connectionPicker.fromPort.kind,
+      source: connectionPicker.fromRole === "source" ? existingEndpoint : newEndpoint,
+      target: connectionPicker.fromRole === "source" ? newEndpoint : existingEndpoint,
+    };
+    updateSelection({ nodeIds: [nodeId], edgeIds: [edgeId] });
+    postOperations([
+      {
+        type: "graph.addNode",
+        graphId: currentGraph.id,
+        node: {
+          kind: "node",
+          id: nodeId,
+          nodeTypeId: option.nodeType.id,
+          title: option.nodeType.title,
+          position: connectionPicker.position,
+          properties: createDefaultProperties(option.nodeType),
+          dynamicPorts: [],
+        },
+      },
+      { type: "graph.addEdge", graphId: currentGraph.id, edge },
+    ]);
+  }, [postOperations, updateSelection]);
 
   const addSubgraph = useCallback((graphTypeId?: string, nodeTypeId?: string): void => {
     const currentGraph = documentRef.current?.graphs.find((graph) => graph.id === activeGraphIdRef.current);
@@ -1214,10 +1450,26 @@ function GraphEditorApp(): React.JSX.Element {
     if (current === undefined || pendingRef.current || graphId.length === 0) {
       return;
     }
-    updateSelection(undefined);
-    postOperations([current.kind === "node"
-      ? { type: "graph.removeNode", graphId, nodeId: current.id }
-      : { type: "graph.removeEdge", graphId, edgeId: current.id }]);
+    const graph = documentRef.current?.graphs.find((candidate) => candidate.id === graphId);
+    if (graph === undefined) {
+      return;
+    }
+    const selectedNodes = new Set(current.nodeIds);
+    const operations: GraphOperation[] = [
+      ...current.edgeIds.flatMap((edgeId) => {
+        const edge = graph.edges.find((candidate) => candidate.id === edgeId);
+        const removedWithNode = edge !== undefined && (
+          edge.source.kind === "node" && selectedNodes.has(edge.source.nodeId)
+          || edge.target.kind === "node" && selectedNodes.has(edge.target.nodeId)
+        );
+        return removedWithNode ? [] : [{ type: "graph.removeEdge" as const, graphId, edgeId }];
+      }),
+      ...current.nodeIds.map((nodeId) => ({ type: "graph.removeNode" as const, graphId, nodeId })),
+    ];
+    if (operations.length > 0) {
+      updateSelection(undefined);
+      postOperations(operations);
+    }
   }, [postOperations, updateSelection]);
 
   useEffect(() => {
@@ -1227,6 +1479,19 @@ function GraphEditorApp(): React.JSX.Element {
         || target instanceof HTMLTextAreaElement
         || target instanceof HTMLSelectElement
         || (target instanceof HTMLElement && target.isContentEditable);
+      const command = event.ctrlKey || event.metaKey;
+      if (!editing && command && event.key.toLowerCase() === "c") {
+        event.preventDefault();
+        copySelection();
+      }
+      if (!editing && command && event.key.toLowerCase() === "v") {
+        event.preventDefault();
+        vscode.postMessage({ type: "readClipboard" });
+      }
+      if (!editing && command && event.key.toLowerCase() === "d") {
+        event.preventDefault();
+        duplicateSelection();
+      }
       if (!editing && (event.key === "Delete" || event.key === "Backspace")) {
         event.preventDefault();
         deleteSelection();
@@ -1239,14 +1504,14 @@ function GraphEditorApp(): React.JSX.Element {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [deleteSelection]);
+  }, [copySelection, deleteSelection, duplicateSelection]);
 
   const handleNodeContextMenu = useCallback((event: ReactMouseEvent, node: GraphFlowNode): void => {
     if (node.data.flavor !== "node") {
       return;
     }
     event.preventDefault();
-    updateSelection({ kind: "node", id: node.id });
+    updateSelection({ nodeIds: [node.id], edgeIds: [] });
     setContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id });
     if (node.data.model.nodeTypeId !== undefined) {
       setReplacementCandidates((current) => {
@@ -1271,10 +1536,33 @@ function GraphEditorApp(): React.JSX.Element {
     }
   }, [setActiveGraphId]);
 
+  const selectSameType = useCallback((nodeId: string): void => {
+    const graph = documentRef.current?.graphs.find((candidate) => candidate.id === activeGraphIdRef.current);
+    const node = graph?.nodes.find((candidate) => candidate.id === nodeId);
+    if (graph === undefined || node?.nodeTypeId === undefined) {
+      return;
+    }
+    const canonicalTypeId = resolveNodeTypeDefinition(catalogRef.current, node.nodeTypeId)?.id ?? node.nodeTypeId;
+    const nodeIds = graph.nodes.flatMap((candidate) => {
+      if (candidate.nodeTypeId === undefined) {
+        return [];
+      }
+      const candidateTypeId = resolveNodeTypeDefinition(catalogRef.current, candidate.nodeTypeId)?.id ?? candidate.nodeTypeId;
+      return candidateTypeId === canonicalTypeId ? [candidate.id] : [];
+    });
+    setContextMenu(undefined);
+    updateSelection({ nodeIds, edgeIds: [] });
+  }, [updateSelection]);
+
   const path = graphDocument === undefined ? [] : findGraphPath(graphDocument, activeGraphId);
   const pickerTypes = picker?.mode === "replace"
     ? catalog.nodeTypes.filter((nodeType) => replacementCandidates[picker.nodeId]?.includes(nodeType.id) ?? false)
-    : catalog.nodeTypes.filter((nodeType) => activeGraph !== undefined && isNodeTypeAvailable(activeGraph, nodeType, catalog, "atomic"));
+    : picker?.mode === "add"
+      ? catalog.nodeTypes.filter((nodeType) => activeGraph !== undefined && isNodeTypeAvailable(activeGraph, nodeType, catalog, "atomic"))
+      : [];
+  const connectionOptions = picker?.mode === "connect" && activeGraph !== undefined
+    ? getConnectionNodeOptions(activeGraph, catalog, picker.fromPort, picker.fromRole)
+    : [];
   const subgraphOptions = activeGraph === undefined ? [] : getSubgraphOptions(activeGraph, catalog);
 
   return (
@@ -1291,6 +1579,9 @@ function GraphEditorApp(): React.JSX.Element {
         >
           添加子图
         </button>
+        <button type="button" className="secondary" onClick={copySelection} disabled={selected === undefined || pending}>复制</button>
+        <button type="button" className="secondary" onClick={() => vscode.postMessage({ type: "readClipboard" })} disabled={pending}>粘贴</button>
+        <button type="button" className="secondary" onClick={duplicateSelection} disabled={selected === undefined || pending}>Duplicate</button>
         <button type="button" className="secondary" onClick={deleteSelection} disabled={selected === undefined || pending}>
           删除所选
         </button>
@@ -1326,6 +1617,7 @@ function GraphEditorApp(): React.JSX.Element {
                   onEdgesChange={handleEdgesChange}
                   onSelectionChange={handleSelectionChange}
                   onConnect={handleConnect}
+                  onConnectEnd={handleConnectEnd}
                   onNodeDragStop={handleNodeDragStop}
                   onNodeContextMenu={handleNodeContextMenu}
                   onNodeDoubleClick={(_, node) => openSubgraph(node.id)}
@@ -1344,6 +1636,7 @@ function GraphEditorApp(): React.JSX.Element {
                   maxZoom={2}
                 >
                   <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
+                  <MiniMap pannable zoomable nodeStrokeWidth={3} />
                   <Controls showInteractive={false} />
                 </ReactFlow>
                 </GraphPendingContext.Provider>
@@ -1379,20 +1672,23 @@ function GraphEditorApp(): React.JSX.Element {
         return (
           <div className="graph-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
             {node?.nodeTypeId !== undefined && (
-              <button
-                type="button"
-                disabled={candidates === undefined || candidates.length === 0}
-                onClick={() => { setContextMenu(undefined); setPicker({ mode: "replace", nodeId: node.id }); }}
-              >
-                替换节点类型{candidates === undefined ? "（检查中…）" : candidates.length === 0 ? "（无兼容类型）" : "…"}
-              </button>
+              <>
+                <button type="button" onClick={() => selectSameType(node.id)}>选择同类型节点</button>
+                <button
+                  type="button"
+                  disabled={candidates === undefined || candidates.length === 0}
+                  onClick={() => { setContextMenu(undefined); setPicker({ mode: "replace", nodeId: node.id }); }}
+                >
+                  替换节点类型{candidates === undefined ? "（检查中…）" : candidates.length === 0 ? "（无兼容类型）" : "…"}
+                </button>
+              </>
             )}
             {node?.kind === "subgraph" && <button type="button" onClick={() => openSubgraph(node.id)}>打开子图</button>}
           </div>
         );
       })()}
 
-      {picker !== undefined && (
+      {picker !== undefined && picker.mode !== "connect" && (
         <NodeTypePicker
           title={picker.mode === "replace" ? "替换节点类型" : "添加节点"}
           nodeTypes={pickerTypes}
@@ -1409,6 +1705,14 @@ function GraphEditorApp(): React.JSX.Element {
               addNodeType(nodeTypeId);
             }
           }}
+        />
+      )}
+
+      {picker?.mode === "connect" && (
+        <ConnectionNodePicker
+          options={connectionOptions}
+          onCancel={() => setPicker(undefined)}
+          onSelect={(option) => addConnectedNode(picker, option)}
         />
       )}
 
@@ -1472,6 +1776,7 @@ function GraphInspector({
     nodeType: propertyNodeType,
     ports: [],
     typeTitle: propertyNodeType.title,
+    overriddenPropertyIds: new Set(),
     commitNode: (_, nextTitle, properties) => postOperations([{
       type: "graph.updateGraph",
       graphId: graph.id,
@@ -1687,18 +1992,135 @@ function NodeTypePicker({
         <header><h2>{title}</h2><button type="button" className="secondary" onClick={onCancel}>关闭</button></header>
         <input autoFocus placeholder="搜索节点类型…" value={query} onChange={(event) => setQuery(event.target.value)} />
         <div className="graph-node-type-list">
-          {filtered.map((nodeType) => (
-            <button key={nodeType.id} type="button" className="graph-node-type-option" onClick={() => onSelect(nodeType.id)}>
-              <strong>{nodeType.title}</strong>
-              <span>{nodeType.menuPath?.join(" / ") || nodeType.category}</span>
-              <code>{nodeType.id}</code>
-            </button>
-          ))}
+          {query.trim().length === 0
+            ? <NodeTypeMenu nodeTypes={filtered} onSelect={onSelect} />
+            : filtered.map((nodeType) => <NodeTypeOption key={nodeType.id} nodeType={nodeType} onSelect={onSelect} />)}
           {filtered.length === 0 && <p className="graph-empty">没有可用的节点类型。</p>}
         </div>
       </section>
     </div>
   );
+}
+
+function ConnectionNodePicker({
+  options,
+  onCancel,
+  onSelect,
+}: {
+  readonly options: readonly ConnectionNodeOption[];
+  readonly onCancel: () => void;
+  readonly onSelect: (option: ConnectionNodeOption) => void;
+}): React.JSX.Element {
+  const [query, setQuery] = useState("");
+  const normalized = query.trim().toLowerCase();
+  const filtered = options.filter(({ nodeType, port }) =>
+    [nodeType.title, nodeType.id, nodeType.category, ...(nodeType.menuPath ?? []), port.title, port.id]
+      .join(" ")
+      .toLowerCase()
+      .includes(normalized),
+  );
+  return (
+    <div className="graph-modal-backdrop" onMouseDown={onCancel}>
+      <section className="graph-node-picker" role="dialog" aria-modal="true" aria-label="连接并创建节点" onMouseDown={(event) => event.stopPropagation()}>
+        <header><h2>连接并创建节点</h2><button type="button" className="secondary" onClick={onCancel}>关闭</button></header>
+        <input autoFocus placeholder="搜索兼容的节点或端口…" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <div className="graph-node-type-list">
+          {filtered.map((option) => (
+            <button
+              key={`${option.nodeType.id}:${option.port.id}`}
+              type="button"
+              className="graph-node-type-option"
+              onClick={() => onSelect(option)}
+            >
+              <strong>{option.nodeType.title}</strong>
+              <span>{option.nodeType.menuPath?.join(" / ") || option.nodeType.category} · {option.port.title}</span>
+              <code>{option.nodeType.id} · {option.port.id}</code>
+            </button>
+          ))}
+          {filtered.length === 0 && <p className="graph-empty">没有兼容且可添加的节点端口。</p>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function NodeTypeMenu({
+  nodeTypes: menuNodeTypes,
+  onSelect,
+}: {
+  readonly nodeTypes: readonly NodeTypeDefinition[];
+  readonly onSelect: (nodeTypeId: string) => void;
+}): React.JSX.Element {
+  const roots = buildNodeTypeMenu(menuNodeTypes);
+  return <>{roots.map((branch) => <NodeTypeMenuBranchView key={branch.title} branch={branch} onSelect={onSelect} />)}</>;
+}
+
+interface NodeTypeMenuBranch {
+  readonly title: string;
+  readonly branches: readonly NodeTypeMenuBranch[];
+  readonly nodeTypes: readonly NodeTypeDefinition[];
+}
+
+function NodeTypeMenuBranchView({
+  branch,
+  onSelect,
+}: {
+  readonly branch: NodeTypeMenuBranch;
+  readonly onSelect: (nodeTypeId: string) => void;
+}): React.JSX.Element {
+  return (
+    <details className="graph-node-type-branch" open>
+      <summary>{branch.title}</summary>
+      <div>
+        {branch.branches.map((child) => <NodeTypeMenuBranchView key={child.title} branch={child} onSelect={onSelect} />)}
+        {branch.nodeTypes.map((nodeType) => <NodeTypeOption key={nodeType.id} nodeType={nodeType} onSelect={onSelect} />)}
+      </div>
+    </details>
+  );
+}
+
+function NodeTypeOption({
+  nodeType,
+  onSelect,
+}: {
+  readonly nodeType: NodeTypeDefinition;
+  readonly onSelect: (nodeTypeId: string) => void;
+}): React.JSX.Element {
+  return (
+    <button type="button" className="graph-node-type-option" onClick={() => onSelect(nodeType.id)}>
+      <strong>{nodeType.title}</strong>
+      <span>{nodeType.menuPath?.join(" / ") || nodeType.category}</span>
+      <code>{nodeType.id}</code>
+    </button>
+  );
+}
+
+function buildNodeTypeMenu(nodeTypes: readonly NodeTypeDefinition[]): readonly NodeTypeMenuBranch[] {
+  interface MutableBranch {
+    title: string;
+    branches: Map<string, MutableBranch>;
+    nodeTypes: NodeTypeDefinition[];
+  }
+  const root: MutableBranch = { title: "root", branches: new Map(), nodeTypes: [] };
+  nodeTypes.forEach((nodeType) => {
+    const path = nodeType.menuPath?.length ? nodeType.menuPath : [nodeType.category || "Other"];
+    let current = root;
+    path.forEach((segment) => {
+      let branch = current.branches.get(segment);
+      if (branch === undefined) {
+        branch = { title: segment, branches: new Map(), nodeTypes: [] };
+        current.branches.set(segment, branch);
+      }
+      current = branch;
+    });
+    current.nodeTypes.push(nodeType);
+  });
+  const freeze = (branch: MutableBranch): NodeTypeMenuBranch => ({
+    title: branch.title,
+    branches: [...branch.branches.values()].sort((left, right) => left.title.localeCompare(right.title)).map(freeze),
+    nodeTypes: [...branch.nodeTypes].sort((left, right) => left.title.localeCompare(right.title)),
+  });
+  return [...root.branches.values()].sort((left, right) => left.title.localeCompare(right.title)).map(freeze);
 }
 
 function SubgraphTypePicker({
@@ -1793,11 +2215,12 @@ function toFlowNodes(
         ...(nodeType === undefined ? {} : { nodeType }),
         ports: portsForNode(document, graph, node, nodeType),
         typeTitle: nodeType?.title ?? (node.kind === "subgraph" ? "Embedded Subgraph" : `Unknown · ${node.nodeTypeId}`),
+        overriddenPropertyIds: overriddenNodeProperties(graph, node, nodeType),
         commitNode,
         commitOperations,
         reportStatus,
       },
-      selected: selected?.kind === "node" && selected.id === node.id,
+      selected: selected?.nodeIds.includes(node.id) ?? false,
     };
   });
   const inputs = graph.interfacePorts.filter((port) => port.direction === "input");
@@ -1842,7 +2265,7 @@ function toFlowEdge(
     data: { model: edge },
     className: `graph-edge-${edge.kind}`,
     markerEnd: { type: MarkerType.ArrowClosed },
-    selected: selected?.kind === "edge" && selected.id === edge.id,
+    selected: selected?.edgeIds.includes(edge.id) ?? false,
   };
 }
 
@@ -1920,6 +2343,35 @@ function typedNodePorts(
   ];
 }
 
+function overriddenNodeProperties(
+  graph: GraphDefinition,
+  node: GraphNodeModel,
+  nodeType: NodeTypeDefinition | undefined,
+): ReadonlySet<string> {
+  const result = new Set<string>();
+  if (nodeType === undefined) {
+    return result;
+  }
+  graph.edges.forEach((edge) => {
+    if (edge.kind !== "data" || edge.target.kind !== "node" || edge.target.nodeId !== node.id) {
+      return;
+    }
+    const port = nodeType.ports.find(
+      (candidate) => candidate.id === edge.target.portId || (candidate.aliases?.includes(edge.target.portId) ?? false),
+    );
+    if (port?.direction !== "input") {
+      return;
+    }
+    const portIds = new Set([port.id, ...(port.aliases ?? [])]);
+    nodeType.properties.forEach((property) => {
+      if ([property.id, ...(property.aliases ?? [])].some((propertyId) => portIds.has(propertyId))) {
+        result.add(property.id);
+      }
+    });
+  });
+  return result;
+}
+
 function resolveDynamicPortGroupDefinition(
   nodeType: NodeTypeDefinition,
   groupId: string,
@@ -1960,13 +2412,24 @@ function toGraphEndpoint(canvasNodeId: string, portId: string): GraphEndpoint {
 }
 
 function keepValidSelection(selection: Selection | undefined, graph: GraphDefinition): Selection | undefined {
-  if (selection?.kind === "node" && graph.nodes.some((node) => node.id === selection.id)) {
-    return selection;
+  if (selection === undefined) {
+    return undefined;
   }
-  if (selection?.kind === "edge" && graph.edges.some((edge) => edge.id === selection.id)) {
-    return selection;
+  const nodeIds = selection.nodeIds.filter((nodeId) => graph.nodes.some((node) => node.id === nodeId));
+  const edgeIds = selection.edgeIds.filter((edgeId) => graph.edges.some((edge) => edge.id === edgeId));
+  return nodeIds.length === 0 && edgeIds.length === 0 ? undefined : { nodeIds, edgeIds };
+}
+
+function selectionsEqual(left: Selection | undefined, right: Selection | undefined): boolean {
+  if (left === right) {
+    return true;
   }
-  return undefined;
+  return left !== undefined
+    && right !== undefined
+    && left.nodeIds.length === right.nodeIds.length
+    && left.edgeIds.length === right.edgeIds.length
+    && left.nodeIds.every((id, index) => id === right.nodeIds[index])
+    && left.edgeIds.every((id, index) => id === right.edgeIds[index]);
 }
 
 function findGraphPath(document: GraphDocument, targetGraphId: string): readonly GraphDefinition[] {
@@ -1997,6 +2460,97 @@ function createDefaultProperties(nodeType: NodeTypeDefinition): Readonly<Record<
   return Object.fromEntries(nodeType.properties.flatMap((property) =>
     property.defaultValue === undefined ? [] : [[property.id, cloneJsonValue(property.defaultValue)]],
   ));
+}
+
+function parseGraphClipboardPayload(text: string): GraphClipboardPayload | undefined {
+  if (text.length === 0 || text.length > 2_000_000) {
+    return undefined;
+  }
+  try {
+    const value = JSON.parse(text) as unknown;
+    if (
+      !isRecordValue(value)
+      || value.format !== "visualbridge.graph-clipboard"
+      || value.version !== 1
+      || !Array.isArray(value.nodes)
+      || value.nodes.length === 0
+      || !value.nodes.every(isClipboardAtomicNode)
+      || !Array.isArray(value.edges)
+      || !value.edges.every(isClipboardEdge)
+    ) {
+      return undefined;
+    }
+    const nodeIds = new Set(value.nodes.map((node) => node.id));
+    if (nodeIds.size !== value.nodes.length || value.edges.some((edge) =>
+      !nodeIds.has(edge.source.nodeId) || !nodeIds.has(edge.target.nodeId),
+    )) {
+      return undefined;
+    }
+    return {
+      format: "visualbridge.graph-clipboard",
+      version: 1,
+      nodes: value.nodes.map(cloneGraphAtomicNode),
+      edges: value.edges.map(cloneGraphEdge),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function isClipboardAtomicNode(value: unknown): value is GraphAtomicNode {
+  return isRecordValue(value)
+    && value.kind === "node"
+    && isIdentifierValue(value.id)
+    && isIdentifierValue(value.nodeTypeId)
+    && typeof value.title === "string"
+    && isRecordValue(value.position)
+    && typeof value.position.x === "number"
+    && Number.isFinite(value.position.x)
+    && typeof value.position.y === "number"
+    && Number.isFinite(value.position.y)
+    && isJsonObject(value.properties)
+    && Array.isArray(value.dynamicPorts)
+    && value.dynamicPorts.every((port) =>
+      isRecordValue(port)
+      && isIdentifierValue(port.id)
+      && isIdentifierValue(port.groupId)
+      && typeof port.title === "string"
+      && isJsonValue(port.value),
+    );
+}
+
+function isClipboardEdge(value: unknown): value is GraphEdgeModel & {
+  readonly source: GraphNodeEndpoint;
+  readonly target: GraphNodeEndpoint;
+} {
+  return isRecordValue(value)
+    && isIdentifierValue(value.id)
+    && (value.kind === "flow" || value.kind === "data")
+    && isClipboardNodeEndpoint(value.source)
+    && isClipboardNodeEndpoint(value.target);
+}
+
+function isClipboardNodeEndpoint(value: unknown): value is GraphNodeEndpoint {
+  return isRecordValue(value)
+    && value.kind === "node"
+    && isIdentifierValue(value.nodeId)
+    && isIdentifierValue(value.portId);
+}
+
+function isIdentifierValue(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function cloneGraphAtomicNode(node: GraphAtomicNode): GraphAtomicNode {
+  return JSON.parse(JSON.stringify(node)) as GraphAtomicNode;
+}
+
+function cloneGraphEdge(edge: GraphEdgeModel): GraphEdgeModel {
+  return JSON.parse(JSON.stringify(edge)) as GraphEdgeModel;
 }
 
 function createDefaultGraphProperties(graphType: GraphTypeDefinition): Readonly<Record<string, JsonValue>> {
@@ -2032,6 +2586,9 @@ function isNodeTypeAvailable(
   if ((flavor === "atomic") === (nodeType.subgraph !== undefined)) {
     return false;
   }
+  if (nodeType.properties.some((property) => property.required && property.defaultValue === undefined)) {
+    return false;
+  }
   const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(catalog, graph.graphTypeId);
   if (
     graphType?.allowedNodeSelectors !== undefined
@@ -2049,6 +2606,100 @@ function isNodeTypeAvailable(
     }).length;
     return count < constraint.maxInstances;
   }) ?? true;
+}
+
+function isNodeTypeRequiredByGraph(
+  graph: GraphDefinition,
+  nodeType: NodeTypeDefinition,
+  catalog: GraphCatalog,
+): boolean {
+  const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(catalog, graph.graphTypeId);
+  return graphType?.nodeConstraints.some((constraint) =>
+    (constraint.minInstances ?? 0) > 0
+    && constraint.maxInstances === 1
+    && matchesNodeSelectorDefinition(nodeType, constraint.selector),
+  ) ?? false;
+}
+
+function getConnectionNodeOptions(
+  graph: GraphDefinition,
+  catalog: GraphCatalog,
+  fromPort: PortDefinition,
+  fromRole: "source" | "target",
+): readonly ConnectionNodeOption[] {
+  const requiredDirection: PortDirection = fromRole === "source" ? "input" : "output";
+  return catalog.nodeTypes.flatMap((nodeType) => {
+    if (!isNodeTypeAvailable(graph, nodeType, catalog, "atomic")) {
+      return [];
+    }
+    return nodeType.ports.flatMap((port) => {
+      if (port.direction !== requiredDirection || port.kind !== fromPort.kind) {
+        return [];
+      }
+      const sourcePort = fromRole === "source" ? fromPort : port;
+      const targetPort = fromRole === "source" ? port : fromPort;
+      return arePortsCompatible(catalog, sourcePort, targetPort) ? [{ nodeType, port }] : [];
+    });
+  }).sort((left, right) =>
+    left.nodeType.title.localeCompare(right.nodeType.title)
+    || left.port.title.localeCompare(right.port.title),
+  );
+}
+
+function arePortsCompatible(
+  catalog: GraphCatalog,
+  sourcePort: PortDefinition,
+  targetPort: PortDefinition,
+): boolean {
+  if (sourcePort.kind !== targetPort.kind || sourcePort.direction !== "output" || targetPort.direction !== "input") {
+    return false;
+  }
+  if (sourcePort.kind !== "data" || sourcePort.dataTypeId === undefined || targetPort.dataTypeId === undefined) {
+    return true;
+  }
+  if (
+    sourcePort.dataTypeId === targetPort.dataTypeId
+    || sourcePort.dataTypeId === "any"
+    || targetPort.dataTypeId === "any"
+  ) {
+    return true;
+  }
+  return catalog.dataTypes
+    .find((dataType) => dataType.id === targetPort.dataTypeId)
+    ?.accepts.includes(sourcePort.dataTypeId) ?? false;
+}
+
+function countCanvasPortConnections(
+  graph: GraphDefinition,
+  catalog: GraphCatalog,
+  canvasNodeId: string,
+  portId: string,
+  role: "source" | "target",
+): number {
+  const requestedEndpoint = toGraphEndpoint(canvasNodeId, portId);
+  const canonicalPortId = canonicalCanvasPortId(requestedEndpoint, graph, catalog);
+  return graph.edges.filter((edge) => {
+    const endpoint = role === "source" ? edge.source : edge.target;
+    if (endpoint.kind !== requestedEndpoint.kind) {
+      return false;
+    }
+    if (
+      endpoint.kind === "node"
+      && requestedEndpoint.kind === "node"
+      && endpoint.nodeId !== requestedEndpoint.nodeId
+    ) {
+      return false;
+    }
+    return canonicalCanvasPortId(endpoint, graph, catalog) === canonicalPortId;
+  }).length;
+}
+
+function eventClientPosition(event: MouseEvent | TouchEvent): GraphPosition | undefined {
+  if (event instanceof MouseEvent) {
+    return { x: event.clientX, y: event.clientY };
+  }
+  const touch = event.changedTouches.item(0) ?? event.touches.item(0);
+  return touch === null ? undefined : { x: touch.clientX, y: touch.clientY };
 }
 
 function getSubgraphOptions(

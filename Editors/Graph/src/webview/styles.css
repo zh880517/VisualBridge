@@ -315,6 +315,14 @@ button:disabled {
   justify-self: start;
 }
 
+.graph-node-property.overridden {
+  opacity: 0.68;
+}
+
+.graph-node-property.overridden > span {
+  color: var(--vscode-inputValidation-infoForeground, var(--vscode-descriptionForeground));
+}
+
 .graph-node-properties-json summary {
   color: var(--vscode-textLink-foreground);
   font-size: 10px;
@@ -426,11 +434,16 @@ button:disabled {
   position: relative;
   min-height: 20px;
   padding: 2px 12px;
-  overflow: hidden;
+  overflow: visible;
   color: var(--vscode-foreground);
   font-size: 11px;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.graph-port > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .graph-port.data {
@@ -447,6 +460,7 @@ button:disabled {
 }
 
 .react-flow__handle.graph-handle {
+  z-index: 2;
   width: 15px;
   min-width: 15px;
   height: 15px;
@@ -690,6 +704,23 @@ button:disabled {
   gap: 6px;
   min-height: 120px;
   overflow: auto;
+}
+
+.graph-node-type-branch {
+  border-left: 1px solid var(--vscode-tree-indentGuidesStroke, var(--vscode-panel-border));
+}
+
+.graph-node-type-branch > summary {
+  padding: 5px 8px;
+  color: var(--vscode-sideBarSectionHeader-foreground, var(--vscode-foreground));
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.graph-node-type-branch > div {
+  display: grid;
+  gap: 5px;
+  padding-left: 12px;
 }
 
 button.graph-node-type-option {

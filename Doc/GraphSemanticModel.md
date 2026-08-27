@@ -56,6 +56,8 @@ Every port declares a stable ID, label, kind, direction, optional data type, and
 
 Data compatibility is deterministic. Identical types, `any`, and target types that explicitly list the source in `accepts` are compatible. VisualBridge does not insert implicit conversion nodes.
 
+The editor may use a connection as a node-creation gesture. Dropping an unfinished edge on empty canvas space filters new atomic-node ports with the same semantic rules, then commits `graph.addNode` and `graph.addEdge` together. Data inputs retain their serialized literal as a fallback while connected; the node UI marks that field as overridden and restores editing when the edge is removed.
+
 ## Graph Catalog
 
 A Graph document type declares a project-relative `.vbgraphcatalog` file:
@@ -114,3 +116,9 @@ Node type is display-only on the canvas. Replacement is available from the node 
 - the target type is allowed by the current Graph Type and the replacement preserves every node-count constraint.
 
 `graph.replaceNodeType` changes only the stable type contract and adds deterministic defaults. It preserves node ID, title, position, properties, and connections and is committed as one VS Code Undo/Redo unit. VisualBridge never silently drops properties or disconnects edges during replacement.
+
+## Editing transactions and transient state
+
+Multi-selection, viewport, MiniMap position, menus, and clipboard contents are editor state and are never serialized into `.vbgraph`. Batch delete, Paste, Duplicate, and connection-created nodes are submitted as ordered Graph Operation batches and receive one final semantic validation before the host creates a single `WorkspaceEdit`; therefore VS Code Undo/Redo treats each gesture as one document edit.
+
+The clipboard V1 payload contains selected atomic nodes and only edges whose two endpoints are in that copied set. Paste assigns fresh stable IDs and remaps its internal endpoints. Singleton nodes required by a Graph Type and embedded subgraphs are excluded until a future payload can preserve ownership and required-instance semantics without ambiguity. Clipboard input is treated as untrusted and rejected unless its format, version, identifiers, JSON values, nodes, and edges are structurally valid.

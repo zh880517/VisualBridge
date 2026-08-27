@@ -104,17 +104,21 @@ The catalog path is relative to the marker. Without a valid catalog, existing un
 ## Editing behavior
 
 - New documents select a root-compatible Graph Type; a single candidate is selected automatically. Initial node templates make required entries available immediately.
-- Add nodes from the current Graph Type's searchable, allowed catalog types. Types at a count maximum and typed-subgraph call types are excluded from the atomic-node picker.
+- Add nodes from the current Graph Type's searchable, allowed catalog types. The picker groups types by `menuPath`; search spans names, IDs, categories, paths, tags, and traits. Types at a count maximum, typed-subgraph call types, and types whose required fields lack deterministic defaults are excluded from the atomic-node picker.
+- Drop an unfinished connection on empty canvas space to open a filtered list of compatible node ports. Choosing one atomically creates the node and edge at the drop position; kind, direction, data assignability, connection limits, allowed selectors, and count constraints are respected.
 - Add typed embedded subgraphs by selecting a compatible call-node type and target Graph Type. The call node renders its static fields/data ports together with the child graph's public interfaces.
 - Render declared flow and data ports; flow edges are solid and data edges are dashed.
 - Permit connection cycles. Data edges never determine execution order.
 - Double-click a subgraph to enter it and use the breadcrumb to return.
 - Add, rename, and remove public subgraph interfaces. Removing an interface also removes its internal and parent connections.
-- Edit node titles and catalog-defined fields directly on each node. Catalog hints provide text, multiline, number/range, checkbox, select, JSON, reference, and read-only presentations. Advanced JSON editing remains available inside the node for unknown or additional fields.
+- Edit node titles and catalog-defined fields directly on each node. Catalog hints provide text, multiline, number/range, checkbox, select, JSON, reference, and read-only presentations. When a data input is connected, its literal field value is retained but shown read-only and marked `已连接`; disconnecting restores that fallback value. Advanced JSON editing remains available inside the node for unknown or additional fields.
 - Add, edit, reorder, and remove instance-level dynamic ports directly on a node. Reordering preserves endpoint IDs; deleting a port removes its related edges in the same operation.
 - Edit the current Graph's title, Graph Type-defined fields, advanced JSON properties, and public interfaces in a Graph-only Inspector that can collapse to the right edge. Assigned Graph Type is read-only.
 - Keep node type display-only; it is never edited as a text field.
-- Right-click an atomic or typed-subgraph node to replace its type. Only same-kind, lossless candidates that preserve Graph Type constraints are offered.
+- Multi-select nodes and edges using React Flow selection gestures, then delete them as one Graph Operation batch. Final semantic validation prevents deleting required Graph Type nodes.
+- Copy, Paste, and Duplicate selected atomic nodes together with edges whose endpoints are both selected. Pasted instances receive fresh node and edge IDs. Singleton required nodes and embedded subgraphs are intentionally excluded from the V1 clipboard payload.
+- Right-click an atomic or typed-subgraph node to select every node of the same canonical type or replace its type. Only same-kind, lossless replacement candidates that preserve Graph Type constraints are offered.
+- Use the MiniMap for large-graph navigation. Viewport, selection, open menus, and clipboard state remain transient editor state.
 - Show structural and semantic diagnostics in the Webview and VS Code Problems.
 
 Every persistent action is a Graph Operation applied through `WorkspaceEdit`, retaining VS Code dirty state and Undo/Redo. Node drag emits one operation when the drag ends. External disk changes still require overwrite or discard-and-refresh confirmation.
