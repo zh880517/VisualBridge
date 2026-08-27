@@ -253,19 +253,22 @@ DocumentType
 
 对话、任务、行为树和时间轴等文档在核心稳定后增加。
 
-### Graph Document V1
+### Graph Document V2
 
-首个落地的 Graph Document 使用 `.vbgraph` JSON 文本格式，只定义不依赖业务规则的通用结构：
+当前落地的 Graph Document 使用 `.vbgraph` JSON 文本格式，并通过 Graph Catalog 提供语义规则：
 
-- 顶层包含 `formatVersion`、`documentId`、`nodes` 和 `edges`。
-- Node 包含稳定 ID、类型、标题、二维位置和自由 JSON 属性。
-- Edge 包含稳定 ID，并通过 Node ID 与 Port ID 表达来源和目标。
-- 首版编辑器为每个 Node 提供固定的 `input` 和 `output` 通用端口。
+- 顶层包含 `formatVersion`、`documentId`、`rootGraphId` 和平铺的 `graphs` 集合。
+- 每个 Graph 自身包含稳定 ID、显示名称、JSON 属性和公开接口；右侧 Graph Inspector 只编辑当前 Graph，并可折叠到画布侧边。
+- 一个文件拥有根图及其内嵌子图；子图节点以稳定 `subgraphId` 独占另一个 Graph，包含关系不得递归成环。
+- Node、Node Type、Port、Property、Graph 和 Graph Interface 均使用独立于显示名称与实现类名的稳定 ID。
+- Edge 显式区分 `flow` 与 `data`。流程边决定执行顺序并允许环路；数据边只传值，不决定执行顺序。
+- Graph Catalog 定义节点类型、端口方向、连接种类、数据类型、连接数量、属性、默认值和旧类型别名。
+- 子图通过稳定公开接口与父图连接；跨图连接不能绕过接口直接指向内部节点。
 - Graph Webview 使用 React 与 React Flow 的受控模式实现画布交互；React Flow 状态仅作为视图状态，不作为文档格式或权威数据源。
-- Parser 拒绝未知结构，Serializer 对节点、连线和属性键进行确定性排序。
-- Core Operation 覆盖新增、删除、移动、修改节点，以及新增和删除连线。
+- Parser 拒绝未知结构，Serializer 对 Graph、节点、连线、接口和属性键进行确定性排序；找不到 Catalog 节点类型时仍保留全部原始节点数据。
+- Core Operation 覆盖 Graph、节点、内嵌子图、公开接口、连线和安全节点类型替换。
 
-Graph V1 只校验格式、ID 唯一性和连线引用完整性，不预设节点类型、端口兼容、环路、连接数量和业务属性规则。这些约束在后续通过 Document Type Validator 和 Catalog 加入，不修改基础 Operation 通信模型。当前实现范围只包含离线编辑，不连接 Unity。
+节点标题与 Catalog 字段直接在画布节点上编辑，节点类型只展示不可直接改写。用户通过节点右键菜单请求替换，Core 仅接受不会丢失属性或连线的候选，并以一个 Operation 完成替换。完整落地契约见 `GraphSemanticModel.md`。当前实现范围仍只包含离线编辑，不连接 Unity。
 
 ### Table 与 Excel
 
@@ -299,7 +302,7 @@ AI 不直接读取或改写 `.xlsx` 和 `.csv` 载体。即使 `.csv` 在物理�
 基础插件提供有限但高复用的编辑器原语：
 
 - Graph Canvas。
-- Form Inspector。
+- 可折叠 Graph Inspector，以及节点内联字段编辑。
 - Table Editor。
 - Reference Picker。
 - Object、Collection 和 Dictionary Editor。
@@ -780,7 +783,7 @@ VisualBridge/
 ### 阶段二：VS Code 编辑闭环
 
 - 注册 Custom Text Editor。
-- 实现 Graph Canvas 和 Form Inspector 的最小能力。
+- 实现 Graph Canvas、节点内联字段和可折叠 Graph Inspector 的最小能力。
 - 通过 `WorkspaceEdit` 完成文本 Document 的保存和 Undo/Redo，并实现外部变更检测、覆盖确认与放弃刷新。
 - 建立 Project Tree、Problems 和状态栏。
 

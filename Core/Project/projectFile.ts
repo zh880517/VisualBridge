@@ -7,6 +7,7 @@ export interface DocumentTypeDefinition {
   readonly editor: string;
   readonly include: readonly string[];
   readonly exclude: readonly string[];
+  readonly catalog?: string;
 }
 
 export interface VisualBridgeProjectDefinition {
@@ -91,6 +92,9 @@ function readDocumentTypes(
     const exclude = entry.exclude === undefined
       ? []
       : readGlobPatterns(entry.exclude, `${basePath}.exclude`, issues, true);
+    const catalog = entry.catalog === undefined
+      ? undefined
+      : readRelativePath(entry.catalog, `${basePath}.catalog`, issues);
 
     if (id !== undefined && seenIds.has(id)) {
       issues.push({ path: `${basePath}.id`, message: `Duplicate document type id '${id}'.` });
@@ -98,7 +102,7 @@ function readDocumentTypes(
 
     if (id !== undefined && editor !== undefined) {
       seenIds.add(id);
-      documentTypes.push({ id, editor, include, exclude });
+      documentTypes.push({ id, editor, include, exclude, ...(catalog === undefined ? {} : { catalog }) });
     }
   });
 
@@ -153,6 +157,21 @@ function readRelativePaths(
   });
 
   return result;
+}
+
+function readRelativePath(
+  value: unknown,
+  path: string,
+  issues: ProjectFileIssue[],
+): string | undefined {
+  if (typeof value !== "string" || !isSafeRelativePath(value)) {
+    issues.push({
+      path,
+      message: "Expected a normalized relative path that stays inside the project root.",
+    });
+    return undefined;
+  }
+  return normalizeRelativePath(value);
 }
 
 function readGlobPatterns(

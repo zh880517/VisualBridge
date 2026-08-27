@@ -7,6 +7,7 @@ const repositoryRoot = path.resolve(scriptDirectory, "../../..");
 const schemaNames = [
   "visualbridge-project.schema.json",
   "visualbridge-graph.schema.json",
+  "visualbridge-graph-catalog.schema.json",
 ];
 const destinationDirectory = path.join(scriptDirectory, "..", "dist", "schemas");
 

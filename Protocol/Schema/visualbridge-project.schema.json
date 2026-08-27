@@ -59,6 +59,11 @@
               "minLength": 1
             },
             "default": []
+          },
+          "catalog": {
+            "type": "string",
+            "description": "Project-relative Graph Catalog path for this document type.",
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
           }
         },
         "additionalProperties": true

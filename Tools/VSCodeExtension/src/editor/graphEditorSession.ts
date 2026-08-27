@@ -3,8 +3,13 @@ import * as vscode from "vscode";
 import type { DocumentDiagnostic } from "@visualbridge/core";
 import {
   applyGraphOperations,
+  createEmptyGraphCatalog,
+  getReplacementCandidates,
   parseGraphDocument,
+  parseGraphCatalog,
   serializeGraphDocument,
+  validateGraphDocument,
+  type GraphCatalog,
 } from "@visualbridge/graph";
 import { createGraphEditorHtml } from "@visualbridge/graph-editor";
 import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
@@ -16,6 +21,8 @@ interface WebviewMessage {
   readonly type?: unknown;
   readonly documentVersion?: unknown;
   readonly operations?: unknown;
+  readonly graphId?: unknown;
+  readonly nodeId?: unknown;
 }
 
 export class GraphEditorSession {
@@ -57,6 +64,21 @@ export class GraphEditorSession {
       },
     });
 
+    const catalogUri = this.getCatalogUri();
+    if (catalogUri !== undefined) {
+      const relativePattern = new vscode.RelativePattern(
+        this.match.project.rootUri,
+        this.match.documentType.catalog ?? "",
+      );
+      const catalogWatcher = vscode.workspace.createFileSystemWatcher(relativePattern);
+      this.disposables.push(
+        catalogWatcher,
+        catalogWatcher.onDidCreate(() => void this.sendState()),
+        catalogWatcher.onDidChange(() => void this.sendState()),
+        catalogWatcher.onDidDelete(() => void this.sendState()),
+      );
+    }
+
     this.disposables.push(
       this.panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
         this.operationQueue = this.operationQueue
@@ -72,6 +94,8 @@ export class GraphEditorSession {
           if (!event.document.isDirty) {
             void this.updateDiskBaseline();
           }
+        } else if (catalogUri !== undefined && sameUri(event.document.uri, catalogUri)) {
+          void this.sendState();
         }
       }),
       vscode.workspace.onDidSaveTextDocument((savedDocument) => {
@@ -99,6 +123,10 @@ export class GraphEditorSession {
       await this.sendState();
       return;
     }
+    if (message.type === "requestReplacementCandidates") {
+      await this.sendReplacementCandidates(message);
+      return;
+    }
     if (message.type !== "applyOperations") {
       return;
     }
@@ -119,9 +147,10 @@ export class GraphEditorSession {
       return;
     }
 
-    const operationResult = applyGraphOperations(parseResult.document, message.operations);
+    const catalogResult = await this.loadCatalog();
+    const operationResult = applyGraphOperations(parseResult.document, message.operations, catalogResult.catalog);
     if (!operationResult.success) {
-      this.updateDiagnostics(operationResult.diagnostics);
+      this.updateDiagnostics([...catalogResult.diagnostics, ...operationResult.diagnostics]);
       await this.rejectOperation(formatDiagnostics(operationResult.diagnostics));
       return;
     }
@@ -213,12 +242,102 @@ export class GraphEditorSession {
       await this.sendInvalid(result.diagnostics);
       return;
     }
+    const catalogResult = await this.loadCatalog();
+    const diagnostics = [
+      ...result.diagnostics,
+      ...catalogResult.diagnostics,
+      ...validateGraphDocument(result.document, catalogResult.catalog),
+    ];
+    this.updateDiagnostics(diagnostics);
     await this.panel.webview.postMessage({
       type: "graphState",
       documentVersion: this.document.version,
       document: result.document,
-      diagnostics: result.diagnostics,
+      catalog: catalogResult.catalog,
+      diagnostics,
     });
+  }
+
+  private async sendReplacementCandidates(message: WebviewMessage): Promise<void> {
+    if (
+      typeof message.documentVersion !== "number"
+      || message.documentVersion !== this.document.version
+      || typeof message.graphId !== "string"
+      || typeof message.nodeId !== "string"
+    ) {
+      await this.sendState();
+      return;
+    }
+    const parseResult = parseGraphDocument(this.document.getText());
+    if (!parseResult.success) {
+      await this.sendInvalid(parseResult.diagnostics);
+      return;
+    }
+    const catalogResult = await this.loadCatalog();
+    await this.panel.webview.postMessage({
+      type: "replacementCandidates",
+      documentVersion: this.document.version,
+      graphId: message.graphId,
+      nodeId: message.nodeId,
+      nodeTypeIds: getReplacementCandidates(
+        parseResult.document,
+        message.graphId,
+        message.nodeId,
+        catalogResult.catalog,
+      ).map((nodeType) => nodeType.id),
+    });
+  }
+
+  private getCatalogUri(): vscode.Uri | undefined {
+    const catalogPath = this.match.documentType.catalog;
+    return catalogPath === undefined
+      ? undefined
+      : vscode.Uri.joinPath(this.match.project.rootUri, ...catalogPath.split("/"));
+  }
+
+  private async loadCatalog(): Promise<{
+    readonly catalog: GraphCatalog;
+    readonly diagnostics: readonly DocumentDiagnostic[];
+  }> {
+    const catalogUri = this.getCatalogUri();
+    if (catalogUri === undefined) {
+      return {
+        catalog: createEmptyGraphCatalog("unconfigured"),
+        diagnostics: [{
+          severity: "warning",
+          code: "graph.catalogNotConfigured",
+          path: "catalog",
+          message: "The Graph document type does not declare a catalog.",
+        }],
+      };
+    }
+    try {
+      const openDocument = vscode.workspace.textDocuments.find((candidate) => sameUri(candidate.uri, catalogUri));
+      const text = openDocument?.getText() ?? new TextDecoder("utf-8", { fatal: true }).decode(
+        await vscode.workspace.fs.readFile(catalogUri),
+      );
+      const result = parseGraphCatalog(text);
+      if (!result.success) {
+        return {
+          catalog: createEmptyGraphCatalog("invalid"),
+          diagnostics: result.diagnostics.map((diagnostic) => ({
+            ...diagnostic,
+            path: `catalog.${diagnostic.path}`,
+          })),
+        };
+      }
+      return { catalog: result.document, diagnostics: result.diagnostics };
+    } catch (errorValue) {
+      return {
+        catalog: createEmptyGraphCatalog("missing"),
+        diagnostics: [{
+          severity: "error",
+          code: "graph.catalogUnavailable",
+          path: "catalog",
+          message: `Unable to load '${this.match.documentType.catalog}': ${formatError(errorValue)}`,
+        }],
+      };
+    }
   }
 
   private async sendInvalid(diagnostics: readonly DocumentDiagnostic[]): Promise<void> {

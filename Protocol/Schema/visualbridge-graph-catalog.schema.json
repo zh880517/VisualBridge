@@ -1,0 +1,266 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://visualbridge.dev/schema/visualbridge-graph-catalog.schema.json",
+  "title": "VisualBridge Graph Catalog",
+  "type": "object",
+  "required": ["formatVersion", "catalogId", "dataTypes", "nodeTypes"],
+  "properties": {
+    "formatVersion": { "const": 1 },
+    "catalogId": { "$ref": "#/$defs/identifier" },
+    "dataTypes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title"],
+        "properties": {
+          "id": { "$ref": "#/$defs/identifier" },
+          "title": { "type": "string" },
+          "accepts": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/identifier" },
+            "default": []
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "nodeTypes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nodeType" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "port": {
+      "type": "object",
+      "required": ["id", "title", "kind", "direction"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "aliases": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "default": []
+        },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "kind": { "enum": ["flow", "data"] },
+        "direction": { "enum": ["input", "output"] },
+        "dataTypeId": { "$ref": "#/$defs/identifier" },
+        "maxConnections": { "type": "integer", "minimum": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "data" } } },
+          "then": { "required": ["dataTypeId"] },
+          "else": { "not": { "required": ["dataTypeId"] } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "property": {
+      "type": "object",
+      "required": ["id", "title", "valueType"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "aliases": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "default": []
+        },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "valueType": { "enum": ["string", "number", "boolean", "json"] },
+        "dataTypeId": { "$ref": "#/$defs/identifier" },
+        "required": { "type": "boolean", "default": false },
+        "defaultValue": {},
+        "editor": { "$ref": "#/$defs/propertyEditor" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "valueType": { "const": "string" } }, "required": ["valueType"] },
+          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["text", "multiline", "reference", "select"] } } } } }
+        },
+        {
+          "if": { "properties": { "valueType": { "const": "number" } }, "required": ["valueType"] },
+          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["number", "select"] } } } } }
+        },
+        {
+          "if": { "properties": { "valueType": { "const": "boolean" } }, "required": ["valueType"] },
+          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["checkbox", "select"] } } } } }
+        },
+        {
+          "if": { "properties": { "valueType": { "const": "json" } }, "required": ["valueType"] },
+          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["json", "select"] } } } } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "propertyEditorOption": {
+      "type": "object",
+      "required": ["title", "value"],
+      "properties": {
+        "title": { "type": "string" },
+        "value": {}
+      },
+      "additionalProperties": false
+    },
+    "propertyEditor": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["text", "multiline", "number", "checkbox", "select", "json", "reference"] },
+        "readOnly": { "type": "boolean", "default": false },
+        "min": { "type": "number" },
+        "max": { "type": "number" },
+        "options": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/propertyEditorOption" },
+          "default": []
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "select" } }, "required": ["kind"] },
+          "then": { "required": ["options"], "properties": { "options": { "minItems": 1 } } },
+          "else": { "properties": { "options": { "maxItems": 0 } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "number" } }, "required": ["kind"] },
+          "else": {
+            "not": {
+              "anyOf": [
+                { "required": ["min"] },
+                { "required": ["max"] }
+              ]
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "dynamicPortTemplate": {
+      "type": "object",
+      "required": ["kind", "direction"],
+      "properties": {
+        "kind": { "enum": ["flow", "data"] },
+        "direction": { "enum": ["input", "output"] },
+        "dataTypeId": { "$ref": "#/$defs/identifier" },
+        "maxConnections": { "type": "integer", "minimum": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "data" } }, "required": ["kind"] },
+          "then": { "required": ["dataTypeId"] },
+          "else": { "not": { "required": ["dataTypeId"] } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "dynamicPortItem": {
+      "type": "object",
+      "required": ["valueType", "defaultValue"],
+      "properties": {
+        "valueType": { "enum": ["string", "number", "boolean", "json"] },
+        "dataTypeId": { "$ref": "#/$defs/identifier" },
+        "defaultValue": {},
+        "editor": { "$ref": "#/$defs/propertyEditor" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "valueType": { "const": "string" } }, "required": ["valueType"] },
+          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["text", "multiline", "reference", "select"] } } } } }
+        },
+        {
+          "if": { "properties": { "valueType": { "const": "number" } }, "required": ["valueType"] },
+          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["number", "select"] } } } } }
+        },
+        {
+          "if": { "properties": { "valueType": { "const": "boolean" } }, "required": ["valueType"] },
+          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["checkbox", "select"] } } } } }
+        },
+        {
+          "if": { "properties": { "valueType": { "const": "json" } }, "required": ["valueType"] },
+          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["json", "select"] } } } } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "dynamicPortGroup": {
+      "type": "object",
+      "required": ["id", "title", "port", "item"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "aliases": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "default": []
+        },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "port": { "$ref": "#/$defs/dynamicPortTemplate" },
+        "item": { "$ref": "#/$defs/dynamicPortItem" },
+        "maxItems": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "nodeSource": {
+      "type": "object",
+      "required": ["providerId", "typeName"],
+      "properties": {
+        "providerId": { "$ref": "#/$defs/identifier" },
+        "assemblyName": { "type": "string" },
+        "typeName": { "type": "string", "minLength": 1 },
+        "wrapperTypeName": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "nodeType": {
+      "type": "object",
+      "required": ["id", "title", "category", "ports", "properties"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "aliases": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "default": []
+        },
+        "title": { "type": "string" },
+        "category": { "type": "string" },
+        "menuPath": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        },
+        "tags": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "default": []
+        },
+        "traits": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "default": []
+        },
+        "source": { "$ref": "#/$defs/nodeSource" },
+        "ports": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/port" }
+        },
+        "dynamicPortGroups": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dynamicPortGroup" },
+          "default": []
+        },
+        "properties": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/property" }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

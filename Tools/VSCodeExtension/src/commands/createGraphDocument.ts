@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import * as vscode from "vscode";
-import { GRAPH_EDITOR_ID, serializeGraphDocument } from "@visualbridge/graph";
+import { GRAPH_EDITOR_ID, createEmptyGraphDocument, serializeGraphDocument } from "@visualbridge/graph";
 import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
 import { DEFAULT_EDITOR_VIEW_TYPE } from "../editor/documentEditorProvider";
 
@@ -45,12 +45,10 @@ export async function createGraphDocument(projects: ProjectRegistry): Promise<vo
     return;
   }
 
-  const text = serializeGraphDocument({
-    formatVersion: 1,
-    documentId: `graph_${randomUUID()}`,
-    nodes: [],
-    edges: [],
-  });
+  const text = serializeGraphDocument(createEmptyGraphDocument(
+    `graph_${randomUUID()}`,
+    `root_${randomUUID()}`,
+  ));
   await vscode.workspace.fs.writeFile(target, new TextEncoder().encode(text));
   await vscode.commands.executeCommand("vscode.openWith", target, DEFAULT_EDITOR_VIEW_TYPE);
 }

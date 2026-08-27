@@ -3,74 +3,18 @@
   "$id": "https://visualbridge.dev/schema/visualbridge-graph.schema.json",
   "title": "VisualBridge Graph Document",
   "type": "object",
-  "required": [
-    "formatVersion",
-    "documentId",
-    "nodes",
-    "edges"
-  ],
+  "required": ["formatVersion", "documentId", "rootGraphId", "graphs"],
   "properties": {
-    "formatVersion": {
-      "const": 1
-    },
-    "documentId": {
-      "$ref": "#/$defs/identifier"
-    },
-    "nodes": {
+    "formatVersion": { "const": 2 },
+    "documentId": { "$ref": "#/$defs/identifier" },
+    "rootGraphId": { "$ref": "#/$defs/identifier" },
+    "graphs": {
       "type": "array",
-      "items": {
-        "type": "object",
-        "required": [
-          "id",
-          "type",
-          "title",
-          "position",
-          "properties"
-        ],
-        "properties": {
-          "id": {
-            "$ref": "#/$defs/identifier"
-          },
-          "type": {
-            "$ref": "#/$defs/identifier"
-          },
-          "title": {
-            "type": "string"
-          },
-          "position": {
-            "$ref": "#/$defs/position"
-          },
-          "properties": {
-            "type": "object"
-          }
-        },
-        "additionalProperties": false
-      }
-    },
-    "edges": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": [
-          "id",
-          "source",
-          "target"
-        ],
-        "properties": {
-          "id": {
-            "$ref": "#/$defs/identifier"
-          },
-          "source": {
-            "$ref": "#/$defs/endpoint"
-          },
-          "target": {
-            "$ref": "#/$defs/endpoint"
-          }
-        },
-        "additionalProperties": false
-      }
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/graph" }
     }
   },
+  "additionalProperties": false,
   "$defs": {
     "identifier": {
       "type": "string",
@@ -78,36 +22,140 @@
     },
     "position": {
       "type": "object",
-      "required": [
-        "x",
-        "y"
-      ],
+      "required": ["x", "y"],
       "properties": {
-        "x": {
-          "type": "number"
-        },
-        "y": {
-          "type": "number"
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+    "properties": {
+      "type": "object"
+    },
+    "interfacePort": {
+      "type": "object",
+      "required": ["id", "title", "kind", "direction"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "title": { "type": "string" },
+        "kind": { "enum": ["flow", "data"] },
+        "direction": { "enum": ["input", "output"] },
+        "dataTypeId": { "$ref": "#/$defs/identifier" },
+        "maxConnections": { "type": "integer", "minimum": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "data" } } },
+          "then": { "required": ["dataTypeId"] },
+          "else": { "not": { "required": ["dataTypeId"] } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "atomicNode": {
+      "type": "object",
+      "required": ["kind", "id", "nodeTypeId", "title", "position", "properties"],
+      "properties": {
+        "kind": { "const": "node" },
+        "id": { "$ref": "#/$defs/identifier" },
+        "nodeTypeId": { "$ref": "#/$defs/identifier" },
+        "title": { "type": "string" },
+        "position": { "$ref": "#/$defs/position" },
+        "properties": { "$ref": "#/$defs/properties" },
+        "dynamicPorts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dynamicPort" },
+          "default": []
         }
       },
       "additionalProperties": false
     },
-    "endpoint": {
+    "dynamicPort": {
       "type": "object",
-      "required": [
-        "nodeId",
-        "portId"
-      ],
+      "required": ["id", "groupId", "title", "value"],
       "properties": {
-        "nodeId": {
-          "$ref": "#/$defs/identifier"
+        "id": { "$ref": "#/$defs/identifier" },
+        "groupId": { "$ref": "#/$defs/identifier" },
+        "title": { "type": "string" },
+        "value": {}
+      },
+      "additionalProperties": false
+    },
+    "subgraphNode": {
+      "type": "object",
+      "required": ["kind", "id", "subgraphId", "title", "position", "properties"],
+      "properties": {
+        "kind": { "const": "subgraph" },
+        "id": { "$ref": "#/$defs/identifier" },
+        "subgraphId": { "$ref": "#/$defs/identifier" },
+        "title": { "type": "string" },
+        "position": { "$ref": "#/$defs/position" },
+        "properties": { "$ref": "#/$defs/properties" }
+      },
+      "additionalProperties": false
+    },
+    "nodeEndpoint": {
+      "type": "object",
+      "required": ["kind", "nodeId", "portId"],
+      "properties": {
+        "kind": { "const": "node" },
+        "nodeId": { "$ref": "#/$defs/identifier" },
+        "portId": { "$ref": "#/$defs/identifier" }
+      },
+      "additionalProperties": false
+    },
+    "interfaceEndpoint": {
+      "type": "object",
+      "required": ["kind", "portId"],
+      "properties": {
+        "kind": { "const": "interface" },
+        "portId": { "$ref": "#/$defs/identifier" }
+      },
+      "additionalProperties": false
+    },
+    "endpoint": {
+      "oneOf": [
+        { "$ref": "#/$defs/nodeEndpoint" },
+        { "$ref": "#/$defs/interfaceEndpoint" }
+      ]
+    },
+    "edge": {
+      "type": "object",
+      "required": ["id", "kind", "source", "target"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "kind": { "enum": ["flow", "data"] },
+        "source": { "$ref": "#/$defs/endpoint" },
+        "target": { "$ref": "#/$defs/endpoint" }
+      },
+      "additionalProperties": false
+    },
+    "graph": {
+      "type": "object",
+      "required": ["id", "title", "properties", "interfacePorts", "nodes", "edges"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "title": { "type": "string" },
+        "properties": { "$ref": "#/$defs/properties" },
+        "interfacePorts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/interfacePort" }
         },
-        "portId": {
-          "$ref": "#/$defs/identifier"
+        "nodes": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "$ref": "#/$defs/atomicNode" },
+              { "$ref": "#/$defs/subgraphNode" }
+            ]
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/edge" }
         }
       },
       "additionalProperties": false
     }
-  },
-  "additionalProperties": false
+  }
 }
