@@ -2,16 +2,15 @@ import { createHash } from "node:crypto";
 import * as vscode from "vscode";
 import type { DocumentDiagnostic } from "@visualbridge/core";
 import {
+  GRAPH_EDITOR_ID,
   applyGraphOperations,
-  createEmptyGraphCatalog,
   getReplacementCandidates,
   parseGraphDocument,
-  parseGraphCatalog,
   serializeGraphDocument,
   validateGraphDocument,
-  type GraphCatalog,
 } from "@visualbridge/graph";
 import { createGraphEditorHtml } from "@visualbridge/graph-editor";
+import { loadGraphCatalogRegistry } from "../catalog/graphCatalogLoader";
 import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
 
 const OVERWRITE = "覆盖";
@@ -28,6 +27,7 @@ interface WebviewMessage {
 
 export class GraphEditorSession {
   private readonly disposables: vscode.Disposable[] = [];
+  private readonly catalogDisposables: vscode.Disposable[] = [];
   private baseDiskHash = "";
   private operationQueue: Promise<void> = Promise.resolve();
   private disposed = false;
@@ -36,7 +36,7 @@ export class GraphEditorSession {
     private readonly extensionUri: vscode.Uri,
     private readonly document: vscode.TextDocument,
     private readonly panel: vscode.WebviewPanel,
-    private readonly match: DocumentMatch,
+    private match: DocumentMatch,
     private readonly projects: ProjectRegistry,
     private readonly diagnostics: vscode.DiagnosticCollection,
     private readonly output: vscode.OutputChannel,
@@ -65,20 +65,7 @@ export class GraphEditorSession {
       },
     });
 
-    const catalogUri = this.getCatalogUri();
-    if (catalogUri !== undefined) {
-      const relativePattern = new vscode.RelativePattern(
-        this.match.project.rootUri,
-        this.match.documentType.catalog ?? "",
-      );
-      const catalogWatcher = vscode.workspace.createFileSystemWatcher(relativePattern);
-      this.disposables.push(
-        catalogWatcher,
-        catalogWatcher.onDidCreate(() => void this.sendState()),
-        catalogWatcher.onDidChange(() => void this.sendState()),
-        catalogWatcher.onDidDelete(() => void this.sendState()),
-      );
-    }
+    this.configureCatalogWatchers();
 
     this.disposables.push(
       this.panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
@@ -95,7 +82,7 @@ export class GraphEditorSession {
           if (!event.document.isDirty) {
             void this.updateDiskBaseline();
           }
-        } else if (catalogUri !== undefined && sameUri(event.document.uri, catalogUri)) {
+        } else if (this.getCatalogUris().some((catalogUri) => sameUri(event.document.uri, catalogUri))) {
           void this.sendState();
         }
       }),
@@ -105,10 +92,15 @@ export class GraphEditorSession {
         }
       }),
       this.projects.onDidChange(() => {
-        if (this.projects.resolveDocument(this.document.uri) === undefined) {
+        const nextMatch = this.projects.resolveDocument(this.document.uri);
+        if (nextMatch === undefined || nextMatch.documentType.editor !== GRAPH_EDITOR_ID) {
           this.panel.dispose();
           void vscode.commands.executeCommand("vscode.openWith", this.document.uri, "default");
+          return;
         }
+        this.match = nextMatch;
+        this.configureCatalogWatchers();
+        void this.sendState();
       }),
       this.panel.onDidDispose(() => this.dispose()),
     );
@@ -158,8 +150,16 @@ export class GraphEditorSession {
       return;
     }
 
-    const catalogResult = await this.loadCatalog();
-    const operationResult = applyGraphOperations(parseResult.document, message.operations, catalogResult.catalog);
+    const catalogResult = await loadGraphCatalogRegistry(
+      this.match.project,
+      this.match.documentType.catalogs,
+    );
+    if (!catalogResult.ready && operationsRequireCatalog(message.operations)) {
+      this.updateDiagnostics([...parseResult.diagnostics, ...catalogResult.diagnostics]);
+      await this.rejectOperation(formatCatalogUnavailable(catalogResult.diagnostics));
+      return;
+    }
+    const operationResult = applyGraphOperations(parseResult.document, message.operations, catalogResult.registry);
     if (!operationResult.success) {
       this.updateDiagnostics([...catalogResult.diagnostics, ...operationResult.diagnostics]);
       await this.rejectOperation(formatDiagnostics(operationResult.diagnostics));
@@ -253,18 +253,22 @@ export class GraphEditorSession {
       await this.sendInvalid(result.diagnostics);
       return;
     }
-    const catalogResult = await this.loadCatalog();
+    const catalogResult = await loadGraphCatalogRegistry(
+      this.match.project,
+      this.match.documentType.catalogs,
+    );
     const diagnostics = [
       ...result.diagnostics,
       ...catalogResult.diagnostics,
-      ...validateGraphDocument(result.document, catalogResult.catalog),
+      ...(catalogResult.ready ? validateGraphDocument(result.document, catalogResult.registry) : []),
     ];
     this.updateDiagnostics(diagnostics);
     await this.panel.webview.postMessage({
       type: "graphState",
       documentVersion: this.document.version,
       document: result.document,
-      catalog: catalogResult.catalog,
+      catalogRegistry: catalogResult.registry,
+      catalogReady: catalogResult.ready,
       diagnostics,
     });
   }
@@ -284,71 +288,48 @@ export class GraphEditorSession {
       await this.sendInvalid(parseResult.diagnostics);
       return;
     }
-    const catalogResult = await this.loadCatalog();
+    const catalogResult = await loadGraphCatalogRegistry(
+      this.match.project,
+      this.match.documentType.catalogs,
+    );
     await this.panel.webview.postMessage({
       type: "replacementCandidates",
       documentVersion: this.document.version,
       graphId: message.graphId,
       nodeId: message.nodeId,
-      nodeTypeIds: getReplacementCandidates(
-        parseResult.document,
-        message.graphId,
-        message.nodeId,
-        catalogResult.catalog,
-      ).map((nodeType) => nodeType.id),
+      nodeTypeIds: catalogResult.ready
+        ? getReplacementCandidates(
+            parseResult.document,
+            message.graphId,
+            message.nodeId,
+            catalogResult.registry,
+          ).map((nodeType) => nodeType.id)
+        : [],
     });
   }
 
-  private getCatalogUri(): vscode.Uri | undefined {
-    const catalogPath = this.match.documentType.catalog;
-    return catalogPath === undefined
-      ? undefined
-      : vscode.Uri.joinPath(this.match.project.rootUri, ...catalogPath.split("/"));
+  private getCatalogUris(): readonly vscode.Uri[] {
+    return this.match.documentType.catalogs.map(
+      (catalogPath) => vscode.Uri.joinPath(this.match.project.rootUri, ...catalogPath.split("/")),
+    );
   }
 
-  private async loadCatalog(): Promise<{
-    readonly catalog: GraphCatalog;
-    readonly diagnostics: readonly DocumentDiagnostic[];
-  }> {
-    const catalogUri = this.getCatalogUri();
-    if (catalogUri === undefined) {
-      return {
-        catalog: createEmptyGraphCatalog("unconfigured"),
-        diagnostics: [{
-          severity: "warning",
-          code: "graph.catalogNotConfigured",
-          path: "catalog",
-          message: "The Graph document type does not declare a catalog.",
-        }],
-      };
+  private configureCatalogWatchers(): void {
+    for (const disposable of this.catalogDisposables.splice(0)) {
+      disposable.dispose();
     }
-    try {
-      const openDocument = vscode.workspace.textDocuments.find((candidate) => sameUri(candidate.uri, catalogUri));
-      const text = openDocument?.getText() ?? new TextDecoder("utf-8", { fatal: true }).decode(
-        await vscode.workspace.fs.readFile(catalogUri),
+    this.match.documentType.catalogs.forEach((catalogPath) => {
+      const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(
+        this.match.project.rootUri,
+        catalogPath,
+      ));
+      this.catalogDisposables.push(
+        watcher,
+        watcher.onDidCreate(() => void this.sendState()),
+        watcher.onDidChange(() => void this.sendState()),
+        watcher.onDidDelete(() => void this.sendState()),
       );
-      const result = parseGraphCatalog(text);
-      if (!result.success) {
-        return {
-          catalog: createEmptyGraphCatalog("invalid"),
-          diagnostics: result.diagnostics.map((diagnostic) => ({
-            ...diagnostic,
-            path: `catalog.${diagnostic.path}`,
-          })),
-        };
-      }
-      return { catalog: result.document, diagnostics: result.diagnostics };
-    } catch (errorValue) {
-      return {
-        catalog: createEmptyGraphCatalog("missing"),
-        diagnostics: [{
-          severity: "error",
-          code: "graph.catalogUnavailable",
-          path: "catalog",
-          message: `Unable to load '${this.match.documentType.catalog}': ${formatError(errorValue)}`,
-        }],
-      };
-    }
+    });
   }
 
   private async sendInvalid(diagnostics: readonly DocumentDiagnostic[]): Promise<void> {
@@ -394,6 +375,9 @@ export class GraphEditorSession {
       return;
     }
     this.disposed = true;
+    for (const disposable of this.catalogDisposables.splice(0)) {
+      disposable.dispose();
+    }
     for (const disposable of this.disposables.splice(0)) {
       disposable.dispose();
     }
@@ -427,6 +411,44 @@ function formatDiagnostics(diagnostics: readonly DocumentDiagnostic[]): string {
   const first = diagnostics[0];
   return first === undefined ? "Graph 操作无效。" : `${first.path}: ${first.message}`;
 }
+
+function formatCatalogUnavailable(diagnostics: readonly DocumentDiagnostic[]): string {
+  const firstError = diagnostics.find((diagnostic) => diagnostic.severity === "error");
+  return firstError === undefined
+    ? "Graph Catalog 尚未就绪，无法执行依赖 Catalog 的操作。"
+    : `Graph Catalog 尚未就绪：${firstError.path}: ${firstError.message}`;
+}
+
+function operationsRequireCatalog(value: unknown): boolean {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  return value.some((operation) => {
+    if (typeof operation !== "object" || operation === null || Array.isArray(operation)) {
+      return false;
+    }
+    const candidate = operation as {
+      readonly type?: unknown;
+      readonly node?: { readonly nodeTypeId?: unknown };
+      readonly subgraph?: { readonly graphTypeId?: unknown };
+    };
+    const type = candidate.type;
+    if (type === "graph.addSubgraph") {
+      return typeof candidate.node?.nodeTypeId === "string"
+        || typeof candidate.subgraph?.graphTypeId === "string";
+    }
+    return typeof type === "string" && CATALOG_OPERATION_TYPES.has(type);
+  });
+}
+
+const CATALOG_OPERATION_TYPES: ReadonlySet<string> = new Set([
+  "graph.addNode",
+  "graph.replaceNodeType",
+  "graph.addDynamicPort",
+  "graph.updateDynamicPort",
+  "graph.addEdge",
+  "graph.assignType",
+]);
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

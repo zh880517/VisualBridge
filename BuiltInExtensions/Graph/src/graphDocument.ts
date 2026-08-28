@@ -12,7 +12,7 @@ import {
   resolvePortDefinition,
   resolvePropertyDefinition,
   resolveNodeType,
-  type GraphCatalog,
+  type GraphCatalogRegistry,
   type GraphDynamicPortGroupDefinition,
   type GraphNodeTypeDefinition,
   type GraphPortDirection,
@@ -196,7 +196,7 @@ export function createEmptyGraphDocument(
   documentId: string,
   rootGraphId: string,
   graphTypeId?: string,
-  catalog?: GraphCatalog,
+  catalog?: GraphCatalogRegistry,
   createNodeId?: () => string,
 ): GraphDocument {
   const graph = createGraphDefinition(rootGraphId, "Root", graphTypeId, catalog, createNodeId);
@@ -212,7 +212,7 @@ export function createGraphDefinition(
   graphId: string,
   title: string,
   graphTypeId?: string,
-  catalog?: GraphCatalog,
+  catalog?: GraphCatalogRegistry,
   createNodeId?: () => string,
 ): GraphDefinition {
   const resolvedCatalog = catalog ?? EMPTY_CATALOG;
@@ -339,7 +339,7 @@ export function serializeGraphDocument(document: GraphDocument): string {
 export function applyGraphOperations(
   document: GraphDocument,
   operationsValue: unknown,
-  catalog?: GraphCatalog,
+  catalog?: GraphCatalogRegistry,
 ): DocumentOperationResult<GraphDocument> {
   const parsed = parseOperations(operationsValue);
   if (!parsed.success) {
@@ -380,7 +380,7 @@ export function applyGraphOperations(
 
 export function validateGraphDocument(
   document: GraphDocument,
-  catalog?: GraphCatalog,
+  catalog?: GraphCatalogRegistry,
 ): readonly DocumentDiagnostic[] {
   const diagnostics = validateStructure(document);
   if (diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
@@ -439,7 +439,7 @@ export function validateGraphDocument(
 export function getGraphNodePorts(
   document: GraphDocument,
   node: GraphNode,
-  catalog?: GraphCatalog,
+  catalog?: GraphCatalogRegistry,
 ): readonly GraphResolvedPort[] {
   if (node.kind === "node") {
     const nodeType = resolveNodeType(catalog ?? EMPTY_CATALOG, node.nodeTypeId);
@@ -459,7 +459,7 @@ export function getReplacementCandidates(
   document: GraphDocument,
   graphId: string,
   nodeId: string,
-  catalog: GraphCatalog,
+  catalog: GraphCatalogRegistry,
 ): readonly GraphNodeTypeDefinition[] {
   const graph = document.graphs.find((candidate) => candidate.id === graphId);
   const node = graph?.nodes.find((candidate) => candidate.id === nodeId);
@@ -826,7 +826,7 @@ function applyOperation(
   document: MutableGraphDocument,
   operation: GraphOperation,
   index: number,
-  catalog?: GraphCatalog,
+  catalog?: GraphCatalogRegistry,
 ): DocumentDiagnostic | undefined {
   const path = `operations[${index}]`;
   const graph = document.graphs.find((candidate) => candidate.id === operation.graphId);
@@ -1188,7 +1188,7 @@ function validateStructure(document: GraphDocument): DocumentDiagnostic[] {
 function validateAtomicNode(
   node: GraphAtomicNode | (GraphSubgraphNode & { readonly nodeTypeId: string }),
   path: string,
-  catalog: GraphCatalog | undefined,
+  catalog: GraphCatalogRegistry | undefined,
   diagnostics: DocumentDiagnostic[],
 ): void {
   if (catalog === undefined) {
@@ -1290,7 +1290,7 @@ function validateGraphType(
   path: string,
   document: GraphDocument,
   ownerByGraphId: ReadonlyMap<string, { readonly graph: GraphDefinition; readonly node: GraphSubgraphNode }>,
-  catalog: GraphCatalog | undefined,
+  catalog: GraphCatalogRegistry | undefined,
   diagnostics: DocumentDiagnostic[],
 ): GraphTypeDefinition | undefined {
   if (catalog === undefined || catalog.graphTypes.length === 0) {
@@ -1342,7 +1342,7 @@ function validateSubgraphNode(
   node: GraphSubgraphNode,
   path: string,
   graphById: ReadonlyMap<string, GraphDefinition>,
-  catalog: GraphCatalog | undefined,
+  catalog: GraphCatalogRegistry | undefined,
   diagnostics: DocumentDiagnostic[],
 ): void {
   if (catalog === undefined || node.nodeTypeId === undefined) {
@@ -1397,7 +1397,7 @@ function validateNodeAllowed(
   node: GraphNode,
   path: string,
   graphType: GraphTypeDefinition | undefined,
-  catalog: GraphCatalog | undefined,
+  catalog: GraphCatalogRegistry | undefined,
   diagnostics: DocumentDiagnostic[],
 ): void {
   if (node.kind === "subgraph" && graphType !== undefined && !graphType.allowSubgraphs) {
@@ -1414,7 +1414,7 @@ function validateNodeAllowed(
       `Graph Type '${graphType.id}' requires embedded subgraphs to use a Catalog subgraph node type.`,
     ));
   }
-  if (graphType?.allowedNodeSelectors === undefined || catalog === undefined) {
+  if (graphType === undefined || catalog === undefined) {
     return;
   }
   const nodeType = node.nodeTypeId === undefined ? undefined : resolveNodeType(catalog, node.nodeTypeId);
@@ -1433,7 +1433,7 @@ function validateNodeAllowed(
 function isNodeTypeAllowedForGraph(
   graph: GraphDefinition,
   nodeType: GraphNodeTypeDefinition,
-  catalog: GraphCatalog,
+  catalog: GraphCatalogRegistry,
 ): boolean {
   const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphType(catalog, graph.graphTypeId);
   return graphType === undefined || isNodeTypeAllowed(graphType, nodeType);
@@ -1443,7 +1443,7 @@ function replacementRespectsNodeConstraints(
   graph: GraphDefinition,
   node: GraphTypedNode,
   targetType: GraphNodeTypeDefinition,
-  catalog: GraphCatalog,
+  catalog: GraphCatalogRegistry,
 ): boolean {
   const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphType(catalog, graph.graphTypeId);
   if (graphType === undefined) {
@@ -1467,7 +1467,7 @@ function validateNodeConstraints(
   graph: GraphDefinition,
   path: string,
   graphType: GraphTypeDefinition | undefined,
-  catalog: GraphCatalog | undefined,
+  catalog: GraphCatalogRegistry | undefined,
   diagnostics: DocumentDiagnostic[],
 ): void {
   if (graphType === undefined || catalog === undefined) {
@@ -1536,7 +1536,7 @@ function validateSemanticEdge(
   path: string,
   nodeById: ReadonlyMap<string, GraphNode>,
   graphById: ReadonlyMap<string, GraphDefinition>,
-  catalog: GraphCatalog | undefined,
+  catalog: GraphCatalogRegistry | undefined,
   diagnostics: DocumentDiagnostic[],
 ): void {
   const source = resolveEndpoint(graph, edge.source, nodeById, graphById, catalog);
@@ -1589,7 +1589,7 @@ function validateCardinality(
   graphIndex: number,
   nodeById: ReadonlyMap<string, GraphNode>,
   graphById: ReadonlyMap<string, GraphDefinition>,
-  catalog: GraphCatalog | undefined,
+  catalog: GraphCatalogRegistry | undefined,
   diagnostics: DocumentDiagnostic[],
 ): void {
   const counts = new Map<string, { readonly count: number; readonly endpoint: GraphEndpoint; readonly role: EndpointRole }>();
@@ -1603,14 +1603,32 @@ function validateCardinality(
   });
   counts.forEach(({ count, endpoint, role }) => {
     const resolved = resolveEndpoint(graph, endpoint, nodeById, graphById, catalog);
-    if (resolved.port?.maxConnections !== undefined && count > resolved.port.maxConnections) {
+    const maxConnections = resolved.port === undefined
+      ? undefined
+      : getEffectiveMaxConnections(graph, resolved.port, catalog);
+    if (maxConnections !== undefined && count > maxConnections) {
       diagnostics.push(error(
         "graph.tooManyConnections",
         `graphs[${graphIndex}].edges`,
-        `${endpointKey(endpoint)} has ${count} connections but allows ${resolved.port.maxConnections}.`,
+        `${endpointKey(endpoint)} has ${count} connections but allows ${maxConnections}.`,
       ));
     }
   });
+}
+
+function getEffectiveMaxConnections(
+  graph: GraphDefinition,
+  port: GraphResolvedPort,
+  catalog: GraphCatalogRegistry | undefined,
+): number | undefined {
+  const graphType = graph.graphTypeId === undefined || catalog === undefined
+    ? undefined
+    : resolveGraphType(catalog, graph.graphTypeId);
+  const graphTypeLimit = graphType?.portConnectionRules[port.direction] === "single" ? 1 : undefined;
+  if (graphTypeLimit === undefined) {
+    return port.maxConnections;
+  }
+  return port.maxConnections === undefined ? graphTypeLimit : Math.min(graphTypeLimit, port.maxConnections);
 }
 
 function validateSemanticDuplicateConnections(
@@ -1618,7 +1636,7 @@ function validateSemanticDuplicateConnections(
   graphIndex: number,
   nodeById: ReadonlyMap<string, GraphNode>,
   graphById: ReadonlyMap<string, GraphDefinition>,
-  catalog: GraphCatalog | undefined,
+  catalog: GraphCatalogRegistry | undefined,
   diagnostics: DocumentDiagnostic[],
 ): void {
   const connections = new Set<string>();
@@ -1644,7 +1662,7 @@ function resolveEndpoint(
   endpoint: GraphEndpoint,
   nodeById: ReadonlyMap<string, GraphNode>,
   graphById: ReadonlyMap<string, GraphDefinition>,
-  catalog?: GraphCatalog,
+  catalog?: GraphCatalogRegistry,
 ): { readonly port?: GraphResolvedPort; readonly issue?: string; readonly unknownNodeType?: boolean; readonly usedAlias?: boolean } {
   if (endpoint.kind === "interface") {
     const port = graph.interfacePorts.find((candidate) => candidate.id === endpoint.portId);
@@ -1745,7 +1763,7 @@ function replacementIssue(
   graph: GraphDefinition,
   node: GraphTypedNode,
   targetType: GraphNodeTypeDefinition,
-  catalog: GraphCatalog,
+  catalog: GraphCatalogRegistry,
 ): string | undefined {
   const childGraph = node.kind === "subgraph"
     ? document.graphs.find((candidate) => candidate.id === node.subgraphId)
@@ -1834,14 +1852,15 @@ function replacementIssue(
     }
   }
   for (const port of getTypedNodePorts(node, targetType)) {
-    if (port.maxConnections === undefined) {
+    const maxConnections = getEffectiveMaxConnections(graph, port, catalog);
+    if (maxConnections === undefined) {
       continue;
     }
     const connectionCount = connected.filter(
       (edge) => edgeUsesAtomicNodeResolvedPort(edge, node, port, targetType),
     ).length;
-    if (connectionCount > port.maxConnections) {
-      return `Port '${port.id}' allows ${port.maxConnections} connections but currently has ${connectionCount}.`;
+    if (connectionCount > maxConnections) {
+      return `Port '${port.id}' allows ${maxConnections} connections but currently has ${connectionCount}.`;
     }
   }
   return undefined;
@@ -2230,10 +2249,8 @@ function formatError(errorValue: unknown): string {
   return errorValue instanceof Error ? errorValue.message : "Unknown JSON parse error.";
 }
 
-const EMPTY_CATALOG: GraphCatalog = {
-  formatVersion: 3,
-  catalogId: "empty",
-  title: "empty",
+const EMPTY_CATALOG: GraphCatalogRegistry = {
+  catalogs: [],
   dataTypes: [],
   graphTypes: [],
   nodeTypes: [],

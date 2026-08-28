@@ -151,6 +151,8 @@ interface DynamicPortGroupDefinition {
 }
 
 interface NodeTypeDefinition {
+  readonly catalogId: string;
+  readonly catalogTitle: string;
   readonly id: string;
   readonly aliases: readonly string[];
   readonly title: string;
@@ -166,6 +168,8 @@ interface NodeTypeDefinition {
 }
 
 interface DataTypeDefinition {
+  readonly catalogId: string;
+  readonly catalogTitle: string;
   readonly id: string;
   readonly title: string;
   readonly accepts: readonly string[];
@@ -190,11 +194,18 @@ interface InitialNodeDefinition {
 }
 
 interface GraphTypeDefinition {
+  readonly catalogId: string;
+  readonly catalogTitle: string;
   readonly id: string;
   readonly aliases: readonly string[];
   readonly title: string;
   readonly description?: string;
   readonly usage: "root" | "subgraph" | "any";
+  readonly supportedCatalogIds: readonly string[];
+  readonly portConnectionRules: {
+    readonly input: "single" | "multiple";
+    readonly output: "single" | "multiple";
+  };
   readonly allowedNodeSelectors?: readonly NodeSelector[];
   readonly properties: readonly PropertyDefinition[];
   readonly nodeConstraints: readonly NodeCountConstraint[];
@@ -203,10 +214,11 @@ interface GraphTypeDefinition {
   readonly allowedSubgraphTypeIds?: readonly string[];
 }
 
-interface GraphCatalog {
-  readonly formatVersion: 3;
-  readonly catalogId: string;
-  readonly title: string;
+interface GraphCatalogRegistry {
+  readonly catalogs: readonly {
+    readonly catalogId: string;
+    readonly title: string;
+  }[];
   readonly dataTypes: readonly DataTypeDefinition[];
   readonly graphTypes: readonly GraphTypeDefinition[];
   readonly nodeTypes: readonly NodeTypeDefinition[];
@@ -352,6 +364,12 @@ interface ConnectionNodeOption {
   readonly port: PortDefinition;
 }
 
+interface ConnectionCandidateEndpoint {
+  readonly canvasNodeId: string;
+  readonly portId: string;
+  readonly port: PortDefinition;
+}
+
 interface SubgraphTypeOption {
   readonly graphType: GraphTypeDefinition;
   readonly nodeType: NodeTypeDefinition;
@@ -369,7 +387,8 @@ type HostMessage =
       readonly type: "graphState";
       readonly documentVersion: number;
       readonly document: GraphDocument;
-      readonly catalog: GraphCatalog;
+      readonly catalogRegistry: GraphCatalogRegistry;
+      readonly catalogReady: boolean;
       readonly diagnostics: readonly DocumentDiagnostic[];
     }
   | {
@@ -534,9 +553,26 @@ function resolvePropertyInputPort(
 
 function InlineNodeProperties({ data, pending }: { readonly data: GraphNodeData; readonly pending: boolean }): React.JSX.Element {
   const definitions = data.nodeType?.properties ?? [];
+  const declaredPropertyIds = new Set(definitions.flatMap((definition) => [definition.id, ...(definition.aliases ?? [])]));
+  const unknownDefinitions: readonly PropertyDefinition[] = Object.entries(data.model.properties)
+    .filter(([propertyId]) => !declaredPropertyIds.has(propertyId))
+    .map(([propertyId, value]) => ({
+      id: propertyId,
+      aliases: [],
+      title: propertyId,
+      description: "该字段未在当前 Catalog Registry 中声明，按现有 JSON 值类型编辑。",
+      valueType: typeof value === "string"
+        ? "string"
+        : typeof value === "number"
+          ? "number"
+          : typeof value === "boolean"
+            ? "boolean"
+            : "json",
+      required: false,
+    }));
   return (
     <div className="graph-node-properties nodrag nowheel" onDoubleClick={(event) => event.stopPropagation()}>
-      {definitions.map((definition) => (
+      {[...definitions, ...unknownDefinitions].map((definition) => (
         <InlineNodeProperty key={definition.id} data={data} definition={definition} pending={pending} />
       ))}
     </div>
@@ -1108,14 +1144,16 @@ function GraphEditorApp(): React.JSX.Element {
   const rootMetadata = useMemo(readMetadata, []);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const documentRef = useRef<GraphDocument | undefined>(undefined);
-  const catalogRef = useRef<GraphCatalog>(emptyCatalog());
+  const catalogRegistryRef = useRef<GraphCatalogRegistry>(emptyCatalogRegistry());
+  const catalogReadyRef = useRef(false);
   const activeGraphIdRef = useRef("");
   const documentVersionRef = useRef(0);
   const pendingRef = useRef(false);
   const selectedRef = useRef<Selection | undefined>(undefined);
   const clipboardPasteIndexRef = useRef(0);
   const [graphDocument, setGraphDocument] = useState<GraphDocument>();
-  const [catalog, setCatalog] = useState<GraphCatalog>(emptyCatalog());
+  const [catalogRegistry, setCatalogRegistry] = useState<GraphCatalogRegistry>(emptyCatalogRegistry());
+  const [catalogReady, setCatalogReady] = useState(false);
   const [replacementCandidates, setReplacementCandidates] = useState<Readonly<Record<string, readonly string[]>>>({});
   const [activeGraphId, setActiveGraphIdValue] = useState("");
   const [flowNodes, setFlowNodes] = useState<GraphFlowNode[]>([]);
@@ -1192,8 +1230,8 @@ function GraphEditorApp(): React.JSX.Element {
       if (node.kind !== "node" || !selectedIds.has(node.id)) {
         return [];
       }
-      const nodeType = resolveNodeTypeDefinition(catalogRef.current, node.nodeTypeId);
-      return nodeType !== undefined && isNodeTypeRequiredByGraph(graph, nodeType, catalogRef.current)
+      const nodeType = resolveNodeTypeDefinition(catalogRegistryRef.current, node.nodeTypeId);
+      return nodeType !== undefined && isNodeTypeRequiredByGraph(graph, nodeType, catalogRegistryRef.current)
         ? []
         : [cloneGraphAtomicNode(node)];
     });
@@ -1211,7 +1249,10 @@ function GraphEditorApp(): React.JSX.Element {
 
   const pasteClipboardPayload = useCallback((payload: GraphClipboardPayload, requestedOffset?: number): void => {
     const graph = documentRef.current?.graphs.find((candidate) => candidate.id === activeGraphIdRef.current);
-    if (graph === undefined || pendingRef.current) {
+    if (graph === undefined || pendingRef.current || !catalogReadyRef.current) {
+      if (!catalogReadyRef.current) {
+        setStatus({ message: "Catalog 尚未就绪，不能创建或复制节点。", error: true });
+      }
       return;
     }
     const offset = requestedOffset ?? 40 * ++clipboardPasteIndexRef.current;
@@ -1273,7 +1314,8 @@ function GraphEditorApp(): React.JSX.Element {
       const message = event.data;
       if (message.type === "graphState") {
         documentRef.current = message.document;
-        catalogRef.current = message.catalog;
+        catalogRegistryRef.current = message.catalogRegistry;
+        catalogReadyRef.current = message.catalogReady;
         documentVersionRef.current = message.documentVersion;
         pendingRef.current = false;
         const currentGraphId = message.document.graphs.some((graph) => graph.id === activeGraphIdRef.current)
@@ -1281,12 +1323,17 @@ function GraphEditorApp(): React.JSX.Element {
           : message.document.rootGraphId;
         activeGraphIdRef.current = currentGraphId;
         setGraphDocument(message.document);
-        setCatalog(message.catalog);
+        setCatalogRegistry(message.catalogRegistry);
+        setCatalogReady(message.catalogReady);
         setReplacementCandidates({});
         setActiveGraphIdValue(currentGraphId);
         setPending(false);
         setInvalidDiagnostics([]);
         setContextMenu(undefined);
+        if (!message.catalogReady) {
+          setPicker(undefined);
+          setSubgraphPickerOpen(false);
+        }
 
         const currentGraph = message.document.graphs.find((graph) => graph.id === currentGraphId);
         const nextSelection = currentGraph === undefined
@@ -1297,8 +1344,10 @@ function GraphEditorApp(): React.JSX.Element {
         const firstWarning = message.diagnostics.find((diagnostic) => diagnostic.severity === "warning");
         const firstDiagnostic = firstError ?? firstWarning;
         setStatus(firstDiagnostic === undefined
-          ? { message: "就绪", error: false }
-          : { message: `${firstDiagnostic.path}: ${firstDiagnostic.message}`, error: firstError !== undefined });
+          ? message.catalogReady
+            ? { message: "就绪", error: false }
+            : { message: "Catalog 尚未就绪，已禁用依赖 Catalog 的编辑操作。", error: true }
+          : { message: `${firstDiagnostic.path}: ${firstDiagnostic.message}`, error: firstError !== undefined || !message.catalogReady });
         return;
       }
       if (message.type === "replacementCandidates") {
@@ -1321,10 +1370,12 @@ function GraphEditorApp(): React.JSX.Element {
       }
       if (message.type === "graphInvalid") {
         documentRef.current = undefined;
+        catalogReadyRef.current = false;
         documentVersionRef.current = message.documentVersion;
         pendingRef.current = false;
         updateSelection(undefined);
         setGraphDocument(undefined);
+        setCatalogReady(false);
         setFlowNodes([]);
         setFlowEdges([]);
         setPending(false);
@@ -1350,9 +1401,9 @@ function GraphEditorApp(): React.JSX.Element {
       setFlowEdges([]);
       return;
     }
-    setFlowNodes(toFlowNodes(graphDocument, activeGraph, catalog, selected, commitNode, postOperations, setStatus));
-    setFlowEdges(activeGraph.edges.map((edge) => toFlowEdge(edge, selected, activeGraph, catalog)));
-  }, [activeGraph, catalog, commitNode, graphDocument, postOperations, selected]);
+    setFlowNodes(toFlowNodes(graphDocument, activeGraph, catalogRegistry, selected, commitNode, postOperations, setStatus));
+    setFlowEdges(activeGraph.edges.map((edge) => toFlowEdge(edge, selected, activeGraph, catalogRegistry)));
+  }, [activeGraph, catalogRegistry, commitNode, graphDocument, postOperations, selected]);
 
   const handleNodesChange = useCallback((changes: NodeChange<GraphFlowNode>[]): void => {
     setFlowNodes((current) => applyNodeChanges(changes, current));
@@ -1378,13 +1429,25 @@ function GraphEditorApp(): React.JSX.Element {
       || connection.target === null
       || connection.sourceHandle === null
       || connection.targetHandle === null
+      || !catalogReadyRef.current
     ) {
       return;
     }
-    const sourcePort = findCanvasPort(currentDocument, currentGraph, catalogRef.current, connection.source, connection.sourceHandle, "source");
-    const targetPort = findCanvasPort(currentDocument, currentGraph, catalogRef.current, connection.target, connection.targetHandle, "target");
-    if (sourcePort === undefined || targetPort === undefined || sourcePort.kind !== targetPort.kind) {
-      setStatus({ message: "流程端口和数据端口不能互相连接。", error: true });
+    const registry = catalogRegistryRef.current;
+    const sourcePort = findCanvasPort(currentDocument, currentGraph, registry, connection.source, connection.sourceHandle, "source");
+    const targetPort = findCanvasPort(currentDocument, currentGraph, registry, connection.target, connection.targetHandle, "target");
+    if (sourcePort === undefined || targetPort === undefined) {
+      setStatus({ message: "无法解析连接端口。", error: true });
+      return;
+    }
+    const issue = validateConnectionCandidate(
+      currentGraph,
+      registry,
+      { canvasNodeId: connection.source, portId: connection.sourceHandle, port: sourcePort },
+      { canvasNodeId: connection.target, portId: connection.targetHandle, port: targetPort },
+    );
+    if (issue !== undefined) {
+      setStatus({ message: issue, error: true });
       return;
     }
     postOperations([{
@@ -1412,6 +1475,7 @@ function GraphEditorApp(): React.JSX.Element {
       || connectionState.fromHandle.id === null
       || flowInstance === undefined
       || pendingRef.current
+      || !catalogReadyRef.current
     ) {
       return;
     }
@@ -1426,7 +1490,7 @@ function GraphEditorApp(): React.JSX.Element {
     const fromPort = findCanvasPort(
       currentDocument,
       currentGraph,
-      catalogRef.current,
+      catalogRegistryRef.current,
       fromNodeId,
       fromPortId,
       fromRole,
@@ -1434,11 +1498,14 @@ function GraphEditorApp(): React.JSX.Element {
     if (fromPort === undefined) {
       return;
     }
-    if (
-      fromPort.maxConnections !== undefined
-      && countCanvasPortConnections(currentGraph, catalogRef.current, fromNodeId, fromPortId, fromRole) >= fromPort.maxConnections
-    ) {
-      setStatus({ message: `端口“${fromPort.title}”已达到最大连接数。`, error: true });
+    const capacityIssue = getConnectionCapacityIssue(
+      currentGraph,
+      catalogRegistryRef.current,
+      { canvasNodeId: fromNodeId, portId: fromPortId, port: fromPort },
+      fromRole,
+    );
+    if (capacityIssue !== undefined) {
+      setStatus({ message: capacityIssue, error: true });
       return;
     }
     const clientPosition = eventClientPosition(event);
@@ -1502,10 +1569,15 @@ function GraphEditorApp(): React.JSX.Element {
 
   const addNodeType = useCallback((nodeTypeId: string): void => {
     const currentGraph = documentRef.current?.graphs.find((graph) => graph.id === activeGraphIdRef.current);
-    const nodeType = catalogRef.current.nodeTypes.find(
+    const nodeType = catalogRegistryRef.current.nodeTypes.find(
       (candidate) => candidate.id === nodeTypeId && candidate.subgraph === undefined,
     );
-    if (currentGraph === undefined || nodeType === undefined) {
+    if (
+      currentGraph === undefined
+      || nodeType === undefined
+      || !catalogReadyRef.current
+      || !isNodeTypeAvailable(currentGraph, nodeType, catalogRegistryRef.current, "atomic")
+    ) {
       return;
     }
     postOperations([{
@@ -1528,7 +1600,7 @@ function GraphEditorApp(): React.JSX.Element {
     option: ConnectionNodeOption,
   ): void => {
     const currentGraph = documentRef.current?.graphs.find((graph) => graph.id === activeGraphIdRef.current);
-    if (currentGraph === undefined) {
+    if (currentGraph === undefined || !catalogReadyRef.current) {
       return;
     }
     const nodeId = newId("node");
@@ -1541,6 +1613,22 @@ function GraphEditorApp(): React.JSX.Element {
       source: connectionPicker.fromRole === "source" ? existingEndpoint : newEndpoint,
       target: connectionPicker.fromRole === "source" ? newEndpoint : existingEndpoint,
     };
+    const sourcePort = connectionPicker.fromRole === "source" ? connectionPicker.fromPort : option.port;
+    const targetPort = connectionPicker.fromRole === "source" ? option.port : connectionPicker.fromPort;
+    const sourceNodeId = connectionPicker.fromRole === "source" ? connectionPicker.fromNodeId : nodeId;
+    const sourcePortId = connectionPicker.fromRole === "source" ? connectionPicker.fromPortId : option.port.id;
+    const targetNodeId = connectionPicker.fromRole === "source" ? nodeId : connectionPicker.fromNodeId;
+    const targetPortId = connectionPicker.fromRole === "source" ? option.port.id : connectionPicker.fromPortId;
+    const issue = validateConnectionCandidate(
+      currentGraph,
+      catalogRegistryRef.current,
+      { canvasNodeId: sourceNodeId, portId: sourcePortId, port: sourcePort },
+      { canvasNodeId: targetNodeId, portId: targetPortId, port: targetPort },
+    );
+    if (issue !== undefined) {
+      setStatus({ message: issue, error: true });
+      return;
+    }
     updateSelection({ nodeIds: [nodeId], edgeIds: [edgeId] });
     postOperations([
       {
@@ -1562,18 +1650,18 @@ function GraphEditorApp(): React.JSX.Element {
 
   const addSubgraph = useCallback((graphTypeId?: string, nodeTypeId?: string): void => {
     const currentGraph = documentRef.current?.graphs.find((graph) => graph.id === activeGraphIdRef.current);
-    if (currentGraph === undefined) {
+    if (currentGraph === undefined || (!catalogReadyRef.current && (graphTypeId !== undefined || nodeTypeId !== undefined))) {
       return;
     }
     const subgraphId = newId("subgraph");
     const index = documentRef.current?.graphs.length ?? 1;
-    const catalog = catalogRef.current;
-    const graphType = graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(catalog, graphTypeId);
+    const registry = catalogRegistryRef.current;
+    const graphType = graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(registry, graphTypeId);
     const nodeType = nodeTypeId === undefined
       ? undefined
-      : catalog.nodeTypes.find((candidate) => candidate.id === nodeTypeId && candidate.subgraph !== undefined);
+      : registry.nodeTypes.find((candidate) => candidate.id === nodeTypeId && candidate.subgraph !== undefined);
     const initialNodes: GraphAtomicNode[] = graphType?.initialNodes.flatMap((initialNode, initialIndex) => {
-      const initialType = resolveNodeTypeDefinition(catalog, initialNode.nodeTypeId);
+      const initialType = resolveNodeTypeDefinition(registry, initialNode.nodeTypeId);
       return initialType === undefined || initialType.subgraph !== undefined
         ? []
         : [{
@@ -1683,7 +1771,7 @@ function GraphEditorApp(): React.JSX.Element {
     event.preventDefault();
     updateSelection({ nodeIds: [node.id], edgeIds: [] });
     setContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id });
-    if (node.data.model.nodeTypeId !== undefined) {
+    if (node.data.model.nodeTypeId !== undefined && catalogReadyRef.current) {
       setReplacementCandidates((current) => {
         const next = { ...current };
         delete next[node.id];
@@ -1712,12 +1800,12 @@ function GraphEditorApp(): React.JSX.Element {
     if (graph === undefined || node?.nodeTypeId === undefined) {
       return;
     }
-    const canonicalTypeId = resolveNodeTypeDefinition(catalogRef.current, node.nodeTypeId)?.id ?? node.nodeTypeId;
+    const canonicalTypeId = resolveNodeTypeDefinition(catalogRegistryRef.current, node.nodeTypeId)?.id ?? node.nodeTypeId;
     const nodeIds = graph.nodes.flatMap((candidate) => {
       if (candidate.nodeTypeId === undefined) {
         return [];
       }
-      const candidateTypeId = resolveNodeTypeDefinition(catalogRef.current, candidate.nodeTypeId)?.id ?? candidate.nodeTypeId;
+      const candidateTypeId = resolveNodeTypeDefinition(catalogRegistryRef.current, candidate.nodeTypeId)?.id ?? candidate.nodeTypeId;
       return candidateTypeId === canonicalTypeId ? [candidate.id] : [];
     });
     setContextMenu(undefined);
@@ -1726,32 +1814,35 @@ function GraphEditorApp(): React.JSX.Element {
 
   const path = graphDocument === undefined ? [] : findGraphPath(graphDocument, activeGraphId);
   const pickerTypes = picker?.mode === "replace"
-    ? catalog.nodeTypes.filter((nodeType) => replacementCandidates[picker.nodeId]?.includes(nodeType.id) ?? false)
+    ? catalogRegistry.nodeTypes.filter((nodeType) => replacementCandidates[picker.nodeId]?.includes(nodeType.id) ?? false)
     : picker?.mode === "add"
-      ? catalog.nodeTypes.filter((nodeType) => activeGraph !== undefined && isNodeTypeAvailable(activeGraph, nodeType, catalog, "atomic"))
+      ? catalogRegistry.nodeTypes.filter((nodeType) => activeGraph !== undefined && isNodeTypeAvailable(activeGraph, nodeType, catalogRegistry, "atomic"))
       : [];
   const connectionOptions = picker?.mode === "connect" && activeGraph !== undefined
-    ? getConnectionNodeOptions(activeGraph, catalog, picker.fromPort, picker.fromRole)
+    ? getConnectionNodeOptions(activeGraph, catalogRegistry, picker.fromPort, picker.fromRole)
     : [];
-  const subgraphOptions = activeGraph === undefined ? [] : getSubgraphOptions(activeGraph, catalog);
+  const subgraphOptions = activeGraph === undefined ? [] : getSubgraphOptions(activeGraph, catalogRegistry);
+  const availableAtomicNodeTypes = activeGraph === undefined || !catalogReady
+    ? []
+    : catalogRegistry.nodeTypes.filter((nodeType) => isNodeTypeAvailable(activeGraph, nodeType, catalogRegistry, "atomic"));
 
   return (
     <div className="graph-app" onClick={() => setContextMenu(undefined)}>
       <header className="graph-toolbar">
-        <button type="button" onClick={(event) => { event.stopPropagation(); setPicker({ mode: "add" }); }} disabled={activeGraph === undefined || pending || catalog.nodeTypes.length === 0}>
+        <button type="button" onClick={(event) => { event.stopPropagation(); setPicker({ mode: "add" }); }} disabled={activeGraph === undefined || pending || !catalogReady || availableAtomicNodeTypes.length === 0}>
           添加节点
         </button>
         <button
           type="button"
-          onClick={() => catalog.graphTypes.length === 0 ? addSubgraph() : setSubgraphPickerOpen(true)}
-          disabled={activeGraph === undefined || pending || (catalog.graphTypes.length > 0 && subgraphOptions.length === 0)}
-          title={catalog.graphTypes.length > 0 && subgraphOptions.length === 0 ? "当前 Graph Type 没有可用的子图类型" : undefined}
+          onClick={() => catalogRegistry.graphTypes.length === 0 ? addSubgraph() : setSubgraphPickerOpen(true)}
+          disabled={activeGraph === undefined || pending || (catalogRegistry.graphTypes.length > 0 && (!catalogReady || subgraphOptions.length === 0))}
+          title={catalogRegistry.graphTypes.length > 0 && !catalogReady ? "Catalog 尚未就绪" : catalogRegistry.graphTypes.length > 0 && subgraphOptions.length === 0 ? "当前 Graph Type 没有可用的子图类型" : undefined}
         >
           添加子图
         </button>
         <button type="button" className="secondary" onClick={copySelection} disabled={selected === undefined || pending}>复制</button>
-        <button type="button" className="secondary" onClick={() => vscode.postMessage({ type: "readClipboard" })} disabled={pending}>粘贴</button>
-        <button type="button" className="secondary" onClick={duplicateSelection} disabled={selected === undefined || pending}>Duplicate</button>
+        <button type="button" className="secondary" onClick={() => vscode.postMessage({ type: "readClipboard" })} disabled={pending || !catalogReady}>粘贴</button>
+        <button type="button" className="secondary" onClick={duplicateSelection} disabled={selected === undefined || pending || !catalogReady}>Duplicate</button>
         <button type="button" className="secondary" onClick={deleteSelection} disabled={selected === undefined || pending}>
           删除所选
         </button>
@@ -1812,7 +1903,7 @@ function GraphEditorApp(): React.JSX.Element {
                         onPaneClick={() => setContextMenu(undefined)}
                         onInit={setFlowInstance}
                         nodesDraggable={!pending}
-                        nodesConnectable={!pending}
+                        nodesConnectable={!pending && catalogReady}
                         elementsSelectable={!pending}
                         deleteKeyCode={null}
                         connectionRadius={24}
@@ -1846,7 +1937,8 @@ function GraphEditorApp(): React.JSX.Element {
                     key={activeGraph.id}
                     graph={activeGraph}
                     isRoot={activeGraph.id === graphDocument.rootGraphId}
-                    catalog={catalog}
+                    catalogRegistry={catalogRegistry}
+                    catalogReady={catalogReady}
                     pending={pending}
                     postOperations={postOperations}
                     reportStatus={setStatus}
@@ -1866,10 +1958,10 @@ function GraphEditorApp(): React.JSX.Element {
                 <button type="button" onClick={() => selectSameType(node.id)}>选择同类型节点</button>
                 <button
                   type="button"
-                  disabled={candidates === undefined || candidates.length === 0}
+                  disabled={!catalogReady || candidates === undefined || candidates.length === 0}
                   onClick={() => { setContextMenu(undefined); setPicker({ mode: "replace", nodeId: node.id }); }}
                 >
-                  替换节点类型{candidates === undefined ? "（检查中…）" : candidates.length === 0 ? "（无兼容类型）" : "…"}
+                  替换节点类型{!catalogReady ? "（Catalog 未就绪）" : candidates === undefined ? "（检查中…）" : candidates.length === 0 ? "（无兼容类型）" : "…"}
                 </button>
               </>
             )}
@@ -1881,7 +1973,6 @@ function GraphEditorApp(): React.JSX.Element {
       {picker !== undefined && picker.mode !== "connect" && (
         <NodeTypePicker
           title={picker.mode === "replace" ? "替换节点类型" : "添加节点"}
-          catalogTitle={catalog.title}
           nodeTypes={pickerTypes}
           onCancel={() => setPicker(undefined)}
           onSelect={(nodeTypeId) => {
@@ -1901,7 +1992,6 @@ function GraphEditorApp(): React.JSX.Element {
 
       {picker?.mode === "connect" && (
         <ConnectionNodePicker
-          catalogTitle={catalog.title}
           options={connectionOptions}
           onCancel={() => setPicker(undefined)}
           onSelect={(option) => addConnectedNode(picker, option)}
@@ -1910,7 +2000,6 @@ function GraphEditorApp(): React.JSX.Element {
 
       {subgraphPickerOpen && (
         <SubgraphTypePicker
-          catalogTitle={catalog.title}
           options={subgraphOptions}
           onCancel={() => setSubgraphPickerOpen(false)}
           onSelect={(graphTypeId, nodeTypeId) => addSubgraph(graphTypeId, nodeTypeId)}
@@ -1925,28 +2014,37 @@ function GraphEditorApp(): React.JSX.Element {
 function GraphInspector({
   graph,
   isRoot,
-  catalog,
+  catalogRegistry,
+  catalogReady,
   pending,
   postOperations,
   reportStatus,
 }: {
   readonly graph: GraphDefinition;
   readonly isRoot: boolean;
-  readonly catalog: GraphCatalog;
+  readonly catalogRegistry: GraphCatalogRegistry;
+  readonly catalogReady: boolean;
   readonly pending: boolean;
   readonly postOperations: (operations: readonly GraphOperation[]) => void;
   readonly reportStatus: (status: { message: string; error: boolean }) => void;
 }): React.JSX.Element {
   const [title, setTitle] = useState(graph.title);
-  const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(catalog, graph.graphTypeId);
-  const assignableTypes = catalog.graphTypes.filter((candidate) => candidate.usage === "any" || candidate.usage === (isRoot ? "root" : "subgraph"));
+  const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(catalogRegistry, graph.graphTypeId);
+  const assignableTypes = catalogRegistry.graphTypes.filter((candidate) => candidate.usage === "any" || candidate.usage === (isRoot ? "root" : "subgraph"));
   const [selectedGraphTypeId, setSelectedGraphTypeId] = useState(assignableTypes[0]?.id ?? "");
   useEffect(() => setTitle(graph.title), [graph.title]);
+  useEffect(() => {
+    setSelectedGraphTypeId((current) => assignableTypes.some((candidate) => candidate.id === current)
+      ? current
+      : assignableTypes[0]?.id ?? "");
+  }, [catalogRegistry, isRoot]);
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
     postOperations([{ type: "graph.updateGraph", graphId: graph.id, title, properties: graph.properties }]);
   };
   const propertyNodeType: NodeTypeDefinition = {
+    catalogId: graphType?.catalogId ?? "untyped",
+    catalogTitle: graphType?.catalogTitle ?? "Graph",
     id: graphType?.id ?? "untyped.graph",
     aliases: [],
     title: graphType?.title ?? "Untyped Graph",
@@ -1980,12 +2078,12 @@ function GraphInspector({
     reportStatus,
   };
   const assignType = (): void => {
-    const nextType = resolveGraphTypeDefinition(catalog, selectedGraphTypeId);
-    if (nextType === undefined) {
+    const nextType = resolveGraphTypeDefinition(catalogRegistry, selectedGraphTypeId);
+    if (nextType === undefined || !catalogReady) {
       return;
     }
     const initialOperations: GraphOperation[] = nextType.initialNodes.flatMap((initialNode, index) => {
-      const nodeType = resolveNodeTypeDefinition(catalog, initialNode.nodeTypeId);
+      const nodeType = resolveNodeTypeDefinition(catalogRegistry, initialNode.nodeTypeId);
       return nodeType === undefined || nodeType.subgraph !== undefined
         ? []
         : [{
@@ -2016,11 +2114,12 @@ function GraphInspector({
             <section className="graph-assign-type">
               <label className="graph-field">
                 <span>Graph Type</span>
-                <select value={selectedGraphTypeId} onChange={(event) => setSelectedGraphTypeId(event.target.value)}>
-                  {assignableTypes.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.title}</option>)}
+                <select value={selectedGraphTypeId} disabled={!catalogReady} onChange={(event) => setSelectedGraphTypeId(event.target.value)}>
+                  {assignableTypes.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.catalogTitle} / {candidate.title}</option>)}
                 </select>
               </label>
-              <button type="button" disabled={pending || graph.nodes.length > 0 || selectedGraphTypeId.length === 0} onClick={assignType}>设置 Graph Type</button>
+              <button type="button" disabled={pending || !catalogReady || graph.nodes.length > 0 || selectedGraphTypeId.length === 0} onClick={assignType}>设置 Graph Type</button>
+              {!catalogReady && <p className="graph-empty">Catalog 尚未就绪，不能设置 Graph Type。</p>}
               {graph.nodes.length > 0 && <p className="graph-empty">已有节点的旧 Graph 需要后续安全迁移，不能直接设置类型。</p>}
             </section>
           )}
@@ -2036,20 +2135,18 @@ function GraphInspector({
 
 function NodeTypePicker({
   title,
-  catalogTitle,
   nodeTypes: availableNodeTypes,
   onCancel,
   onSelect,
 }: {
   readonly title: string;
-  readonly catalogTitle: string;
   readonly nodeTypes: readonly NodeTypeDefinition[];
   readonly onCancel: () => void;
   readonly onSelect: (nodeTypeId: string) => void;
 }): React.JSX.Element {
   const [query, setQuery] = useState("");
   const filtered = availableNodeTypes.filter((nodeType) =>
-    [catalogTitle, nodeType.title, nodeType.id, nodeType.category, ...(nodeType.menuPath ?? []), ...(nodeType.tags ?? []), ...(nodeType.traits ?? [])]
+    [nodeType.catalogTitle, nodeType.catalogId, nodeType.title, nodeType.id, nodeType.category, ...(nodeType.menuPath ?? []), ...(nodeType.tags ?? []), ...(nodeType.traits ?? [])]
       .join(" ")
       .toLowerCase()
       .includes(query.trim().toLowerCase()),
@@ -2061,8 +2158,8 @@ function NodeTypePicker({
         <input autoFocus placeholder="搜索节点类型…" value={query} onChange={(event) => setQuery(event.target.value)} />
         <div className="graph-node-type-list">
           {query.trim().length === 0
-            ? <NodeTypeMenu catalogTitle={catalogTitle} nodeTypes={filtered} onSelect={onSelect} />
-            : filtered.map((nodeType) => <NodeTypeOption key={nodeType.id} catalogTitle={catalogTitle} nodeType={nodeType} onSelect={onSelect} />)}
+            ? <NodeTypeMenu nodeTypes={filtered} onSelect={onSelect} />
+            : filtered.map((nodeType) => <NodeTypeOption key={`${nodeType.catalogId}:${nodeType.id}`} nodeType={nodeType} onSelect={onSelect} />)}
           {filtered.length === 0 && <p className="graph-empty">没有可用的节点类型。</p>}
         </div>
       </section>
@@ -2071,12 +2168,10 @@ function NodeTypePicker({
 }
 
 function ConnectionNodePicker({
-  catalogTitle,
   options,
   onCancel,
   onSelect,
 }: {
-  readonly catalogTitle: string;
   readonly options: readonly ConnectionNodeOption[];
   readonly onCancel: () => void;
   readonly onSelect: (option: ConnectionNodeOption) => void;
@@ -2084,7 +2179,7 @@ function ConnectionNodePicker({
   const [query, setQuery] = useState("");
   const normalized = query.trim().toLowerCase();
   const filtered = options.filter(({ nodeType, port }) =>
-    [catalogTitle, nodeType.title, nodeType.id, nodeType.category, ...(nodeType.menuPath ?? []), port.title, port.id]
+    [nodeType.catalogTitle, nodeType.catalogId, nodeType.title, nodeType.id, nodeType.category, ...(nodeType.menuPath ?? []), port.title, port.id]
       .join(" ")
       .toLowerCase()
       .includes(normalized),
@@ -2097,13 +2192,13 @@ function ConnectionNodePicker({
         <div className="graph-node-type-list">
           {filtered.map((option) => (
             <button
-              key={`${option.nodeType.id}:${option.port.id}`}
+              key={`${option.nodeType.catalogId}:${option.nodeType.id}:${option.port.id}`}
               type="button"
               className="graph-node-type-option"
               onClick={() => onSelect(option)}
             >
               <strong>{option.nodeType.title}</strong>
-              <span>{getNodeTypeDisplayPath(catalogTitle, option.nodeType)} · {option.port.title}</span>
+              <span>{getNodeTypeDisplayPath(option.nodeType)} · {option.port.title}</span>
               <code>{option.nodeType.id} · {option.port.id}</code>
             </button>
           ))}
@@ -2115,16 +2210,14 @@ function ConnectionNodePicker({
 }
 
 function NodeTypeMenu({
-  catalogTitle,
   nodeTypes: menuNodeTypes,
   onSelect,
 }: {
-  readonly catalogTitle: string;
   readonly nodeTypes: readonly NodeTypeDefinition[];
   readonly onSelect: (nodeTypeId: string) => void;
 }): React.JSX.Element {
-  const roots = buildNodeTypeMenu(catalogTitle, menuNodeTypes);
-  return <>{roots.map((branch) => <NodeTypeMenuBranchView key={branch.title} catalogTitle={catalogTitle} branch={branch} onSelect={onSelect} />)}</>;
+  const roots = buildNodeTypeMenu(menuNodeTypes);
+  return <>{roots.map((branch) => <NodeTypeMenuBranchView key={branch.title} branch={branch} onSelect={onSelect} />)}</>;
 }
 
 interface NodeTypeMenuBranch {
@@ -2134,11 +2227,9 @@ interface NodeTypeMenuBranch {
 }
 
 function NodeTypeMenuBranchView({
-  catalogTitle,
   branch,
   onSelect,
 }: {
-  readonly catalogTitle: string;
   readonly branch: NodeTypeMenuBranch;
   readonly onSelect: (nodeTypeId: string) => void;
 }): React.JSX.Element {
@@ -2146,32 +2237,30 @@ function NodeTypeMenuBranchView({
     <details className="graph-node-type-branch" open>
       <summary>{branch.title}</summary>
       <div>
-        {branch.branches.map((child) => <NodeTypeMenuBranchView key={child.title} catalogTitle={catalogTitle} branch={child} onSelect={onSelect} />)}
-        {branch.nodeTypes.map((nodeType) => <NodeTypeOption key={nodeType.id} catalogTitle={catalogTitle} nodeType={nodeType} onSelect={onSelect} />)}
+        {branch.branches.map((child) => <NodeTypeMenuBranchView key={child.title} branch={child} onSelect={onSelect} />)}
+        {branch.nodeTypes.map((nodeType) => <NodeTypeOption key={`${nodeType.catalogId}:${nodeType.id}`} nodeType={nodeType} onSelect={onSelect} />)}
       </div>
     </details>
   );
 }
 
 function NodeTypeOption({
-  catalogTitle,
   nodeType,
   onSelect,
 }: {
-  readonly catalogTitle: string;
   readonly nodeType: NodeTypeDefinition;
   readonly onSelect: (nodeTypeId: string) => void;
 }): React.JSX.Element {
   return (
     <button type="button" className="graph-node-type-option" onClick={() => onSelect(nodeType.id)}>
       <strong>{nodeType.title}</strong>
-      <span>{getNodeTypeDisplayPath(catalogTitle, nodeType)}</span>
+      <span>{getNodeTypeDisplayPath(nodeType)}</span>
       <code>{nodeType.id}</code>
     </button>
   );
 }
 
-function buildNodeTypeMenu(catalogTitle: string, nodeTypes: readonly NodeTypeDefinition[]): readonly NodeTypeMenuBranch[] {
+function buildNodeTypeMenu(nodeTypes: readonly NodeTypeDefinition[]): readonly NodeTypeMenuBranch[] {
   interface MutableBranch {
     title: string;
     branches: Map<string, MutableBranch>;
@@ -2179,7 +2268,7 @@ function buildNodeTypeMenu(catalogTitle: string, nodeTypes: readonly NodeTypeDef
   }
   const root: MutableBranch = { title: "root", branches: new Map(), nodeTypes: [] };
   nodeTypes.forEach((nodeType) => {
-    const path = [catalogTitle, ...getNodeTypeRelativePath(nodeType)];
+    const path = [nodeType.catalogTitle, ...getNodeTypeRelativePath(nodeType)];
     let current = root;
     path.forEach((segment) => {
       let branch = current.branches.get(segment);
@@ -2203,17 +2292,15 @@ function getNodeTypeRelativePath(nodeType: NodeTypeDefinition): readonly string[
   return nodeType.menuPath?.length ? nodeType.menuPath : [nodeType.category || "Other"];
 }
 
-function getNodeTypeDisplayPath(catalogTitle: string, nodeType: NodeTypeDefinition): string {
-  return [catalogTitle, ...getNodeTypeRelativePath(nodeType), nodeType.title].join(" / ");
+function getNodeTypeDisplayPath(nodeType: NodeTypeDefinition): string {
+  return [nodeType.catalogTitle, ...getNodeTypeRelativePath(nodeType), nodeType.title].join(" / ");
 }
 
 function SubgraphTypePicker({
-  catalogTitle,
   options,
   onCancel,
   onSelect,
 }: {
-  readonly catalogTitle: string;
   readonly options: readonly SubgraphTypeOption[];
   readonly onCancel: () => void;
   readonly onSelect: (graphTypeId: string, nodeTypeId: string) => void;
@@ -2221,7 +2308,7 @@ function SubgraphTypePicker({
   const [query, setQuery] = useState("");
   const normalized = query.trim().toLowerCase();
   const filtered = options.filter(({ graphType, nodeType }) =>
-    [catalogTitle, graphType.title, graphType.id, nodeType.title, nodeType.id, ...(nodeType.menuPath ?? [])]
+    [nodeType.catalogTitle, nodeType.catalogId, graphType.catalogTitle, graphType.catalogId, graphType.title, graphType.id, nodeType.title, nodeType.id, ...(nodeType.menuPath ?? [])]
       .join(" ")
       .toLowerCase()
       .includes(normalized),
@@ -2234,13 +2321,13 @@ function SubgraphTypePicker({
         <div className="graph-node-type-list">
           {filtered.map(({ graphType, nodeType }) => (
             <button
-              key={`${graphType.id}:${nodeType.id}`}
+              key={`${graphType.catalogId}:${graphType.id}:${nodeType.catalogId}:${nodeType.id}`}
               type="button"
               className="graph-node-type-option"
               onClick={() => onSelect(graphType.id, nodeType.id)}
             >
               <strong>{nodeType.title}</strong>
-              <span>{getNodeTypeDisplayPath(catalogTitle, nodeType)} · 创建 {graphType.title}</span>
+              <span>{getNodeTypeDisplayPath(nodeType)} · 创建 {graphType.catalogTitle} / {graphType.title}</span>
               <code>{nodeType.id} → {graphType.id}</code>
             </button>
           ))}
@@ -2282,14 +2369,14 @@ function LoadingDocument(): React.JSX.Element {
 function toFlowNodes(
   document: GraphDocument,
   graph: GraphDefinition,
-  catalog: GraphCatalog,
+  catalogRegistry: GraphCatalogRegistry,
   selected: Selection | undefined,
   commitNode: GraphNodeData["commitNode"],
   commitOperations: GraphNodeData["commitOperations"],
   reportStatus: GraphNodeData["reportStatus"],
 ): GraphFlowNode[] {
   const nodes: GraphFlowNode[] = graph.nodes.map((node) => {
-    const nodeType = node.nodeTypeId === undefined ? undefined : resolveNodeTypeDefinition(catalog, node.nodeTypeId);
+    const nodeType = node.nodeTypeId === undefined ? undefined : resolveNodeTypeDefinition(catalogRegistry, node.nodeTypeId);
     return {
       id: node.id,
       type: "visualBridgeNode",
@@ -2339,15 +2426,15 @@ function toFlowEdge(
   edge: GraphEdgeModel,
   selected: Selection | undefined,
   graph: GraphDefinition,
-  catalog: GraphCatalog,
+  catalogRegistry: GraphCatalogRegistry,
 ): GraphFlowEdge {
   return {
     id: edge.id,
     type: "default",
     source: edge.source.kind === "node" ? edge.source.nodeId : INTERFACE_INPUT_NODE_ID,
-    sourceHandle: canonicalCanvasPortId(edge.source, graph, catalog),
+    sourceHandle: canonicalCanvasPortId(edge.source, graph, catalogRegistry),
     target: edge.target.kind === "node" ? edge.target.nodeId : INTERFACE_OUTPUT_NODE_ID,
-    targetHandle: canonicalCanvasPortId(edge.target, graph, catalog),
+    targetHandle: canonicalCanvasPortId(edge.target, graph, catalogRegistry),
     data: { model: edge },
     className: `graph-edge-${edge.kind}`,
     markerEnd: { type: MarkerType.ArrowClosed },
@@ -2358,7 +2445,7 @@ function toFlowEdge(
 function canonicalCanvasPortId(
   endpoint: GraphEndpoint,
   graph: GraphDefinition,
-  catalog: GraphCatalog,
+  catalogRegistry: GraphCatalogRegistry,
 ): string {
   if (endpoint.kind === "interface") {
     return endpoint.portId;
@@ -2367,7 +2454,7 @@ function canonicalCanvasPortId(
   if (node?.nodeTypeId === undefined) {
     return endpoint.portId;
   }
-  const nodeType = resolveNodeTypeDefinition(catalog, node.nodeTypeId);
+  const nodeType = resolveNodeTypeDefinition(catalogRegistry, node.nodeTypeId);
   return nodeType?.ports.find(
     (port) => port.id === endpoint.portId || (port.aliases?.includes(endpoint.portId) ?? false),
   )?.id ?? endpoint.portId;
@@ -2470,7 +2557,7 @@ function resolveDynamicPortGroupDefinition(
 function findCanvasPort(
   document: GraphDocument,
   graph: GraphDefinition,
-  catalog: GraphCatalog,
+  catalogRegistry: GraphCatalogRegistry,
   canvasNodeId: string,
   portId: string,
   role: "source" | "target",
@@ -2481,13 +2568,13 @@ function findCanvasPort(
   }
   if (canvasNodeId === INTERFACE_OUTPUT_NODE_ID && role === "target") {
     const port = graph.interfacePorts.find((candidate) => candidate.id === portId && candidate.direction === "output");
-    return port === undefined ? undefined : { ...port, direction: "input" };
+    return port === undefined ? undefined : { ...port, direction: "input", maxConnections: 1 };
   }
   const node = graph.nodes.find((candidate) => candidate.id === canvasNodeId);
   if (node === undefined) {
     return undefined;
   }
-  const nodeType = node.nodeTypeId === undefined ? undefined : resolveNodeTypeDefinition(catalog, node.nodeTypeId);
+  const nodeType = node.nodeTypeId === undefined ? undefined : resolveNodeTypeDefinition(catalogRegistry, node.nodeTypeId);
   return portsForNode(document, graph, node, nodeType).find((port) => port.id === portId);
 }
 
@@ -2645,12 +2732,12 @@ function createDefaultGraphProperties(graphType: GraphTypeDefinition): Readonly<
   ));
 }
 
-function resolveNodeTypeDefinition(catalog: GraphCatalog, nodeTypeId: string): NodeTypeDefinition | undefined {
-  return catalog.nodeTypes.find((nodeType) => nodeType.id === nodeTypeId || nodeType.aliases.includes(nodeTypeId));
+function resolveNodeTypeDefinition(registry: GraphCatalogRegistry, nodeTypeId: string): NodeTypeDefinition | undefined {
+  return registry.nodeTypes.find((nodeType) => nodeType.id === nodeTypeId || nodeType.aliases.includes(nodeTypeId));
 }
 
-function resolveGraphTypeDefinition(catalog: GraphCatalog, graphTypeId: string): GraphTypeDefinition | undefined {
-  return catalog.graphTypes.find((graphType) => graphType.id === graphTypeId || graphType.aliases.includes(graphTypeId));
+function resolveGraphTypeDefinition(registry: GraphCatalogRegistry, graphTypeId: string): GraphTypeDefinition | undefined {
+  return registry.graphTypes.find((graphType) => graphType.id === graphTypeId || graphType.aliases.includes(graphTypeId));
 }
 
 function matchesNodeSelectorDefinition(nodeType: NodeTypeDefinition, selector: NodeSelector): boolean {
@@ -2666,7 +2753,7 @@ function matchesNodeSelectorDefinition(nodeType: NodeTypeDefinition, selector: N
 function isNodeTypeAvailable(
   graph: GraphDefinition,
   nodeType: NodeTypeDefinition,
-  catalog: GraphCatalog,
+  catalogRegistry: GraphCatalogRegistry,
   flavor: "atomic" | "subgraph",
 ): boolean {
   if ((flavor === "atomic") === (nodeType.subgraph !== undefined)) {
@@ -2675,7 +2762,10 @@ function isNodeTypeAvailable(
   if (nodeType.properties.some((property) => property.required && property.defaultValue === undefined)) {
     return false;
   }
-  const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(catalog, graph.graphTypeId);
+  const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(catalogRegistry, graph.graphTypeId);
+  if (graphType !== undefined && !graphType.supportedCatalogIds.includes(nodeType.catalogId)) {
+    return false;
+  }
   if (
     graphType?.allowedNodeSelectors !== undefined
     && !graphType.allowedNodeSelectors.some((selector) => matchesNodeSelectorDefinition(nodeType, selector))
@@ -2687,7 +2777,7 @@ function isNodeTypeAvailable(
       return true;
     }
     const count = graph.nodes.filter((node) => {
-      const currentType = node.nodeTypeId === undefined ? undefined : resolveNodeTypeDefinition(catalog, node.nodeTypeId);
+      const currentType = node.nodeTypeId === undefined ? undefined : resolveNodeTypeDefinition(catalogRegistry, node.nodeTypeId);
       return currentType !== undefined && matchesNodeSelectorDefinition(currentType, constraint.selector);
     }).length;
     return count < constraint.maxInstances;
@@ -2697,9 +2787,9 @@ function isNodeTypeAvailable(
 function isNodeTypeRequiredByGraph(
   graph: GraphDefinition,
   nodeType: NodeTypeDefinition,
-  catalog: GraphCatalog,
+  catalogRegistry: GraphCatalogRegistry,
 ): boolean {
-  const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(catalog, graph.graphTypeId);
+  const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(catalogRegistry, graph.graphTypeId);
   return graphType?.nodeConstraints.some((constraint) =>
     (constraint.minInstances ?? 0) > 0
     && constraint.maxInstances === 1
@@ -2709,13 +2799,13 @@ function isNodeTypeRequiredByGraph(
 
 function getConnectionNodeOptions(
   graph: GraphDefinition,
-  catalog: GraphCatalog,
+  catalogRegistry: GraphCatalogRegistry,
   fromPort: PortDefinition,
   fromRole: "source" | "target",
 ): readonly ConnectionNodeOption[] {
   const requiredDirection: PortDirection = fromRole === "source" ? "input" : "output";
-  return catalog.nodeTypes.flatMap((nodeType) => {
-    if (!isNodeTypeAvailable(graph, nodeType, catalog, "atomic")) {
+  return catalogRegistry.nodeTypes.flatMap((nodeType) => {
+    if (!isNodeTypeAvailable(graph, nodeType, catalogRegistry, "atomic")) {
       return [];
     }
     return nodeType.ports.flatMap((port) => {
@@ -2724,7 +2814,7 @@ function getConnectionNodeOptions(
       }
       const sourcePort = fromRole === "source" ? fromPort : port;
       const targetPort = fromRole === "source" ? port : fromPort;
-      return arePortsCompatible(catalog, sourcePort, targetPort) ? [{ nodeType, port }] : [];
+      return arePortsCompatible(catalogRegistry, sourcePort, targetPort) ? [{ nodeType, port }] : [];
     });
   }).sort((left, right) =>
     left.nodeType.title.localeCompare(right.nodeType.title)
@@ -2733,7 +2823,7 @@ function getConnectionNodeOptions(
 }
 
 function arePortsCompatible(
-  catalog: GraphCatalog,
+  catalogRegistry: GraphCatalogRegistry,
   sourcePort: PortDefinition,
   targetPort: PortDefinition,
 ): boolean {
@@ -2750,20 +2840,91 @@ function arePortsCompatible(
   ) {
     return true;
   }
-  return catalog.dataTypes
+  return catalogRegistry.dataTypes
     .find((dataType) => dataType.id === targetPort.dataTypeId)
     ?.accepts.includes(sourcePort.dataTypeId) ?? false;
 }
 
+function validateConnectionCandidate(
+  graph: GraphDefinition,
+  catalogRegistry: GraphCatalogRegistry,
+  source: ConnectionCandidateEndpoint,
+  target: ConnectionCandidateEndpoint,
+): string | undefined {
+  if (!arePortsCompatible(catalogRegistry, source.port, target.port)) {
+    return source.port.kind !== target.port.kind
+      ? "流程端口和数据端口不能互相连接。"
+      : source.port.kind === "data"
+        ? `数据类型“${source.port.dataTypeId ?? "any"}”不能连接到“${target.port.dataTypeId ?? "any"}”。`
+        : "端口方向不兼容。";
+  }
+  const sourceEndpoint = toGraphEndpoint(source.canvasNodeId, source.portId);
+  const targetEndpoint = toGraphEndpoint(target.canvasNodeId, target.portId);
+  if (graph.edges.some((edge) =>
+    endpointsEquivalent(edge.source, sourceEndpoint, graph, catalogRegistry)
+    && endpointsEquivalent(edge.target, targetEndpoint, graph, catalogRegistry),
+  )) {
+    return "这两个端口之间已经存在连接。";
+  }
+  return getConnectionCapacityIssue(graph, catalogRegistry, source, "source")
+    ?? getConnectionCapacityIssue(graph, catalogRegistry, target, "target");
+}
+
+function endpointsEquivalent(
+  left: GraphEndpoint,
+  right: GraphEndpoint,
+  graph: GraphDefinition,
+  catalogRegistry: GraphCatalogRegistry,
+): boolean {
+  if (left.kind !== right.kind) {
+    return false;
+  }
+  if (left.kind === "node" && right.kind === "node" && left.nodeId !== right.nodeId) {
+    return false;
+  }
+  return canonicalCanvasPortId(left, graph, catalogRegistry) === canonicalCanvasPortId(right, graph, catalogRegistry);
+}
+
+function getEffectiveMaxConnections(
+  graph: GraphDefinition,
+  catalogRegistry: GraphCatalogRegistry,
+  port: PortDefinition,
+): number | undefined {
+  const graphType = graph.graphTypeId === undefined
+    ? undefined
+    : resolveGraphTypeDefinition(catalogRegistry, graph.graphTypeId);
+  const graphTypeLimit = graphType?.portConnectionRules[port.direction] === "single" ? 1 : undefined;
+  if (graphTypeLimit === undefined) {
+    return port.maxConnections;
+  }
+  return port.maxConnections === undefined ? graphTypeLimit : Math.min(graphTypeLimit, port.maxConnections);
+}
+
+function getConnectionCapacityIssue(
+  graph: GraphDefinition,
+  catalogRegistry: GraphCatalogRegistry,
+  endpoint: ConnectionCandidateEndpoint,
+  role: "source" | "target",
+): string | undefined {
+  const maxConnections = getEffectiveMaxConnections(graph, catalogRegistry, endpoint.port);
+  if (
+    maxConnections === undefined
+    || countCanvasPortConnections(graph, catalogRegistry, endpoint.canvasNodeId, endpoint.portId, role) < maxConnections
+  ) {
+    return undefined;
+  }
+  return `${role === "source" ? "输出" : "输入"}端口“${endpoint.port.title}”已达到最大连接数。`;
+}
+
 function countCanvasPortConnections(
   graph: GraphDefinition,
-  catalog: GraphCatalog,
+  catalogRegistry: GraphCatalogRegistry,
   canvasNodeId: string,
   portId: string,
   role: "source" | "target",
 ): number {
   const requestedEndpoint = toGraphEndpoint(canvasNodeId, portId);
-  const canonicalPortId = canonicalCanvasPortId(requestedEndpoint, graph, catalog);
+  const canonicalPortId = canonicalCanvasPortId(requestedEndpoint, graph, catalogRegistry);
   return graph.edges.filter((edge) => {
     const endpoint = role === "source" ? edge.source : edge.target;
     if (endpoint.kind !== requestedEndpoint.kind) {
@@ -2776,7 +2937,7 @@ function countCanvasPortConnections(
     ) {
       return false;
     }
-    return canonicalCanvasPortId(endpoint, graph, catalog) === canonicalPortId;
+    return canonicalCanvasPortId(endpoint, graph, catalogRegistry) === canonicalPortId;
   }).length;
 }
 
@@ -2790,26 +2951,26 @@ function eventClientPosition(event: MouseEvent | TouchEvent): GraphPosition | un
 
 function getSubgraphOptions(
   graph: GraphDefinition,
-  catalog: GraphCatalog,
+  catalogRegistry: GraphCatalogRegistry,
 ): readonly SubgraphTypeOption[] {
-  const parentType = graph.graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(catalog, graph.graphTypeId);
+  const parentType = graph.graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(catalogRegistry, graph.graphTypeId);
   if (parentType !== undefined && !parentType.allowSubgraphs) {
     return [];
   }
-  const graphTypes = catalog.graphTypes.filter((graphType) => {
+  const graphTypes = catalogRegistry.graphTypes.filter((graphType) => {
     if (graphType.usage === "root") {
       return false;
     }
     return parentType?.allowedSubgraphTypeIds === undefined
-      || parentType.allowedSubgraphTypeIds.some((id) => resolveGraphTypeDefinition(catalog, id)?.id === graphType.id);
+      || parentType.allowedSubgraphTypeIds.some((id) => resolveGraphTypeDefinition(catalogRegistry, id)?.id === graphType.id);
   });
-  return catalog.nodeTypes.flatMap((nodeType) => {
-    if (nodeType.subgraph === undefined || !isNodeTypeAvailable(graph, nodeType, catalog, "subgraph")) {
+  return catalogRegistry.nodeTypes.flatMap((nodeType) => {
+    if (nodeType.subgraph === undefined || !isNodeTypeAvailable(graph, nodeType, catalogRegistry, "subgraph")) {
       return [];
     }
     return graphTypes.flatMap((graphType) => (
       nodeType.subgraph?.graphTypeIds === undefined
-      || nodeType.subgraph.graphTypeIds.some((id) => resolveGraphTypeDefinition(catalog, id)?.id === graphType.id)
+      || nodeType.subgraph.graphTypeIds.some((id) => resolveGraphTypeDefinition(catalogRegistry, id)?.id === graphType.id)
         ? [{ graphType, nodeType }]
         : []
     ));
@@ -2869,8 +3030,8 @@ function isJsonValue(value: unknown): value is JsonValue {
   return isJsonObject(value);
 }
 
-function emptyCatalog(): GraphCatalog {
-  return { formatVersion: 3, catalogId: "empty", title: "empty", dataTypes: [], graphTypes: [], nodeTypes: [] };
+function emptyCatalogRegistry(): GraphCatalogRegistry {
+  return { catalogs: [], dataTypes: [], graphTypes: [], nodeTypes: [] };
 }
 
 function readMetadata(): { projectId: string; documentType: string; relativePath: string } {

@@ -3,11 +3,11 @@ import * as vscode from "vscode";
 import {
   GRAPH_EDITOR_ID,
   createEmptyGraphDocument,
-  parseGraphCatalog,
   serializeGraphDocument,
-  type GraphCatalog,
-  type GraphTypeDefinition,
+  type GraphCatalogRegistry,
+  type RegisteredGraphTypeDefinition,
 } from "@visualbridge/graph";
+import { loadGraphCatalogRegistry } from "../catalog/graphCatalogLoader";
 import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
 import { DEFAULT_EDITOR_VIEW_TYPE } from "../editor/documentEditorProvider";
 
@@ -40,16 +40,6 @@ export async function createGraphDocument(projects: ProjectRegistry): Promise<vo
     return;
   }
 
-  const catalog = await loadCatalog(project, graphDocumentType.catalog);
-  if (catalog.graphTypes.length > 0 && catalog.graphTypes.every((graphType) => graphType.usage === "subgraph")) {
-    void vscode.window.showWarningMessage("Graph Catalog 没有可用作根图的 Graph Type。");
-    return;
-  }
-  const selectedGraphType = await selectRootGraphType(catalog);
-  if (catalog.graphTypes.some((graphType) => graphType.usage !== "subgraph") && selectedGraphType === undefined) {
-    return;
-  }
-
   const match = projects.resolveDocument(target);
   if (
     match === undefined
@@ -62,49 +52,54 @@ export async function createGraphDocument(projects: ProjectRegistry): Promise<vo
     return;
   }
 
+  const catalogResult = await loadGraphCatalogRegistry(project, match.documentType.catalogs);
+  if (!catalogResult.ready && match.documentType.catalogs.length > 0) {
+    const firstError = catalogResult.diagnostics.find((diagnostic) => diagnostic.severity === "error");
+    void vscode.window.showWarningMessage(
+      `无法创建 Graph，Catalog Registry 无效：${firstError?.message ?? "未知错误"}`,
+    );
+    return;
+  }
+  const catalogRegistry = catalogResult.registry;
+  if (
+    catalogRegistry.graphTypes.length > 0
+    && catalogRegistry.graphTypes.every((graphType) => graphType.usage === "subgraph")
+  ) {
+    void vscode.window.showWarningMessage("Graph Catalog Registry 没有可用作根图的 Graph Type。");
+    return;
+  }
+  const selectedGraphType = await selectRootGraphType(catalogRegistry);
+  if (
+    catalogRegistry.graphTypes.some((graphType) => graphType.usage !== "subgraph")
+    && selectedGraphType === undefined
+  ) {
+    return;
+  }
+
   const text = serializeGraphDocument(createEmptyGraphDocument(
     `graph_${randomUUID()}`,
     `root_${randomUUID()}`,
     selectedGraphType?.id,
-    catalog,
+    catalogRegistry,
     () => `node_${randomUUID()}`,
   ));
   await vscode.workspace.fs.writeFile(target, new TextEncoder().encode(text));
   await vscode.commands.executeCommand("vscode.openWith", target, DEFAULT_EDITOR_VIEW_TYPE);
 }
 
-async function loadCatalog(
-  project: ProjectContext,
-  catalogPath: string | undefined,
-): Promise<GraphCatalog> {
-  if (catalogPath === undefined) {
-    return { formatVersion: 3, catalogId: "unconfigured", title: "unconfigured", dataTypes: [], graphTypes: [], nodeTypes: [] };
-  }
-  try {
-    const uri = vscode.Uri.joinPath(project.rootUri, ...catalogPath.split("/"));
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(await vscode.workspace.fs.readFile(uri));
-    const result = parseGraphCatalog(text);
-    if (result.success) {
-      return result.document;
-    }
-    void vscode.window.showWarningMessage(`Graph Catalog 无效，将创建未指定类型的 Graph：${result.diagnostics[0]?.message ?? "未知错误"}`);
-  } catch (errorValue) {
-    void vscode.window.showWarningMessage(`无法读取 Graph Catalog，将创建未指定类型的 Graph：${String(errorValue)}`);
-  }
-  return { formatVersion: 3, catalogId: "invalid", title: "invalid", dataTypes: [], graphTypes: [], nodeTypes: [] };
-}
-
-async function selectRootGraphType(catalog: GraphCatalog): Promise<GraphTypeDefinition | undefined> {
-  const candidates = catalog.graphTypes.filter((graphType) => graphType.usage !== "subgraph");
+async function selectRootGraphType(
+  catalogRegistry: GraphCatalogRegistry,
+): Promise<RegisteredGraphTypeDefinition | undefined> {
+  const candidates = catalogRegistry.graphTypes.filter((graphType) => graphType.usage !== "subgraph");
   if (candidates.length === 0) {
     return undefined;
   }
   if (candidates.length === 1) {
     return candidates[0];
   }
-  const items: (vscode.QuickPickItem & { readonly graphType: GraphTypeDefinition })[] = candidates.map((graphType) => ({
+  const items: (vscode.QuickPickItem & { readonly graphType: RegisteredGraphTypeDefinition })[] = candidates.map((graphType) => ({
     label: graphType.title,
-    description: graphType.id,
+    description: `${graphType.catalogTitle} · ${graphType.id}`,
     ...(graphType.description === undefined ? {} : { detail: graphType.description }),
     graphType,
   }));

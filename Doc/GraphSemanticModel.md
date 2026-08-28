@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document defines the landed Graph V3 and Graph Catalog V3 authoring contract. It covers stable identity, Graph Types, flow and data connections, typed embedded subgraphs, catalog-driven validation, and safe node-type replacement. Runtime execution, Unity compilation, and debugging are outside the current implementation.
+This document defines the landed Graph Document V3 and Graph Catalog V4 authoring contract. It covers stable identity, multi-Catalog registration, Graph Types, flow and data connections, typed embedded subgraphs, catalog-driven validation, and safe node-type replacement. Runtime execution, Unity compilation, and debugging are outside the current implementation.
 
 ## Stable identity
 
@@ -14,7 +14,7 @@ Serialized references never depend on a display label, source filename, C# class
 - `graphTypeId` identifies the semantic contract of each root or embedded graph.
 - `portId`, `propertyId`, and `interfacePortId` identify connection and property contracts.
 
-Labels may be renamed freely. A node implementation must retain its existing `nodeTypeId` when its source class is renamed. Catalog `aliases` support explicit legacy IDs for node types, ports, and properties. Aliases participate in lookup, validation, cardinality, and safe replacement, but each identity namespace must remain unambiguous. If a type is unavailable, VisualBridge preserves the node and its complete property object and reports it as unknown.
+Labels may be renamed freely. A node implementation must retain its existing `nodeTypeId` when its source class is renamed. Catalog `aliases` support explicit legacy IDs for node types, Graph Types, ports, and properties. A project loads its declared Catalogs into one registry. Catalog IDs and Data Type IDs are globally unique; Node Type and Graph Type canonical IDs and aliases are globally unambiguous in their respective namespaces. VisualBridge rejects a conflicting registry instead of resolving by Catalog load order. If a type is unavailable, VisualBridge preserves the node and its complete property object and reports it as unknown.
 
 ## Document ownership and embedded subgraphs
 
@@ -52,32 +52,37 @@ Every edge explicitly declares `kind`:
 - `flow` defines execution order and may form cycles.
 - `data` transfers values and never schedules or orders node execution.
 
-Every port declares a stable ID, label, kind, direction, optional data type, and optional connection limit. Validation requires output-to-input direction, matching edge and port kinds, compatible data types, existing endpoints, unique connections, and respected cardinality. There is no global cycle validator; a future project-specific validator may impose additional constraints.
+Every port declares a stable ID, label, kind, direction, optional data type, and optional `maxConnections`. Its Graph Type also declares `portConnectionRules.input` and `.output` as `single` or `multiple`. The effective limit is the stricter result: `single` caps the direction at one connection, while a port-level maximum may restrict it further but never loosen it. Validation requires output-to-input direction, matching edge and port kinds, compatible data types, existing endpoints, unique connections, and respected cardinality. There is no global cycle validator; a future project-specific validator may impose additional constraints.
 
-Data compatibility is deterministic. Identical types, `any`, and target types that explicitly list the source in `accepts` are compatible. VisualBridge does not insert implicit conversion nodes.
+Data compatibility is a registry-wide rule rather than a per-Catalog rule. Ports from different Catalogs may connect when their globally registered Data Types are compatible. Identical types, `any`, and target types that explicitly list the source in `accepts` are compatible. VisualBridge does not insert implicit conversion nodes.
 
 The editor may use a connection as a node-creation gesture. Dropping an unfinished edge on empty canvas space filters new atomic-node ports with the same semantic rules, then commits `graph.addNode` and `graph.addEdge` together. Data inputs retain their serialized literal as a fallback while connected; the node UI marks that field as overridden and restores editing when the edge is removed.
 
 ## Graph Catalog
 
-A Graph document type declares a project-relative `.vbgraphcatalog` file:
+A Graph document type declares one or more project-relative `.vbgraphcatalog` files:
 
 ```json
 {
   "id": "logicGraph",
   "editor": "graph",
   "include": ["Graph/**/*.vbgraph"],
-  "catalog": "Catalog/Logic.vbgraphcatalog"
+  "catalogs": [
+    "Catalog/Common.vbgraphcatalog",
+    "Catalog/Logic.vbgraphcatalog"
+  ]
 }
 ```
 
-The catalog is the authority for Graph Types, node types, ports, data types, properties, defaults, and aliases. Its required `title` is the display name and root path of that Catalog in node lists. A node's optional `menuPath` extends that root and never repeats it; the node `title` is the final path segment. For example, Catalog `通用`, node path `操作 / 整数`, and node title `加法` produce `通用 / 操作 / 整数 / 加法`. Categories, tags, capability traits, source-code provenance, descriptions, and property editor hints remain searchable metadata. Editor hints affect presentation only; the declared value type remains authoritative. VS Code and future MCP adapters use the same parser and validators. Catalog files are text contracts and should be committed when editing must work without Unity. Legacy Catalog V1/V2 files remain readable by using `catalogId` as their fallback display title; serialization upgrades them to V3.
+Each node type belongs to the Catalog file that declares it. The registry combines all loaded Catalogs and is the authority for Graph Types, node types, ports, Data Types, properties, defaults, aliases, and cross-Catalog references. A Catalog's required `title` is its display name and the root path for its own nodes. A node's optional `menuPath` extends that root and never repeats it; the node `title` is the final path segment. For example, Catalog `通用`, node path `操作 / 整数`, and node title `加法` produce `通用 / 操作 / 整数 / 加法`. Categories, tags, capability traits, source-code provenance, descriptions, and property editor hints remain searchable metadata. Editor hints affect presentation only; the declared value type remains authoritative.
+
+VS Code and future MCP adapters use the same parser, registry, and validators. Catalog files are text contracts and should be committed when editing must work without Unity. Legacy Catalog V1-V3 files remain readable. V1/V2 use `catalogId` as a fallback display title. A legacy Graph Type defaults `supportedCatalogIds` to its declaring Catalog and defaults both connection directions to `multiple`; serialization upgrades it to V4.
 
 Catalog serialization is deterministic: unordered type collections and identity aliases are sorted, JSON object keys in defaults are normalized, and the output ends with a newline. Port, dynamic-group, and property arrays preserve declaration order because that order controls the editor layout. This lets a future Unity exporter regenerate the same file without noisy diffs while retaining C# field and branch order.
 
 ## Graph Types and instance constraints
 
-Each Graph Type has a stable ID and aliases, a `usage` of `root`, `subgraph`, or `any`, Graph property definitions, allowed-node selectors, direct-node count constraints, initial node templates, and a subgraph policy. A selector may match canonical or aliased node type IDs, any listed tag, and all listed traits; selector dimensions are combined with AND, while the allowed-selector list is OR.
+Each Graph Type has a stable ID and aliases, a `usage` of `root`, `subgraph`, or `any`, `supportedCatalogIds`, directional connection rules, Graph property definitions, allowed-node selectors, direct-node count constraints, initial node templates, and a subgraph policy. Catalog support is the coarse node allowlist. `allowedNodeSelectors`, when present, is a second filter within those Catalogs. A selector may match canonical or aliased node type IDs, any listed tag, and all listed traits; selector dimensions are combined with AND, while the allowed-selector list is OR. Initial nodes and explicitly referenced selector nodes must belong to a supported Catalog.
 
 Count constraints have their own stable IDs and non-negative `minInstances`/`maxInstances`. They count direct typed nodes only and never recurse into child graphs. Entry uniqueness is expressed as a normal trait constraint, for example `traits: ["flow.entry"]` with both bounds set to one. Initial templates must satisfy all minimum constraints so newly created root and embedded graphs start valid. Removing, adding, or replacing nodes may not violate a bound; the node picker also hides types whose maximum has already been reached.
 

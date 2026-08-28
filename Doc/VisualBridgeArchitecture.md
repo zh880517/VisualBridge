@@ -185,7 +185,7 @@ GameProject/
 目录职责：
 
 - `<EditableRoot>`：与 `Assets` 平级的 VisualBridge 可编辑根目录，文件夹名由游戏工程自定义。
-- `VisualBridge.project.vbjson`：工程边界与插件启用标识，同时声明版本、文档根目录、Catalog 和扩展。
+- `VisualBridge.project.vbjson`：工程边界与插件启用标识，同时声明版本、文档根目录、各 Document Type 使用的 Catalog 列表和扩展。
 - `.visualbridge/generated`：由 Unity 或其他生成器输出并可供离线工具使用的描述数据。
 - `.visualbridge/cache`：本地索引和临时数据，不进入 Git。
 - `Logic`、`Flow`、`Config`、`Tables` 和 `Dialogue`：真正需要编辑、评审和提交的游戏内容；目录名和启用范围可由 Project File 声明。
@@ -207,7 +207,7 @@ VisualBridge Project File 概念上声明：
 
 VisualBridge Project File 不保存编辑器窗口状态、连接端口、当前调试会话和其他临时信息。
 
-首个落地版本包含 `formatVersion`、`projectId`、`documentRoots` 和 `documentTypes`。每个 Document Type 至少声明稳定 `id`、编辑器模块 `editor`、包含规则 `include`，并可声明排除规则 `exclude`。路径和 Glob 统一使用 `/` 分隔，所有文档根目录必须位于 Project File 所在目录内。
+首个落地版本包含 `formatVersion`、`projectId`、`documentRoots` 和 `documentTypes`。每个 Document Type 至少声明稳定 `id`、编辑器模块 `editor`、包含规则 `include`，并可声明排除规则 `exclude` 和工程相对 `catalogs` 数组。路径和 Glob 统一使用 `/` 分隔，所有文档根目录和 Catalog 必须位于 Project File 所在目录内。
 
 ### 工程发现和索引
 
@@ -253,7 +253,7 @@ DocumentType
 
 对话、任务、行为树和时间轴等文档在核心稳定后增加。
 
-### Graph Document V2
+### Graph Document V3 与 Graph Catalog V4
 
 当前落地的 Graph Document 使用 `.vbgraph` JSON 文本格式，并通过 Graph Catalog 提供语义规则：
 
@@ -262,7 +262,9 @@ DocumentType
 - 一个文件拥有根图及其内嵌子图；子图节点以稳定 `subgraphId` 独占另一个 Graph，包含关系不得递归成环。
 - Node、Node Type、Port、Property、Graph 和 Graph Interface 均使用独立于显示名称与实现类名的稳定 ID。
 - Edge 显式区分 `flow` 与 `data`。流程边决定执行顺序并允许环路；数据边只传值，不决定执行顺序。
-- Graph Catalog 定义节点类型、端口方向、连接种类、数据类型、连接数量、属性、默认值和旧类型别名。
+- Graph Document Type 可以加载多个 Graph Catalog。Registry 记录每个节点类型的所属 Catalog，并统一解析 Graph Type、节点类型、跨 Catalog Data Type 和旧类型 alias。
+- Graph Catalog V4 定义节点类型、端口方向、连接种类、数据类型、连接数量、属性、默认值和旧类型别名。Graph Type 以 `supportedCatalogIds` 粗筛节点 Catalog，再以可选 `allowedNodeSelectors` 精筛节点。
+- `portConnectionRules` 定义 Graph Type 输入/输出端口的 `single` 或 `multiple` 规则；端口 `maxConnections` 只能进一步收紧。跨 Catalog 数据连接继续遵守同一套全局 Data Type 兼容规则。
 - 子图通过稳定公开接口与父图连接；跨图连接不能绕过接口直接指向内部节点。
 - Graph Webview 使用 React 与 React Flow 的受控模式实现画布交互；React Flow 状态仅作为视图状态，不作为文档格式或权威数据源。
 - Parser 拒绝未知结构，Serializer 对 Graph、节点、连线、接口和属性键进行确定性排序；找不到 Catalog 节点类型时仍保留全部原始节点数据。
@@ -369,6 +371,8 @@ Catalog 是外部工具理解游戏类型的统一入口，可能包含：
 - 废弃、别名和最小迁移信息。
 
 Catalog 默认是确定性生成的文本文件。是否提交 Git 由项目策略决定；如果希望 VS Code、AI 和 CI 在不启动 Unity 时工作，则应提交必要 Catalog。
+
+同一 Document Type 声明的多个 Catalog 会构成一个 Registry。Catalog ID 和 Data Type ID 全局唯一；Node Type 与 Graph Type 的规范 ID 和 alias 在各自命名空间内全局无歧义。节点归属声明它的 Catalog，Catalog `title` 是该节点在创建列表中的根路径，节点 `menuPath` 在根路径后继续扩展。Registry 统一校验跨 Catalog 引用，不按文件加载顺序解决冲突。
 
 ### Reference Kind
 
@@ -478,7 +482,7 @@ Unity Bridge 是通用 Unity Package，负责 Unity 和 VisualBridge 之间的�
 - 发送调试事件和运行时变量。
 - 根据请求打开 VS Code 中的 Authoring Document。
 
-Graph 完成前不实现上述 Unity 代码。后续 Catalog Exporter 必须把 Graph/Node Type 的显式稳定 ID、Graph 用途、允许节点 selector、实例数量约束、初始节点以及 typed subgraph 目标类型导出为确定性 Catalog；C# 全名只作为 `source` 追踪信息，不能充当持久身份。Exporter 不执行业务 `OnCreate()` 获取默认值，也不得用旧格式覆盖更高版本 Catalog。
+Graph 完成前不实现上述 Unity 代码。后续 Catalog Exporter 必须输出 Graph Catalog V4，把稳定 `catalogId`/显示根 `title`、Graph/Node Type 的显式全局无歧义 ID、节点 Catalog 归属、Graph 用途、`supportedCatalogIds`、`portConnectionRules`、允许节点 selector、实例数量约束、初始节点以及 typed subgraph 目标类型写入确定性 Catalog；C# 全名只作为 `source` 追踪信息，不能充当持久身份。Exporter 不执行业务 `OnCreate()` 获取默认值，也不得用旧格式覆盖更高版本 Catalog。当前 Unity Package 尚未实现这些功能。
 
 不同业务模块通过 Unity Adapter 注册具体 Catalog Generator、Importer、Compiler 和 Debug Mapping。
 
@@ -881,7 +885,7 @@ Domain Reload 会中断连接。Unity Bridge 重新登记实例，VS Code 和 MC
 - 项目 `.ts` 不直接加载到 VS Code Extension Host。
 - 自定义 Webview TypeScript/TSX 仍需要构建为 JavaScript/CSS。
 - 内置 Graph Canvas 使用 React 与 React Flow；React Flow 的节点和连线数据由 Graph Document 派生，用户交互必须转换为 Graph Operation 后才能写入源文档。
-- Graph Catalog V3 声明显示根名、Graph Type、允许节点、直接节点数量约束和 typed subgraph 调用契约；节点的 `menuPath` 是相对 Catalog 显示根名的扩展路径。Graph Document V3 为根图和每个内嵌图保存独立 `graphTypeId`。
+- Graph Catalog V4 支持多 Catalog Registry、节点 Catalog 归属、显示根名、Graph Type 支持 Catalog、允许节点精筛、输入/输出连接数量规则、直接节点数量约束和 typed subgraph 调用契约；节点的 `menuPath` 是相对所属 Catalog 显示根名的扩展路径。旧 Catalog V1-V3 可读取，缺省支持声明自身 Catalog 且输入/输出均为 `multiple`；序列化升级为 V4。Graph Document 继续保持 V3，并为根图和每个内嵌图保存独立 `graphTypeId`。
 - Graph Type 一经设置暂不允许任意修改；节点和子图创建、删除及安全替换必须保持数量约束，子图调用节点的静态数据端口与子图公开接口共同形成父图端口契约。
 - 声明式扩展优先，项目 Provider 处理复杂逻辑。
 - Unity Editor 与本机工具使用 Project Discovery File 和 Loopback WebSocket。

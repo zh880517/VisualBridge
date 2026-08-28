@@ -1,10 +1,10 @@
 # VisualBridge Graph V3
 
-Graph V3 and Graph Catalog V3 add Catalog-defined Graph Types, instance constraints, initial nodes, typed embedded subgraphs, and Catalog-rooted node menus to the semantic editor. Unity, runtime compilation, and debug communication are not connected yet.
+Graph Document V3 and Graph Catalog V4 add multi-Catalog registration, Catalog-defined Graph Types, instance constraints, initial nodes, typed embedded subgraphs, and Catalog-rooted node menus to the semantic editor. Unity, runtime compilation, and debug communication are not connected yet.
 
 ## Project declaration
 
-The `VisualBridge.project.vbjson` marker enables the editor and declares its Graph Catalog:
+The `VisualBridge.project.vbjson` marker enables the editor and declares its Graph Catalogs:
 
 ```json
 {
@@ -17,19 +17,22 @@ The `VisualBridge.project.vbjson` marker enables the editor and declares its Gra
       "editor": "graph",
       "include": ["Graph/**/*.vbgraph"],
       "exclude": [],
-      "catalog": "Catalog/Logic.vbgraphcatalog"
+      "catalogs": [
+        "Catalog/Common.vbgraphcatalog",
+        "Catalog/Logic.vbgraphcatalog"
+      ]
     }
   ]
 }
 ```
 
-The catalog path is relative to the marker. Without a valid catalog, existing unknown nodes remain readable and editable, but new typed nodes and type replacement are unavailable. Node, port, and property aliases are migration identities, not display names. The parser rejects aliases that collide with a canonical ID or another alias in the same namespace.
+Catalog paths are relative to the marker. The host loads them into one registry. Catalog IDs and Data Type IDs must be globally unique; Node Type and Graph Type IDs and aliases must be globally unambiguous in their respective namespaces. Conflicts invalidate the registry instead of being resolved by load order. Without a valid registry, existing unknown nodes remain readable and editable, but new typed nodes and type replacement are unavailable.
 
 ## Catalog example
 
 ```json
 {
-  "formatVersion": 3,
+  "formatVersion": 4,
   "catalogId": "example.logic",
   "title": "通用",
   "dataTypes": [
@@ -41,12 +44,14 @@ The catalog path is relative to the marker. Without a valid catalog, existing un
       "aliases": [],
       "title": "Main Flow",
       "usage": "root",
+      "supportedCatalogIds": ["example.common", "example.logic"],
+      "portConnectionRules": { "input": "single", "output": "multiple" },
       "allowedNodeSelectors": [{ "tags": ["common"] }],
       "properties": [],
       "nodeConstraints": [
         { "id": "entry", "selector": { "traits": ["flowEntry"] }, "minInstances": 1, "maxInstances": 1 }
       ],
-      "initialNodes": [{ "nodeTypeId": "example.flow.entry" }],
+      "initialNodes": [{ "nodeTypeId": "example.flow.step" }],
       "allowSubgraphs": true
     }
   ],
@@ -59,7 +64,7 @@ The catalog path is relative to the marker. Without a valid catalog, existing un
       "category": "Operation",
       "menuPath": ["操作", "整数"],
       "tags": ["common"],
-      "traits": ["flowInput", "flowOutput"],
+      "traits": ["flowEntry", "flowInput", "flowOutput"],
       "source": {
         "providerId": "unity",
         "assemblyName": "Example.Runtime",
@@ -106,8 +111,8 @@ The catalog path is relative to the marker. Without a valid catalog, existing un
 ## Editing behavior
 
 - New documents select a root-compatible Graph Type; a single candidate is selected automatically. Initial node templates make required entries available immediately.
-- Add nodes from the current Graph Type's searchable, allowed catalog types. `GraphCatalog.title` is the root path and each node's `menuPath` is relative to that root, so a Catalog titled `通用`, a path of `操作 / 整数`, and a node titled `加法` appear as `通用 / 操作 / 整数 / 加法`. Search spans the Catalog title, names, IDs, categories, paths, tags, and traits. Types at a count maximum, typed-subgraph call types, and types whose required fields lack deterministic defaults are excluded from the atomic-node picker.
-- Drop an unfinished connection on empty canvas space to open a filtered list of compatible node ports. Choosing one atomically creates the node and edge at the drop position; kind, direction, data assignability, connection limits, allowed selectors, and count constraints are respected.
+- Add nodes from the current Graph Type's searchable registered types. A node belongs to its declaring Catalog. `supportedCatalogIds` first restricts the available Catalogs, then `allowedNodeSelectors` optionally refines their nodes. Each declaring Catalog's `title` is the node's root path and `menuPath` is relative to that root, so Catalog `通用`, path `操作 / 整数`, and node `加法` appear as `通用 / 操作 / 整数 / 加法`. Search spans the Catalog title, names, IDs, categories, paths, tags, and traits. Types at a count maximum, typed-subgraph call types, and types whose required fields lack deterministic defaults are excluded from the atomic-node picker.
+- Drop an unfinished connection on empty canvas space to open a filtered list of compatible node ports. Choosing one atomically creates the node and edge at the drop position; kind, direction, registry-wide Data Type assignability, connection limits, supported Catalogs, allowed selectors, and count constraints are respected. `portConnectionRules` supplies the Graph Type's input/output limit and a port's `maxConnections` may only make that limit stricter.
 - Add typed embedded subgraphs by selecting a compatible call-node type and target Graph Type. The call node renders its static fields/data ports together with the child graph's public interfaces.
 - Render declared flow and data ports; flow edges are solid and data edges are dashed.
 - Permit connection cycles. Data edges never determine execution order.

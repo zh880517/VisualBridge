@@ -7,7 +7,7 @@ export interface DocumentTypeDefinition {
   readonly editor: string;
   readonly include: readonly string[];
   readonly exclude: readonly string[];
-  readonly catalog?: string;
+  readonly catalogs: readonly string[];
 }
 
 export interface VisualBridgeProjectDefinition {
@@ -92,9 +92,19 @@ function readDocumentTypes(
     const exclude = entry.exclude === undefined
       ? []
       : readGlobPatterns(entry.exclude, `${basePath}.exclude`, issues, true);
-    const catalog = entry.catalog === undefined
-      ? undefined
-      : readRelativePath(entry.catalog, `${basePath}.catalog`, issues);
+    const hasCatalog = entry.catalog !== undefined;
+    const hasCatalogs = entry.catalogs !== undefined;
+    if (hasCatalog && hasCatalogs) {
+      issues.push({
+        path: `${basePath}.catalogs`,
+        message: "'catalog' and 'catalogs' cannot be declared together.",
+      });
+    }
+    const catalogs = hasCatalogs
+      ? readRelativePaths(entry.catalogs, `${basePath}.catalogs`, issues)
+      : hasCatalog
+        ? toArray(readRelativePath(entry.catalog, `${basePath}.catalog`, issues))
+        : [];
 
     if (id !== undefined && seenIds.has(id)) {
       issues.push({ path: `${basePath}.id`, message: `Duplicate document type id '${id}'.` });
@@ -102,11 +112,15 @@ function readDocumentTypes(
 
     if (id !== undefined && editor !== undefined) {
       seenIds.add(id);
-      documentTypes.push({ id, editor, include, exclude, ...(catalog === undefined ? {} : { catalog }) });
+      documentTypes.push({ id, editor, include, exclude, catalogs });
     }
   });
 
   return documentTypes;
+}
+
+function toArray(value: string | undefined): readonly string[] {
+  return value === undefined ? [] : [value];
 }
 
 function readIdentifier(
