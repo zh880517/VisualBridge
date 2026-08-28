@@ -16,6 +16,12 @@ Keep durable documentation in `Doc/`. Put task plans and temporary design notes 
 - `dotnet build .\UnityProject\Assembly-CSharp-Editor.csproj` — compile-check editor-only C#.
 - `git diff --check` — detect whitespace errors before review.
 
+## Code Intelligence
+
+- Use CodeGraph first for symbol relationships, entry points, callers, callees, and change-impact analysis when its project index is available.
+- Run `codegraph sync .` after source changes before relying on impact or affected-test results.
+- Treat CodeGraph as navigation evidence; confirm behavior in source and with the relevant build or automated validation before reporting a result.
+
 Open the repository root in VS Code and press `F5` to launch an Extension Development Host. Unity-generated `.csproj` files must not be edited manually.
 
 ## Coding Style & Naming Conventions

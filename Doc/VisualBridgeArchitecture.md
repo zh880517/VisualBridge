@@ -608,6 +608,8 @@ AI Host
 
 MCP Server 独立加载 Authoring Project，并按需连接 Unity，不要求 VS Code 正在运行。多个 AI Agent 启动各自的 MCP Server，通过 `baseHash`、原子文件写入和调试 Lease 协调。
 
+当前已落地的 `Tools/VisualBridgeMcp` 是仅面向本地 Authoring Project 的 stdio 垂直切片。它从进程工作目录或 `VISUALBRIDGE_WORKSPACE` 环境变量确定发现根目录，复用 Core Project File Parser 和 Built-in Graph Parser、Catalog Registry、Validator、GraphOperation 与 Serializer。当前不提供独立 CLI，不连接 Unity，也不包含 Runtime/Debug 能力。具体工具与写入结果契约见 `VisualBridgeMcp.md`。
+
 ### MCP 能力边界
 
 MCP 提供少量稳定的项目级能力：
@@ -621,6 +623,8 @@ MCP 提供少量稳定的项目级能力：
 - 设置断点、控制执行、读取调用栈和变量。
 
 不为每个节点或属性操作创建大量顶层 Tool。领域差异通过 Document Operation Schema 表达。
+
+当前 Graph 垂直切片固定提供六个 Tool：工程发现/读取、Catalog 查询、Graph 查询、节点类型搜索、Graph 校验和 GraphOperation 批量修改。写入 Tool 必须携带读取时得到的 SHA-256 `baseHash`；服务端在同目录临时文件完整写入和同步后，再次检查目标 Hash 并执行原子替换。冲突、无效事务和成功写入使用不同的结构化状态返回，冲突不会自动重试或覆盖。
 
 ## 实例发现与通信
 
@@ -788,6 +792,8 @@ VisualBridge/
 - 完成最小 MCP Server，用于检查和修改源文件。
 
 阶段目标是证明“文本源文件 -> VisualBridgeCore -> 校验与确定性修改”。
+
+Project、Graph Core 与最小 stdio MCP 垂直切片现已落地，并由 `TestData/GraphSemanticProject` 固定样例和 Node 自动化测试持续验证；Unity Catalog Exporter、Importer、Runtime 和 Debug 仍不在本阶段范围内。
 
 ### 阶段二：VS Code 编辑闭环
 

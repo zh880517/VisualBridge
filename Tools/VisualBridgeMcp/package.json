@@ -1,0 +1,28 @@
+{
+  "name": "@visualbridge/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "esbuild src/server.ts --bundle --platform=node --format=esm --outfile=dist/server.js --sourcemap && npm run check",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/stdio.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "@visualbridge/core": "*",
+    "@visualbridge/graph": "*",
+    "minimatch": "^10.2.6",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@types/node": "^24.13.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

@@ -5,6 +5,7 @@ import {
   PROJECT_FILE_GLOB,
   type DocumentTypeDefinition,
   type VisualBridgeProjectDefinition,
+  findMatchingDocumentTypes,
   parseProjectFile,
 } from "@visualbridge/core";
 
@@ -150,16 +151,17 @@ export class ProjectRegistry implements vscode.Disposable {
   public resolveDocument(uri: vscode.Uri): DocumentMatch | undefined {
     for (const project of this.projectsValue) {
       const relativePath = getRelativePath(project.rootUri, uri);
-      if (relativePath === undefined || !isInDocumentRoots(relativePath, project.definition.documentRoots)) {
+      if (relativePath === undefined) {
         continue;
       }
 
-      for (const documentType of project.definition.documentTypes) {
-        const matchesInclude = documentType.include.some((pattern) => matches(pattern, relativePath));
-        const matchesExclude = documentType.exclude.some((pattern) => matches(pattern, relativePath));
-        if (matchesInclude && !matchesExclude) {
-          return { project, documentType, relativePath };
-        }
+      const documentType = findMatchingDocumentTypes(
+        project.definition,
+        relativePath,
+        matches,
+      )[0];
+      if (documentType !== undefined) {
+        return { project, documentType, relativePath };
       }
     }
 
@@ -209,12 +211,6 @@ function getRelativePath(rootUri: vscode.Uri, documentUri: vscode.Uri): string |
   }
 
   return normalizedPath;
-}
-
-function isInDocumentRoots(relativePath: string, documentRoots: readonly string[]): boolean {
-  return documentRoots.some(
-    (root) => root === "." || relativePath === root || relativePath.startsWith(`${root}/`),
-  );
 }
 
 function matches(pattern: string, relativePath: string): boolean {

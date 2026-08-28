@@ -176,6 +176,13 @@ export interface GraphCatalogRegistry {
   readonly nodeTypes: readonly RegisteredGraphNodeTypeDefinition[];
 }
 
+export interface GraphNodeSearchOptions {
+  readonly query?: string;
+  readonly graphTypeId?: string;
+  readonly includeSubgraphNodeTypes?: boolean;
+  readonly limit?: number;
+}
+
 export type GraphCatalogLookup = GraphCatalog | GraphCatalogRegistry;
 
 export function createEmptyGraphCatalog(catalogId = "empty"): GraphCatalog {
@@ -874,6 +881,59 @@ export function isNodeTypeAllowed(
     graphType.allowedNodeSelectors === undefined
     || graphType.allowedNodeSelectors.some((selector) => matchesNodeSelector(nodeType, selector))
   );
+}
+
+export function searchGraphNodeTypes(
+  catalog: GraphCatalogRegistry,
+  options: GraphNodeSearchOptions = {},
+): readonly RegisteredGraphNodeTypeDefinition[] {
+  const graphType = options.graphTypeId === undefined
+    ? undefined
+    : resolveGraphType(catalog, options.graphTypeId);
+  if (options.graphTypeId !== undefined && graphType === undefined) {
+    return [];
+  }
+
+  const queryTerms = options.query?.trim().toLowerCase().split(/\s+/).filter(Boolean) ?? [];
+  const limit = Math.max(1, Math.min(options.limit ?? 50, 200));
+  return catalog.nodeTypes
+    .filter((nodeType) => options.includeSubgraphNodeTypes !== false || nodeType.subgraph === undefined)
+    .filter((nodeType) => graphType === undefined || isNodeTypeAllowed(graphType, nodeType))
+    .filter((nodeType) => {
+      const searchText = nodeSearchText(nodeType);
+      return queryTerms.every((term) => searchText.includes(term));
+    })
+    .sort((left, right) => {
+      const pathComparison = nodeDisplayPath(left).localeCompare(nodeDisplayPath(right));
+      return pathComparison !== 0 ? pathComparison : left.id.localeCompare(right.id);
+    })
+    .slice(0, limit);
+}
+
+function nodeSearchText(nodeType: RegisteredGraphNodeTypeDefinition): string {
+  return [
+    nodeType.catalogTitle,
+    nodeType.catalogId,
+    nodeType.title,
+    nodeType.id,
+    ...nodeType.aliases,
+    nodeType.category,
+    ...nodeType.menuPath,
+    ...nodeType.tags,
+    ...nodeType.traits,
+    nodeType.source?.providerId,
+    nodeType.source?.assemblyName,
+    nodeType.source?.typeName,
+    nodeType.source?.wrapperTypeName,
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join("\n")
+    .toLowerCase();
+}
+
+function nodeDisplayPath(nodeType: RegisteredGraphNodeTypeDefinition): string {
+  const relativePath = nodeType.menuPath.length > 0 ? nodeType.menuPath : [nodeType.category];
+  return [nodeType.catalogTitle, ...relativePath, nodeType.title].join(" / ");
 }
 
 export function resolveNodePort(

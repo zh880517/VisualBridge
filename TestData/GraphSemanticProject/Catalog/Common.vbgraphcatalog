@@ -1,0 +1,222 @@
+{
+  "formatVersion": 4,
+  "catalogId": "sample.common",
+  "title": "Common",
+  "dataTypes": [
+    { "id": "int", "title": "Integer", "color": "#4DA3FF", "accepts": [] },
+    { "id": "float", "title": "Float", "accepts": ["int"] },
+    { "id": "string", "title": "String", "accepts": [] },
+    { "id": "stringFromAny", "title": "String From Any", "acceptsAnySource": true, "accepts": [] },
+    { "id": "int-list", "title": "Integer List", "accepts": [] }
+  ],
+  "graphTypes": [],
+  "nodeTypes": [
+    {
+      "id": "sample.entry",
+      "aliases": ["legacy.entry"],
+      "title": "Entry",
+      "category": "Flow",
+      "menuPath": ["Flow"],
+      "tags": ["allowed"],
+      "traits": ["flow.entry"],
+      "ports": [
+        { "id": "flow.out", "aliases": ["Out"], "title": "Out", "kind": "flow", "direction": "output" }
+      ],
+      "dynamicPortGroups": [],
+      "properties": []
+    },
+    {
+      "id": "sample.step",
+      "aliases": ["legacy.step"],
+      "title": "Step",
+      "category": "Flow",
+      "menuPath": ["Flow"],
+      "tags": ["allowed"],
+      "traits": ["flow.step"],
+      "ports": [
+        { "id": "flow.in", "aliases": ["In"], "title": "In", "kind": "flow", "direction": "input", "maxConnections": 1 },
+        { "id": "flow.out", "aliases": ["Out"], "title": "Out", "kind": "flow", "direction": "output" }
+      ],
+      "dynamicPortGroups": [],
+      "properties": [
+        { "id": "label", "aliases": ["Label"], "title": "Label", "valueType": "string", "required": true, "defaultValue": "step" }
+      ]
+    },
+    {
+      "id": "sample.step.safe",
+      "aliases": [],
+      "title": "Safe Step",
+      "category": "Flow",
+      "menuPath": ["Flow"],
+      "tags": ["allowed"],
+      "traits": ["flow.step"],
+      "ports": [
+        { "id": "flow.in", "aliases": ["In"], "title": "In", "kind": "flow", "direction": "input", "maxConnections": 1 },
+        { "id": "flow.out", "aliases": ["Out"], "title": "Out", "kind": "flow", "direction": "output" }
+      ],
+      "dynamicPortGroups": [],
+      "properties": [
+        { "id": "label", "aliases": ["Label"], "title": "Label", "valueType": "string", "required": true, "defaultValue": "safe" }
+      ]
+    },
+    {
+      "id": "sample.step.unsafe",
+      "aliases": [],
+      "title": "Unsafe Step",
+      "category": "Flow",
+      "menuPath": ["Flow"],
+      "tags": ["allowed"],
+      "traits": ["flow.step"],
+      "ports": [
+        { "id": "flow.in", "aliases": [], "title": "In", "kind": "flow", "direction": "input", "maxConnections": 1 }
+      ],
+      "dynamicPortGroups": [],
+      "properties": [
+        { "id": "label", "aliases": [], "title": "Label", "valueType": "number", "required": true, "defaultValue": 0 }
+      ]
+    },
+    {
+      "id": "sample.intSource",
+      "aliases": [],
+      "title": "Integer Source",
+      "category": "Data",
+      "menuPath": ["Data", "Source"],
+      "tags": ["allowed"],
+      "traits": ["data.source"],
+      "ports": [
+        { "id": "value", "aliases": [], "title": "Value", "kind": "data", "direction": "output", "dataTypeId": "int" }
+      ],
+      "dynamicPortGroups": [],
+      "properties": []
+    },
+    {
+      "id": "sample.floatSource",
+      "aliases": [],
+      "title": "Float Source",
+      "category": "Data",
+      "menuPath": ["Data", "Source"],
+      "tags": ["allowed"],
+      "traits": ["data.source"],
+      "ports": [
+        { "id": "value", "aliases": [], "title": "Value", "kind": "data", "direction": "output", "dataTypeId": "float" }
+      ],
+      "dynamicPortGroups": [],
+      "properties": []
+    },
+    {
+      "id": "sample.stringSource",
+      "aliases": [],
+      "title": "String Source",
+      "category": "Data",
+      "menuPath": ["Data", "Source"],
+      "tags": ["allowed"],
+      "traits": ["data.source"],
+      "ports": [
+        { "id": "value", "aliases": [], "title": "Value", "kind": "data", "direction": "output", "dataTypeId": "string" }
+      ],
+      "dynamicPortGroups": [],
+      "properties": []
+    },
+    {
+      "id": "sample.intSink",
+      "aliases": [],
+      "title": "Integer Sink",
+      "category": "Data",
+      "menuPath": ["Data", "Sink"],
+      "tags": ["allowed"],
+      "traits": ["data.sink"],
+      "ports": [
+        { "id": "value", "aliases": [], "title": "Value", "kind": "data", "direction": "input", "dataTypeId": "int", "maxConnections": 1 }
+      ],
+      "dynamicPortGroups": [],
+      "properties": []
+    },
+    {
+      "id": "sample.floatSink",
+      "aliases": [],
+      "title": "Float Sink",
+      "category": "Data",
+      "menuPath": ["Data", "Sink"],
+      "tags": ["allowed"],
+      "traits": ["data.sink"],
+      "ports": [
+        { "id": "value", "aliases": [], "title": "Value", "kind": "data", "direction": "input", "dataTypeId": "float", "maxConnections": 1 }
+      ],
+      "dynamicPortGroups": [],
+      "properties": []
+    },
+    {
+      "id": "sample.stringSink",
+      "aliases": [],
+      "title": "String Sink",
+      "category": "Data",
+      "menuPath": ["Data", "Sink"],
+      "tags": ["allowed"],
+      "traits": ["data.sink"],
+      "ports": [
+        { "id": "value", "aliases": [], "title": "Value", "kind": "data", "direction": "input", "dataTypeId": "string", "maxConnections": 1 }
+      ],
+      "dynamicPortGroups": [],
+      "properties": [
+        { "id": "value", "aliases": [], "title": "Value", "valueType": "string", "dataTypeId": "string", "required": true, "defaultValue": "" }
+      ]
+    },
+    {
+      "id": "sample.stringAnySink",
+      "aliases": [],
+      "title": "String From Any Sink",
+      "category": "Data",
+      "menuPath": ["Data", "Sink"],
+      "tags": ["allowed"],
+      "traits": ["data.sink"],
+      "ports": [
+        { "id": "value", "aliases": [], "title": "Value", "kind": "data", "direction": "input", "dataTypeId": "stringFromAny", "maxConnections": 1 }
+      ],
+      "dynamicPortGroups": [],
+      "properties": [
+        { "id": "value", "aliases": [], "title": "Value", "valueType": "string", "dataTypeId": "stringFromAny", "required": true, "defaultValue": "" }
+      ]
+    },
+    {
+      "id": "sample.list",
+      "aliases": [],
+      "title": "List Inputs",
+      "category": "Data",
+      "menuPath": ["Data", "List"],
+      "tags": ["allowed"],
+      "traits": ["data.list"],
+      "ports": [],
+      "dynamicPortGroups": [
+        {
+          "id": "list.whole",
+          "aliases": [],
+          "title": "Whole List",
+          "listPortMode": "list",
+          "port": { "kind": "data", "direction": "input", "dataTypeId": "int-list", "maxConnections": 1 },
+          "item": { "valueType": "number", "dataTypeId": "int", "defaultValue": 0 }
+        },
+        {
+          "id": "list.elements",
+          "aliases": [],
+          "title": "Elements",
+          "listPortMode": "element",
+          "port": { "kind": "data", "direction": "input", "dataTypeId": "int", "maxConnections": 1 },
+          "item": { "valueType": "number", "dataTypeId": "int", "defaultValue": 0 }
+        }
+      ],
+      "properties": []
+    },
+    {
+      "id": "sample.hidden",
+      "aliases": [],
+      "title": "Hidden Node",
+      "category": "Internal",
+      "menuPath": ["Internal"],
+      "tags": ["hidden"],
+      "traits": [],
+      "ports": [],
+      "dynamicPortGroups": [],
+      "properties": []
+    }
+  ]
+}

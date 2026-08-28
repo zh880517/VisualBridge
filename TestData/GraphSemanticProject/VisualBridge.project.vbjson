@@ -1,0 +1,22 @@
+{
+  "formatVersion": 1,
+  "projectId": "GraphSemanticProject",
+  "documentRoots": [
+    "Graph"
+  ],
+  "documentTypes": [
+    {
+      "id": "logicGraph",
+      "editor": "graph",
+      "include": [
+        "Graph/**/*.vbgraph"
+      ],
+      "exclude": [],
+      "catalogs": [
+        "Catalog/Common.vbgraphcatalog",
+        "Catalog/Logic.vbgraphcatalog",
+        "Catalog/Blocked.vbgraphcatalog"
+      ]
+    }
+  ]
+}

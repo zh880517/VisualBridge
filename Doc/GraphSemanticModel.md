@@ -131,3 +131,9 @@ Node type is display-only on the canvas. Replacement is available from the node 
 Multi-selection, viewport, MiniMap position, menus, and clipboard contents are editor state and are never serialized into `.vbgraph`. Batch delete, Paste, Duplicate, and connection-created nodes are submitted as ordered Graph Operation batches and receive one final semantic validation before the host creates a single `WorkspaceEdit`; therefore VS Code Undo/Redo treats each gesture as one document edit.
 
 The clipboard V1 payload contains selected atomic nodes and only edges whose two endpoints are in that copied set. Paste assigns fresh stable IDs and remaps its internal endpoints. Singleton nodes required by a Graph Type and embedded subgraphs are excluded until a future payload can preserve ownership and required-instance semantics without ambiguity. Clipboard input is treated as untrusted and rejected unless its format, version, identifiers, JSON values, nodes, and edges are structurally valid.
+
+## Automated semantic baseline
+
+`TestData/GraphSemanticProject` is the checked-in Graph semantic fixture shared by Core tests and the stdio MCP integration test. Its three Catalogs and one Graph cover Registry identity and aliases, supported-Catalog and selector filtering, directional flow/data cardinality, `int`/`float`/`any`/`stringFromAny` compatibility, both `List<T>` port modes, dynamic subgraph interface locking, lossless node replacement, atomic operation batches, and deterministic Graph/Catalog serialization.
+
+The Graph package uses Node's built-in test runner and contains no Unity tests. `npm test` runs this semantic suite and then starts the real MCP stdio server against a temporary copy of the same Authoring Project. The integration test proves that stale hashes are rejected without changing the file, valid GraphOperation batches are atomically persisted, and a failed later operation leaves the complete batch unapplied.

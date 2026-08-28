@@ -1,0 +1,78 @@
+{
+  "formatVersion": 3,
+  "documentId": "semantic-sample",
+  "rootGraphId": "root",
+  "graphs": [
+    {
+      "id": "child",
+      "graphTypeId": "sample.subgraph",
+      "title": "Child",
+      "properties": {},
+      "interfacePorts": [
+        { "id": "parameter", "title": "Parameter", "kind": "data", "direction": "input", "dataTypeId": "any", "maxConnections": 1, "dynamic": true }
+      ],
+      "nodes": [
+        {
+          "kind": "node",
+          "id": "child_int_sink",
+          "nodeTypeId": "sample.intSink",
+          "title": "Child Integer Sink",
+          "position": { "x": 300, "y": 100 },
+          "properties": {},
+          "dynamicPorts": []
+        }
+      ],
+      "edges": []
+    },
+    {
+      "id": "root",
+      "graphTypeId": "legacy.root",
+      "title": "Semantic Sample",
+      "properties": { "priority": 1 },
+      "interfacePorts": [],
+      "nodes": [
+        { "kind": "node", "id": "entry", "nodeTypeId": "legacy.entry", "title": "Entry", "position": { "x": 0, "y": 0 }, "properties": {}, "dynamicPorts": [] },
+        { "kind": "node", "id": "step_a", "nodeTypeId": "sample.step", "title": "Step A", "position": { "x": 240, "y": 0 }, "properties": { "label": "A" }, "dynamicPorts": [] },
+        { "kind": "node", "id": "step_b", "nodeTypeId": "sample.step", "title": "Step B", "position": { "x": 480, "y": 0 }, "properties": { "label": "B" }, "dynamicPorts": [] },
+        { "kind": "node", "id": "int_source", "nodeTypeId": "sample.intSource", "title": "Integer Source", "position": { "x": 0, "y": 240 }, "properties": {}, "dynamicPorts": [] },
+        { "kind": "node", "id": "float_source", "nodeTypeId": "sample.floatSource", "title": "Float Source", "position": { "x": 0, "y": 360 }, "properties": {}, "dynamicPorts": [] },
+        { "kind": "node", "id": "string_source", "nodeTypeId": "sample.stringSource", "title": "String Source", "position": { "x": 0, "y": 480 }, "properties": {}, "dynamicPorts": [] },
+        { "kind": "node", "id": "int_sink", "nodeTypeId": "sample.intSink", "title": "Integer Sink", "position": { "x": 300, "y": 240 }, "properties": {}, "dynamicPorts": [] },
+        { "kind": "node", "id": "float_sink", "nodeTypeId": "sample.floatSink", "title": "Float Sink", "position": { "x": 300, "y": 360 }, "properties": {}, "dynamicPorts": [] },
+        { "kind": "node", "id": "string_sink", "nodeTypeId": "sample.stringSink", "title": "String Sink", "position": { "x": 300, "y": 480 }, "properties": { "value": "fallback" }, "dynamicPorts": [] },
+        { "kind": "node", "id": "string_any_sink", "nodeTypeId": "sample.stringAnySink", "title": "String From Any Sink", "position": { "x": 540, "y": 240 }, "properties": { "value": "fallback" }, "dynamicPorts": [] },
+        {
+          "kind": "node",
+          "id": "list_node",
+          "nodeTypeId": "sample.list",
+          "title": "List Inputs",
+          "position": { "x": 540, "y": 420 },
+          "properties": {},
+          "dynamicPorts": [
+            { "id": "whole_a", "groupId": "list.whole", "title": "Whole A", "value": 1 },
+            { "id": "whole_b", "groupId": "list.whole", "title": "Whole B", "value": 2 },
+            { "id": "element_a", "groupId": "list.elements", "title": "Element A", "value": 3 },
+            { "id": "element_b", "groupId": "list.elements", "title": "Element B", "value": 4 }
+          ]
+        },
+        {
+          "kind": "subgraph",
+          "id": "subgraph_call",
+          "nodeTypeId": "legacy.subgraphCall",
+          "subgraphId": "child",
+          "title": "Child",
+          "position": { "x": 780, "y": 180 },
+          "properties": {},
+          "dynamicPorts": []
+        }
+      ],
+      "edges": [
+        { "id": "flow_entry_step_a", "kind": "flow", "source": { "kind": "node", "nodeId": "entry", "portId": "flow.out" }, "target": { "kind": "node", "nodeId": "step_a", "portId": "flow.in" } },
+        { "id": "flow_step_a_step_b", "kind": "flow", "source": { "kind": "node", "nodeId": "step_a", "portId": "flow.out" }, "target": { "kind": "node", "nodeId": "step_b", "portId": "flow.in" } },
+        { "id": "data_int_float", "kind": "data", "source": { "kind": "node", "nodeId": "int_source", "portId": "value" }, "target": { "kind": "node", "nodeId": "float_sink", "portId": "value" } },
+        { "id": "data_int_string_any", "kind": "data", "source": { "kind": "node", "nodeId": "int_source", "portId": "value" }, "target": { "kind": "node", "nodeId": "string_any_sink", "portId": "value" } },
+        { "id": "data_string_string", "kind": "data", "source": { "kind": "node", "nodeId": "string_source", "portId": "value" }, "target": { "kind": "node", "nodeId": "string_sink", "portId": "value" } }
+      ]
+    }
+  ]
+}

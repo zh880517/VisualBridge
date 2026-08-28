@@ -1,0 +1,21 @@
+{
+  "formatVersion": 4,
+  "catalogId": "sample.blocked",
+  "title": "Blocked",
+  "dataTypes": [],
+  "graphTypes": [],
+  "nodeTypes": [
+    {
+      "id": "sample.blockedNode",
+      "aliases": [],
+      "title": "Blocked Node",
+      "category": "Blocked",
+      "menuPath": [],
+      "tags": ["allowed"],
+      "traits": [],
+      "ports": [],
+      "dynamicPortGroups": [],
+      "properties": []
+    }
+  ]
+}
