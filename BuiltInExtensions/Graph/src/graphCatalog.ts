@@ -118,6 +118,7 @@ export interface GraphNodeTypeDefinition {
   readonly id: string;
   readonly aliases: readonly string[];
   readonly title: string;
+  readonly icon?: string;
   readonly category: string;
   readonly menuPath: readonly string[];
   readonly tags: readonly string[];
@@ -426,6 +427,7 @@ export function serializeGraphCatalog(catalog: GraphCatalog): string {
         id: nodeType.id,
         aliases: [...nodeType.aliases].sort(),
         title: nodeType.title,
+        ...(nodeType.icon === undefined ? {} : { icon: nodeType.icon }),
         category: nodeType.category,
         menuPath: [...nodeType.menuPath],
         tags: [...nodeType.tags].sort(),
@@ -808,12 +810,13 @@ function readNodeTypes(value: unknown, diagnostics: DocumentDiagnostic[]): reado
       diagnostics.push(error("graphCatalog.invalidNodeType", path, "Expected an object."));
       return [];
     }
-    checkKeys(entry, ["id", "aliases", "title", "category", "menuPath", "tags", "traits", "source", "subgraph", "ports", "dynamicPortGroups", "properties"], path, diagnostics);
+    checkKeys(entry, ["id", "aliases", "title", "icon", "category", "menuPath", "tags", "traits", "source", "subgraph", "ports", "dynamicPortGroups", "properties"], path, diagnostics);
     const id = readIdentifier(entry.id, `${path}.id`, diagnostics);
     const aliases = entry.aliases === undefined
       ? []
       : readIdentifierArray(entry.aliases, `${path}.aliases`, diagnostics);
     const title = readString(entry.title, `${path}.title`, diagnostics);
+    const icon = entry.icon === undefined ? undefined : readNonEmptyString(entry.icon, `${path}.icon`, diagnostics);
     const category = readString(entry.category, `${path}.category`, diagnostics);
     const menuPath = entry.menuPath === undefined
       ? category === undefined ? [] : category.split("/").filter((segment) => segment.length > 0)
@@ -829,7 +832,7 @@ function readNodeTypes(value: unknown, diagnostics: DocumentDiagnostic[]): reado
     const properties = readPropertyDefinitions(entry.properties, `${path}.properties`, diagnostics);
     return id === undefined || title === undefined || category === undefined
       ? []
-      : [{ id, aliases, title, category, menuPath, tags, traits, ...(source === undefined ? {} : { source }), ...(subgraph === undefined ? {} : { subgraph }), ports, dynamicPortGroups, properties }];
+      : [{ id, aliases, title, ...(icon === undefined ? {} : { icon }), category, menuPath, tags, traits, ...(source === undefined ? {} : { source }), ...(subgraph === undefined ? {} : { subgraph }), ports, dynamicPortGroups, properties }];
   });
 }
 

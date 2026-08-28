@@ -154,6 +154,7 @@ interface NodeTypeDefinition {
   readonly id: string;
   readonly aliases: readonly string[];
   readonly title: string;
+  readonly icon?: string;
   readonly category: string;
   readonly menuPath?: readonly string[];
   readonly tags?: readonly string[];
@@ -395,6 +396,7 @@ const vscode = acquireVsCodeApi();
 const INTERFACE_INPUT_NODE_ID = "$visualbridge.interface.inputs";
 const INTERFACE_OUTPUT_NODE_ID = "$visualbridge.interface.outputs";
 const GraphPendingContext = createContext(false);
+const GraphNodeTypeVisibilityContext = createContext(true);
 const nodeTypes = {
   visualBridgeNode: VisualBridgeNode,
   visualBridgeInterface: VisualBridgeInterfaceNode,
@@ -402,17 +404,27 @@ const nodeTypes = {
 
 function VisualBridgeNode({ data, selected }: NodeProps<GraphFlowNode>): React.JSX.Element {
   const pending = useContext(GraphPendingContext);
+  const showNodeTypes = useContext(GraphNodeTypeVisibilityContext);
   if (data.flavor !== "node") {
     return <article className="graph-node">Invalid node</article>;
   }
-  const inputs = data.ports.filter((port) => port.direction === "input");
+  const propertyInputPortIds = new Set(
+    (data.nodeType?.properties ?? []).flatMap((property) => {
+      const port = resolvePropertyInputPort(data.nodeType, property);
+      return port === undefined ? [] : [port.id];
+    }),
+  );
+  const inputs = data.ports.filter((port) => port.direction === "input" && !propertyInputPortIds.has(port.id));
   const outputs = data.ports.filter((port) => port.direction === "output");
   return (
     <article className={`graph-node${selected ? " selected" : ""}${data.model.kind === "subgraph" ? " subgraph" : ""}`}>
       <header className="graph-node-header" title={data.model.title || data.typeTitle}>
+        <span className={`graph-node-icon${data.nodeType?.icon === undefined ? " empty" : ""}`} aria-hidden="true">
+          {data.nodeType?.icon ?? ""}
+        </span>
         <InlineNodeTitle data={data} pending={pending} />
       </header>
-      <div className="graph-node-type">{data.typeTitle}</div>
+      {showNodeTypes && <div className="graph-node-type">{data.typeTitle}</div>}
       <InlineNodeProperties data={data} pending={pending} />
       <InlineDynamicPorts data={data} pending={pending} />
       <div className="graph-port-columns">
@@ -426,30 +438,72 @@ function VisualBridgeNode({ data, selected }: NodeProps<GraphFlowNode>): React.J
 
 function InlineNodeTitle({ data, pending }: { readonly data: GraphNodeData; readonly pending: boolean }): React.JSX.Element {
   const [title, setTitle] = useState(data.model.title);
-  useEffect(() => setTitle(data.model.title), [data.model.title]);
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    setTitle(data.model.title);
+    setEditing(false);
+  }, [data.model.title]);
   const commit = (): void => {
     if (title !== data.model.title) {
       data.commitNode(data.model.id, title, data.model.properties);
     }
   };
+  if (!editing) {
+    return (
+      <span
+        className="graph-node-title-display"
+        title="双击编辑节点名称"
+        onDoubleClick={(event) => {
+          event.stopPropagation();
+          if (!pending) {
+            setEditing(true);
+          }
+        }}
+      >
+        {data.model.title}
+      </span>
+    );
+  }
   return (
     <input
+      autoFocus
       className="graph-node-title-input nodrag nowheel"
       aria-label="节点标题"
       value={title}
       disabled={pending}
       onChange={(event) => setTitle(event.target.value)}
       onDoubleClick={(event) => event.stopPropagation()}
-      onBlur={commit}
+      onFocus={(event) => event.currentTarget.select()}
+      onBlur={() => {
+        commit();
+        setEditing(false);
+      }}
       onKeyDown={(event) => {
         event.stopPropagation();
         if (event.key === "Enter") {
           event.currentTarget.blur();
         } else if (event.key === "Escape") {
+          event.preventDefault();
           setTitle(data.model.title);
+          setEditing(false);
         }
       }}
     />
+  );
+}
+
+function resolvePropertyInputPort(
+  nodeType: NodeTypeDefinition | undefined,
+  property: PropertyDefinition,
+): PortDefinition | undefined {
+  if (nodeType === undefined) {
+    return undefined;
+  }
+  const propertyIds = new Set([property.id, ...(property.aliases ?? [])]);
+  return nodeType.ports.find((port) =>
+    port.kind === "data"
+    && port.direction === "input"
+    && [port.id, ...(port.aliases ?? [])].some((portId) => propertyIds.has(portId)),
   );
 }
 
@@ -460,10 +514,9 @@ function InlineNodeProperties({ data, pending }: { readonly data: GraphNodeData;
       {definitions.map((definition) => (
         <InlineNodeProperty key={definition.id} data={data} definition={definition} pending={pending} />
       ))}
-      {definitions.length === 0 && Object.keys(data.model.properties).length === 0 && (
+      {definitions.length === 0 && (
         <span className="graph-node-no-properties">无字段</span>
       )}
-      <InlineNodePropertiesJson data={data} pending={pending} />
     </div>
   );
 }
@@ -482,8 +535,8 @@ function InlineNodeProperty({
   const serializedPropertyId = serializedPropertyIds[0];
   const value = serializedPropertyId === undefined ? undefined : data.model.properties[serializedPropertyId];
   const overridden = data.overriddenPropertyIds.has(definition.id);
-  const displayTitle = `${definition.title}${overridden ? "（已连接）" : ""}`;
-  const fieldTitle = `${displayTitle}${definition.required ? " *" : ""}`;
+  const inputPort = resolvePropertyInputPort(data.nodeType, definition);
+  const fieldTitle = `${definition.title}${definition.required ? " *" : ""}`;
   const commit = (nextValue: JsonValue | undefined): void => {
     if (
       (nextValue === undefined && serializedPropertyIds.length === 0)
@@ -502,15 +555,39 @@ function InlineNodeProperty({
       data.commitNode(data.model.id, data.model.title, properties);
     }
   };
+  const wrapEditor = (editor: React.JSX.Element): React.JSX.Element => (
+    <div
+      className={`graph-node-property-input${overridden ? " connected" : ""}`}
+      title={overridden ? "输入端口已连接；字面值已保留，断开连接后可继续编辑。" : definition.description}
+    >
+      {inputPort !== undefined && (
+        <Handle
+          id={inputPort.id}
+          type="target"
+          position={Position.Left}
+          className="graph-handle data"
+          title={`${inputPort.title} · data${inputPort.dataTypeId === undefined ? "" : ` · ${inputPort.dataTypeId}`}`}
+        />
+      )}
+      {overridden
+        ? (
+          <div className="graph-node-property-connected">
+            <span>{fieldTitle}</span>
+            <em>已连接</em>
+          </div>
+        )
+        : editor}
+    </div>
+  );
   if (definition.editor?.kind === "select") {
     const selectedIndex = definition.editor.options.findIndex((option) => jsonValuesEqual(option.value, value));
     const selectedValue = selectedIndex < 0 ? "" : String(selectedIndex);
-    return (
-      <label className={`graph-node-property${overridden ? " overridden" : ""}`} title={overridden ? "输入端口已连接；当前字面值会保留，但不会作为有效输入。" : definition.description}>
+    return wrapEditor(
+      <label className="graph-node-property">
         <span>{fieldTitle}</span>
         <select
           value={selectedValue}
-          disabled={pending || overridden || definition.editor.readOnly}
+          disabled={pending || definition.editor.readOnly}
           onChange={(event) => {
             const option = definition.editor?.options[Number(event.target.value)];
             if (option !== undefined) {
@@ -523,32 +600,32 @@ function InlineNodeProperty({
             <option key={`${index}:${JSON.stringify(option.value)}`} value={String(index)}>{option.title}</option>
           ))}
         </select>
-      </label>
+      </label>,
     );
   }
   if (definition.valueType === "boolean" || definition.editor?.kind === "checkbox") {
-    return (
-      <label className={`graph-node-property boolean${overridden ? " overridden" : ""}`} title={overridden ? "输入端口已连接；当前字面值会保留，但不会作为有效输入。" : definition.description}>
+    return wrapEditor(
+      <label className="graph-node-property boolean">
         <span>{fieldTitle}</span>
         <input
           type="checkbox"
           checked={value === true}
-          disabled={pending || overridden || definition.editor?.readOnly}
+          disabled={pending || definition.editor?.readOnly}
           onChange={(event) => commit(event.target.checked)}
         />
-      </label>
+      </label>,
     );
   }
-  return (
+  return wrapEditor(
     <InlineNodeScalarProperty
       key={`${data.model.id}:${definition.id}:${JSON.stringify(value)}`}
-      definition={overridden ? { ...definition, title: displayTitle, description: "输入端口已连接；当前字面值会保留，但不会作为有效输入。" } : definition}
+      definition={definition}
       value={value}
       editor={definition.editor}
-      pending={pending || overridden}
+      pending={pending}
       commit={commit}
       reportStatus={data.reportStatus}
-    />
+    />,
   );
 }
 
@@ -634,45 +711,6 @@ function InlineNodeScalarProperty({
             {...(editor?.max === undefined ? {} : { max: editor.max })}
           />}
     </label>
-  );
-}
-
-function InlineNodePropertiesJson({ data, pending }: { readonly data: GraphNodeData; readonly pending: boolean }): React.JSX.Element {
-  const [text, setText] = useState(JSON.stringify(data.model.properties, undefined, 2));
-  useEffect(() => setText(JSON.stringify(data.model.properties, undefined, 2)), [data.model.properties]);
-  const commit = (): void => {
-    try {
-      const properties = JSON.parse(text) as unknown;
-      if (!isJsonObject(properties)) {
-        throw new Error("必须是 JSON 对象");
-      }
-      if (!jsonValuesEqual(properties, data.model.properties)) {
-        data.commitNode(data.model.id, data.model.title, properties);
-      }
-    } catch (errorValue) {
-      data.reportStatus({ message: `节点属性无法解析：${String(errorValue)}`, error: true });
-      setText(JSON.stringify(data.model.properties, undefined, 2));
-    }
-  };
-  return (
-    <details className="graph-node-properties-json">
-      <summary>全部属性 JSON</summary>
-      <textarea
-        aria-label="全部节点属性 JSON"
-        value={text}
-        disabled={pending}
-        rows={4}
-        spellCheck={false}
-        onChange={(event) => setText(event.target.value)}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          event.stopPropagation();
-          if (event.key === "Escape") {
-            setText(JSON.stringify(data.model.properties, undefined, 2));
-          }
-        }}
-      />
-    </details>
   );
 }
 
@@ -961,6 +999,7 @@ function GraphEditorApp(): React.JSX.Element {
   const [picker, setPicker] = useState<NodePickerState>();
   const [subgraphPickerOpen, setSubgraphPickerOpen] = useState(false);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
+  const [showNodeTypes, setShowNodeTypes] = useState(true);
 
   const activeGraph = useMemo(
     () => graphDocument?.graphs.find((graph) => graph.id === activeGraphId),
@@ -1593,6 +1632,14 @@ function GraphEditorApp(): React.JSX.Element {
             </span>
           ))}
         </nav>
+        <label className="graph-toolbar-option">
+          <input
+            type="checkbox"
+            checked={showNodeTypes}
+            onChange={(event) => setShowNodeTypes(event.target.checked)}
+          />
+          <span>显示节点类型</span>
+        </label>
         <span className="graph-toolbar-spacer" />
         <span className="graph-metadata" title={rootMetadata.relativePath}>
           {rootMetadata.projectId} · {rootMetadata.documentType} · {rootMetadata.relativePath}
@@ -1609,36 +1656,38 @@ function GraphEditorApp(): React.JSX.Element {
             <main className={`graph-content${inspectorCollapsed ? " inspector-collapsed" : ""}`}>
               <div ref={canvasRef} className="graph-canvas">
                 <GraphPendingContext.Provider value={pending}>
-                <ReactFlow<GraphFlowNode, GraphFlowEdge>
-                  nodes={flowNodes}
-                  edges={flowEdges}
-                  nodeTypes={nodeTypes}
-                  onNodesChange={handleNodesChange}
-                  onEdgesChange={handleEdgesChange}
-                  onSelectionChange={handleSelectionChange}
-                  onConnect={handleConnect}
-                  onConnectEnd={handleConnectEnd}
-                  onNodeDragStop={handleNodeDragStop}
-                  onNodeContextMenu={handleNodeContextMenu}
-                  onNodeDoubleClick={(_, node) => openSubgraph(node.id)}
-                  onPaneClick={() => setContextMenu(undefined)}
-                  onInit={setFlowInstance}
-                  nodesDraggable={!pending}
-                  nodesConnectable={!pending}
-                  elementsSelectable={!pending}
-                  deleteKeyCode={null}
-                  connectionRadius={24}
-                  snapToGrid
-                  snapGrid={[10, 10]}
-                  fitView
-                  fitViewOptions={{ maxZoom: 1, padding: 0.24 }}
-                  minZoom={0.2}
-                  maxZoom={2}
-                >
-                  <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
-                  <MiniMap pannable zoomable nodeStrokeWidth={3} />
-                  <Controls showInteractive={false} />
-                </ReactFlow>
+                  <GraphNodeTypeVisibilityContext.Provider value={showNodeTypes}>
+                    <ReactFlow<GraphFlowNode, GraphFlowEdge>
+                      nodes={flowNodes}
+                      edges={flowEdges}
+                      nodeTypes={nodeTypes}
+                      onNodesChange={handleNodesChange}
+                      onEdgesChange={handleEdgesChange}
+                      onSelectionChange={handleSelectionChange}
+                      onConnect={handleConnect}
+                      onConnectEnd={handleConnectEnd}
+                      onNodeDragStop={handleNodeDragStop}
+                      onNodeContextMenu={handleNodeContextMenu}
+                      onNodeDoubleClick={(_, node) => openSubgraph(node.id)}
+                      onPaneClick={() => setContextMenu(undefined)}
+                      onInit={setFlowInstance}
+                      nodesDraggable={!pending}
+                      nodesConnectable={!pending}
+                      elementsSelectable={!pending}
+                      deleteKeyCode={null}
+                      connectionRadius={24}
+                      snapToGrid
+                      snapGrid={[10, 10]}
+                      fitView
+                      fitViewOptions={{ maxZoom: 1, padding: 0.24 }}
+                      minZoom={0.2}
+                      maxZoom={2}
+                    >
+                      <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
+                      <MiniMap pannable zoomable nodeStrokeWidth={3} />
+                      <Controls showInteractive={false} />
+                    </ReactFlow>
+                  </GraphNodeTypeVisibilityContext.Provider>
                 </GraphPendingContext.Provider>
               </div>
               <aside className={`graph-inspector-shell${inspectorCollapsed ? " collapsed" : ""}`}>
@@ -1837,134 +1886,7 @@ function GraphInspector({
       </form>
       <h3>Graph 属性</h3>
       <InlineNodeProperties data={propertyData} pending={pending} />
-      <h3>公开接口</h3>
-      <div className="graph-interface-list">
-        {graph.interfacePorts.map((port) => (
-          <InterfacePortRow key={port.id} graphId={graph.id} port={port} pending={pending} postOperations={postOperations} />
-        ))}
-        {graph.interfacePorts.length === 0 && <p className="graph-empty">当前 Graph 没有公开接口。</p>}
-      </div>
-      <AddInterfacePortForm
-        graphId={graph.id}
-        catalog={catalog}
-        pending={pending}
-        postOperations={postOperations}
-        reportStatus={reportStatus}
-      />
     </aside>
-  );
-}
-
-function InterfacePortRow({
-  graphId,
-  port,
-  pending,
-  postOperations,
-}: {
-  readonly graphId: string;
-  readonly port: PortDefinition;
-  readonly pending: boolean;
-  readonly postOperations: (operations: readonly GraphOperation[]) => void;
-}): React.JSX.Element {
-  const [title, setTitle] = useState(port.title);
-  return (
-    <section className="graph-interface-row">
-      <code>{port.id}</code>
-      <span>{port.kind} · {port.direction}{port.dataTypeId === undefined ? "" : ` · ${port.dataTypeId}`}</span>
-      <input value={title} onChange={(event) => setTitle(event.target.value)} />
-      <div>
-        <button
-          type="button"
-          className="secondary"
-          disabled={pending || title === port.title}
-          onClick={() => postOperations([{ type: "graph.updateInterfacePort", graphId, portId: port.id, title }])}
-        >
-          重命名
-        </button>
-        <button
-          type="button"
-          className="danger"
-          disabled={pending}
-          onClick={() => {
-            if (window.confirm(`删除接口 '${port.title}'？相关连线也会被删除。`)) {
-              postOperations([{ type: "graph.removeInterfacePort", graphId, portId: port.id }]);
-            }
-          }}
-        >
-          删除
-        </button>
-      </div>
-    </section>
-  );
-}
-
-function AddInterfacePortForm({
-  graphId,
-  catalog,
-  pending,
-  postOperations,
-  reportStatus,
-}: {
-  readonly graphId: string;
-  readonly catalog: GraphCatalog;
-  readonly pending: boolean;
-  readonly postOperations: (operations: readonly GraphOperation[]) => void;
-  readonly reportStatus: (status: { message: string; error: boolean }) => void;
-}): React.JSX.Element {
-  const [id, setId] = useState("");
-  const [title, setTitle] = useState("");
-  const [kind, setKind] = useState<PortKind>("flow");
-  const [direction, setDirection] = useState<PortDirection>("input");
-  const [dataTypeId, setDataTypeId] = useState(catalog.dataTypes[0]?.id ?? "any");
-  const submit = (event: FormEvent<HTMLFormElement>): void => {
-    event.preventDefault();
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)) {
-      reportStatus({ message: "接口 ID 必须是稳定的有效标识符。", error: true });
-      return;
-    }
-    postOperations([{
-      type: "graph.addInterfacePort",
-      graphId,
-      port: {
-        id,
-        title: title || id,
-        kind,
-        direction,
-        ...(kind === "data" ? { dataTypeId } : {}),
-        maxConnections: 1,
-      },
-    }]);
-  };
-  return (
-    <form className="graph-add-interface" onSubmit={submit}>
-      <h3>添加接口</h3>
-      <InputField label="稳定 ID" value={id} onChange={setId} />
-      <InputField label="显示名称" value={title} onChange={setTitle} />
-      <label className="graph-field">
-        <span>连接类型</span>
-        <select value={kind} onChange={(event) => setKind(event.target.value as PortKind)}>
-          <option value="flow">流程</option>
-          <option value="data">数据</option>
-        </select>
-      </label>
-      <label className="graph-field">
-        <span>方向</span>
-        <select value={direction} onChange={(event) => setDirection(event.target.value as PortDirection)}>
-          <option value="input">输入</option>
-          <option value="output">输出</option>
-        </select>
-      </label>
-      {kind === "data" && (
-        <label className="graph-field">
-          <span>数据类型</span>
-          <select value={dataTypeId} onChange={(event) => setDataTypeId(event.target.value)}>
-            <option value="any">any</option>
-            {catalog.dataTypes.map((dataType) => <option key={dataType.id} value={dataType.id}>{dataType.title}</option>)}
-          </select>
-        </label>
-      )}
-      <button type="submit" disabled={pending}>添加接口</button>
-    </form>
   );
 }
 

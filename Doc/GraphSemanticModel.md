@@ -41,7 +41,7 @@ A `.vbgraph` contains one root graph and zero or more embedded graphs:
 
 Graphs are stored as a flat collection for stable operation addressing. A subgraph node owns another graph through `subgraphId`; every non-root graph has exactly one owner. Removing a subgraph node removes its owned graph hierarchy in the same operation. Flow and data edges may contain cycles, but subgraph ownership must remain an acyclic tree.
 
-Every graph also owns a JSON `properties` object. Its Graph Type declares the typed fields and editor hints rendered by the collapsible Graph Inspector. Node titles and catalog-defined fields are edited directly on each canvas node; the Inspector never changes its target based on node or edge selection.
+Every graph also owns a JSON `properties` object. Its Graph Type declares the typed fields and editor hints rendered by the collapsible Graph Inspector. Node titles and catalog-defined fields are edited directly on each canvas node; titles enter edit mode only after a header double-click. A property that shares identity with a data-input port is rendered together with that port. Once connected, its literal editor is hidden while the stored fallback value is retained for restoration after disconnect. The Inspector never changes its target based on node or edge selection and does not expose raw JSON or graph-interface management.
 
 Subgraphs expose explicit interface ports. From the parent, an input interface is an input handle and an output interface is an output handle. Inside the subgraph, the directions are reversed: an input interface supplies values or flow to internal nodes, while an output interface receives them. Edges cannot bypass this public interface to address nodes in another graph.
 

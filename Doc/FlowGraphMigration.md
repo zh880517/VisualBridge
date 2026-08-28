@@ -57,12 +57,12 @@ Unity Package 未来应把 C# 声明导出为 `.vbgraphcatalog`，Catalog 是代
 | Catalog 节点搜索与创建 | 已完成 | 支持菜单路径、Tag、Trait 和来源元数据搜索 |
 | 节点字段内联编辑 | 已完成 | 支持 select、multiline、range、readonly 等显示提示 |
 | 节点类型安全替换、未知类型保留 | 已完成 | 校验与替换规则识别成员别名 |
-| 子图公开接口和内嵌导航 | 已完成 | typed subgraph 同时保留调用节点类型和目标 Graph Type |
-| Graph Inspector | 已完成 | Graph Type 字段按 Catalog 定义直接编辑 |
+| 子图公开接口和内嵌导航 | 已完成 | typed subgraph 同时保留调用节点类型和目标 Graph Type；Inspector 不提供接口管理 |
+| Graph Inspector | 已完成 | 仅编辑 Graph 名称和 Graph Type 字段，不暴露原始 JSON |
 | 入口唯一性、节点数量规则 | 已完成 | 通用 selector + min/max，创建时生成初始节点 |
 | 实例级动态输出 | 已完成 | Catalog 组模板 + 实例稳定 ID + 原子增删改排序 |
 | 多选、复制、粘贴、Duplicate | 已完成 | 原子节点和内部边以批量 Operation 粘贴并生成新 ID；必需单例和子图暂不复制 |
-| 输入接线后默认值状态 | 已完成 | 保留字面值并标记为被连接覆盖，断开后恢复编辑 |
+| 输入接线后默认值状态 | 已完成 | 字段与输入端口同排；连接后隐藏编辑器并保留字面值，断开后恢复编辑 |
 | 分层菜单、同类型选择、MiniMap | 已完成 | `menuPath` 分层、全文搜索、规范类型同选和缩略图导航已落地 |
 | 悬空连线创建节点 | 已完成 | 按方向、端口种类、数据类型和 Graph Type 约束筛选并原子创建 |
 | C# Catalog 导出 | 缺失 | 最终在 Unity Package Editor 程序集中实现 |

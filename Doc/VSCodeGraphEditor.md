@@ -54,6 +54,7 @@ The catalog path is relative to the marker. Without a valid catalog, existing un
       "id": "example.flow.step",
       "aliases": ["legacy.flow.step"],
       "title": "Step",
+      "icon": "▶",
       "category": "Flow",
       "menuPath": ["Flow", "Basic"],
       "tags": ["common"],
@@ -110,10 +111,11 @@ The catalog path is relative to the marker. Without a valid catalog, existing un
 - Render declared flow and data ports; flow edges are solid and data edges are dashed.
 - Permit connection cycles. Data edges never determine execution order.
 - Double-click a subgraph to enter it and use the breadcrumb to return.
-- Add, rename, and remove public subgraph interfaces. Removing an interface also removes its internal and parent connections.
-- Edit node titles and catalog-defined fields directly on each node. Catalog hints provide text, multiline, number/range, checkbox, select, JSON, reference, and read-only presentations. When a data input is connected, its literal field value is retained but shown read-only and marked `已连接`; disconnecting restores that fallback value. Advanced JSON editing remains available inside the node for unknown or additional fields.
+- Render public subgraph interfaces on both the call site and child canvas. Interface definitions remain part of the Graph contract, but the Graph Inspector does not create, rename, or remove them.
+- Configure an optional text glyph with a node type's `icon` field. Every node reserves a fixed icon slot before its title, keeping titles aligned even when some types omit the icon. The toolbar checkbox controls whether the node type subtitle is visible; this is transient view state and is not serialized.
+- Edit a node title by double-clicking its header. Catalog-defined fields are edited directly on each node using text, multiline, number/range, checkbox, select, JSON, reference, and read-only presentations. A field and its matching data-input handle share one row; while connected, the literal editor is hidden and the fallback value is retained. Disconnecting restores that value and editor.
 - Add, edit, reorder, and remove instance-level dynamic ports directly on a node. Reordering preserves endpoint IDs; deleting a port removes its related edges in the same operation.
-- Edit the current Graph's title, Graph Type-defined fields, advanced JSON properties, and public interfaces in a Graph-only Inspector that can collapse to the right edge. Assigned Graph Type is read-only.
+- Edit only the current Graph's title and Graph Type-defined fields in a Graph-only Inspector that can collapse to the right edge. Assigned Graph Type is read-only.
 - Keep node type display-only; it is never edited as a text field.
 - Multi-select nodes and edges using React Flow selection gestures, then delete them as one Graph Operation batch. Final semantic validation prevents deleting required Graph Type nodes.
 - Copy, Paste, and Duplicate selected atomic nodes together with edges whose endpoints are both selected. Pasted instances receive fresh node and edge IDs. Singleton required nodes and embedded subgraphs are intentionally excluded from the V1 clipboard payload.

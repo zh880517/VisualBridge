@@ -339,6 +339,7 @@
           "default": []
         },
         "title": { "type": "string" },
+        "icon": { "type": "string", "minLength": 1 },
         "category": { "type": "string" },
         "menuPath": {
           "type": "array",
