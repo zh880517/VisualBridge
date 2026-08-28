@@ -881,7 +881,7 @@ Domain Reload 会中断连接。Unity Bridge 重新登记实例，VS Code 和 MC
 - 项目 `.ts` 不直接加载到 VS Code Extension Host。
 - 自定义 Webview TypeScript/TSX 仍需要构建为 JavaScript/CSS。
 - 内置 Graph Canvas 使用 React 与 React Flow；React Flow 的节点和连线数据由 Graph Document 派生，用户交互必须转换为 Graph Operation 后才能写入源文档。
-- Graph Catalog V2 声明 Graph Type、允许节点、直接节点数量约束和 typed subgraph 调用契约；Graph Document V3 为根图和每个内嵌图保存独立 `graphTypeId`。
+- Graph Catalog V3 声明显示根名、Graph Type、允许节点、直接节点数量约束和 typed subgraph 调用契约；节点的 `menuPath` 是相对 Catalog 显示根名的扩展路径。Graph Document V3 为根图和每个内嵌图保存独立 `graphTypeId`。
 - Graph Type 一经设置暂不允许任意修改；节点和子图创建、删除及安全替换必须保持数量约束，子图调用节点的静态数据端口与子图公开接口共同形成父图端口契约。
 - 声明式扩展优先，项目 Provider 处理复杂逻辑。
 - Unity Editor 与本机工具使用 Project Discovery File 和 Loopback WebSocket。

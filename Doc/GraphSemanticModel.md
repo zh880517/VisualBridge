@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document defines the landed Graph V3 and Graph Catalog V2 authoring contract. It covers stable identity, Graph Types, flow and data connections, typed embedded subgraphs, catalog-driven validation, and safe node-type replacement. Runtime execution, Unity compilation, and debugging are outside the current implementation.
+This document defines the landed Graph V3 and Graph Catalog V3 authoring contract. It covers stable identity, Graph Types, flow and data connections, typed embedded subgraphs, catalog-driven validation, and safe node-type replacement. Runtime execution, Unity compilation, and debugging are outside the current implementation.
 
 ## Stable identity
 
@@ -71,7 +71,7 @@ A Graph document type declares a project-relative `.vbgraphcatalog` file:
 }
 ```
 
-The catalog is the authority for Graph Types, node types, ports, data types, properties, defaults, and aliases. It may also declare a hierarchical `menuPath`, tags, capability traits, source-code provenance, descriptions, and property editor hints. Editor hints affect presentation only; the declared value type remains authoritative. VS Code and future MCP adapters use the same parser and validators. Catalog files are text contracts and should be committed when editing must work without Unity.
+The catalog is the authority for Graph Types, node types, ports, data types, properties, defaults, and aliases. Its required `title` is the display name and root path of that Catalog in node lists. A node's optional `menuPath` extends that root and never repeats it; the node `title` is the final path segment. For example, Catalog `通用`, node path `操作 / 整数`, and node title `加法` produce `通用 / 操作 / 整数 / 加法`. Categories, tags, capability traits, source-code provenance, descriptions, and property editor hints remain searchable metadata. Editor hints affect presentation only; the declared value type remains authoritative. VS Code and future MCP adapters use the same parser and validators. Catalog files are text contracts and should be committed when editing must work without Unity. Legacy Catalog V1/V2 files remain readable by using `catalogId` as their fallback display title; serialization upgrades them to V3.
 
 Catalog serialization is deterministic: unordered type collections and identity aliases are sorted, JSON object keys in defaults are normalized, and the output ends with a newline. Port, dynamic-group, and property arrays preserve declaration order because that order controls the editor layout. This lets a future Unity exporter regenerate the same file without noisy diffs while retaining C# field and branch order.
 

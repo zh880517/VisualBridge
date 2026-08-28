@@ -204,8 +204,9 @@ interface GraphTypeDefinition {
 }
 
 interface GraphCatalog {
-  readonly formatVersion: 2;
+  readonly formatVersion: 3;
   readonly catalogId: string;
+  readonly title: string;
   readonly dataTypes: readonly DataTypeDefinition[];
   readonly graphTypes: readonly GraphTypeDefinition[];
   readonly nodeTypes: readonly NodeTypeDefinition[];
@@ -538,9 +539,6 @@ function InlineNodeProperties({ data, pending }: { readonly data: GraphNodeData;
       {definitions.map((definition) => (
         <InlineNodeProperty key={definition.id} data={data} definition={definition} pending={pending} />
       ))}
-      {definitions.length === 0 && (
-        <span className="graph-node-no-properties">无字段</span>
-      )}
     </div>
   );
 }
@@ -1883,6 +1881,7 @@ function GraphEditorApp(): React.JSX.Element {
       {picker !== undefined && picker.mode !== "connect" && (
         <NodeTypePicker
           title={picker.mode === "replace" ? "替换节点类型" : "添加节点"}
+          catalogTitle={catalog.title}
           nodeTypes={pickerTypes}
           onCancel={() => setPicker(undefined)}
           onSelect={(nodeTypeId) => {
@@ -1902,6 +1901,7 @@ function GraphEditorApp(): React.JSX.Element {
 
       {picker?.mode === "connect" && (
         <ConnectionNodePicker
+          catalogTitle={catalog.title}
           options={connectionOptions}
           onCancel={() => setPicker(undefined)}
           onSelect={(option) => addConnectedNode(picker, option)}
@@ -1910,6 +1910,7 @@ function GraphEditorApp(): React.JSX.Element {
 
       {subgraphPickerOpen && (
         <SubgraphTypePicker
+          catalogTitle={catalog.title}
           options={subgraphOptions}
           onCancel={() => setSubgraphPickerOpen(false)}
           onSelect={(graphTypeId, nodeTypeId) => addSubgraph(graphTypeId, nodeTypeId)}
@@ -2035,18 +2036,20 @@ function GraphInspector({
 
 function NodeTypePicker({
   title,
+  catalogTitle,
   nodeTypes: availableNodeTypes,
   onCancel,
   onSelect,
 }: {
   readonly title: string;
+  readonly catalogTitle: string;
   readonly nodeTypes: readonly NodeTypeDefinition[];
   readonly onCancel: () => void;
   readonly onSelect: (nodeTypeId: string) => void;
 }): React.JSX.Element {
   const [query, setQuery] = useState("");
   const filtered = availableNodeTypes.filter((nodeType) =>
-    [nodeType.title, nodeType.id, nodeType.category, ...(nodeType.menuPath ?? []), ...(nodeType.tags ?? []), ...(nodeType.traits ?? [])]
+    [catalogTitle, nodeType.title, nodeType.id, nodeType.category, ...(nodeType.menuPath ?? []), ...(nodeType.tags ?? []), ...(nodeType.traits ?? [])]
       .join(" ")
       .toLowerCase()
       .includes(query.trim().toLowerCase()),
@@ -2058,8 +2061,8 @@ function NodeTypePicker({
         <input autoFocus placeholder="搜索节点类型…" value={query} onChange={(event) => setQuery(event.target.value)} />
         <div className="graph-node-type-list">
           {query.trim().length === 0
-            ? <NodeTypeMenu nodeTypes={filtered} onSelect={onSelect} />
-            : filtered.map((nodeType) => <NodeTypeOption key={nodeType.id} nodeType={nodeType} onSelect={onSelect} />)}
+            ? <NodeTypeMenu catalogTitle={catalogTitle} nodeTypes={filtered} onSelect={onSelect} />
+            : filtered.map((nodeType) => <NodeTypeOption key={nodeType.id} catalogTitle={catalogTitle} nodeType={nodeType} onSelect={onSelect} />)}
           {filtered.length === 0 && <p className="graph-empty">没有可用的节点类型。</p>}
         </div>
       </section>
@@ -2068,10 +2071,12 @@ function NodeTypePicker({
 }
 
 function ConnectionNodePicker({
+  catalogTitle,
   options,
   onCancel,
   onSelect,
 }: {
+  readonly catalogTitle: string;
   readonly options: readonly ConnectionNodeOption[];
   readonly onCancel: () => void;
   readonly onSelect: (option: ConnectionNodeOption) => void;
@@ -2079,7 +2084,7 @@ function ConnectionNodePicker({
   const [query, setQuery] = useState("");
   const normalized = query.trim().toLowerCase();
   const filtered = options.filter(({ nodeType, port }) =>
-    [nodeType.title, nodeType.id, nodeType.category, ...(nodeType.menuPath ?? []), port.title, port.id]
+    [catalogTitle, nodeType.title, nodeType.id, nodeType.category, ...(nodeType.menuPath ?? []), port.title, port.id]
       .join(" ")
       .toLowerCase()
       .includes(normalized),
@@ -2098,7 +2103,7 @@ function ConnectionNodePicker({
               onClick={() => onSelect(option)}
             >
               <strong>{option.nodeType.title}</strong>
-              <span>{option.nodeType.menuPath?.join(" / ") || option.nodeType.category} · {option.port.title}</span>
+              <span>{getNodeTypeDisplayPath(catalogTitle, option.nodeType)} · {option.port.title}</span>
               <code>{option.nodeType.id} · {option.port.id}</code>
             </button>
           ))}
@@ -2110,14 +2115,16 @@ function ConnectionNodePicker({
 }
 
 function NodeTypeMenu({
+  catalogTitle,
   nodeTypes: menuNodeTypes,
   onSelect,
 }: {
+  readonly catalogTitle: string;
   readonly nodeTypes: readonly NodeTypeDefinition[];
   readonly onSelect: (nodeTypeId: string) => void;
 }): React.JSX.Element {
-  const roots = buildNodeTypeMenu(menuNodeTypes);
-  return <>{roots.map((branch) => <NodeTypeMenuBranchView key={branch.title} branch={branch} onSelect={onSelect} />)}</>;
+  const roots = buildNodeTypeMenu(catalogTitle, menuNodeTypes);
+  return <>{roots.map((branch) => <NodeTypeMenuBranchView key={branch.title} catalogTitle={catalogTitle} branch={branch} onSelect={onSelect} />)}</>;
 }
 
 interface NodeTypeMenuBranch {
@@ -2127,9 +2134,11 @@ interface NodeTypeMenuBranch {
 }
 
 function NodeTypeMenuBranchView({
+  catalogTitle,
   branch,
   onSelect,
 }: {
+  readonly catalogTitle: string;
   readonly branch: NodeTypeMenuBranch;
   readonly onSelect: (nodeTypeId: string) => void;
 }): React.JSX.Element {
@@ -2137,30 +2146,32 @@ function NodeTypeMenuBranchView({
     <details className="graph-node-type-branch" open>
       <summary>{branch.title}</summary>
       <div>
-        {branch.branches.map((child) => <NodeTypeMenuBranchView key={child.title} branch={child} onSelect={onSelect} />)}
-        {branch.nodeTypes.map((nodeType) => <NodeTypeOption key={nodeType.id} nodeType={nodeType} onSelect={onSelect} />)}
+        {branch.branches.map((child) => <NodeTypeMenuBranchView key={child.title} catalogTitle={catalogTitle} branch={child} onSelect={onSelect} />)}
+        {branch.nodeTypes.map((nodeType) => <NodeTypeOption key={nodeType.id} catalogTitle={catalogTitle} nodeType={nodeType} onSelect={onSelect} />)}
       </div>
     </details>
   );
 }
 
 function NodeTypeOption({
+  catalogTitle,
   nodeType,
   onSelect,
 }: {
+  readonly catalogTitle: string;
   readonly nodeType: NodeTypeDefinition;
   readonly onSelect: (nodeTypeId: string) => void;
 }): React.JSX.Element {
   return (
     <button type="button" className="graph-node-type-option" onClick={() => onSelect(nodeType.id)}>
       <strong>{nodeType.title}</strong>
-      <span>{nodeType.menuPath?.join(" / ") || nodeType.category}</span>
+      <span>{getNodeTypeDisplayPath(catalogTitle, nodeType)}</span>
       <code>{nodeType.id}</code>
     </button>
   );
 }
 
-function buildNodeTypeMenu(nodeTypes: readonly NodeTypeDefinition[]): readonly NodeTypeMenuBranch[] {
+function buildNodeTypeMenu(catalogTitle: string, nodeTypes: readonly NodeTypeDefinition[]): readonly NodeTypeMenuBranch[] {
   interface MutableBranch {
     title: string;
     branches: Map<string, MutableBranch>;
@@ -2168,7 +2179,7 @@ function buildNodeTypeMenu(nodeTypes: readonly NodeTypeDefinition[]): readonly N
   }
   const root: MutableBranch = { title: "root", branches: new Map(), nodeTypes: [] };
   nodeTypes.forEach((nodeType) => {
-    const path = nodeType.menuPath?.length ? nodeType.menuPath : [nodeType.category || "Other"];
+    const path = [catalogTitle, ...getNodeTypeRelativePath(nodeType)];
     let current = root;
     path.forEach((segment) => {
       let branch = current.branches.get(segment);
@@ -2188,11 +2199,21 @@ function buildNodeTypeMenu(nodeTypes: readonly NodeTypeDefinition[]): readonly N
   return [...root.branches.values()].sort((left, right) => left.title.localeCompare(right.title)).map(freeze);
 }
 
+function getNodeTypeRelativePath(nodeType: NodeTypeDefinition): readonly string[] {
+  return nodeType.menuPath?.length ? nodeType.menuPath : [nodeType.category || "Other"];
+}
+
+function getNodeTypeDisplayPath(catalogTitle: string, nodeType: NodeTypeDefinition): string {
+  return [catalogTitle, ...getNodeTypeRelativePath(nodeType), nodeType.title].join(" / ");
+}
+
 function SubgraphTypePicker({
+  catalogTitle,
   options,
   onCancel,
   onSelect,
 }: {
+  readonly catalogTitle: string;
   readonly options: readonly SubgraphTypeOption[];
   readonly onCancel: () => void;
   readonly onSelect: (graphTypeId: string, nodeTypeId: string) => void;
@@ -2200,7 +2221,7 @@ function SubgraphTypePicker({
   const [query, setQuery] = useState("");
   const normalized = query.trim().toLowerCase();
   const filtered = options.filter(({ graphType, nodeType }) =>
-    [graphType.title, graphType.id, nodeType.title, nodeType.id, ...(nodeType.menuPath ?? [])]
+    [catalogTitle, graphType.title, graphType.id, nodeType.title, nodeType.id, ...(nodeType.menuPath ?? [])]
       .join(" ")
       .toLowerCase()
       .includes(normalized),
@@ -2219,7 +2240,7 @@ function SubgraphTypePicker({
               onClick={() => onSelect(graphType.id, nodeType.id)}
             >
               <strong>{nodeType.title}</strong>
-              <span>创建 {graphType.title}</span>
+              <span>{getNodeTypeDisplayPath(catalogTitle, nodeType)} · 创建 {graphType.title}</span>
               <code>{nodeType.id} → {graphType.id}</code>
             </button>
           ))}
@@ -2849,7 +2870,7 @@ function isJsonValue(value: unknown): value is JsonValue {
 }
 
 function emptyCatalog(): GraphCatalog {
-  return { formatVersion: 2, catalogId: "empty", dataTypes: [], graphTypes: [], nodeTypes: [] };
+  return { formatVersion: 3, catalogId: "empty", title: "empty", dataTypes: [], graphTypes: [], nodeTypes: [] };
 }
 
 function readMetadata(): { projectId: string; documentType: string; relativePath: string } {

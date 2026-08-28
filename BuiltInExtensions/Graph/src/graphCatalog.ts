@@ -1,7 +1,7 @@
 import type { DocumentDiagnostic, DocumentParseResult } from "@visualbridge/core";
 import type { JsonValue } from "./graphDocument";
 
-export const GRAPH_CATALOG_FORMAT_VERSION = 2;
+export const GRAPH_CATALOG_FORMAT_VERSION = 3;
 
 export type GraphPortKind = "flow" | "data";
 export type GraphPortDirection = "input" | "output";
@@ -133,6 +133,7 @@ export interface GraphNodeTypeDefinition {
 export interface GraphCatalog {
   readonly formatVersion: typeof GRAPH_CATALOG_FORMAT_VERSION;
   readonly catalogId: string;
+  readonly title: string;
   readonly dataTypes: readonly GraphDataTypeDefinition[];
   readonly graphTypes: readonly GraphTypeDefinition[];
   readonly nodeTypes: readonly GraphNodeTypeDefinition[];
@@ -142,6 +143,7 @@ export function createEmptyGraphCatalog(catalogId = "empty"): GraphCatalog {
   return {
     formatVersion: GRAPH_CATALOG_FORMAT_VERSION,
     catalogId,
+    title: catalogId,
     dataTypes: [],
     graphTypes: [],
     nodeTypes: [],
@@ -161,8 +163,8 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
   }
 
   const diagnostics: DocumentDiagnostic[] = [];
-  checkKeys(value, ["formatVersion", "catalogId", "dataTypes", "graphTypes", "nodeTypes"], "$", diagnostics);
-  if (value.formatVersion !== 1 && value.formatVersion !== GRAPH_CATALOG_FORMAT_VERSION) {
+  checkKeys(value, ["formatVersion", "catalogId", "title", "dataTypes", "graphTypes", "nodeTypes"], "$", diagnostics);
+  if (value.formatVersion !== 1 && value.formatVersion !== 2 && value.formatVersion !== GRAPH_CATALOG_FORMAT_VERSION) {
     diagnostics.push(error(
       "graphCatalog.unsupportedVersion",
       "formatVersion",
@@ -171,6 +173,9 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
   }
 
   const catalogId = readIdentifier(value.catalogId, "catalogId", diagnostics);
+  const title = value.title === undefined && (value.formatVersion === 1 || value.formatVersion === 2)
+    ? catalogId
+    : readNonEmptyString(value.title, "title", diagnostics);
   const dataTypes = readDataTypes(value.dataTypes, diagnostics);
   const nodeTypes = readNodeTypes(value.nodeTypes, diagnostics);
   const graphTypes = value.graphTypes === undefined
@@ -365,7 +370,7 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
     });
   });
 
-  if (catalogId === undefined || diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+  if (catalogId === undefined || title === undefined || diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
     return { success: false, diagnostics };
   }
 
@@ -374,6 +379,7 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
     document: {
       formatVersion: GRAPH_CATALOG_FORMAT_VERSION,
       catalogId,
+      title,
       dataTypes,
       graphTypes,
       nodeTypes,
@@ -386,6 +392,7 @@ export function serializeGraphCatalog(catalog: GraphCatalog): string {
   const normalized: GraphCatalog = {
     formatVersion: GRAPH_CATALOG_FORMAT_VERSION,
     catalogId: catalog.catalogId,
+    title: catalog.title,
     dataTypes: [...catalog.dataTypes]
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((dataType) => ({

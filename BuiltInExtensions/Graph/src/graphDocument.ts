@@ -2231,8 +2231,9 @@ function formatError(errorValue: unknown): string {
 }
 
 const EMPTY_CATALOG: GraphCatalog = {
-  formatVersion: 2,
+  formatVersion: 3,
   catalogId: "empty",
+  title: "empty",
   dataTypes: [],
   graphTypes: [],
   nodeTypes: [],

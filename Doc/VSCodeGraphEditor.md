@@ -1,6 +1,6 @@
 # VisualBridge Graph V3
 
-Graph V3 adds Catalog-defined Graph Types, instance constraints, initial nodes, and typed embedded subgraphs to the semantic editor. Unity, runtime compilation, and debug communication are not connected yet.
+Graph V3 and Graph Catalog V3 add Catalog-defined Graph Types, instance constraints, initial nodes, typed embedded subgraphs, and Catalog-rooted node menus to the semantic editor. Unity, runtime compilation, and debug communication are not connected yet.
 
 ## Project declaration
 
@@ -29,8 +29,9 @@ The catalog path is relative to the marker. Without a valid catalog, existing un
 
 ```json
 {
-  "formatVersion": 2,
+  "formatVersion": 3,
   "catalogId": "example.logic",
+  "title": "通用",
   "dataTypes": [
     { "id": "number", "title": "Number", "accepts": [] }
   ],
@@ -55,8 +56,8 @@ The catalog path is relative to the marker. Without a valid catalog, existing un
       "aliases": ["legacy.flow.step"],
       "title": "Step",
       "icon": "▶",
-      "category": "Flow",
-      "menuPath": ["Flow", "Basic"],
+      "category": "Operation",
+      "menuPath": ["操作", "整数"],
       "tags": ["common"],
       "traits": ["flowInput", "flowOutput"],
       "source": {
@@ -105,7 +106,7 @@ The catalog path is relative to the marker. Without a valid catalog, existing un
 ## Editing behavior
 
 - New documents select a root-compatible Graph Type; a single candidate is selected automatically. Initial node templates make required entries available immediately.
-- Add nodes from the current Graph Type's searchable, allowed catalog types. The picker groups types by `menuPath`; search spans names, IDs, categories, paths, tags, and traits. Types at a count maximum, typed-subgraph call types, and types whose required fields lack deterministic defaults are excluded from the atomic-node picker.
+- Add nodes from the current Graph Type's searchable, allowed catalog types. `GraphCatalog.title` is the root path and each node's `menuPath` is relative to that root, so a Catalog titled `通用`, a path of `操作 / 整数`, and a node titled `加法` appear as `通用 / 操作 / 整数 / 加法`. Search spans the Catalog title, names, IDs, categories, paths, tags, and traits. Types at a count maximum, typed-subgraph call types, and types whose required fields lack deterministic defaults are excluded from the atomic-node picker.
 - Drop an unfinished connection on empty canvas space to open a filtered list of compatible node ports. Choosing one atomically creates the node and edge at the drop position; kind, direction, data assignability, connection limits, allowed selectors, and count constraints are respected.
 - Add typed embedded subgraphs by selecting a compatible call-node type and target Graph Type. The call node renders its static fields/data ports together with the child graph's public interfaces.
 - Render declared flow and data ports; flow edges are solid and data edges are dashed.

@@ -78,7 +78,7 @@ async function loadCatalog(
   catalogPath: string | undefined,
 ): Promise<GraphCatalog> {
   if (catalogPath === undefined) {
-    return { formatVersion: 2, catalogId: "unconfigured", dataTypes: [], graphTypes: [], nodeTypes: [] };
+    return { formatVersion: 3, catalogId: "unconfigured", title: "unconfigured", dataTypes: [], graphTypes: [], nodeTypes: [] };
   }
   try {
     const uri = vscode.Uri.joinPath(project.rootUri, ...catalogPath.split("/"));
@@ -91,7 +91,7 @@ async function loadCatalog(
   } catch (errorValue) {
     void vscode.window.showWarningMessage(`无法读取 Graph Catalog，将创建未指定类型的 Graph：${String(errorValue)}`);
   }
-  return { formatVersion: 2, catalogId: "invalid", dataTypes: [], graphTypes: [], nodeTypes: [] };
+  return { formatVersion: 3, catalogId: "invalid", title: "invalid", dataTypes: [], graphTypes: [], nodeTypes: [] };
 }
 
 async function selectRootGraphType(catalog: GraphCatalog): Promise<GraphTypeDefinition | undefined> {

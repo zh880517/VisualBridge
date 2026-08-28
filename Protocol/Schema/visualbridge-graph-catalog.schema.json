@@ -3,10 +3,11 @@
   "$id": "https://visualbridge.dev/schema/visualbridge-graph-catalog.schema.json",
   "title": "VisualBridge Graph Catalog",
   "type": "object",
-  "required": ["formatVersion", "catalogId", "dataTypes", "graphTypes", "nodeTypes"],
+  "required": ["formatVersion", "catalogId", "title", "dataTypes", "graphTypes", "nodeTypes"],
   "properties": {
-    "formatVersion": { "const": 2 },
+    "formatVersion": { "const": 3 },
     "catalogId": { "$ref": "#/$defs/identifier" },
+    "title": { "type": "string", "minLength": 1 },
     "dataTypes": {
       "type": "array",
       "items": {
