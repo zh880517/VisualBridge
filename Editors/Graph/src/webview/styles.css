@@ -330,7 +330,7 @@ button:disabled {
   color: var(--vscode-descriptionForeground);
   font-size: 11px;
   background: var(--vscode-editor-background);
-  border: 1px dashed var(--vscode-charts-blue);
+  border: 1px dashed var(--graph-data-color, var(--vscode-charts-blue));
 }
 
 .graph-node-property-connected span {
@@ -340,7 +340,7 @@ button:disabled {
 }
 
 .graph-node-property-connected em {
-  color: var(--vscode-charts-blue);
+  color: var(--graph-data-color, var(--vscode-charts-blue));
   font-style: normal;
   text-align: right;
 }
@@ -364,6 +364,12 @@ button:disabled {
   background: var(--vscode-input-background);
   border: 1px solid var(--vscode-input-border);
   outline: none;
+}
+
+.graph-node-property-input.typed .graph-node-property input:not([type="checkbox"]),
+.graph-node-property-input.typed .graph-node-property select,
+.graph-node-property-input.typed .graph-node-property textarea {
+  border-left: 3px solid var(--graph-data-color);
 }
 
 .graph-node-property textarea {
@@ -423,6 +429,10 @@ button:disabled {
   background: var(--vscode-editor-background);
   border: 1px solid var(--vscode-panel-border);
   border-radius: 3px;
+}
+
+.graph-dynamic-port-row.typed {
+  border-left: 3px solid var(--graph-data-color);
 }
 
 .graph-dynamic-port-row.selected {
@@ -566,7 +576,7 @@ button:disabled {
 }
 
 .graph-port.data {
-  color: var(--vscode-charts-blue);
+  color: var(--graph-data-color, var(--vscode-charts-blue));
 }
 
 .graph-port.flow {
@@ -584,7 +594,7 @@ button:disabled {
 }
 
 .react-flow__handle.graph-handle.data {
-  background: var(--vscode-charts-blue);
+  background: var(--graph-data-color, var(--vscode-charts-blue));
   border-radius: 2px;
 }
 
@@ -720,10 +730,12 @@ button:disabled {
   display: grid;
   min-width: 210px;
   padding: 4px;
-  background: var(--vscode-menu-background);
-  border: 1px solid var(--vscode-menu-border);
-  border-radius: 3px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border));
+  border-radius: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.58);
+  opacity: 1;
 }
 
 .graph-context-menu button {

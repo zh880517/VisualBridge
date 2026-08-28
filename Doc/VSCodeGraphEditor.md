@@ -36,7 +36,7 @@ Catalog paths are relative to the marker. The host loads them into one registry.
   "catalogId": "example.logic",
   "title": "通用",
   "dataTypes": [
-    { "id": "number", "title": "Number", "accepts": [] }
+    { "id": "number", "title": "Number", "color": "#4DA3FF", "accepts": [] }
   ],
   "graphTypes": [
     {
@@ -115,6 +115,7 @@ Catalog paths are relative to the marker. The host loads them into one registry.
 - Drop an unfinished connection on empty canvas space to open a filtered list of compatible node ports. Choosing one atomically creates the node and edge at the drop position; kind, direction, registry-wide Data Type assignability, connection limits, supported Catalogs, allowed selectors, and count constraints are respected. `portConnectionRules` supplies the Graph Type's input/output limit and a port's `maxConnections` may only make that limit stricter.
 - Add typed embedded subgraphs by selecting a compatible call-node type and target Graph Type. The call node renders its static fields/data ports together with the child graph's public interfaces.
 - Render declared flow and data ports; flow edges are solid and data edges are dashed.
+- Give every Data Type a stable built-in color derived from its ID. An optional Catalog `color` in `#RRGGBB` format overrides that default. Property inputs, static and dynamic data handles, interface ports, and data edges use the resolved type color; flow ports keep their separate flow color.
 - Permit connection cycles. Data edges never determine execution order.
 - Double-click a subgraph to enter it and use the breadcrumb to return.
 - Render public subgraph interfaces on both the call site and child canvas. Interface definitions remain part of the Graph contract, but the Graph Inspector does not create, rename, or remove them.
@@ -128,6 +129,7 @@ Catalog paths are relative to the marker. The host loads them into one registry.
 - Multi-select nodes and edges using React Flow selection gestures, then delete them as one Graph Operation batch. Final semantic validation prevents deleting required Graph Type nodes.
 - Copy, Paste, and Duplicate selected atomic nodes together with edges whose endpoints are both selected. Pasted instances receive fresh node and edge IDs. Singleton required nodes and embedded subgraphs are intentionally excluded from the V1 clipboard payload.
 - Right-click an atomic or typed-subgraph node to select every node of the same canonical type or replace its type. Only same-kind, lossless replacement candidates that preserve Graph Type constraints are offered.
+- Right-click empty canvas space for Graph-level Add Node, Add Subgraph, and Paste actions. Newly added nodes and subgraphs use the clicked canvas position. Context menus use an opaque editor-widget surface so the graph remains visually separated from menu text.
 - Use the MiniMap for large-graph navigation. Viewport, selection, open menus, and clipboard state remain transient editor state.
 - Show structural and semantic diagnostics in the Webview and VS Code Problems.
 

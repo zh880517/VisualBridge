@@ -28,6 +28,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type CSSProperties,
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
@@ -172,6 +173,7 @@ interface DataTypeDefinition {
   readonly catalogTitle: string;
   readonly id: string;
   readonly title: string;
+  readonly color?: string;
   readonly accepts: readonly string[];
 }
 
@@ -348,7 +350,7 @@ interface Selection {
 }
 
 type NodePickerState =
-  | { readonly mode: "add" }
+  | { readonly mode: "add"; readonly position?: GraphPosition }
   | { readonly mode: "replace"; readonly nodeId: string }
   | {
       readonly mode: "connect";
@@ -358,6 +360,10 @@ type NodePickerState =
       readonly fromPort: PortDefinition;
       readonly position: GraphPosition;
     };
+
+type GraphContextMenuState =
+  | { readonly kind: "node"; readonly x: number; readonly y: number; readonly nodeId: string }
+  | { readonly kind: "graph"; readonly x: number; readonly y: number; readonly position: GraphPosition };
 
 interface ConnectionNodeOption {
   readonly nodeType: NodeTypeDefinition;
@@ -418,6 +424,7 @@ const INTERFACE_OUTPUT_NODE_ID = "$visualbridge.interface.outputs";
 const GraphPendingContext = createContext(false);
 const GraphNodeTypeVisibilityContext = createContext(true);
 const GraphNodeIdVisibilityContext = createContext(false);
+const GraphDataTypesContext = createContext<readonly DataTypeDefinition[]>([]);
 const nodeTypes = {
   visualBridgeNode: VisualBridgeNode,
   visualBridgeInterface: VisualBridgeInterfaceNode,
@@ -588,12 +595,14 @@ function InlineNodeProperty({
   readonly definition: PropertyDefinition;
   readonly pending: boolean;
 }): React.JSX.Element {
+  const dataTypes = useContext(GraphDataTypesContext);
   const propertyIds = [definition.id, ...(definition.aliases ?? [])];
   const serializedPropertyIds = propertyIds.filter((propertyId) => Object.hasOwn(data.model.properties, propertyId));
   const serializedPropertyId = serializedPropertyIds[0];
   const value = serializedPropertyId === undefined ? undefined : data.model.properties[serializedPropertyId];
   const overridden = data.overriddenPropertyIds.has(definition.id);
   const inputPort = resolvePropertyInputPort(data.nodeType, definition);
+  const dataColorStyle = graphDataTypeStyle(inputPort?.dataTypeId ?? definition.dataTypeId, dataTypes);
   const fieldTitle = definition.title;
   const commit = (nextValue: JsonValue | undefined): void => {
     if (
@@ -615,7 +624,8 @@ function InlineNodeProperty({
   };
   const wrapEditor = (editor: React.JSX.Element): React.JSX.Element => (
     <div
-      className={`graph-node-property-input${overridden ? " connected" : ""}`}
+      className={`graph-node-property-input${dataColorStyle === undefined ? "" : " typed"}${overridden ? " connected" : ""}`}
+      style={dataColorStyle}
       title={overridden ? "输入端口已连接；字面值已保留，断开连接后可继续编辑。" : definition.description}
     >
       {inputPort !== undefined && (
@@ -944,7 +954,9 @@ function DynamicPortRow({
   readonly onDragEnd: () => void;
   readonly onKeyboardMove: (offset: -1 | 1) => void;
 }): React.JSX.Element {
+  const dataTypes = useContext(GraphDataTypesContext);
   const model = data.model;
+  const dataColorStyle = graphDataTypeStyle(group.port.dataTypeId ?? group.item.dataTypeId, dataTypes);
   const commit = (nextValue: JsonValue): void => {
     if (!jsonValuesEqual(nextValue, port.value)) {
       data.commitOperations([{
@@ -959,7 +971,8 @@ function DynamicPortRow({
   };
   return (
     <article
-      className={`graph-dynamic-port-row${selected ? " selected" : ""}${dragging ? " dragging" : ""}${dropPosition === undefined ? "" : ` drop-${dropPosition}`}`}
+      className={`graph-dynamic-port-row${dataColorStyle === undefined ? "" : " typed"}${selected ? " selected" : ""}${dragging ? " dragging" : ""}${dropPosition === undefined ? "" : ` drop-${dropPosition}`}`}
+      style={dataColorStyle}
       role="option"
       aria-selected={selected}
       tabIndex={0}
@@ -1122,10 +1135,16 @@ function PortColumn({
   readonly ports: readonly PortDefinition[];
   readonly align?: "left" | "right";
 }): React.JSX.Element {
+  const dataTypes = useContext(GraphDataTypesContext);
   return (
     <div className={`graph-port-column ${align}`}>
       {ports.map((port) => (
-        <div key={`${port.direction}:${port.id}`} className={`graph-port ${port.kind}`} title={port.dataTypeId}>
+        <div
+          key={`${port.direction}:${port.id}`}
+          className={`graph-port ${port.kind}`}
+          style={graphDataTypeStyle(port.dataTypeId, dataTypes)}
+          title={port.dataTypeId}
+        >
           <Handle
             id={port.id}
             type={port.direction === "input" ? "target" : "source"}
@@ -1163,9 +1182,10 @@ function GraphEditorApp(): React.JSX.Element {
   const [pending, setPending] = useState(false);
   const [invalidDiagnostics, setInvalidDiagnostics] = useState<readonly DocumentDiagnostic[]>([]);
   const [status, setStatus] = useState({ message: "正在加载 Graph Document…", error: false });
-  const [contextMenu, setContextMenu] = useState<{ readonly x: number; readonly y: number; readonly nodeId: string }>();
+  const [contextMenu, setContextMenu] = useState<GraphContextMenuState>();
   const [picker, setPicker] = useState<NodePickerState>();
   const [subgraphPickerOpen, setSubgraphPickerOpen] = useState(false);
+  const [subgraphPosition, setSubgraphPosition] = useState<GraphPosition>();
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [showNodeTypes, setShowNodeTypes] = useState(true);
   const [showNodeIds, setShowNodeIds] = useState(false);
@@ -1200,6 +1220,7 @@ function GraphEditorApp(): React.JSX.Element {
     setContextMenu(undefined);
     setPicker(undefined);
     setSubgraphPickerOpen(false);
+    setSubgraphPosition(undefined);
     setStatus({ message: "正在应用修改…", error: false });
     vscode.postMessage({
       type: "applyOperations",
@@ -1402,7 +1423,7 @@ function GraphEditorApp(): React.JSX.Element {
       return;
     }
     setFlowNodes(toFlowNodes(graphDocument, activeGraph, catalogRegistry, selected, commitNode, postOperations, setStatus));
-    setFlowEdges(activeGraph.edges.map((edge) => toFlowEdge(edge, selected, activeGraph, catalogRegistry)));
+    setFlowEdges(activeGraph.edges.map((edge) => toFlowEdge(edge, selected, graphDocument, activeGraph, catalogRegistry)));
   }, [activeGraph, catalogRegistry, commitNode, graphDocument, postOperations, selected]);
 
   const handleNodesChange = useCallback((changes: NodeChange<GraphFlowNode>[]): void => {
@@ -1567,7 +1588,7 @@ function GraphEditorApp(): React.JSX.Element {
     return { x: Math.round(position.x), y: Math.round(position.y) };
   }, [flowInstance]);
 
-  const addNodeType = useCallback((nodeTypeId: string): void => {
+  const addNodeType = useCallback((nodeTypeId: string, position?: GraphPosition): void => {
     const currentGraph = documentRef.current?.graphs.find((graph) => graph.id === activeGraphIdRef.current);
     const nodeType = catalogRegistryRef.current.nodeTypes.find(
       (candidate) => candidate.id === nodeTypeId && candidate.subgraph === undefined,
@@ -1588,7 +1609,7 @@ function GraphEditorApp(): React.JSX.Element {
         id: newId("node"),
         nodeTypeId: nodeType.id,
         title: nodeType.title,
-        position: nodePosition(),
+        position: position ?? nodePosition(),
         properties: createDefaultProperties(nodeType),
         dynamicPorts: [],
       },
@@ -1648,7 +1669,7 @@ function GraphEditorApp(): React.JSX.Element {
     ]);
   }, [postOperations, updateSelection]);
 
-  const addSubgraph = useCallback((graphTypeId?: string, nodeTypeId?: string): void => {
+  const addSubgraph = useCallback((graphTypeId?: string, nodeTypeId?: string, position?: GraphPosition): void => {
     const currentGraph = documentRef.current?.graphs.find((graph) => graph.id === activeGraphIdRef.current);
     if (currentGraph === undefined || (!catalogReadyRef.current && (graphTypeId !== undefined || nodeTypeId !== undefined))) {
       return;
@@ -1683,7 +1704,7 @@ function GraphEditorApp(): React.JSX.Element {
         ...(nodeType === undefined ? {} : { nodeTypeId: nodeType.id }),
         subgraphId,
         title: nodeType?.title ?? `Subgraph ${index}`,
-        position: nodePosition(),
+        position: position ?? nodePosition(),
         properties: nodeType === undefined ? {} : createDefaultProperties(nodeType),
         dynamicPorts: [],
       },
@@ -1770,7 +1791,7 @@ function GraphEditorApp(): React.JSX.Element {
     }
     event.preventDefault();
     updateSelection({ nodeIds: [node.id], edgeIds: [] });
-    setContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id });
+    setContextMenu({ kind: "node", x: event.clientX, y: event.clientY, nodeId: node.id });
     if (node.data.model.nodeTypeId !== undefined && catalogReadyRef.current) {
       setReplacementCandidates((current) => {
         const next = { ...current };
@@ -1785,6 +1806,21 @@ function GraphEditorApp(): React.JSX.Element {
       });
     }
   }, [updateSelection]);
+
+  const handlePaneContextMenu = useCallback((event: MouseEvent | ReactMouseEvent): void => {
+    event.preventDefault();
+    const fallback = nodePosition();
+    const position = flowInstance === undefined
+      ? fallback
+      : flowInstance.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    updateSelection(undefined);
+    setContextMenu({
+      kind: "graph",
+      x: event.clientX,
+      y: event.clientY,
+      position: { x: Math.round(position.x), y: Math.round(position.y) },
+    });
+  }, [flowInstance, nodePosition, updateSelection]);
 
   const openSubgraph = useCallback((nodeId: string): void => {
     const graph = documentRef.current?.graphs.find((candidate) => candidate.id === activeGraphIdRef.current);
@@ -1827,14 +1863,22 @@ function GraphEditorApp(): React.JSX.Element {
     : catalogRegistry.nodeTypes.filter((nodeType) => isNodeTypeAvailable(activeGraph, nodeType, catalogRegistry, "atomic"));
 
   return (
-    <div className="graph-app" onClick={() => setContextMenu(undefined)}>
+    <GraphDataTypesContext.Provider value={catalogRegistry.dataTypes}>
+      <div className="graph-app" onClick={() => setContextMenu(undefined)}>
       <header className="graph-toolbar">
         <button type="button" onClick={(event) => { event.stopPropagation(); setPicker({ mode: "add" }); }} disabled={activeGraph === undefined || pending || !catalogReady || availableAtomicNodeTypes.length === 0}>
           添加节点
         </button>
         <button
           type="button"
-          onClick={() => catalogRegistry.graphTypes.length === 0 ? addSubgraph() : setSubgraphPickerOpen(true)}
+          onClick={() => {
+            setSubgraphPosition(undefined);
+            if (catalogRegistry.graphTypes.length === 0) {
+              addSubgraph();
+            } else {
+              setSubgraphPickerOpen(true);
+            }
+          }}
           disabled={activeGraph === undefined || pending || (catalogRegistry.graphTypes.length > 0 && (!catalogReady || subgraphOptions.length === 0))}
           title={catalogRegistry.graphTypes.length > 0 && !catalogReady ? "Catalog 尚未就绪" : catalogRegistry.graphTypes.length > 0 && subgraphOptions.length === 0 ? "当前 Graph Type 没有可用的子图类型" : undefined}
         >
@@ -1899,6 +1943,7 @@ function GraphEditorApp(): React.JSX.Element {
                         onConnectEnd={handleConnectEnd}
                         onNodeDragStop={handleNodeDragStop}
                         onNodeContextMenu={handleNodeContextMenu}
+                        onPaneContextMenu={handlePaneContextMenu}
                         onNodeDoubleClick={(_, node) => openSubgraph(node.id)}
                         onPaneClick={() => setContextMenu(undefined)}
                         onInit={setFlowInstance}
@@ -1948,7 +1993,7 @@ function GraphEditorApp(): React.JSX.Element {
             </main>
           )}
 
-      {contextMenu !== undefined && activeGraph !== undefined && (() => {
+      {contextMenu?.kind === "node" && activeGraph !== undefined && (() => {
         const node = activeGraph.nodes.find((candidate) => candidate.id === contextMenu.nodeId);
         const candidates = replacementCandidates[contextMenu.nodeId];
         return (
@@ -1970,6 +2015,48 @@ function GraphEditorApp(): React.JSX.Element {
         );
       })()}
 
+      {contextMenu?.kind === "graph" && activeGraph !== undefined && (
+        <div className="graph-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
+          <button
+            type="button"
+            disabled={pending || !catalogReady || availableAtomicNodeTypes.length === 0}
+            onClick={() => {
+              const position = contextMenu.position;
+              setContextMenu(undefined);
+              setPicker({ mode: "add", position });
+            }}
+          >
+            添加节点…
+          </button>
+          <button
+            type="button"
+            disabled={pending || (catalogRegistry.graphTypes.length > 0 && (!catalogReady || subgraphOptions.length === 0))}
+            onClick={() => {
+              const position = contextMenu.position;
+              setContextMenu(undefined);
+              if (catalogRegistry.graphTypes.length === 0) {
+                addSubgraph(undefined, undefined, position);
+              } else {
+                setSubgraphPosition(position);
+                setSubgraphPickerOpen(true);
+              }
+            }}
+          >
+            添加子图…
+          </button>
+          <button
+            type="button"
+            disabled={pending || !catalogReady}
+            onClick={() => {
+              setContextMenu(undefined);
+              vscode.postMessage({ type: "readClipboard" });
+            }}
+          >
+            粘贴
+          </button>
+        </div>
+      )}
+
       {picker !== undefined && picker.mode !== "connect" && (
         <NodeTypePicker
           title={picker.mode === "replace" ? "替换节点类型" : "添加节点"}
@@ -1984,7 +2071,7 @@ function GraphEditorApp(): React.JSX.Element {
                 nodeTypeId,
               }]);
             } else {
-              addNodeType(nodeTypeId);
+              addNodeType(nodeTypeId, picker.position);
             }
           }}
         />
@@ -2001,13 +2088,17 @@ function GraphEditorApp(): React.JSX.Element {
       {subgraphPickerOpen && (
         <SubgraphTypePicker
           options={subgraphOptions}
-          onCancel={() => setSubgraphPickerOpen(false)}
-          onSelect={(graphTypeId, nodeTypeId) => addSubgraph(graphTypeId, nodeTypeId)}
+          onCancel={() => {
+            setSubgraphPickerOpen(false);
+            setSubgraphPosition(undefined);
+          }}
+          onSelect={(graphTypeId, nodeTypeId) => addSubgraph(graphTypeId, nodeTypeId, subgraphPosition)}
         />
       )}
 
-      <footer className={`graph-status${status.error ? " error" : ""}`}><span>{status.message}</span></footer>
-    </div>
+        <footer className={`graph-status${status.error ? " error" : ""}`}><span>{status.message}</span></footer>
+      </div>
+    </GraphDataTypesContext.Provider>
   );
 }
 
@@ -2425,19 +2516,33 @@ function toFlowNodes(
 function toFlowEdge(
   edge: GraphEdgeModel,
   selected: Selection | undefined,
+  document: GraphDocument,
   graph: GraphDefinition,
   catalogRegistry: GraphCatalogRegistry,
 ): GraphFlowEdge {
+  const sourceCanvasNodeId = edge.source.kind === "node" ? edge.source.nodeId : INTERFACE_INPUT_NODE_ID;
+  const sourcePort = findCanvasPort(
+    document,
+    graph,
+    catalogRegistry,
+    sourceCanvasNodeId,
+    edge.source.portId,
+    "source",
+  );
+  const dataColor = edge.kind === "data"
+    ? resolveGraphDataTypeColor(sourcePort?.dataTypeId, catalogRegistry.dataTypes)
+    : undefined;
   return {
     id: edge.id,
     type: "default",
-    source: edge.source.kind === "node" ? edge.source.nodeId : INTERFACE_INPUT_NODE_ID,
+    source: sourceCanvasNodeId,
     sourceHandle: canonicalCanvasPortId(edge.source, graph, catalogRegistry),
     target: edge.target.kind === "node" ? edge.target.nodeId : INTERFACE_OUTPUT_NODE_ID,
     targetHandle: canonicalCanvasPortId(edge.target, graph, catalogRegistry),
     data: { model: edge },
     className: `graph-edge-${edge.kind}`,
-    markerEnd: { type: MarkerType.ArrowClosed },
+    ...(dataColor === undefined ? {} : { style: { stroke: dataColor } }),
+    markerEnd: { type: MarkerType.ArrowClosed, ...(dataColor === undefined ? {} : { color: dataColor }) },
     selected: selected?.edgeIds.includes(edge.id) ?? false,
   };
 }
@@ -2575,7 +2680,9 @@ function findCanvasPort(
     return undefined;
   }
   const nodeType = node.nodeTypeId === undefined ? undefined : resolveNodeTypeDefinition(catalogRegistry, node.nodeTypeId);
-  return portsForNode(document, graph, node, nodeType).find((port) => port.id === portId);
+  return portsForNode(document, graph, node, nodeType).find(
+    (port) => port.id === portId || (port.aliases?.includes(portId) ?? false),
+  );
 }
 
 function toGraphEndpoint(canvasNodeId: string, portId: string): GraphEndpoint {
@@ -3028,6 +3135,53 @@ function isJsonValue(value: unknown): value is JsonValue {
     return value.every(isJsonValue);
   }
   return isJsonObject(value);
+}
+
+const DEFAULT_GRAPH_DATA_TYPE_COLORS = [
+  "#4DA3FF",
+  "#FF8A65",
+  "#66BB6A",
+  "#AB77E6",
+  "#F2C94C",
+  "#26C6DA",
+  "#EC6F9F",
+  "#9CCC65",
+  "#FFB74D",
+  "#7E8CE0",
+  "#26A69A",
+  "#B0BEC5",
+] as const;
+
+type GraphDataColorStyle = CSSProperties & { readonly "--graph-data-color": string };
+
+function resolveGraphDataTypeColor(
+  dataTypeId: string | undefined,
+  dataTypes: readonly DataTypeDefinition[],
+): string | undefined {
+  if (dataTypeId === undefined) {
+    return undefined;
+  }
+  const configuredColor = dataTypes.find((dataType) => dataType.id === dataTypeId)?.color;
+  if (configuredColor !== undefined) {
+    return configuredColor;
+  }
+  if (dataTypeId === "any") {
+    return "#8B98A5";
+  }
+  let hash = 2166136261;
+  for (let index = 0; index < dataTypeId.length; index += 1) {
+    hash ^= dataTypeId.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return DEFAULT_GRAPH_DATA_TYPE_COLORS[(hash >>> 0) % DEFAULT_GRAPH_DATA_TYPE_COLORS.length];
+}
+
+function graphDataTypeStyle(
+  dataTypeId: string | undefined,
+  dataTypes: readonly DataTypeDefinition[],
+): GraphDataColorStyle | undefined {
+  const color = resolveGraphDataTypeColor(dataTypeId, dataTypes);
+  return color === undefined ? undefined : { "--graph-data-color": color };
 }
 
 function emptyCatalogRegistry(): GraphCatalogRegistry {

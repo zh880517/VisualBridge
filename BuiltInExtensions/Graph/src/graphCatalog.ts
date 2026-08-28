@@ -12,6 +12,7 @@ export type GraphPropertyEditorKind = "text" | "multiline" | "number" | "checkbo
 export interface GraphDataTypeDefinition {
   readonly id: string;
   readonly title: string;
+  readonly color?: string;
   readonly accepts: readonly string[];
 }
 
@@ -333,6 +334,7 @@ export function serializeGraphCatalog(catalog: GraphCatalog): string {
       .map((dataType) => ({
         id: dataType.id,
         title: dataType.title,
+        ...(dataType.color === undefined ? {} : { color: dataType.color }),
         accepts: [...dataType.accepts].sort(),
       })),
     graphTypes: [...catalog.graphTypes]
@@ -893,13 +895,18 @@ function readDataTypes(value: unknown, diagnostics: DocumentDiagnostic[]): reado
       diagnostics.push(error("graphCatalog.invalidDataType", path, "Expected an object."));
       return [];
     }
-    checkKeys(entry, ["id", "title", "accepts"], path, diagnostics);
+    checkKeys(entry, ["id", "title", "color", "accepts"], path, diagnostics);
     const id = readIdentifier(entry.id, `${path}.id`, diagnostics);
     const title = readString(entry.title, `${path}.title`, diagnostics);
+    const color = entry.color === undefined
+      ? undefined
+      : readColor(entry.color, `${path}.color`, diagnostics);
     const accepts = entry.accepts === undefined
       ? []
       : readIdentifierArray(entry.accepts, `${path}.accepts`, diagnostics);
-    return id === undefined || title === undefined ? [] : [{ id, title, accepts }];
+    return id === undefined || title === undefined
+      ? []
+      : [{ id, title, ...(color === undefined ? {} : { color }), accepts }];
   });
 }
 
@@ -1632,6 +1639,14 @@ function readNonEmptyString(value: unknown, path: string, diagnostics: DocumentD
     return undefined;
   }
   return result;
+}
+
+function readColor(value: unknown, path: string, diagnostics: DocumentDiagnostic[]): string | undefined {
+  if (typeof value !== "string" || !/^#[0-9A-Fa-f]{6}$/.test(value)) {
+    diagnostics.push(error("graphCatalog.invalidColor", path, "Expected a color in #RRGGBB format."));
+    return undefined;
+  }
+  return value.toUpperCase();
 }
 
 function readBoolean(value: unknown, path: string, diagnostics: DocumentDiagnostic[]): boolean | undefined {

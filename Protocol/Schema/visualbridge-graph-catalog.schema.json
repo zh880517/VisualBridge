@@ -16,6 +16,10 @@
         "properties": {
           "id": { "$ref": "#/$defs/identifier" },
           "title": { "type": "string" },
+          "color": {
+            "type": "string",
+            "pattern": "^#[0-9A-Fa-f]{6}$"
+          },
           "accepts": {
             "type": "array",
             "items": { "$ref": "#/$defs/identifier" },
