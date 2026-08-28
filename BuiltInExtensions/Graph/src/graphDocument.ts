@@ -9,6 +9,7 @@ import {
   matchesNodeSelector,
   resolveDynamicPortGroup,
   resolveGraphType,
+  resolveListPortDefinition,
   resolvePortDefinition,
   resolvePropertyDefinition,
   resolveNodeType,
@@ -994,6 +995,7 @@ function applyOperation(
       if (
         node.dynamicPorts.some((port) => port.id === operation.port.id)
         || resolvePortDefinition(nodeType, operation.port.id) !== undefined
+        || resolveListPortDefinition(nodeType, operation.port.id) !== undefined
       ) {
         return error("graph.dynamicPortAlreadyExists", `${path}.port.id`, `Port id '${operation.port.id}' is already used on node '${node.id}'.`);
       }
@@ -1406,6 +1408,13 @@ function validateAtomicNode(
         "graph.dynamicPortIdCollision",
         `${portPath}.id`,
         `Dynamic port id '${port.id}' collides with a static port identity on '${nodeType.id}'.`,
+      ));
+    }
+    if (resolveListPortDefinition(nodeType, port.id) !== undefined) {
+      diagnostics.push(error(
+        "graph.dynamicPortIdCollision",
+        `${portPath}.id`,
+        `Dynamic item id '${port.id}' collides with a whole-List port identity on '${nodeType.id}'.`,
       ));
     }
     const group = resolveDynamicPortGroup(nodeType, port.groupId);
@@ -1884,9 +1893,15 @@ function getTypedNodePorts(
 ): readonly GraphResolvedPort[] {
   return [
     ...nodeType.ports,
+    ...nodeType.dynamicPortGroups.flatMap((group) => {
+      const port = group.listPortMode === "list"
+        ? resolveListPortDefinition(nodeType, group.id)
+        : undefined;
+      return port === undefined ? [] : [port];
+    }),
     ...node.dynamicPorts.flatMap((dynamicPort) => {
       const group = resolveDynamicPortGroup(nodeType, dynamicPort.groupId);
-      return group === undefined
+      return group === undefined || group.listPortMode === "list"
         ? []
         : [{
             id: dynamicPort.id,
@@ -1906,6 +1921,7 @@ function resolveTypedNodePort(
   portId: string,
 ): GraphResolvedPort | undefined {
   return resolvePortDefinition(nodeType, portId)
+    ?? resolveListPortDefinition(nodeType, portId)
     ?? getTypedNodePorts(node, nodeType).find((port) => port.id === portId);
 }
 
@@ -1966,6 +1982,9 @@ function replacementIssue(
   for (const dynamicPort of node.dynamicPorts) {
     if (resolvePortDefinition(targetType, dynamicPort.id) !== undefined) {
       return `Dynamic port '${dynamicPort.id}' collides with a static port on '${targetType.title}'.`;
+    }
+    if (resolveListPortDefinition(targetType, dynamicPort.id) !== undefined) {
+      return `Dynamic item '${dynamicPort.id}' collides with a whole-List port on '${targetType.title}'.`;
     }
     const group = resolveDynamicPortGroup(targetType, dynamicPort.groupId);
     if (group === undefined) {

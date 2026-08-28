@@ -36,7 +36,8 @@ Catalog paths are relative to the marker. The host loads them into one registry.
   "catalogId": "example.logic",
   "title": "通用",
   "dataTypes": [
-    { "id": "number", "title": "Number", "color": "#4DA3FF", "accepts": [] }
+    { "id": "int", "title": "Integer", "color": "#4DA3FF", "accepts": [] },
+    { "id": "float", "title": "Float", "color": "#4FC3F7", "accepts": ["int"] }
   ],
   "graphTypes": [
     {
@@ -74,7 +75,7 @@ Catalog paths are relative to the marker. The host loads them into one registry.
       "ports": [
         { "id": "flow.in", "aliases": [], "title": "In", "kind": "flow", "direction": "input", "maxConnections": 1 },
         { "id": "flow.out", "aliases": [], "title": "Out", "kind": "flow", "direction": "output", "maxConnections": 1 },
-        { "id": "value", "aliases": ["Value"], "title": "Value", "kind": "data", "direction": "input", "dataTypeId": "number", "maxConnections": 1 }
+        { "id": "value", "aliases": ["Value"], "title": "Value", "kind": "data", "direction": "input", "dataTypeId": "int", "maxConnections": 1 }
       ],
       "dynamicPortGroups": [
         {
@@ -97,7 +98,7 @@ Catalog paths are relative to the marker. The host loads them into one registry.
           "title": "Amount",
           "description": "Value consumed by the step.",
           "valueType": "number",
-          "dataTypeId": "number",
+          "dataTypeId": "int",
           "required": true,
           "defaultValue": 0,
           "editor": { "kind": "number", "readOnly": false, "min": 0, "max": 100, "options": [] }
@@ -107,6 +108,30 @@ Catalog paths are relative to the marker. The host loads them into one registry.
   ]
 }
 ```
+
+`valueType` describes the JSON scalar shape and editor control, so integer and floating-point fields both use `valueType: "number"`. Runtime semantics belong to `dataTypeId`: C# numeric contracts use distinct stable IDs such as `int` and `float`, never a shared `number` Data Type. The future Unity exporter maps `System.Int32` to `int` and `System.Single` to `float`. A target Data Type may list accepted source types explicitly; the example lets `float` accept `int` to model the C# widening conversion while keeping `float` to `int` invalid.
+
+## List fields
+
+A data `dynamicPortGroup` represents an editable `List<T>` when it declares `listPortMode`. Its ordered instance elements remain in `node.dynamicPorts` so every element has a stable ID across reorder, Undo/Redo, and serialization. The legacy field name is retained for Graph Document V3 compatibility; in `list` mode those item IDs are not connection endpoints.
+
+```json
+{
+  "id": "values",
+  "aliases": [],
+  "title": "Values",
+  "listPortMode": "element",
+  "port": { "kind": "data", "direction": "input", "dataTypeId": "int", "maxConnections": 1 },
+  "item": {
+    "valueType": "number",
+    "dataTypeId": "int",
+    "defaultValue": 0,
+    "editor": { "kind": "number", "readOnly": false, "options": [] }
+  }
+}
+```
+
+`listPortMode: "list"` creates one input handle using the group ID and requires `port.dataTypeId` to identify the complete list type, such as `int-list`; connecting it hides the entire literal list editor. `listPortMode: "element"` creates one input handle per stable item ID, requires `port.dataTypeId` to equal `item.dataTypeId`, and hides only the connected element editor. Both modes require a data input template and an item `dataTypeId`. Omitting `listPortMode` preserves the existing dynamic flow/data-port behavior.
 
 ## Editing behavior
 
@@ -125,6 +150,7 @@ Catalog paths are relative to the marker. The host loads them into one registry.
 - Edit a node title by double-clicking its header. Catalog-defined fields are edited directly on each node using text, multiline, number/range, checkbox, select, JSON, reference, and read-only presentations. A field and its matching data-input handle share one row; while connected, the literal editor is hidden and the fallback value is retained. Disconnecting restores that value and editor.
 - Keep required-field semantics in the Catalog and validator without adding an asterisk to field labels in the canvas or Graph Inspector.
 - Add, select, edit, drag-reorder, and remove instance-level dynamic elements directly on a node. A row edits only the element value and places its dynamic handle at the row edge; there is no separate port-name editor. Each row has a visible selected state and a grip handle. Selecting a row reveals the group-level delete action immediately after Add; deleting removes that element and its related edges in one operation. Dropping a row commits one reorder operation while preserving endpoint IDs, and `Alt+↑/↓` on the grip provides keyboard reordering.
+- Edit `List<T>` elements with the same stable-element controls. Whole-List port mode renders one group input and hides all element editors while connected; element-port mode renders a handle after every element and hides only the connected element's literal editor.
 - Edit only the current Graph's title and Graph Type-defined fields in a Graph-only Inspector that can collapse to the right edge. Assigned Graph Type is read-only.
 - Keep node type display-only; it is never edited as a text field.
 - Multi-select nodes and edges using React Flow selection gestures, then delete them as one Graph Operation batch. Final semantic validation prevents deleting required Graph Type nodes.

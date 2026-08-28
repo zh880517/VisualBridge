@@ -6,6 +6,7 @@ export const GRAPH_CATALOG_FORMAT_VERSION = 4;
 export type GraphPortKind = "flow" | "data";
 export type GraphPortDirection = "input" | "output";
 export type GraphPortConnectionMode = "single" | "multiple";
+export type GraphListPortMode = "list" | "element";
 export type GraphPropertyValueType = "string" | "number" | "boolean" | "json";
 export type GraphPropertyEditorKind = "text" | "multiline" | "number" | "checkbox" | "select" | "json" | "reference";
 
@@ -57,6 +58,7 @@ export interface GraphDynamicPortGroupDefinition {
   readonly aliases: readonly string[];
   readonly title: string;
   readonly description?: string;
+  readonly listPortMode?: GraphListPortMode;
   readonly port: {
     readonly kind: GraphPortKind;
     readonly direction: GraphPortDirection;
@@ -277,6 +279,50 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
       "graphCatalog.duplicateDynamicPortGroupAlias",
       diagnostics,
     );
+    nodeType.dynamicPortGroups.forEach((group, groupIndex) => {
+      if (group.listPortMode === undefined) {
+        return;
+      }
+      const groupPath = `nodeTypes[${nodeTypeIndex}].dynamicPortGroups[${groupIndex}]`;
+      if (group.port.kind !== "data" || group.port.direction !== "input") {
+        diagnostics.push(error(
+          "graphCatalog.invalidListPort",
+          `${groupPath}.port`,
+          "List fields require a data input port template.",
+        ));
+      }
+      if (group.item.dataTypeId === undefined) {
+        diagnostics.push(error(
+          "graphCatalog.missingListItemDataType",
+          `${groupPath}.item.dataTypeId`,
+          "List fields require an item dataTypeId.",
+        ));
+      }
+      if (
+        group.listPortMode === "element"
+        && group.item.dataTypeId !== undefined
+        && group.port.dataTypeId !== group.item.dataTypeId
+      ) {
+        diagnostics.push(error(
+          "graphCatalog.listElementDataTypeMismatch",
+          `${groupPath}.port.dataTypeId`,
+          "Element-port List fields must use the item dataTypeId for their port template.",
+        ));
+      }
+      if (group.listPortMode === "list") {
+        const groupIds = new Set([group.id, ...group.aliases]);
+        const collidingPort = nodeType.ports.find((port) =>
+          [port.id, ...port.aliases].some((portId) => groupIds.has(portId)),
+        );
+        if (collidingPort !== undefined) {
+          diagnostics.push(error(
+            "graphCatalog.listPortIdCollision",
+            `${groupPath}.id`,
+            `List port '${group.id}' collides with static port '${collidingPort.id}'.`,
+          ));
+        }
+      }
+    });
     if (nodeType.subgraph !== undefined) {
       nodeType.ports.forEach((port, portIndex) => {
         if (port.kind !== "data") {
@@ -402,6 +448,7 @@ export function serializeGraphCatalog(catalog: GraphCatalog): string {
             aliases: [...group.aliases].sort(),
             title: group.title,
             ...(group.description === undefined ? {} : { description: group.description }),
+            ...(group.listPortMode === undefined ? {} : { listPortMode: group.listPortMode }),
             port: {
               kind: group.port.kind,
               direction: group.port.direction,
@@ -833,7 +880,9 @@ export function resolveNodePort(
   portId: string,
 ): GraphPortDefinition | undefined {
   const nodeType = resolveNodeType(catalog, nodeTypeId);
-  return nodeType === undefined ? undefined : resolvePortDefinition(nodeType, portId);
+  return nodeType === undefined
+    ? undefined
+    : resolvePortDefinition(nodeType, portId) ?? resolveListPortDefinition(nodeType, portId);
 }
 
 export function resolveNodeProperty(
@@ -850,6 +899,28 @@ export function resolvePortDefinition(
   portId: string,
 ): GraphPortDefinition | undefined {
   return nodeType.ports.find((port) => port.id === portId || port.aliases.includes(portId));
+}
+
+export function resolveListPortDefinition(
+  nodeType: GraphNodeTypeDefinition,
+  portId: string,
+): GraphPortDefinition | undefined {
+  const group = nodeType.dynamicPortGroups.find((candidate) =>
+    candidate.listPortMode === "list"
+    && (candidate.id === portId || candidate.aliases.includes(portId)),
+  );
+  return group === undefined
+    ? undefined
+    : {
+        id: group.id,
+        aliases: group.aliases,
+        title: group.title,
+        ...(group.description === undefined ? {} : { description: group.description }),
+        kind: group.port.kind,
+        direction: group.port.direction,
+        ...(group.port.dataTypeId === undefined ? {} : { dataTypeId: group.port.dataTypeId }),
+        ...(group.port.maxConnections === undefined ? {} : { maxConnections: group.port.maxConnections }),
+      };
 }
 
 export function resolvePropertyDefinition(
@@ -1220,11 +1291,14 @@ function readDynamicPortGroups(
       diagnostics.push(error("graphCatalog.invalidDynamicPortGroup", path, "Expected an object."));
       return [];
     }
-    checkKeys(entry, ["id", "aliases", "title", "description", "port", "item", "maxItems"], path, diagnostics);
+    checkKeys(entry, ["id", "aliases", "title", "description", "listPortMode", "port", "item", "maxItems"], path, diagnostics);
     const id = readIdentifier(entry.id, `${path}.id`, diagnostics);
     const aliases = entry.aliases === undefined ? [] : readIdentifierArray(entry.aliases, `${path}.aliases`, diagnostics);
     const title = readString(entry.title, `${path}.title`, diagnostics);
     const description = entry.description === undefined ? undefined : readString(entry.description, `${path}.description`, diagnostics);
+    const listPortMode = entry.listPortMode === undefined
+      ? undefined
+      : readEnum(entry.listPortMode, ["list", "element"] as const, `${path}.listPortMode`, diagnostics);
     const port = readDynamicPortTemplate(entry.port, `${path}.port`, diagnostics);
     const item = readDynamicPortItem(entry.item, `${path}.item`, diagnostics);
     const maxItems = entry.maxItems === undefined
@@ -1232,7 +1306,7 @@ function readDynamicPortGroups(
       : readPositiveInteger(entry.maxItems, `${path}.maxItems`, diagnostics);
     return id === undefined || title === undefined || port === undefined || item === undefined
       ? []
-      : [{ id, aliases, title, ...(description === undefined ? {} : { description }), port, item, ...(maxItems === undefined ? {} : { maxItems }) }];
+      : [{ id, aliases, title, ...(description === undefined ? {} : { description }), ...(listPortMode === undefined ? {} : { listPortMode }), port, item, ...(maxItems === undefined ? {} : { maxItems }) }];
   });
 }
 

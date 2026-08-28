@@ -415,6 +415,28 @@ button:disabled {
   padding: 1px 6px;
 }
 
+.graph-list-field-port {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.graph-list-field-port.enabled {
+  padding-left: 4px;
+  color: var(--graph-data-color, var(--vscode-descriptionForeground));
+}
+
+.graph-list-field-port > strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-list-field-port > .graph-list-handle {
+  left: -12px;
+}
+
 .graph-dynamic-port-group-actions {
   display: flex;
   gap: 4px;
@@ -452,6 +474,32 @@ button:disabled {
 
 .graph-dynamic-port-row.drop-after {
   box-shadow: inset 0 -2px var(--vscode-charts-blue);
+}
+
+.graph-list-connected,
+.graph-list-element-connected {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 27px;
+  padding: 4px 6px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  background: var(--vscode-editor-background);
+  border: 1px dashed var(--graph-data-color, var(--vscode-charts-blue));
+  border-radius: 3px;
+}
+
+.graph-list-connected em,
+.graph-list-element-connected em {
+  color: var(--graph-data-color, var(--vscode-charts-blue));
+  font-style: normal;
+}
+
+.graph-list-element-connected {
+  grid-row: 1;
+  grid-column: 2;
 }
 
 .graph-dynamic-port-row > select,

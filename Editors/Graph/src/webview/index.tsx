@@ -137,6 +137,7 @@ interface DynamicPortGroupDefinition {
   readonly aliases: readonly string[];
   readonly title: string;
   readonly description?: string;
+  readonly listPortMode?: "list" | "element";
   readonly port: {
     readonly kind: PortKind;
     readonly direction: PortDirection;
@@ -322,6 +323,7 @@ interface GraphNodeData extends Record<string, unknown> {
   readonly ports: readonly PortDefinition[];
   readonly typeTitle: string;
   readonly overriddenPropertyIds: ReadonlySet<string>;
+  readonly connectedInputPortIds: ReadonlySet<string>;
   readonly commitNode: (
     nodeId: string,
     title: string,
@@ -455,7 +457,11 @@ function VisualBridgeNode({ data, selected }: NodeProps<GraphFlowNode>): React.J
       return port === undefined ? [] : [port.id];
     }),
   );
-  const dynamicPortIds = new Set(data.model.dynamicPorts.map((port) => port.id));
+  const dynamicPortIds = new Set([
+    ...data.model.dynamicPorts.map((port) => port.id),
+    ...(data.nodeType?.dynamicPortGroups ?? []).flatMap((group) =>
+      group.listPortMode === "list" ? [group.id, ...group.aliases] : []),
+  ]);
   const flowInputs = data.ports.filter(
     (port) => port.kind === "flow" && port.direction === "input" && !dynamicPortIds.has(port.id),
   );
@@ -795,6 +801,7 @@ function InlineNodeScalarProperty({
 }
 
 function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; readonly pending: boolean }): React.JSX.Element | null {
+  const dataTypes = useContext(GraphDataTypesContext);
   const [selectedPortId, setSelectedPortId] = useState<string>();
   const [dragState, setDragState] = useState<{
     readonly sourcePortId: string;
@@ -841,19 +848,34 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
         const ports = data.model.dynamicPorts.filter((port) => group.id === port.groupId || group.aliases.includes(port.groupId));
         const canAdd = group.maxItems === undefined || ports.length < group.maxItems;
         const selectedPort = ports.find((port) => port.id === selectedPortId);
+        const listConnected = group.listPortMode === "list" && data.connectedInputPortIds.has(group.id);
         const groupDragState = dragState !== undefined && ports.some((port) => port.id === dragState.sourcePortId)
           ? dragState
           : undefined;
         return (
           <section key={group.id} className="graph-dynamic-port-group" title={group.description}>
             <header>
-              <strong>{group.title}</strong>
-              <div className="graph-dynamic-port-group-actions">
+              <div
+                className={`graph-list-field-port${group.listPortMode === "list" ? " enabled" : ""}`}
+                style={group.listPortMode === "list" ? graphDataTypeStyle(group.port.dataTypeId, dataTypes) : undefined}
+              >
+                <strong>{group.title}</strong>
+                {group.listPortMode === "list" && (
+                  <Handle
+                    id={group.id}
+                    type="target"
+                    position={Position.Left}
+                    className="graph-handle data graph-list-handle"
+                    title={`${group.title} · List · ${group.port.dataTypeId ?? "any"}`}
+                  />
+                )}
+              </div>
+              {!listConnected && <div className="graph-dynamic-port-group-actions">
                 <button
                   type="button"
                   className="secondary"
                   disabled={pending || !canAdd}
-                  aria-label={`添加动态端口 ${group.title}`}
+                  aria-label={`${group.listPortMode === undefined ? "添加动态端口" : "添加列表元素"} ${group.title}`}
                   title="添加元素"
                   onClick={() => {
                     const port: GraphDynamicPort = {
@@ -878,7 +900,7 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
                     type="button"
                     className="graph-dynamic-port-delete"
                     disabled={pending}
-                    aria-label={`删除动态端口 ${selectedPort.title}`}
+                    aria-label={`${group.listPortMode === undefined ? "删除动态端口" : "删除列表元素"} ${selectedPort.title}`}
                     title="删除选中元素"
                     onClick={() => {
                       if (window.confirm("删除选中的动态元素？相关连线也会被删除。")) {
@@ -897,15 +919,18 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
                     </svg>
                   </button>
                 )}
-              </div>
+              </div>}
             </header>
-            {ports.map((port, portIndex) => (
+            {listConnected
+              ? <div className="graph-list-connected"><span>{group.title}</span><em>已连接</em></div>
+              : ports.map((port, portIndex) => (
               <DynamicPortRow
                 key={port.id}
                 data={data}
                 group={group}
                 port={port}
                 pending={pending}
+                connected={group.listPortMode === "element" && data.connectedInputPortIds.has(port.id)}
                 selected={selectedPortId === port.id}
                 onSelect={() => setSelectedPortId(port.id)}
                 dragging={groupDragState?.sourcePortId === port.id}
@@ -928,8 +953,10 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
                   }
                 }}
               />
-            ))}
-            {ports.length === 0 && <span className="graph-node-no-properties">暂无端口</span>}
+              ))}
+            {!listConnected && ports.length === 0 && (
+              <span className="graph-node-no-properties">{group.listPortMode === undefined ? "暂无端口" : "暂无元素"}</span>
+            )}
           </section>
         );
       })}
@@ -942,6 +969,7 @@ function DynamicPortRow({
   group,
   port,
   pending,
+  connected,
   selected,
   onSelect,
   dragging,
@@ -956,6 +984,7 @@ function DynamicPortRow({
   readonly group: DynamicPortGroupDefinition;
   readonly port: GraphDynamicPort;
   readonly pending: boolean;
+  readonly connected: boolean;
   readonly selected: boolean;
   readonly onSelect: () => void;
   readonly dragging: boolean;
@@ -968,7 +997,10 @@ function DynamicPortRow({
 }): React.JSX.Element {
   const dataTypes = useContext(GraphDataTypesContext);
   const model = data.model;
-  const dataColorStyle = graphDataTypeStyle(group.port.dataTypeId ?? group.item.dataTypeId, dataTypes);
+  const dataColorStyle = graphDataTypeStyle(
+    group.listPortMode === "list" ? group.item.dataTypeId : group.port.dataTypeId ?? group.item.dataTypeId,
+    dataTypes,
+  );
   const commit = (nextValue: JsonValue): void => {
     if (!jsonValuesEqual(nextValue, port.value)) {
       data.commitOperations([{
@@ -1038,20 +1070,26 @@ function DynamicPortRow({
           <circle cx="3" cy="13" r="1" /><circle cx="9" cy="13" r="1" />
         </svg>
       </button>
-      <DynamicPortValueEditor
-        group={group}
-        port={port}
-        pending={pending}
-        commit={commit}
-        reportStatus={data.reportStatus}
-      />
-      <Handle
-        id={port.id}
-        type={group.port.direction === "input" ? "target" : "source"}
-        position={group.port.direction === "input" ? Position.Left : Position.Right}
-        className={`graph-handle ${group.port.kind}`}
-        title={`${group.title} · ${group.port.kind}${group.port.dataTypeId === undefined ? "" : ` · ${group.port.dataTypeId}`}`}
-      />
+      {connected
+        ? <div className="graph-list-element-connected"><span>元素</span><em>已连接</em></div>
+        : (
+          <DynamicPortValueEditor
+            group={group}
+            port={port}
+            pending={pending}
+            commit={commit}
+            reportStatus={data.reportStatus}
+          />
+        )}
+      {group.listPortMode !== "list" && (
+        <Handle
+          id={port.id}
+          type={group.port.direction === "input" ? "target" : "source"}
+          position={group.port.direction === "input" ? Position.Left : Position.Right}
+          className={`graph-handle ${group.port.kind}`}
+          title={`${group.title} · ${group.port.kind}${group.port.dataTypeId === undefined ? "" : ` · ${group.port.dataTypeId}`}`}
+        />
+      )}
     </article>
   );
 }
@@ -2441,6 +2479,7 @@ function GraphInspector({
     ports: [],
     typeTitle: propertyNodeType.title,
     overriddenPropertyIds: new Set(),
+    connectedInputPortIds: new Set(),
     commitNode: (_, nextTitle, properties) => postOperations([{
       type: "graph.updateGraph",
       graphId: graph.id,
@@ -2762,6 +2801,7 @@ function toFlowNodes(
         ports: portsForNode(document, graph, node, nodeType),
         typeTitle: nodeType?.title ?? (node.kind === "subgraph" ? "Embedded Subgraph" : `Unknown · ${node.nodeTypeId}`),
         overriddenPropertyIds: overriddenNodeProperties(graph, node, nodeType),
+        connectedInputPortIds: connectedNodeInputPorts(document, graph, node, nodeType),
         commitNode,
         commitOperations,
         reportStatus,
@@ -2863,8 +2903,15 @@ function canonicalCanvasPortId(
     return endpoint.portId;
   }
   const nodeType = resolveNodeTypeDefinition(catalogRegistry, node.nodeTypeId);
-  return nodeType?.ports.find(
+  const staticPortId = nodeType?.ports.find(
     (port) => port.id === endpoint.portId || (port.aliases?.includes(endpoint.portId) ?? false),
+  )?.id;
+  if (staticPortId !== undefined) {
+    return staticPortId;
+  }
+  return nodeType?.dynamicPortGroups?.find((group) =>
+    group.listPortMode === "list"
+    && (group.id === endpoint.portId || group.aliases.includes(endpoint.portId)),
   )?.id ?? endpoint.portId;
 }
 
@@ -2907,9 +2954,20 @@ function typedNodePorts(
 ): readonly PortDefinition[] {
   return [
     ...nodeType.ports,
+    ...(nodeType.dynamicPortGroups ?? []).flatMap((group) => group.listPortMode === "list"
+      ? [{
+          id: group.id,
+          aliases: group.aliases,
+          title: group.title,
+          kind: group.port.kind,
+          direction: group.port.direction,
+          ...(group.port.dataTypeId === undefined ? {} : { dataTypeId: group.port.dataTypeId }),
+          ...(group.port.maxConnections === undefined ? {} : { maxConnections: group.port.maxConnections }),
+        }]
+      : []),
     ...node.dynamicPorts.flatMap((dynamicPort) => {
       const group = resolveDynamicPortGroupDefinition(nodeType, dynamicPort.groupId);
-      return group === undefined
+      return group === undefined || group.listPortMode === "list"
         ? []
         : [{
             id: dynamicPort.id,
@@ -2949,6 +3007,28 @@ function overriddenNodeProperties(
         result.add(property.id);
       }
     });
+  });
+  return result;
+}
+
+function connectedNodeInputPorts(
+  document: GraphDocument,
+  graph: GraphDefinition,
+  node: GraphNodeModel,
+  nodeType: NodeTypeDefinition | undefined,
+): ReadonlySet<string> {
+  const ports = portsForNode(document, graph, node, nodeType);
+  const result = new Set<string>();
+  graph.edges.forEach((edge) => {
+    if (edge.target.kind !== "node" || edge.target.nodeId !== node.id) {
+      return;
+    }
+    const port = ports.find((candidate) =>
+      candidate.id === edge.target.portId || (candidate.aliases?.includes(edge.target.portId) ?? false),
+    );
+    if (port?.direction === "input") {
+      result.add(port.id);
+    }
   });
   return result;
 }
@@ -3218,7 +3298,21 @@ function getConnectionNodeOptions(
     if (!isNodeTypeAvailable(graph, nodeType, catalogRegistry, "atomic")) {
       return [];
     }
-    return nodeType.ports.flatMap((port) => {
+    const creationPorts: readonly PortDefinition[] = [
+      ...nodeType.ports,
+      ...(nodeType.dynamicPortGroups ?? []).flatMap((group) => group.listPortMode === "list"
+        ? [{
+            id: group.id,
+            aliases: group.aliases,
+            title: group.title,
+            kind: group.port.kind,
+            direction: group.port.direction,
+            ...(group.port.dataTypeId === undefined ? {} : { dataTypeId: group.port.dataTypeId }),
+            ...(group.port.maxConnections === undefined ? {} : { maxConnections: group.port.maxConnections }),
+          }]
+        : []),
+    ];
+    return creationPorts.flatMap((port) => {
       if (port.direction !== requiredDirection || port.kind !== fromPort.kind) {
         return [];
       }

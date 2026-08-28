@@ -56,7 +56,11 @@ Every port declares a stable ID, label, kind, direction, optional data type, and
 
 Data compatibility is a registry-wide rule rather than a per-Catalog rule. Ports from different Catalogs may connect when their globally registered Data Types are compatible. Identical types, `any`, and target types that explicitly list the source in `accepts` are compatible. VisualBridge does not insert implicit conversion nodes. A Data Type may also declare an optional `#RRGGBB` presentation color. Color never affects compatibility or serialization of Graph instances; the editor uses a stable built-in palette when the Catalog omits it.
 
+Catalog Data Types preserve runtime distinctions. C# `System.Int32` and `System.Single` are represented by separate stable Data Type IDs (`int` and `float` by default), not by a common `number` type. Numeric properties still use `valueType: "number"` because JSON has one numeric scalar category; their `dataTypeId` carries the C# semantic type. If a project permits the C# widening conversion from `int` to `float`, the `float` Data Type declares `accepts: ["int"]`; the reverse connection remains incompatible unless explicitly modeled.
+
 The editor may use a connection as a node-creation gesture. Dropping an unfinished edge on empty canvas space filters new atomic-node ports with the same semantic rules, then commits `graph.addNode` and `graph.addEdge` together. Data inputs retain their serialized literal as a fallback while connected; the node UI marks that field as overridden and restores editing when the edge is removed.
+
+Editable C# `List<T>` fields use data dynamic-port groups with `listPortMode: "list"` or `"element"`. Ordered elements are persisted as stable-ID `dynamicPorts` items even when the whole List is the only port; reordering therefore never changes an element's identity. Whole-List mode exposes the group ID as one `List<T>` input, while its item IDs are values only. Element mode exposes each item ID as a `T` input and does not expose a group port. A connected whole-List input overrides the complete literal list; a connected element input overrides only that element. Unconfigured dynamic groups retain their existing dynamic branch/port semantics.
 
 ## Graph Catalog
 
