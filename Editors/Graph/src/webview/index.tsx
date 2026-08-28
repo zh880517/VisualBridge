@@ -397,6 +397,7 @@ const INTERFACE_INPUT_NODE_ID = "$visualbridge.interface.inputs";
 const INTERFACE_OUTPUT_NODE_ID = "$visualbridge.interface.outputs";
 const GraphPendingContext = createContext(false);
 const GraphNodeTypeVisibilityContext = createContext(true);
+const GraphNodeIdVisibilityContext = createContext(false);
 const nodeTypes = {
   visualBridgeNode: VisualBridgeNode,
   visualBridgeInterface: VisualBridgeInterfaceNode,
@@ -405,6 +406,7 @@ const nodeTypes = {
 function VisualBridgeNode({ data, selected }: NodeProps<GraphFlowNode>): React.JSX.Element {
   const pending = useContext(GraphPendingContext);
   const showNodeTypes = useContext(GraphNodeTypeVisibilityContext);
+  const showNodeIds = useContext(GraphNodeIdVisibilityContext);
   if (data.flavor !== "node") {
     return <article className="graph-node">Invalid node</article>;
   }
@@ -414,8 +416,12 @@ function VisualBridgeNode({ data, selected }: NodeProps<GraphFlowNode>): React.J
       return port === undefined ? [] : [port.id];
     }),
   );
-  const inputs = data.ports.filter((port) => port.direction === "input" && !propertyInputPortIds.has(port.id));
-  const outputs = data.ports.filter((port) => port.direction === "output");
+  const flowInputs = data.ports.filter((port) => port.kind === "flow" && port.direction === "input");
+  const flowOutputs = data.ports.filter((port) => port.kind === "flow" && port.direction === "output");
+  const dataInputs = data.ports.filter(
+    (port) => port.kind === "data" && port.direction === "input" && !propertyInputPortIds.has(port.id),
+  );
+  const dataOutputs = data.ports.filter((port) => port.kind === "data" && port.direction === "output");
   return (
     <article className={`graph-node${selected ? " selected" : ""}${data.model.kind === "subgraph" ? " subgraph" : ""}`}>
       <header className="graph-node-header" title={data.model.title || data.typeTitle}>
@@ -425,13 +431,21 @@ function VisualBridgeNode({ data, selected }: NodeProps<GraphFlowNode>): React.J
         <InlineNodeTitle data={data} pending={pending} />
       </header>
       {showNodeTypes && <div className="graph-node-type">{data.typeTitle}</div>}
+      {(flowInputs.length > 0 || flowOutputs.length > 0) && (
+        <div className="graph-port-columns flow">
+          <PortColumn ports={flowInputs} />
+          <PortColumn ports={flowOutputs} align="right" />
+        </div>
+      )}
       <InlineNodeProperties data={data} pending={pending} />
       <InlineDynamicPorts data={data} pending={pending} />
-      <div className="graph-port-columns">
-        <PortColumn ports={inputs} />
-        <PortColumn ports={outputs} align="right" />
-      </div>
-      <div className="graph-node-id">{data.model.id}</div>
+      {(dataInputs.length > 0 || dataOutputs.length > 0) && (
+        <div className="graph-port-columns data">
+          <PortColumn ports={dataInputs} />
+          <PortColumn ports={dataOutputs} align="right" />
+        </div>
+      )}
+      {showNodeIds && <div className="graph-node-id">{data.model.id}</div>}
     </article>
   );
 }
@@ -715,6 +729,11 @@ function InlineNodeScalarProperty({
 }
 
 function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; readonly pending: boolean }): React.JSX.Element | null {
+  const [dragState, setDragState] = useState<{
+    readonly sourcePortId: string;
+    readonly targetPortId?: string;
+    readonly position?: "before" | "after";
+  }>();
   if (data.nodeType === undefined) {
     return null;
   }
@@ -722,11 +741,36 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
   if (groups.length === 0 && data.model.dynamicPorts.length === 0) {
     return null;
   }
+  const reorder = (sourcePortId: string, targetPortId: string, position: "before" | "after"): void => {
+    if (sourcePortId === targetPortId) {
+      return;
+    }
+    const portIds = data.model.dynamicPorts.map((port) => port.id);
+    const sourceIndex = portIds.indexOf(sourcePortId);
+    if (sourceIndex < 0) {
+      return;
+    }
+    portIds.splice(sourceIndex, 1);
+    const targetIndex = portIds.indexOf(targetPortId);
+    if (targetIndex < 0) {
+      return;
+    }
+    portIds.splice(targetIndex + (position === "after" ? 1 : 0), 0, sourcePortId);
+    data.commitOperations([{
+      type: "graph.reorderDynamicPorts",
+      graphId: data.graphId,
+      nodeId: data.model.id,
+      portIds,
+    }]);
+  };
   return (
     <div className="graph-dynamic-port-groups nodrag nowheel" onDoubleClick={(event) => event.stopPropagation()}>
       {groups.map((group) => {
         const ports = data.model.dynamicPorts.filter((port) => group.id === port.groupId || group.aliases.includes(port.groupId));
         const canAdd = group.maxItems === undefined || ports.length < group.maxItems;
+        const groupDragState = dragState !== undefined && ports.some((port) => port.id === dragState.sourcePortId)
+          ? dragState
+          : undefined;
         return (
           <section key={group.id} className="graph-dynamic-port-group" title={group.description}>
             <header>
@@ -751,13 +795,32 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
                 +
               </button>
             </header>
-            {ports.map((port) => (
+            {ports.map((port, portIndex) => (
               <DynamicPortRow
                 key={port.id}
                 data={data}
                 group={group}
                 port={port}
                 pending={pending}
+                dragging={groupDragState?.sourcePortId === port.id}
+                dropPosition={groupDragState?.targetPortId === port.id ? groupDragState.position : undefined}
+                onDragStart={() => setDragState({ sourcePortId: port.id })}
+                onDragOver={(position) => setDragState((current) => current === undefined
+                  ? current
+                  : { sourcePortId: current.sourcePortId, targetPortId: port.id, position })}
+                onDrop={(sourcePortId, position) => {
+                  if (ports.some((candidate) => candidate.id === sourcePortId)) {
+                    reorder(sourcePortId, port.id, position);
+                  }
+                  setDragState(undefined);
+                }}
+                onDragEnd={() => setDragState(undefined)}
+                onKeyboardMove={(offset) => {
+                  const target = ports[portIndex + offset];
+                  if (target !== undefined) {
+                    reorder(port.id, target.id, offset < 0 ? "before" : "after");
+                  }
+                }}
               />
             ))}
             {ports.length === 0 && <span className="graph-node-no-properties">暂无端口</span>}
@@ -773,35 +836,29 @@ function DynamicPortRow({
   group,
   port,
   pending,
+  dragging,
+  dropPosition,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+  onKeyboardMove,
 }: {
   readonly data: GraphNodeData;
   readonly group: DynamicPortGroupDefinition;
   readonly port: GraphDynamicPort;
   readonly pending: boolean;
+  readonly dragging: boolean;
+  readonly dropPosition: "before" | "after" | undefined;
+  readonly onDragStart: () => void;
+  readonly onDragOver: (position: "before" | "after") => void;
+  readonly onDrop: (sourcePortId: string, position: "before" | "after") => void;
+  readonly onDragEnd: () => void;
+  readonly onKeyboardMove: (offset: -1 | 1) => void;
 }): React.JSX.Element {
   const model = data.model;
   const [title, setTitle] = useState(port.title);
   useEffect(() => setTitle(port.title), [port.title]);
-  const groupPorts = model.dynamicPorts.filter(
-    (candidate) => group.id === candidate.groupId || group.aliases.includes(candidate.groupId),
-  );
-  const groupIndex = groupPorts.findIndex((candidate) => candidate.id === port.id);
-  const move = (offset: -1 | 1): void => {
-    const other = groupPorts[groupIndex + offset];
-    if (other === undefined) {
-      return;
-    }
-    const portIds = model.dynamicPorts.map((candidate) => candidate.id);
-    const leftIndex = portIds.indexOf(port.id);
-    const rightIndex = portIds.indexOf(other.id);
-    [portIds[leftIndex], portIds[rightIndex]] = [portIds[rightIndex]!, portIds[leftIndex]!];
-    data.commitOperations([{
-      type: "graph.reorderDynamicPorts",
-      graphId: data.graphId,
-      nodeId: model.id,
-      portIds,
-    }]);
-  };
   const commit = (nextTitle: string, nextValue: JsonValue): void => {
     if (nextTitle !== port.title || !jsonValuesEqual(nextValue, port.value)) {
       data.commitOperations([{
@@ -815,8 +872,52 @@ function DynamicPortRow({
     }
   };
   return (
-    <article className="graph-dynamic-port-row">
+    <article
+      className={`graph-dynamic-port-row${dragging ? " dragging" : ""}${dropPosition === undefined ? "" : ` drop-${dropPosition}`}`}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        const bounds = event.currentTarget.getBoundingClientRect();
+        onDragOver(event.clientY < bounds.top + bounds.height / 2 ? "before" : "after");
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        const bounds = event.currentTarget.getBoundingClientRect();
+        onDrop(
+          event.dataTransfer.getData("text/plain"),
+          event.clientY < bounds.top + bounds.height / 2 ? "before" : "after",
+        );
+      }}
+    >
+      <button
+        type="button"
+        className="graph-dynamic-port-drag"
+        draggable={!pending}
+        disabled={pending}
+        aria-label={`拖动排序 ${port.title}`}
+        title="拖动排序；Alt+↑/↓ 也可移动"
+        onDragStart={(event) => {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", port.id);
+          onDragStart();
+        }}
+        onDragEnd={onDragEnd}
+        onKeyDown={(event) => {
+          if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+            event.preventDefault();
+            event.stopPropagation();
+            onKeyboardMove(event.key === "ArrowUp" ? -1 : 1);
+          }
+        }}
+      >
+        <svg viewBox="0 0 12 16" aria-hidden="true">
+          <circle cx="3" cy="3" r="1" /><circle cx="9" cy="3" r="1" />
+          <circle cx="3" cy="8" r="1" /><circle cx="9" cy="8" r="1" />
+          <circle cx="3" cy="13" r="1" /><circle cx="9" cy="13" r="1" />
+        </svg>
+      </button>
       <input
+        className="graph-dynamic-port-title"
         aria-label={`动态端口名称 ${port.id}`}
         value={title}
         disabled={pending}
@@ -838,28 +939,27 @@ function DynamicPortRow({
         commit={(value) => commit(port.title, value)}
         reportStatus={data.reportStatus}
       />
-      <div className="graph-dynamic-port-actions">
-        <button type="button" className="secondary" disabled={pending || groupIndex <= 0} aria-label={`上移 ${port.title}`} onClick={() => move(-1)}>↑</button>
-        <button type="button" className="secondary" disabled={pending || groupIndex >= groupPorts.length - 1} aria-label={`下移 ${port.title}`} onClick={() => move(1)}>↓</button>
-        <button
-          type="button"
-          className="danger"
-          disabled={pending}
-          aria-label={`删除动态端口 ${port.title}`}
-          onClick={() => {
-            if (window.confirm(`删除动态端口 '${port.title}'？相关连线也会被删除。`)) {
-              data.commitOperations([{
-                type: "graph.removeDynamicPort",
-                graphId: data.graphId,
-                nodeId: model.id,
-                portId: port.id,
-              }]);
-            }
-          }}
-        >
-          −
-        </button>
-      </div>
+      <button
+        type="button"
+        className="graph-dynamic-port-delete"
+        disabled={pending}
+        aria-label={`删除动态端口 ${port.title}`}
+        title="删除动态端口"
+        onClick={() => {
+          if (window.confirm(`删除动态端口 '${port.title}'？相关连线也会被删除。`)) {
+            data.commitOperations([{
+              type: "graph.removeDynamicPort",
+              graphId: data.graphId,
+              nodeId: model.id,
+              portId: port.id,
+            }]);
+          }
+        }}
+      >
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M3 4h10M6 4V2.5h4V4M4.5 4l.7 9h5.6l.7-9M6.5 6.5v4M9.5 6.5v4" />
+        </svg>
+      </button>
     </article>
   );
 }
@@ -1000,6 +1100,7 @@ function GraphEditorApp(): React.JSX.Element {
   const [subgraphPickerOpen, setSubgraphPickerOpen] = useState(false);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [showNodeTypes, setShowNodeTypes] = useState(true);
+  const [showNodeIds, setShowNodeIds] = useState(false);
 
   const activeGraph = useMemo(
     () => graphDocument?.graphs.find((graph) => graph.id === activeGraphId),
@@ -1640,6 +1741,14 @@ function GraphEditorApp(): React.JSX.Element {
           />
           <span>显示节点类型</span>
         </label>
+        <label className="graph-toolbar-option">
+          <input
+            type="checkbox"
+            checked={showNodeIds}
+            onChange={(event) => setShowNodeIds(event.target.checked)}
+          />
+          <span>显示节点 ID</span>
+        </label>
         <span className="graph-toolbar-spacer" />
         <span className="graph-metadata" title={rootMetadata.relativePath}>
           {rootMetadata.projectId} · {rootMetadata.documentType} · {rootMetadata.relativePath}
@@ -1657,36 +1766,38 @@ function GraphEditorApp(): React.JSX.Element {
               <div ref={canvasRef} className="graph-canvas">
                 <GraphPendingContext.Provider value={pending}>
                   <GraphNodeTypeVisibilityContext.Provider value={showNodeTypes}>
-                    <ReactFlow<GraphFlowNode, GraphFlowEdge>
-                      nodes={flowNodes}
-                      edges={flowEdges}
-                      nodeTypes={nodeTypes}
-                      onNodesChange={handleNodesChange}
-                      onEdgesChange={handleEdgesChange}
-                      onSelectionChange={handleSelectionChange}
-                      onConnect={handleConnect}
-                      onConnectEnd={handleConnectEnd}
-                      onNodeDragStop={handleNodeDragStop}
-                      onNodeContextMenu={handleNodeContextMenu}
-                      onNodeDoubleClick={(_, node) => openSubgraph(node.id)}
-                      onPaneClick={() => setContextMenu(undefined)}
-                      onInit={setFlowInstance}
-                      nodesDraggable={!pending}
-                      nodesConnectable={!pending}
-                      elementsSelectable={!pending}
-                      deleteKeyCode={null}
-                      connectionRadius={24}
-                      snapToGrid
-                      snapGrid={[10, 10]}
-                      fitView
-                      fitViewOptions={{ maxZoom: 1, padding: 0.24 }}
-                      minZoom={0.2}
-                      maxZoom={2}
-                    >
-                      <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
-                      <MiniMap pannable zoomable nodeStrokeWidth={3} />
-                      <Controls showInteractive={false} />
-                    </ReactFlow>
+                    <GraphNodeIdVisibilityContext.Provider value={showNodeIds}>
+                      <ReactFlow<GraphFlowNode, GraphFlowEdge>
+                        nodes={flowNodes}
+                        edges={flowEdges}
+                        nodeTypes={nodeTypes}
+                        onNodesChange={handleNodesChange}
+                        onEdgesChange={handleEdgesChange}
+                        onSelectionChange={handleSelectionChange}
+                        onConnect={handleConnect}
+                        onConnectEnd={handleConnectEnd}
+                        onNodeDragStop={handleNodeDragStop}
+                        onNodeContextMenu={handleNodeContextMenu}
+                        onNodeDoubleClick={(_, node) => openSubgraph(node.id)}
+                        onPaneClick={() => setContextMenu(undefined)}
+                        onInit={setFlowInstance}
+                        nodesDraggable={!pending}
+                        nodesConnectable={!pending}
+                        elementsSelectable={!pending}
+                        deleteKeyCode={null}
+                        connectionRadius={24}
+                        snapToGrid
+                        snapGrid={[10, 10]}
+                        fitView
+                        fitViewOptions={{ maxZoom: 1, padding: 0.24 }}
+                        minZoom={0.2}
+                        maxZoom={2}
+                      >
+                        <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
+                        <MiniMap pannable zoomable nodeStrokeWidth={3} />
+                        <Controls showInteractive={false} />
+                      </ReactFlow>
+                    </GraphNodeIdVisibilityContext.Provider>
                   </GraphNodeTypeVisibilityContext.Provider>
                 </GraphPendingContext.Provider>
               </div>
