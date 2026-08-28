@@ -800,6 +800,22 @@ function InlineNodeScalarProperty({
   );
 }
 
+function AddListIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M8 3v10M3 8h10" />
+    </svg>
+  );
+}
+
+function DeleteListIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M3 4h10M6 4V2.5h4V4M4.5 4l.7 9h5.6l.7-9M6.5 6.5v4M9.5 6.5v4" />
+    </svg>
+  );
+}
+
 function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; readonly pending: boolean }): React.JSX.Element | null {
   const dataTypes = useContext(GraphDataTypesContext);
   const [selectedPortId, setSelectedPortId] = useState<string>();
@@ -873,7 +889,7 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
               {!listConnected && <div className="graph-dynamic-port-group-actions">
                 <button
                   type="button"
-                  className="secondary"
+                  className="secondary graph-list-add"
                   disabled={pending || !canAdd}
                   aria-label={`${group.listPortMode === undefined ? "添加动态端口" : "添加列表元素"} ${group.title}`}
                   title="添加元素"
@@ -893,12 +909,12 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
                     }]);
                   }}
                 >
-                  +
+                  <AddListIcon />
                 </button>
                 {selectedPort !== undefined && (
                   <button
                     type="button"
-                    className="graph-dynamic-port-delete"
+                    className="graph-list-delete"
                     disabled={pending}
                     aria-label={`${group.listPortMode === undefined ? "删除动态端口" : "删除列表元素"} ${selectedPort.title}`}
                     title="删除选中元素"
@@ -914,9 +930,7 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
                       }
                     }}
                   >
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M3 4h10M6 4V2.5h4V4M4.5 4l.7 9h5.6l.7-9M6.5 6.5v4M9.5 6.5v4" />
-                    </svg>
+                    <DeleteListIcon />
                   </button>
                 )}
               </div>}
@@ -1241,20 +1255,21 @@ function VisualBridgeInterfaceNode({ data }: NodeProps<GraphFlowNode>): React.JS
           <span className="graph-interface-actions nodrag nowheel">
             <button
               type="button"
+              className="secondary graph-list-add"
               disabled={pending}
               aria-label={`添加${data.side === "inputs" ? "输入" : "输出"}参数`}
               title={`添加${data.side === "inputs" ? "输入" : "输出"}参数`}
               onClick={addParameter}
-            >+</button>
+            ><AddListIcon /></button>
             {selectedPortId !== undefined && (
               <button
                 type="button"
-                className="secondary"
+                className="secondary graph-list-delete"
                 disabled={pending}
                 aria-label="删除所选参数"
                 title="删除所选参数"
                 onClick={deleteSelected}
-              >−</button>
+              ><DeleteListIcon /></button>
             )}
           </span>
         )}

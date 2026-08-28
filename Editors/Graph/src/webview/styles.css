@@ -521,7 +521,7 @@ button:disabled {
 }
 
 .graph-dynamic-port-drag,
-.graph-dynamic-port-delete {
+.graph-list-delete {
   display: grid;
   width: 24px;
   min-width: 24px;
@@ -529,6 +529,11 @@ button:disabled {
   padding: 4px;
   color: var(--vscode-descriptionForeground);
   background: transparent;
+  place-items: center;
+}
+
+.graph-list-add {
+  display: grid;
   place-items: center;
 }
 
@@ -543,7 +548,7 @@ button:disabled {
   cursor: grabbing;
 }
 
-.graph-dynamic-port-delete {
+.graph-list-delete {
   color: var(--vscode-descriptionForeground);
 }
 
@@ -552,13 +557,14 @@ button:disabled {
   background: var(--vscode-list-hoverBackground);
 }
 
-.graph-dynamic-port-delete:hover:not(:disabled) {
+.graph-list-delete:hover:not(:disabled) {
   color: var(--vscode-errorForeground);
   background: var(--vscode-list-hoverBackground);
 }
 
 .graph-dynamic-port-drag svg,
-.graph-dynamic-port-delete svg {
+.graph-list-add svg,
+.graph-list-delete svg {
   width: 14px;
   height: 14px;
 }
@@ -567,7 +573,8 @@ button:disabled {
   fill: currentColor;
 }
 
-.graph-dynamic-port-delete path {
+.graph-list-add path,
+.graph-list-delete path {
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
