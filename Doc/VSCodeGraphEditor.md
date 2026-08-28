@@ -37,7 +37,8 @@ Catalog paths are relative to the marker. The host loads them into one registry.
   "title": "通用",
   "dataTypes": [
     { "id": "int", "title": "Integer", "color": "#4DA3FF", "accepts": [] },
-    { "id": "float", "title": "Float", "color": "#4FC3F7", "accepts": ["int"] }
+    { "id": "float", "title": "Float", "color": "#4FC3F7", "accepts": ["int"] },
+    { "id": "stringFromAny", "title": "String From Any", "acceptsAnySource": true, "accepts": [] }
   ],
   "graphTypes": [
     {
@@ -109,7 +110,7 @@ Catalog paths are relative to the marker. The host loads them into one registry.
 }
 ```
 
-`valueType` describes the JSON scalar shape and editor control, so integer and floating-point fields both use `valueType: "number"`. Runtime semantics belong to `dataTypeId`: C# numeric contracts use distinct stable IDs such as `int` and `float`, never a shared `number` Data Type. The future Unity exporter maps `System.Int32` to `int` and `System.Single` to `float`. A target Data Type may list accepted source types explicitly; the example lets `float` accept `int` to model the C# widening conversion while keeping `float` to `int` invalid.
+`valueType` describes the JSON scalar shape and editor control, so integer and floating-point fields both use `valueType: "number"`. Runtime semantics belong to `dataTypeId`: C# numeric contracts use distinct stable IDs such as `int` and `float`, never a shared `number` Data Type. The future Unity exporter maps `System.Int32` to `int` and `System.Single` to `float`. A target Data Type may list accepted source types explicitly; the example lets `float` accept `int` to model the C# widening conversion while keeping `float` to `int` invalid. `acceptsAnySource: true` is a directional input rule: a `stringFromAny` field still declares `valueType: "string"` for its fallback editor, but its matching data input accepts every source Data Type. Ordinary `string` fields remain strict, and nodes perform the actual runtime conversion rather than VisualBridge inserting a conversion node.
 
 ## List fields
 

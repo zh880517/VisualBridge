@@ -54,6 +54,8 @@ Unity Package 未来应把 C# 声明导出为 Graph Catalog V4 `.vbgraphcatalog`
 
 Catalog 属性的 `valueType: "number"` 只表示 JSON 数值和数值编辑器，不是 C# 类型身份。Unity 导出器必须同时写入具体 `dataTypeId`，以保留整数与浮点数的端口约束、颜色和连接兼容性。默认兼容规则可由 `float.accepts: ["int"]` 表达 C# 的 `int` 到 `float` 扩宽；不能因此允许反向连接。
 
+需要把任意 C# 值转为字符串的输入应导出独立的 `stringFromAny` Data Type，并声明 `acceptsAnySource: true`；对应属性仍使用 `valueType: "string"` 和字符串默认值。该能力只放宽目标输入，不能替代普通 `string`，实际 `ToString` 转换由节点运行时代码负责。
+
 导出 `List<T>` 时，`item.dataTypeId` 始终保存元素类型 `T`。`listPortMode: "list"` 的 `port.dataTypeId` 保存完整 `List<T>` 类型；`listPortMode: "element"` 的端口类型必须等于元素类型。Graph Document V3 使用带稳定 ID 的 `dynamicPorts` 项保存列表顺序和值，Unity 导入/编译时只按顺序提取元素值，稳定 ID 仅服务于编辑身份和元素连线。
 
 动态端口必须改成实例级稳定 ID。Catalog 只声明动态端口组模板，`.vbgraph` 节点保存带独立 ID 的端口项；排序不能改变连线身份。旧系统以列表索引改写边的行为只用于旧资产导入，不进入新格式。

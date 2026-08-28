@@ -20,6 +20,10 @@
             "type": "string",
             "pattern": "^#[0-9A-Fa-f]{6}$"
           },
+          "acceptsAnySource": {
+            "type": "boolean",
+            "default": false
+          },
           "accepts": {
             "type": "array",
             "items": { "$ref": "#/$defs/identifier" },

@@ -14,6 +14,7 @@ export interface GraphDataTypeDefinition {
   readonly id: string;
   readonly title: string;
   readonly color?: string;
+  readonly acceptsAnySource?: boolean;
   readonly accepts: readonly string[];
 }
 
@@ -381,6 +382,7 @@ export function serializeGraphCatalog(catalog: GraphCatalog): string {
         id: dataType.id,
         title: dataType.title,
         ...(dataType.color === undefined ? {} : { color: dataType.color }),
+        ...(dataType.acceptsAnySource ? { acceptsAnySource: true } : {}),
         accepts: [...dataType.accepts].sort(),
       })),
     graphTypes: [...catalog.graphTypes]
@@ -949,9 +951,9 @@ export function isDataTypeAssignable(
   if (sourceDataTypeId === targetDataTypeId || sourceDataTypeId === "any" || targetDataTypeId === "any") {
     return true;
   }
-  return catalog.dataTypes
-    .find((dataType) => dataType.id === targetDataTypeId)
-    ?.accepts.includes(sourceDataTypeId) ?? false;
+  const targetDataType = catalog.dataTypes.find((dataType) => dataType.id === targetDataTypeId);
+  return targetDataType?.acceptsAnySource === true
+    || targetDataType?.accepts.includes(sourceDataTypeId) === true;
 }
 
 function readDataTypes(value: unknown, diagnostics: DocumentDiagnostic[]): readonly GraphDataTypeDefinition[] {
@@ -966,18 +968,21 @@ function readDataTypes(value: unknown, diagnostics: DocumentDiagnostic[]): reado
       diagnostics.push(error("graphCatalog.invalidDataType", path, "Expected an object."));
       return [];
     }
-    checkKeys(entry, ["id", "title", "color", "accepts"], path, diagnostics);
+    checkKeys(entry, ["id", "title", "color", "acceptsAnySource", "accepts"], path, diagnostics);
     const id = readIdentifier(entry.id, `${path}.id`, diagnostics);
     const title = readString(entry.title, `${path}.title`, diagnostics);
     const color = entry.color === undefined
       ? undefined
       : readColor(entry.color, `${path}.color`, diagnostics);
+    const acceptsAnySource = entry.acceptsAnySource === undefined
+      ? false
+      : readBoolean(entry.acceptsAnySource, `${path}.acceptsAnySource`, diagnostics);
     const accepts = entry.accepts === undefined
       ? []
       : readIdentifierArray(entry.accepts, `${path}.accepts`, diagnostics);
-    return id === undefined || title === undefined
+    return id === undefined || title === undefined || acceptsAnySource === undefined
       ? []
-      : [{ id, title, ...(color === undefined ? {} : { color }), accepts }];
+      : [{ id, title, ...(color === undefined ? {} : { color }), acceptsAnySource, accepts }];
   });
 }
 

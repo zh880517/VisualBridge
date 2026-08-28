@@ -177,6 +177,7 @@ interface DataTypeDefinition {
   readonly id: string;
   readonly title: string;
   readonly color?: string;
+  readonly acceptsAnySource?: boolean;
   readonly accepts: readonly string[];
 }
 
@@ -3704,9 +3705,11 @@ function arePortsCompatible(
   ) {
     return true;
   }
-  return catalogRegistry.dataTypes
-    .find((dataType) => dataType.id === targetPort.dataTypeId)
-    ?.accepts.includes(sourcePort.dataTypeId) ?? false;
+  const targetDataType = catalogRegistry.dataTypes.find(
+    (dataType) => dataType.id === targetPort.dataTypeId,
+  );
+  return targetDataType?.acceptsAnySource === true
+    || targetDataType?.accepts.includes(sourcePort.dataTypeId) === true;
 }
 
 function planConnectionCandidate(
