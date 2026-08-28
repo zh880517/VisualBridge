@@ -416,12 +416,22 @@ function VisualBridgeNode({ data, selected }: NodeProps<GraphFlowNode>): React.J
       return port === undefined ? [] : [port.id];
     }),
   );
-  const flowInputs = data.ports.filter((port) => port.kind === "flow" && port.direction === "input");
-  const flowOutputs = data.ports.filter((port) => port.kind === "flow" && port.direction === "output");
-  const dataInputs = data.ports.filter(
-    (port) => port.kind === "data" && port.direction === "input" && !propertyInputPortIds.has(port.id),
+  const dynamicPortIds = new Set(data.model.dynamicPorts.map((port) => port.id));
+  const flowInputs = data.ports.filter(
+    (port) => port.kind === "flow" && port.direction === "input" && !dynamicPortIds.has(port.id),
   );
-  const dataOutputs = data.ports.filter((port) => port.kind === "data" && port.direction === "output");
+  const flowOutputs = data.ports.filter(
+    (port) => port.kind === "flow" && port.direction === "output" && !dynamicPortIds.has(port.id),
+  );
+  const dataInputs = data.ports.filter(
+    (port) => port.kind === "data"
+      && port.direction === "input"
+      && !propertyInputPortIds.has(port.id)
+      && !dynamicPortIds.has(port.id),
+  );
+  const dataOutputs = data.ports.filter(
+    (port) => port.kind === "data" && port.direction === "output" && !dynamicPortIds.has(port.id),
+  );
   return (
     <article className={`graph-node${selected ? " selected" : ""}${data.model.kind === "subgraph" ? " subgraph" : ""}`}>
       <header className="graph-node-header" title={data.model.title || data.typeTitle}>
@@ -550,7 +560,7 @@ function InlineNodeProperty({
   const value = serializedPropertyId === undefined ? undefined : data.model.properties[serializedPropertyId];
   const overridden = data.overriddenPropertyIds.has(definition.id);
   const inputPort = resolvePropertyInputPort(data.nodeType, definition);
-  const fieldTitle = `${definition.title}${definition.required ? " *" : ""}`;
+  const fieldTitle = definition.title;
   const commit = (nextValue: JsonValue | undefined): void => {
     if (
       (nextValue === undefined && serializedPropertyIds.length === 0)
@@ -715,7 +725,7 @@ function InlineNodeScalarProperty({
   };
   return (
     <label className="graph-node-property" title={definition.description}>
-      <span>{definition.title}{definition.required ? " *" : ""}</span>
+      <span>{definition.title}</span>
       {usesJsonEditor || usesMultilineEditor
         ? <textarea {...commonProps} rows={2} spellCheck={false} />
         : <input
@@ -729,11 +739,17 @@ function InlineNodeScalarProperty({
 }
 
 function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; readonly pending: boolean }): React.JSX.Element | null {
+  const [selectedPortId, setSelectedPortId] = useState<string>();
   const [dragState, setDragState] = useState<{
     readonly sourcePortId: string;
     readonly targetPortId?: string;
     readonly position?: "before" | "after";
   }>();
+  useEffect(() => {
+    if (selectedPortId !== undefined && !data.model.dynamicPorts.some((port) => port.id === selectedPortId)) {
+      setSelectedPortId(undefined);
+    }
+  }, [data.model.dynamicPorts, selectedPortId]);
   if (data.nodeType === undefined) {
     return null;
   }
@@ -768,6 +784,7 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
       {groups.map((group) => {
         const ports = data.model.dynamicPorts.filter((port) => group.id === port.groupId || group.aliases.includes(port.groupId));
         const canAdd = group.maxItems === undefined || ports.length < group.maxItems;
+        const selectedPort = ports.find((port) => port.id === selectedPortId);
         const groupDragState = dragState !== undefined && ports.some((port) => port.id === dragState.sourcePortId)
           ? dragState
           : undefined;
@@ -775,25 +792,56 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
           <section key={group.id} className="graph-dynamic-port-group" title={group.description}>
             <header>
               <strong>{group.title}</strong>
-              <button
-                type="button"
-                className="secondary"
-                disabled={pending || !canAdd}
-                aria-label={`添加动态端口 ${group.title}`}
-                onClick={() => data.commitOperations([{
-                  type: "graph.addDynamicPort",
-                  graphId: data.graphId,
-                  nodeId: data.model.id,
-                  port: {
-                    id: newId("port"),
-                    groupId: group.id,
-                    title: `${group.title} ${ports.length + 1}`,
-                    value: cloneJsonValue(group.item.defaultValue),
-                  },
-                }])}
-              >
-                +
-              </button>
+              <div className="graph-dynamic-port-group-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={pending || !canAdd}
+                  aria-label={`添加动态端口 ${group.title}`}
+                  title="添加元素"
+                  onClick={() => {
+                    const port: GraphDynamicPort = {
+                      id: newId("port"),
+                      groupId: group.id,
+                      title: `${group.title} ${ports.length + 1}`,
+                      value: cloneJsonValue(group.item.defaultValue),
+                    };
+                    setSelectedPortId(port.id);
+                    data.commitOperations([{
+                      type: "graph.addDynamicPort",
+                      graphId: data.graphId,
+                      nodeId: data.model.id,
+                      port,
+                    }]);
+                  }}
+                >
+                  +
+                </button>
+                {selectedPort !== undefined && (
+                  <button
+                    type="button"
+                    className="graph-dynamic-port-delete"
+                    disabled={pending}
+                    aria-label={`删除动态端口 ${selectedPort.title}`}
+                    title="删除选中元素"
+                    onClick={() => {
+                      if (window.confirm("删除选中的动态元素？相关连线也会被删除。")) {
+                        setSelectedPortId(undefined);
+                        data.commitOperations([{
+                          type: "graph.removeDynamicPort",
+                          graphId: data.graphId,
+                          nodeId: data.model.id,
+                          portId: selectedPort.id,
+                        }]);
+                      }
+                    }}
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M3 4h10M6 4V2.5h4V4M4.5 4l.7 9h5.6l.7-9M6.5 6.5v4M9.5 6.5v4" />
+                    </svg>
+                  </button>
+                )}
+              </div>
             </header>
             {ports.map((port, portIndex) => (
               <DynamicPortRow
@@ -802,6 +850,8 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
                 group={group}
                 port={port}
                 pending={pending}
+                selected={selectedPortId === port.id}
+                onSelect={() => setSelectedPortId(port.id)}
                 dragging={groupDragState?.sourcePortId === port.id}
                 dropPosition={groupDragState?.targetPortId === port.id ? groupDragState.position : undefined}
                 onDragStart={() => setDragState({ sourcePortId: port.id })}
@@ -836,6 +886,8 @@ function DynamicPortRow({
   group,
   port,
   pending,
+  selected,
+  onSelect,
   dragging,
   dropPosition,
   onDragStart,
@@ -848,6 +900,8 @@ function DynamicPortRow({
   readonly group: DynamicPortGroupDefinition;
   readonly port: GraphDynamicPort;
   readonly pending: boolean;
+  readonly selected: boolean;
+  readonly onSelect: () => void;
   readonly dragging: boolean;
   readonly dropPosition: "before" | "after" | undefined;
   readonly onDragStart: () => void;
@@ -857,23 +911,31 @@ function DynamicPortRow({
   readonly onKeyboardMove: (offset: -1 | 1) => void;
 }): React.JSX.Element {
   const model = data.model;
-  const [title, setTitle] = useState(port.title);
-  useEffect(() => setTitle(port.title), [port.title]);
-  const commit = (nextTitle: string, nextValue: JsonValue): void => {
-    if (nextTitle !== port.title || !jsonValuesEqual(nextValue, port.value)) {
+  const commit = (nextValue: JsonValue): void => {
+    if (!jsonValuesEqual(nextValue, port.value)) {
       data.commitOperations([{
         type: "graph.updateDynamicPort",
         graphId: data.graphId,
         nodeId: model.id,
         portId: port.id,
-        title: nextTitle,
+        title: port.title,
         value: nextValue,
       }]);
     }
   };
   return (
     <article
-      className={`graph-dynamic-port-row${dragging ? " dragging" : ""}${dropPosition === undefined ? "" : ` drop-${dropPosition}`}`}
+      className={`graph-dynamic-port-row${selected ? " selected" : ""}${dragging ? " dragging" : ""}${dropPosition === undefined ? "" : ` drop-${dropPosition}`}`}
+      role="option"
+      aria-selected={selected}
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
       onDragOver={(event) => {
         event.preventDefault();
         event.dataTransfer.dropEffect = "move";
@@ -899,6 +961,7 @@ function DynamicPortRow({
         onDragStart={(event) => {
           event.dataTransfer.effectAllowed = "move";
           event.dataTransfer.setData("text/plain", port.id);
+          onSelect();
           onDragStart();
         }}
         onDragEnd={onDragEnd}
@@ -916,50 +979,20 @@ function DynamicPortRow({
           <circle cx="3" cy="13" r="1" /><circle cx="9" cy="13" r="1" />
         </svg>
       </button>
-      <input
-        className="graph-dynamic-port-title"
-        aria-label={`动态端口名称 ${port.id}`}
-        value={title}
-        disabled={pending}
-        onChange={(event) => setTitle(event.target.value)}
-        onBlur={() => commit(title, port.value)}
-        onKeyDown={(event) => {
-          event.stopPropagation();
-          if (event.key === "Enter") {
-            event.currentTarget.blur();
-          } else if (event.key === "Escape") {
-            setTitle(port.title);
-          }
-        }}
-      />
       <DynamicPortValueEditor
         group={group}
         port={port}
         pending={pending}
-        commit={(value) => commit(port.title, value)}
+        commit={commit}
         reportStatus={data.reportStatus}
       />
-      <button
-        type="button"
-        className="graph-dynamic-port-delete"
-        disabled={pending}
-        aria-label={`删除动态端口 ${port.title}`}
-        title="删除动态端口"
-        onClick={() => {
-          if (window.confirm(`删除动态端口 '${port.title}'？相关连线也会被删除。`)) {
-            data.commitOperations([{
-              type: "graph.removeDynamicPort",
-              graphId: data.graphId,
-              nodeId: model.id,
-              portId: port.id,
-            }]);
-          }
-        }}
-      >
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M3 4h10M6 4V2.5h4V4M4.5 4l.7 9h5.6l.7-9M6.5 6.5v4M9.5 6.5v4" />
-        </svg>
-      </button>
+      <Handle
+        id={port.id}
+        type={group.port.direction === "input" ? "target" : "source"}
+        position={group.port.direction === "input" ? Position.Left : Position.Right}
+        className={`graph-handle ${group.port.kind}`}
+        title={`${group.title} · ${group.port.kind}${group.port.dataTypeId === undefined ? "" : ` · ${group.port.dataTypeId}`}`}
+      />
     </article>
   );
 }
