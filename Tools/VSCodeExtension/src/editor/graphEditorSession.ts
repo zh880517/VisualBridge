@@ -88,7 +88,7 @@ export class GraphEditorSession {
       }),
       vscode.workspace.onDidSaveTextDocument((savedDocument) => {
         if (sameUri(savedDocument.uri, this.document.uri)) {
-          void this.updateDiskBaseline();
+          void this.updateDiskBaseline().then(() => this.sendState());
         }
       }),
       this.projects.onDidChange(() => {
@@ -269,6 +269,7 @@ export class GraphEditorSession {
       document: result.document,
       catalogRegistry: catalogResult.registry,
       catalogReady: catalogResult.ready,
+      isDirty: this.document.isDirty,
       diagnostics,
     });
   }
@@ -336,6 +337,7 @@ export class GraphEditorSession {
     await this.panel.webview.postMessage({
       type: "graphInvalid",
       documentVersion: this.document.version,
+      isDirty: this.document.isDirty,
       diagnostics,
     });
   }

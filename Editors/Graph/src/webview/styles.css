@@ -90,6 +90,33 @@ button:disabled {
   background: var(--vscode-editorGroupHeader-tabsBackground);
 }
 
+.graph-save-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  color: var(--vscode-descriptionForeground);
+}
+
+.graph-save-state i {
+  width: 8px;
+  height: 8px;
+  background: var(--vscode-testing-iconPassed, #73c991);
+  border-radius: 50%;
+}
+
+.graph-save-state.dirty {
+  color: var(--vscode-foreground);
+}
+
+.graph-save-state.dirty i {
+  background: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d);
+}
+
+.graph-save-state.pending i {
+  background: var(--vscode-progressBar-background, #0e70c0);
+}
+
 .graph-hint {
   color: var(--vscode-descriptionForeground);
   font-size: 12px;
@@ -908,6 +935,19 @@ button:disabled {
 .graph-context-menu button:hover:not(:disabled) {
   color: var(--vscode-menu-selectionForeground);
   background: var(--vscode-menu-selectionBackground);
+}
+
+.graph-context-menu button:disabled {
+  color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground));
+  background: transparent;
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.graph-context-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--vscode-menu-separatorBackground, var(--vscode-menu-border, var(--vscode-editorWidget-border, #454545)));
 }
 
 .graph-modal-backdrop {

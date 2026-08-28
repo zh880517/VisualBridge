@@ -8,6 +8,7 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
+  SelectionMode,
   applyEdgeChanges,
   applyNodeChanges,
   type Connection,
@@ -372,6 +373,7 @@ type NodePickerState =
 
 type GraphContextMenuState =
   | { readonly kind: "node"; readonly x: number; readonly y: number; readonly nodeId: string }
+  | { readonly kind: "selection"; readonly x: number; readonly y: number }
   | { readonly kind: "graph"; readonly x: number; readonly y: number; readonly position: GraphPosition };
 
 interface ConnectionNodeOption {
@@ -409,11 +411,13 @@ type HostMessage =
       readonly document: GraphDocument;
       readonly catalogRegistry: GraphCatalogRegistry;
       readonly catalogReady: boolean;
+      readonly isDirty?: boolean;
       readonly diagnostics: readonly DocumentDiagnostic[];
     }
   | {
       readonly type: "graphInvalid";
       readonly documentVersion: number;
+      readonly isDirty?: boolean;
       readonly diagnostics: readonly DocumentDiagnostic[];
     }
   | {
@@ -1479,6 +1483,30 @@ function PortColumn({
   );
 }
 
+function SelectionContextActions({
+  copyIssue,
+  duplicateIssue,
+  deleteIssue,
+  onCopy,
+  onDuplicate,
+  onDelete,
+}: {
+  readonly copyIssue: string | undefined;
+  readonly duplicateIssue: string | undefined;
+  readonly deleteIssue: string | undefined;
+  readonly onCopy: () => void;
+  readonly onDuplicate: () => void;
+  readonly onDelete: () => void;
+}): React.JSX.Element {
+  return (
+    <>
+      <button type="button" disabled={copyIssue !== undefined} title={copyIssue} onClick={onCopy}>复制</button>
+      <button type="button" disabled={duplicateIssue !== undefined} title={duplicateIssue} onClick={onDuplicate}>Duplicate</button>
+      <button type="button" disabled={deleteIssue !== undefined} title={deleteIssue} onClick={onDelete}>删除所选</button>
+    </>
+  );
+}
+
 function GraphEditorApp(): React.JSX.Element {
   const rootMetadata = useMemo(readMetadata, []);
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -1500,6 +1528,7 @@ function GraphEditorApp(): React.JSX.Element {
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<GraphFlowNode, GraphFlowEdge>>();
   const [selected, setSelected] = useState<Selection>();
   const [pending, setPending] = useState(false);
+  const [documentDirty, setDocumentDirty] = useState<boolean>();
   const [invalidDiagnostics, setInvalidDiagnostics] = useState<readonly DocumentDiagnostic[]>([]);
   const [status, setStatus] = useState({ message: "正在加载 Graph Document…", error: false });
   const [contextMenu, setContextMenu] = useState<GraphContextMenuState>();
@@ -1666,6 +1695,7 @@ function GraphEditorApp(): React.JSX.Element {
         setGraphDocument(message.document);
         setCatalogRegistry(message.catalogRegistry);
         setCatalogReady(message.catalogReady);
+        setDocumentDirty(Boolean(message.isDirty));
         setReplacementCandidates({});
         setActiveGraphIdValue(currentGraphId);
         setPending(false);
@@ -1717,6 +1747,7 @@ function GraphEditorApp(): React.JSX.Element {
         updateSelection(undefined);
         setGraphDocument(undefined);
         setCatalogReady(false);
+        setDocumentDirty(Boolean(message.isDirty));
         setFlowNodes([]);
         setFlowEdges([]);
         setPending(false);
@@ -2125,7 +2156,11 @@ function GraphEditorApp(): React.JSX.Element {
       return;
     }
     event.preventDefault();
-    updateSelection({ nodeIds: [node.id], edgeIds: [] });
+    event.stopPropagation();
+    const currentSelection = selectedRef.current;
+    if (!currentSelection?.nodeIds.includes(node.id)) {
+      updateSelection({ nodeIds: [node.id], edgeIds: [] });
+    }
     setContextMenu({ kind: "node", x: event.clientX, y: event.clientY, nodeId: node.id });
     if (node.data.model.nodeTypeId !== undefined && catalogReadyRef.current) {
       setReplacementCandidates((current) => {
@@ -2141,6 +2176,22 @@ function GraphEditorApp(): React.JSX.Element {
       });
     }
   }, [updateSelection]);
+
+  const handleEdgeContextMenu = useCallback((event: ReactMouseEvent, edge: GraphFlowEdge): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    const currentSelection = selectedRef.current;
+    if (!currentSelection?.edgeIds.includes(edge.id)) {
+      updateSelection({ nodeIds: [], edgeIds: [edge.id] });
+    }
+    setContextMenu({ kind: "selection", x: event.clientX, y: event.clientY });
+  }, [updateSelection]);
+
+  const handleSelectionContextMenu = useCallback((event: ReactMouseEvent): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({ kind: "selection", x: event.clientX, y: event.clientY });
+  }, []);
 
   const handlePaneContextMenu = useCallback((event: MouseEvent | ReactMouseEvent): void => {
     event.preventDefault();
@@ -2196,35 +2247,47 @@ function GraphEditorApp(): React.JSX.Element {
   const availableAtomicNodeTypes = activeGraph === undefined || !catalogReady
     ? []
     : catalogRegistry.nodeTypes.filter((nodeType) => isNodeTypeAvailable(activeGraph, nodeType, catalogRegistry, "atomic"));
+  const contextSelectionPayload = contextMenu?.kind === "node" || contextMenu?.kind === "selection"
+    ? createClipboardPayload()
+    : undefined;
+  const copySelectionIssue = pending
+    ? "正在应用修改"
+    : contextSelectionPayload === undefined
+      ? "当前选择中没有可复制的原子节点"
+      : undefined;
+  const duplicateSelectionIssue = copySelectionIssue ?? (!catalogReady ? "Catalog 尚未就绪" : undefined);
+  const deleteSelectionIssue = pending
+    ? "正在应用修改"
+    : activeGraph === undefined || selected === undefined
+      ? "当前没有选择内容"
+      : getDeleteSelectionIssue(activeGraph, selected, catalogRegistry);
+  const addNodeIssue = pending
+    ? "正在应用修改"
+    : !catalogReady
+      ? "Catalog 尚未就绪"
+      : availableAtomicNodeTypes.length === 0
+        ? "当前 Graph Type 没有可用的节点类型"
+        : undefined;
+  const addSubgraphIssue = pending
+    ? "正在应用修改"
+    : catalogRegistry.graphTypes.length > 0 && !catalogReady
+      ? "Catalog 尚未就绪"
+      : catalogRegistry.graphTypes.length > 0 && subgraphOptions.length === 0
+        ? "当前 Graph Type 没有可用的子图类型"
+        : undefined;
+  const pasteIssue = pending ? "正在应用修改" : !catalogReady ? "Catalog 尚未就绪" : undefined;
+  const saveState = pending
+    ? { kind: "pending", label: "修改中…", title: "正在应用 Graph 修改" }
+    : documentDirty === undefined
+      ? { kind: "pending", label: "读取状态…", title: "正在读取文档保存状态" }
+      : documentDirty
+        ? { kind: "dirty", label: "未保存", title: "文档包含尚未保存到磁盘的修改" }
+        : { kind: "saved", label: "已保存", title: "文档内容已保存到磁盘" };
 
   return (
     <GraphDataTypesContext.Provider value={catalogRegistry.dataTypes}>
       <div className="graph-app" onClick={() => setContextMenu(undefined)}>
       <header className="graph-toolbar">
-        <button type="button" onClick={(event) => { event.stopPropagation(); setPicker({ mode: "add" }); }} disabled={activeGraph === undefined || pending || !catalogReady || availableAtomicNodeTypes.length === 0}>
-          添加节点
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setSubgraphPosition(undefined);
-            if (catalogRegistry.graphTypes.length === 0) {
-              addSubgraph();
-            } else {
-              setSubgraphPickerOpen(true);
-            }
-          }}
-          disabled={activeGraph === undefined || pending || (catalogRegistry.graphTypes.length > 0 && (!catalogReady || subgraphOptions.length === 0))}
-          title={catalogRegistry.graphTypes.length > 0 && !catalogReady ? "Catalog 尚未就绪" : catalogRegistry.graphTypes.length > 0 && subgraphOptions.length === 0 ? "当前 Graph Type 没有可用的子图类型" : undefined}
-        >
-          添加子图
-        </button>
-        <button type="button" className="secondary" onClick={copySelection} disabled={selected === undefined || pending}>复制</button>
-        <button type="button" className="secondary" onClick={() => vscode.postMessage({ type: "readClipboard" })} disabled={pending || !catalogReady}>粘贴</button>
-        <button type="button" className="secondary" onClick={duplicateSelection} disabled={selected === undefined || pending || !catalogReady}>Duplicate</button>
-        <button type="button" className="secondary" onClick={deleteSelection} disabled={selected === undefined || pending}>
-          删除所选
-        </button>
         <nav className="graph-breadcrumb" aria-label="Graph breadcrumb">
           {path.map((item, index) => (
             <span key={item.id}>
@@ -2250,6 +2313,13 @@ function GraphEditorApp(): React.JSX.Element {
           <span>显示节点 ID</span>
         </label>
         <span className="graph-toolbar-spacer" />
+        <span
+          className={`graph-save-state ${saveState.kind}`}
+          title={saveState.title}
+        >
+          <i aria-hidden="true" />
+          {saveState.label}
+        </span>
         <span className="graph-metadata" title={rootMetadata.relativePath}>
           {rootMetadata.projectId} · {rootMetadata.documentType} · {rootMetadata.relativePath}
         </span>
@@ -2278,6 +2348,8 @@ function GraphEditorApp(): React.JSX.Element {
                         onConnectEnd={handleConnectEnd}
                         onNodeDragStop={handleNodeDragStop}
                         onNodeContextMenu={handleNodeContextMenu}
+                        onEdgeContextMenu={handleEdgeContextMenu}
+                        onSelectionContextMenu={handleSelectionContextMenu}
                         onPaneContextMenu={handlePaneContextMenu}
                         onNodeDoubleClick={(_, node) => openSubgraph(node.id)}
                         onPaneClick={() => setContextMenu(undefined)}
@@ -2285,6 +2357,9 @@ function GraphEditorApp(): React.JSX.Element {
                         nodesDraggable={!pending}
                         nodesConnectable={!pending && catalogReady}
                         elementsSelectable={!pending}
+                        selectionOnDrag
+                        selectionMode={SelectionMode.Partial}
+                        panOnDrag={[1]}
                         deleteKeyCode={null}
                         connectionRadius={24}
                         snapToGrid
@@ -2331,30 +2406,78 @@ function GraphEditorApp(): React.JSX.Element {
       {contextMenu?.kind === "node" && activeGraph !== undefined && (() => {
         const node = activeGraph.nodes.find((candidate) => candidate.id === contextMenu.nodeId);
         const candidates = replacementCandidates[contextMenu.nodeId];
+        const selectSameTypeIssue = pending
+          ? "正在应用修改"
+          : node?.nodeTypeId === undefined
+            ? "节点没有可识别的类型"
+            : undefined;
+        const replaceNodeIssue = pending
+          ? "正在应用修改"
+          : node?.nodeTypeId === undefined
+            ? "节点没有可替换的类型"
+            : !catalogReady
+              ? "Catalog 尚未就绪"
+              : candidates === undefined
+                ? "正在检查兼容类型"
+                : candidates.length === 0
+                  ? "没有兼容的节点类型"
+                  : undefined;
         return (
           <div className="graph-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
-            {node?.nodeTypeId !== undefined && (
-              <>
-                <button type="button" onClick={() => selectSameType(node.id)}>选择同类型节点</button>
-                <button
-                  type="button"
-                  disabled={!catalogReady || candidates === undefined || candidates.length === 0}
-                  onClick={() => { setContextMenu(undefined); setPicker({ mode: "replace", nodeId: node.id }); }}
-                >
-                  替换节点类型{!catalogReady ? "（Catalog 未就绪）" : candidates === undefined ? "（检查中…）" : candidates.length === 0 ? "（无兼容类型）" : "…"}
-                </button>
-              </>
-            )}
+            <button
+              type="button"
+              disabled={selectSameTypeIssue !== undefined}
+              title={selectSameTypeIssue}
+              onClick={() => node !== undefined && selectSameType(node.id)}
+            >
+              选择同类型节点
+            </button>
+            <button
+              type="button"
+              disabled={replaceNodeIssue !== undefined}
+              title={replaceNodeIssue}
+              onClick={() => {
+                if (node !== undefined) {
+                  setContextMenu(undefined);
+                  setPicker({ mode: "replace", nodeId: node.id });
+                }
+              }}
+            >
+              替换节点类型…
+            </button>
             {node?.kind === "subgraph" && <button type="button" onClick={() => openSubgraph(node.id)}>打开子图</button>}
+            <div className="graph-context-menu-separator" role="separator" />
+            <SelectionContextActions
+              copyIssue={copySelectionIssue}
+              duplicateIssue={duplicateSelectionIssue}
+              deleteIssue={deleteSelectionIssue}
+              onCopy={() => { setContextMenu(undefined); copySelection(); }}
+              onDuplicate={() => { setContextMenu(undefined); duplicateSelection(); }}
+              onDelete={() => { setContextMenu(undefined); deleteSelection(); }}
+            />
           </div>
         );
       })()}
+
+      {contextMenu?.kind === "selection" && activeGraph !== undefined && (
+        <div className="graph-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
+          <SelectionContextActions
+            copyIssue={copySelectionIssue}
+            duplicateIssue={duplicateSelectionIssue}
+            deleteIssue={deleteSelectionIssue}
+            onCopy={() => { setContextMenu(undefined); copySelection(); }}
+            onDuplicate={() => { setContextMenu(undefined); duplicateSelection(); }}
+            onDelete={() => { setContextMenu(undefined); deleteSelection(); }}
+          />
+        </div>
+      )}
 
       {contextMenu?.kind === "graph" && activeGraph !== undefined && (
         <div className="graph-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
           <button
             type="button"
-            disabled={pending || !catalogReady || availableAtomicNodeTypes.length === 0}
+            disabled={addNodeIssue !== undefined}
+            title={addNodeIssue}
             onClick={() => {
               const position = contextMenu.position;
               setContextMenu(undefined);
@@ -2365,7 +2488,8 @@ function GraphEditorApp(): React.JSX.Element {
           </button>
           <button
             type="button"
-            disabled={pending || (catalogRegistry.graphTypes.length > 0 && (!catalogReady || subgraphOptions.length === 0))}
+            disabled={addSubgraphIssue !== undefined}
+            title={addSubgraphIssue}
             onClick={() => {
               const position = contextMenu.position;
               setContextMenu(undefined);
@@ -2381,7 +2505,8 @@ function GraphEditorApp(): React.JSX.Element {
           </button>
           <button
             type="button"
-            disabled={pending || !catalogReady}
+            disabled={pasteIssue !== undefined}
+            title={pasteIssue}
             onClick={() => {
               setContextMenu(undefined);
               vscode.postMessage({ type: "readClipboard" });
@@ -3300,6 +3425,43 @@ function isNodeTypeRequiredByGraph(
     && constraint.maxInstances === 1
     && matchesNodeSelectorDefinition(nodeType, constraint.selector),
   ) ?? false;
+}
+
+function getDeleteSelectionIssue(
+  graph: GraphDefinition,
+  selection: Selection,
+  catalogRegistry: GraphCatalogRegistry,
+): string | undefined {
+  if (selection.nodeIds.length === 0 && selection.edgeIds.length === 0) {
+    return "当前没有选择内容";
+  }
+  if (selection.nodeIds.length === 0) {
+    return undefined;
+  }
+  const graphType = graph.graphTypeId === undefined
+    ? undefined
+    : resolveGraphTypeDefinition(catalogRegistry, graph.graphTypeId);
+  if (graphType === undefined) {
+    return undefined;
+  }
+  const selectedNodeIds = new Set(selection.nodeIds);
+  for (const constraint of graphType.nodeConstraints) {
+    const minimum = constraint.minInstances ?? 0;
+    if (minimum === 0) {
+      continue;
+    }
+    const matchingNodes = graph.nodes.filter((node) => {
+      const nodeType = node.nodeTypeId === undefined
+        ? undefined
+        : resolveNodeTypeDefinition(catalogRegistry, node.nodeTypeId);
+      return nodeType !== undefined && matchesNodeSelectorDefinition(nodeType, constraint.selector);
+    });
+    const remainingCount = matchingNodes.filter((node) => !selectedNodeIds.has(node.id)).length;
+    if (remainingCount < minimum) {
+      return `Graph Type 要求至少保留 ${minimum} 个匹配节点`;
+    }
+  }
+  return undefined;
 }
 
 function getConnectionNodeOptions(
