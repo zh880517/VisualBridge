@@ -1544,13 +1544,26 @@ function GraphEditorApp(): React.JSX.Element {
     [activeGraphId, graphDocument],
   );
 
-  const updateSelection = useCallback((next: Selection | undefined): void => {
+  const updateSelection = useCallback((next: Selection | undefined, synchronizeFlow = true): void => {
     const current = selectedRef.current;
     if (selectionsEqual(current, next)) {
       return;
     }
     selectedRef.current = next;
     setSelected(next);
+    if (!synchronizeFlow) {
+      return;
+    }
+    const selectedNodeIds = new Set(next?.nodeIds ?? []);
+    const selectedEdgeIds = new Set(next?.edgeIds ?? []);
+    setFlowNodes((nodes) => nodes.map((node) => {
+      const shouldSelect = node.data.flavor === "node" && selectedNodeIds.has(node.id);
+      return node.selected === shouldSelect ? node : { ...node, selected: shouldSelect };
+    }));
+    setFlowEdges((edges) => edges.map((edge) => {
+      const shouldSelect = selectedEdgeIds.has(edge.id);
+      return edge.selected === shouldSelect ? edge : { ...edge, selected: shouldSelect };
+    }));
   }, []);
 
   const setActiveGraphId = useCallback((next: string): void => {
@@ -1773,9 +1786,10 @@ function GraphEditorApp(): React.JSX.Element {
       setFlowEdges([]);
       return;
     }
-    setFlowNodes(toFlowNodes(graphDocument, activeGraph, catalogRegistry, selected, commitNode, postOperations, setStatus));
-    setFlowEdges(activeGraph.edges.map((edge) => toFlowEdge(edge, selected, graphDocument, activeGraph, catalogRegistry)));
-  }, [activeGraph, catalogRegistry, commitNode, graphDocument, postOperations, selected]);
+    const currentSelection = selectedRef.current;
+    setFlowNodes(toFlowNodes(graphDocument, activeGraph, catalogRegistry, currentSelection, commitNode, postOperations, setStatus));
+    setFlowEdges(activeGraph.edges.map((edge) => toFlowEdge(edge, currentSelection, graphDocument, activeGraph, catalogRegistry)));
+  }, [activeGraph, catalogRegistry, commitNode, graphDocument, postOperations]);
 
   const handleNodesChange = useCallback((changes: NodeChange<GraphFlowNode>[]): void => {
     setFlowNodes((current) => applyNodeChanges(changes, current));
@@ -1788,7 +1802,7 @@ function GraphEditorApp(): React.JSX.Element {
   const handleSelectionChange = useCallback((selection: { nodes: GraphFlowNode[]; edges: GraphFlowEdge[] }): void => {
     const nodeIds = selection.nodes.filter((candidate) => candidate.data.flavor === "node").map((node) => node.id).sort();
     const edgeIds = selection.edges.map((edge) => edge.id).sort();
-    updateSelection(nodeIds.length === 0 && edgeIds.length === 0 ? undefined : { nodeIds, edgeIds });
+    updateSelection(nodeIds.length === 0 && edgeIds.length === 0 ? undefined : { nodeIds, edgeIds }, false);
   }, [updateSelection]);
 
   const handleConnect = useCallback((connection: Connection): void => {
