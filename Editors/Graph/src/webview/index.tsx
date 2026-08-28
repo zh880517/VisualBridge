@@ -359,6 +359,12 @@ interface Selection {
   readonly edgeIds: readonly string[];
 }
 
+interface DeleteSelectionPlan {
+  readonly nodeIds: readonly string[];
+  readonly edgeIds: readonly string[];
+  readonly retainedNodeIds: readonly string[];
+}
+
 type NodePickerState =
   | { readonly mode: "add"; readonly position?: GraphPosition }
   | { readonly mode: "replace"; readonly nodeId: string }
@@ -1487,6 +1493,7 @@ function SelectionContextActions({
   copyIssue,
   duplicateIssue,
   deleteIssue,
+  deleteLabel,
   onCopy,
   onDuplicate,
   onDelete,
@@ -1494,6 +1501,7 @@ function SelectionContextActions({
   readonly copyIssue: string | undefined;
   readonly duplicateIssue: string | undefined;
   readonly deleteIssue: string | undefined;
+  readonly deleteLabel: string;
   readonly onCopy: () => void;
   readonly onDuplicate: () => void;
   readonly onDelete: () => void;
@@ -1502,7 +1510,7 @@ function SelectionContextActions({
     <>
       <button type="button" disabled={copyIssue !== undefined} title={copyIssue} onClick={onCopy}>复制</button>
       <button type="button" disabled={duplicateIssue !== undefined} title={duplicateIssue} onClick={onDuplicate}>Duplicate</button>
-      <button type="button" disabled={deleteIssue !== undefined} title={deleteIssue} onClick={onDelete}>删除所选</button>
+      <button type="button" disabled={deleteIssue !== undefined} title={deleteIssue} onClick={onDelete}>{deleteLabel}</button>
     </>
   );
 }
@@ -2113,9 +2121,10 @@ function GraphEditorApp(): React.JSX.Element {
     if (graph === undefined) {
       return;
     }
-    const selectedNodes = new Set(current.nodeIds);
+    const plan = planDeleteSelection(graph, current, catalogRegistryRef.current);
+    const selectedNodes = new Set(plan.nodeIds);
     const operations: GraphOperation[] = [
-      ...current.edgeIds.flatMap((edgeId) => {
+      ...plan.edgeIds.flatMap((edgeId) => {
         const edge = graph.edges.find((candidate) => candidate.id === edgeId);
         const removedWithNode = edge !== undefined && (
           edge.source.kind === "node" && selectedNodes.has(edge.source.nodeId)
@@ -2123,10 +2132,12 @@ function GraphEditorApp(): React.JSX.Element {
         );
         return removedWithNode ? [] : [{ type: "graph.removeEdge" as const, graphId, edgeId }];
       }),
-      ...current.nodeIds.map((nodeId) => ({ type: "graph.removeNode" as const, graphId, nodeId })),
+      ...plan.nodeIds.map((nodeId) => ({ type: "graph.removeNode" as const, graphId, nodeId })),
     ];
     if (operations.length > 0) {
-      updateSelection(undefined);
+      updateSelection(plan.retainedNodeIds.length === 0
+        ? undefined
+        : { nodeIds: plan.retainedNodeIds, edgeIds: [] });
       postOperations(operations);
     }
   }, [postOperations, updateSelection]);
@@ -2270,11 +2281,19 @@ function GraphEditorApp(): React.JSX.Element {
       ? "当前选择中没有可复制的原子节点"
       : undefined;
   const duplicateSelectionIssue = copySelectionIssue ?? (!catalogReady ? "Catalog 尚未就绪" : undefined);
+  const deletePlan = activeGraph === undefined || selected === undefined
+    ? undefined
+    : planDeleteSelection(activeGraph, selected, catalogRegistry);
   const deleteSelectionIssue = pending
     ? "正在应用修改"
-    : activeGraph === undefined || selected === undefined
+    : deletePlan === undefined
       ? "当前没有选择内容"
-      : getDeleteSelectionIssue(activeGraph, selected, catalogRegistry);
+      : deletePlan.nodeIds.length === 0 && deletePlan.edgeIds.length === 0
+        ? "所选节点必须由当前 Graph Type 保留"
+        : undefined;
+  const deleteSelectionLabel = deletePlan !== undefined && deletePlan.retainedNodeIds.length > 0
+    ? `删除可删除项（保留 ${deletePlan.retainedNodeIds.length} 个必需节点）`
+    : "删除所选";
   const addNodeIssue = pending
     ? "正在应用修改"
     : !catalogReady
@@ -2465,6 +2484,7 @@ function GraphEditorApp(): React.JSX.Element {
               copyIssue={copySelectionIssue}
               duplicateIssue={duplicateSelectionIssue}
               deleteIssue={deleteSelectionIssue}
+              deleteLabel={deleteSelectionLabel}
               onCopy={() => { setContextMenu(undefined); copySelection(); }}
               onDuplicate={() => { setContextMenu(undefined); duplicateSelection(); }}
               onDelete={() => { setContextMenu(undefined); deleteSelection(); }}
@@ -2479,6 +2499,7 @@ function GraphEditorApp(): React.JSX.Element {
             copyIssue={copySelectionIssue}
             duplicateIssue={duplicateSelectionIssue}
             deleteIssue={deleteSelectionIssue}
+            deleteLabel={deleteSelectionLabel}
             onCopy={() => { setContextMenu(undefined); copySelection(); }}
             onDuplicate={() => { setContextMenu(undefined); duplicateSelection(); }}
             onDelete={() => { setContextMenu(undefined); deleteSelection(); }}
@@ -3441,41 +3462,55 @@ function isNodeTypeRequiredByGraph(
   ) ?? false;
 }
 
-function getDeleteSelectionIssue(
+function planDeleteSelection(
   graph: GraphDefinition,
   selection: Selection,
   catalogRegistry: GraphCatalogRegistry,
-): string | undefined {
-  if (selection.nodeIds.length === 0 && selection.edgeIds.length === 0) {
-    return "当前没有选择内容";
-  }
-  if (selection.nodeIds.length === 0) {
-    return undefined;
-  }
+): DeleteSelectionPlan {
+  const selectedNodeIds = new Set(selection.nodeIds);
+  const selectedEdgeIds = new Set(selection.edgeIds);
   const graphType = graph.graphTypeId === undefined
     ? undefined
     : resolveGraphTypeDefinition(catalogRegistry, graph.graphTypeId);
-  if (graphType === undefined) {
-    return undefined;
-  }
-  const selectedNodeIds = new Set(selection.nodeIds);
-  for (const constraint of graphType.nodeConstraints) {
+  const constrainedCounts = (graphType?.nodeConstraints ?? []).flatMap((constraint) => {
     const minimum = constraint.minInstances ?? 0;
-    if (minimum === 0) {
+    return minimum === 0 ? [] : [{
+      constraint,
+      minimum,
+      remaining: graph.nodes.filter((node) => {
+        const nodeType = node.nodeTypeId === undefined
+          ? undefined
+          : resolveNodeTypeDefinition(catalogRegistry, node.nodeTypeId);
+        return nodeType !== undefined && matchesNodeSelectorDefinition(nodeType, constraint.selector);
+      }).length,
+    }];
+  });
+  const nodeIds: string[] = [];
+  const retainedNodeIds: string[] = [];
+  for (const node of graph.nodes) {
+    if (!selectedNodeIds.has(node.id)) {
       continue;
     }
-    const matchingNodes = graph.nodes.filter((node) => {
-      const nodeType = node.nodeTypeId === undefined
-        ? undefined
-        : resolveNodeTypeDefinition(catalogRegistry, node.nodeTypeId);
-      return nodeType !== undefined && matchesNodeSelectorDefinition(nodeType, constraint.selector);
-    });
-    const remainingCount = matchingNodes.filter((node) => !selectedNodeIds.has(node.id)).length;
-    if (remainingCount < minimum) {
-      return `Graph Type 要求至少保留 ${minimum} 个匹配节点`;
+    const nodeType = node.nodeTypeId === undefined
+      ? undefined
+      : resolveNodeTypeDefinition(catalogRegistry, node.nodeTypeId);
+    const matchingConstraints = nodeType === undefined
+      ? []
+      : constrainedCounts.filter(({ constraint }) => matchesNodeSelectorDefinition(nodeType, constraint.selector));
+    if (matchingConstraints.some(({ minimum, remaining }) => remaining <= minimum)) {
+      retainedNodeIds.push(node.id);
+      continue;
     }
+    nodeIds.push(node.id);
+    matchingConstraints.forEach((count) => {
+      count.remaining -= 1;
+    });
   }
-  return undefined;
+  return {
+    nodeIds,
+    edgeIds: graph.edges.filter((edge) => selectedEdgeIds.has(edge.id)).map((edge) => edge.id),
+    retainedNodeIds,
+  };
 }
 
 function getConnectionNodeOptions(
