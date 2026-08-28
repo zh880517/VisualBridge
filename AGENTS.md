@@ -30,7 +30,7 @@ Use UTF-8 and final newlines. Indent C# with four spaces and TypeScript/JSON wit
 
 ## Testing Guidelines
 
-No repository test suite or coverage threshold exists yet. Unless explicitly requested, do not add Unity tests. Validate Unity changes with the relevant `dotnet build` command and report when generated project files or unavailable Unity assemblies limit verification.
+Run `npm test` for the fixed Graph, Entity, and MCP semantic suites. Add host-independent tests beside the relevant built-in extension and keep reusable fixtures under `TestData/`. No coverage threshold is established. Unless explicitly requested, do not add Unity tests. Validate Unity changes with the relevant `dotnet build` command and report when generated project files or unavailable Unity assemblies limit verification.
 
 ## Commit & Pull Request Guidelines
 

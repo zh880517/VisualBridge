@@ -207,7 +207,7 @@ VisualBridge Project File 概念上声明：
 
 VisualBridge Project File 不保存编辑器窗口状态、连接端口、当前调试会话和其他临时信息。
 
-首个落地版本包含 `formatVersion`、`projectId`、`documentRoots` 和 `documentTypes`。每个 Document Type 至少声明稳定 `id`、编辑器模块 `editor`、包含规则 `include`，并可声明排除规则 `exclude` 和工程相对 `catalogs` 数组。路径和 Glob 统一使用 `/` 分隔，所有文档根目录和 Catalog 必须位于 Project File 所在目录内。
+首个落地版本包含 `formatVersion`、`projectId`、`documentRoots` 和 `documentTypes`。每个 Document Type 至少声明稳定 `id`、编辑器大类 `editor`、包含规则 `include`，并可声明排除规则 `exclude` 和工程相对 `catalogs` 数组。`editor` 选择 `graph`、`entity` 等少量稳定大类，`id` 表示项目在该大类下扩展的业务子类；文件扩展名完全由 `include` / `exclude` 决定，不参与编辑器大类判断。同一个实际文件必须只匹配一个 Document Type，业务子类不得依赖声明顺序解决 Glob 重叠。路径和 Glob 统一使用 `/` 分隔，所有文档根目录和 Catalog 必须位于 Project File 所在目录内。
 
 ### 工程发现和索引
 
@@ -248,6 +248,7 @@ DocumentType
 平台初期重点支持：
 
 - Graph Document：逻辑图、状态机、游戏流程。
+- Entity Document：Entity 根配置与可组合 Component 列表。
 - Structured Document：属性、对象和集合配置。
 - Table Document：表格型配置。
 
@@ -274,6 +275,16 @@ DocumentType
 - Core Operation 覆盖 Graph、节点、内嵌子图、公开接口、连线和安全节点类型替换。
 
 节点标题与 Catalog 字段直接在画布节点上编辑，节点类型只展示不可直接改写。用户通过节点右键菜单请求替换，Core 仅接受不会丢失属性或连线的候选，并以一个 Operation 完成替换。完整落地契约见 `GraphSemanticModel.md`。当前实现范围仍只包含离线编辑，不连接 Unity。
+
+### Entity Document V1 与共享字段模型
+
+当前落地的 Entity Document 保存 Entity 根属性和有序 Component 实例。Entity Catalog V1 声明 Component Group、Entity Type、允许的 Group、Component Type、菜单路径、来源追踪和字段定义；同一 Document Type 可以加载多个 Catalog，并以全局无歧义的稳定 ID / alias 建立 Registry。
+
+Entity 的组织方式借鉴旧配置编辑器的 Entity、分组和 Component 卡片概念，但 Authoring JSON 直接替代 `ScriptableObject` 编辑数据，不迁移 `ScriptableObject`、子资源、包装配置或 Export 按钮。正式游戏项目只保留运行时真正使用的普通 C# class / struct。
+
+字段能力位于 Core 与共享 Form Editor，而不是 Entity 私有实现。数值、颜色、选择项、引用、List 和非框架普通自定义结构体都通过递归字段定义表达；`valueType` 描述 JSON 形态，`dataTypeId` 保留 `int`、`float` 和游戏结构等运行时语义。Graph、Structured、Table 与后续编辑器应复用这套字段解析、校验和 UI 原语。
+
+Entity Document 的默认便利后缀是 `.vbentity`，但业务文件可以使用 Project File 声明的任意扩展名。完整格式、Operation、编辑器行为和未来 Unity 生成约束见 `EntityComponentModel.md`。
 
 ### Table 与 Excel
 
@@ -308,6 +319,8 @@ AI 不直接读取或改写 `.xlsx` 和 `.csv` 载体。即使 `.csv` 在物理�
 
 - Graph Canvas。
 - 可折叠 Graph Inspector，以及节点内联字段编辑。
+- 共享 Form Field Editor：数值、颜色、选择项、对象、集合和 JSON。
+- Entity / Component Editor。
 - Table Editor。
 - Reference Picker。
 - Object、Collection 和 Dictionary Editor。
@@ -419,7 +432,7 @@ Reference Provider 提供：
 
 ### 插件生命周期
 
-- 基础插件是一个 N 合一 VS Code 扩展，Graph、Table/Excel、Structured Config、Debug 和 Unity Connection 是其内部功能模块。
+- 基础插件是一个 N 合一 VS Code 扩展，Graph、Entity、Table/Excel、Structured Config、Debug 和 Unity Connection 是其内部功能模块。
 - 插件实例按 VS Code Extension Host/窗口创建。
 - 一个插件实例只有一个项目注册表和连接管理器。
 - 一个窗口可以持有多个 ProjectContext 和多个 UnityConnection。
@@ -427,7 +440,7 @@ Reference Provider 提供：
 - 关闭 Webview 不终止其他文档和调试连接。
 - 不使用全局 `currentProject`、`currentUnity` 或 `currentDocument`。
 
-插件 Shell 保持轻量，只完成 Document Type 匹配和 Provider 注册。Graph、Excel 等重模块在对应文件第一次打开时延迟加载。每个文件拥有独立 DocumentSession、脏状态、Undo/Redo 和 Webview；多个文件共享当前窗口的 Extension Host，不为每个文件启动一份扩展进程。
+插件 Shell 保持轻量，只完成 Document Type 匹配和 Provider 注册。Graph、Entity、Excel 等重模块在对应文件第一次打开时延迟加载。每个文件拥有独立 DocumentSession、脏状态、Undo/Redo 和 Webview；多个文件共享当前窗口的 Extension Host，不为每个文件启动一份扩展进程。
 
 VS Code 扩展一旦在某个窗口内激活，通常持续到该窗口关闭或重新加载。关闭某类文件的最后一个编辑会话时，插件应主动释放该模块的 Workbook、索引、文件监听、Worker、子进程和运行时订阅；Extension Shell 可以继续驻留。不同 VS Code 窗口拥有独立的 Extension Host、模块状态和文档会话。
 
@@ -453,6 +466,8 @@ VS Code 原生 Explorer
 - `.xlsx`、`.json` 等通用格式不得通过用户级全局关联强制接管。
 - Authoring Project 需要默认接管通用格式时，应通过 `.code-workspace` 或工作区级 `workbench.editorAssociations` 只影响当前工程窗口。
 - VisualBridge Project File 负责声明该工程启用的 Document Type、文件匹配规则和功能模块；Custom Editor 打开后仍需验证文件属于有效 ProjectContext。
+- 插件不得用扩展名直接推断 `graph`、`entity` 等编辑器大类；必须由 Project Registry 先解析匹配的 Document Type，再读取其 `editor` 和稳定 `id`。
+- VS Code 扩展清单中的 Custom Editor selector 是静态的。`.vbgraph`、`.vbentity` 等只提供默认便利关联；Project 自定义扩展名通过可选的通配 Custom Editor、`VisualBridge: Open Document` 或工程级 `workbench.editorAssociations` 进入相同路由。
 - 未发现有效 VisualBridge Project File 时不启用工程功能；不属于有效 ProjectContext 的通用文件不创建业务 DocumentSession，并使用默认编辑器打开。
 - Custom Editor 的静态声明即使存在，也只表示编辑器可用；没有打开对应文件时不加载 Excel、Graph 等重模块。
 
@@ -485,7 +500,7 @@ Unity Bridge 是通用 Unity Package，负责 Unity 和 VisualBridge 之间的�
 - 发送调试事件和运行时变量。
 - 根据请求打开 VS Code 中的 Authoring Document。
 
-Graph 完成前不实现上述 Unity 代码。后续 Catalog Exporter 必须输出 Graph Catalog V4，把稳定 `catalogId`/显示根 `title`、Graph/Node Type 的显式全局无歧义 ID、节点 Catalog 归属、Graph 用途、`supportedCatalogIds`、`portConnectionRules`、允许节点 selector、实例数量约束、初始节点以及 typed subgraph 目标类型写入确定性 Catalog；C# 全名只作为 `source` 追踪信息，不能充当持久身份。Exporter 不执行业务 `OnCreate()` 获取默认值，也不得用旧格式覆盖更高版本 Catalog。当前 Unity Package 尚未实现这些功能。
+当前不实现上述 Unity 代码。后续 Catalog Exporter 必须输出 Graph Catalog V4，把稳定 `catalogId`/显示根 `title`、Graph/Node Type 的显式全局无歧义 ID、节点 Catalog 归属、Graph 用途、`supportedCatalogIds`、`portConnectionRules`、允许节点 selector、实例数量约束、初始节点以及 typed subgraph 目标类型写入确定性 Catalog；C# 全名只作为 `source` 追踪信息，不能充当持久身份。Entity Catalog Exporter 只扫描正式项目中运行时使用的普通 class / struct，不引入 `ScriptableObject` 包装层，并将数值、颜色、List 和普通自定义结构递归映射到全项目共享字段模型。Exporter 不执行业务初始化方法获取默认值，也不得用旧格式覆盖更高版本 Catalog。当前 Unity Package 尚未实现这些功能。
 
 不同业务模块通过 Unity Adapter 注册具体 Catalog Generator、Importer、Compiler 和 Debug Mapping。
 
@@ -760,10 +775,12 @@ VisualBridge/
 ├─ Editors/
 │  ├─ Shared/
 │  ├─ Graph/
+│  ├─ Entity/
 │  ├─ Form/
 │  └─ Table/
 ├─ BuiltInExtensions/
 │  ├─ Graph/
+│  ├─ Entity/
 │  └─ StructuredConfig/
 ├─ Tools/
 │  ├─ VSCodeExtension/
@@ -793,12 +810,13 @@ VisualBridge/
 
 阶段目标是证明“文本源文件 -> VisualBridgeCore -> 校验与确定性修改”。
 
-Project、Graph Core 与最小 stdio MCP 垂直切片现已落地，并由 `TestData/GraphSemanticProject` 固定样例和 Node 自动化测试持续验证；Unity Catalog Exporter、Importer、Runtime 和 Debug 仍不在本阶段范围内。
+Project、Graph Core、Entity Core、共享 Form Field 和最小 stdio MCP 垂直切片现已落地。Graph 与 Entity 分别由 `TestData/GraphSemanticProject` 和 `TestData/EntitySemanticProject` 固定样例及 Node 自动化测试持续验证；Unity Catalog Exporter、Importer、Runtime 和 Debug 仍不在本阶段范围内。
 
 ### 阶段二：VS Code 编辑闭环
 
 - 注册 Custom Text Editor。
 - 实现 Graph Canvas、节点内联字段和可折叠 Graph Inspector 的最小能力。
+- 实现 Entity / Component 卡片编辑和共享 Form Field 的最小能力。
 - 通过 `WorkspaceEdit` 完成文本 Document 的保存和 Undo/Redo，并实现外部变更检测、覆盖确认与放弃刷新。
 - 建立 Project Tree、Problems 和状态栏。
 
@@ -882,7 +900,7 @@ Domain Reload 会中断连接。Unity Bridge 重新登记实例，VS Code 和 MC
 - Document Type 是核心扩展点。
 - 基础插件提供 Graph、Form、Table、Reference 等通用原语。
 - 基础插件采用 N 合一扩展形式，各 Document Type 模块按文件打开事件延迟加载。
-- 用户使用 VS Code 原生 Explorer；插件工程功能启用后，打开有效 ProjectContext 声明的指定类型文件时进入对应 Custom Editor，不要求额外启动命令或自定义文件树。
+- 用户使用 VS Code 原生 Explorer；默认 VisualBridge 后缀可以直接进入对应 Custom Editor。Project 自定义后缀由 `VisualBridge: Open Document` 或工程级编辑器关联进入通配 Custom Editor，随后统一由 Project Registry 按 Document Type 路由，不使用自定义文件树。
 - 插件实例按 VS Code 窗口隔离，每个文件创建独立 DocumentSession，多个文件共享当前窗口的 Extension Host。
 - 平台专属格式可以默认关联自定义编辑器，`.xlsx` 等通用格式只通过 Authoring Project 的工作区级关联在当前工程窗口接管。
 - Table Document 提供统一语义模型，Excel 是可选权威载体或导入导出 Codec；AI 不直接读写 `.xlsx` 和 `.csv`，必须通过 MCP 的搜索、查询和修改能力访问。
@@ -894,6 +912,8 @@ Domain Reload 会中断连接。Unity Bridge 重新登记实例，VS Code 和 MC
 - 项目 `.ts` 不直接加载到 VS Code Extension Host。
 - 自定义 Webview TypeScript/TSX 仍需要构建为 JavaScript/CSS。
 - 内置 Graph Canvas 使用 React 与 React Flow；React Flow 的节点和连线数据由 Graph Document 派生，用户交互必须转换为 Graph Operation 后才能写入源文档。
+- 内置 Entity Editor 使用 Entity Catalog V1 组织 Entity、Component Group 与 Component Type；Entity JSON 是权威数据且不依赖 `ScriptableObject`。Entity Operation 批量应用具有原子性，Serializer 确定性输出。
+- Core Form Field 与共享 Form Editor 是跨 Graph、Entity、Structured 和 Table 的公共字段基础，保留 JSON 形态与运行时 `dataTypeId` 的区别，并递归支持普通自定义结构和 List。
 - Graph Catalog V4 支持多 Catalog Registry、节点 Catalog 归属、显示根名、Graph Type 支持 Catalog、允许节点精筛、输入/输出连接数量规则、直接节点数量约束和 typed subgraph 调用契约；节点的 `menuPath` 是相对所属 Catalog 显示根名的扩展路径。旧 Catalog V1-V3 可读取，缺省支持声明自身 Catalog 且输入/输出均为 `multiple`；序列化升级为 V4。Graph Document 继续保持 V3，并为根图和每个内嵌图保存独立 `graphTypeId`。
 - Graph Type 一经设置暂不允许任意修改；节点和子图创建、删除及安全替换必须保持数量约束，子图调用节点的静态数据端口与子图公开接口共同形成父图端口契约。
 - 声明式扩展优先，项目 Provider 处理复杂逻辑。
@@ -908,12 +928,12 @@ Domain Reload 会中断连接。Unity Bridge 重新登记实例，VS Code 和 MC
 
 - Document、Catalog、Schema 和 Extension Manifest 的完整字段。
 - 稳定 ID 的生成、别名和迁移规则。
-- Graph、Structured Config 和 Table 的最终文本格式。
+- Structured Config 和 Table 的最终文本格式。
 - Operation Schema、错误码和诊断位置格式。
 - Provider JSON-RPC 消息和生命周期细节。
 - MCP SDK 的依赖分发方式和具体 Tool/Resource Schema。
 - Node 最低版本、类型检查和第三方依赖策略。
-- Graph 之外的 Webview UI SDK、组件模型、隔离和热重载方式。
+- Entity / Form 之外的 Webview UI SDK、组件模型、隔离和热重载方式。
 - Unity Catalog Generator、Importer 和 Compiler API。
 - WebSocket 消息、认证、配对和安全策略。
 - Controller Lease、断线恢复和调试事件缓存策略。

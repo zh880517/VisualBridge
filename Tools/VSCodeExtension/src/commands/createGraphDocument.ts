@@ -8,52 +8,22 @@ import {
   type RegisteredGraphTypeDefinition,
 } from "@visualbridge/graph";
 import { loadGraphCatalogRegistry } from "../catalog/graphCatalogLoader";
-import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
-import { DEFAULT_EDITOR_VIEW_TYPE } from "../editor/documentEditorProvider";
+import type { ProjectRegistry } from "../project/projectRegistry";
+import { OPTIONAL_EDITOR_VIEW_TYPE } from "../editor/documentEditorProvider";
+import { selectDocumentType, selectProject, suggestDefaultTarget } from "./createDocumentSupport";
 
 export async function createGraphDocument(projects: ProjectRegistry): Promise<void> {
-  const project = await selectProject(projects.projects);
+  const project = await selectProject(projects.projects, "Graph Document");
   if (project === undefined) {
     return;
   }
 
-  const graphDocumentType = project.definition.documentTypes.find(
-    (documentType) => documentType.editor === GRAPH_EDITOR_ID,
-  );
+  const graphDocumentType = await selectDocumentType(project, GRAPH_EDITOR_ID, "Graph");
   if (graphDocumentType === undefined) {
-    void vscode.window.showWarningMessage(
-      `Project '${project.definition.projectId}' does not declare a Graph document type.`,
-    );
     return;
   }
-
-  const firstRoot = project.definition.documentRoots[0] ?? ".";
-  const defaultDirectory = firstRoot === "."
-    ? project.rootUri
-    : vscode.Uri.joinPath(project.rootUri, ...firstRoot.split("/"));
-  const target = await vscode.window.showSaveDialog({
-    title: "Create VisualBridge Graph Document",
-    defaultUri: vscode.Uri.joinPath(defaultDirectory, "NewGraph.vbgraph"),
-    filters: { "VisualBridge Graph": ["vbgraph"] },
-  });
-  if (target === undefined) {
-    return;
-  }
-
-  const match = projects.resolveDocument(target);
-  if (
-    match === undefined
-    || match.project.markerUri.toString() !== project.markerUri.toString()
-    || match.documentType.editor !== GRAPH_EDITOR_ID
-  ) {
-    void vscode.window.showWarningMessage(
-      "The selected path is not included by this project's Graph document type.",
-    );
-    return;
-  }
-
-  const catalogResult = await loadGraphCatalogRegistry(project, match.documentType.catalogs);
-  if (!catalogResult.ready && match.documentType.catalogs.length > 0) {
+  const catalogResult = await loadGraphCatalogRegistry(project, graphDocumentType.catalogs);
+  if (!catalogResult.ready && graphDocumentType.catalogs.length > 0) {
     const firstError = catalogResult.diagnostics.find((diagnostic) => diagnostic.severity === "error");
     void vscode.window.showWarningMessage(
       `无法创建 Graph，Catalog Registry 无效：${firstError?.message ?? "未知错误"}`,
@@ -76,6 +46,26 @@ export async function createGraphDocument(projects: ProjectRegistry): Promise<vo
     return;
   }
 
+  const target = await vscode.window.showSaveDialog({
+    title: "Create VisualBridge Graph Document",
+    defaultUri: suggestDefaultTarget(project, graphDocumentType, "NewGraph", "vbgraph"),
+  });
+  if (target === undefined) {
+    return;
+  }
+  const match = projects.resolveDocument(target);
+  if (
+    match === undefined
+    || match.project.markerUri.toString() !== project.markerUri.toString()
+    || match.documentType.id !== graphDocumentType.id
+    || match.documentType.editor !== GRAPH_EDITOR_ID
+  ) {
+    void vscode.window.showWarningMessage(
+      `The selected path is not included by Graph Document Type '${graphDocumentType.id}'.`,
+    );
+    return;
+  }
+
   const text = serializeGraphDocument(createEmptyGraphDocument(
     `graph_${randomUUID()}`,
     `root_${randomUUID()}`,
@@ -84,7 +74,7 @@ export async function createGraphDocument(projects: ProjectRegistry): Promise<vo
     () => `node_${randomUUID()}`,
   ));
   await vscode.workspace.fs.writeFile(target, new TextEncoder().encode(text));
-  await vscode.commands.executeCommand("vscode.openWith", target, DEFAULT_EDITOR_VIEW_TYPE);
+  await vscode.commands.executeCommand("vscode.openWith", target, OPTIONAL_EDITOR_VIEW_TYPE);
 }
 
 async function selectRootGraphType(
@@ -108,26 +98,4 @@ async function selectRootGraphType(
     { title: "Select Root Graph Type", placeHolder: "Graph Type for the new document" },
   );
   return selected?.graphType;
-}
-
-async function selectProject(
-  projects: readonly ProjectContext[],
-): Promise<ProjectContext | undefined> {
-  if (projects.length === 0) {
-    void vscode.window.showWarningMessage("No valid VisualBridge project is available.");
-    return undefined;
-  }
-  if (projects.length === 1) {
-    return projects[0];
-  }
-
-  const selected = await vscode.window.showQuickPick(
-    projects.map((project) => ({
-      label: project.definition.projectId,
-      description: project.rootUri.fsPath,
-      project,
-    })),
-    { title: "Select a VisualBridge project", placeHolder: "Project for the new Graph Document" },
-  );
-  return selected?.project;
 }

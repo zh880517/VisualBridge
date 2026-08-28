@@ -1,0 +1,21 @@
+{
+  "formatVersion": 1,
+  "projectId": "visualbridge.entity-semantics",
+  "documentRoots": [
+    "Config"
+  ],
+  "documentTypes": [
+    {
+      "id": "hero-config",
+      "editor": "entity",
+      "include": [
+        "Config/Entities/**/*.herojson"
+      ],
+      "exclude": [],
+      "catalogs": [
+        "Catalog/Common.vbentitycatalog",
+        "Catalog/Gameplay.vbentitycatalog"
+      ]
+    }
+  ]
+}

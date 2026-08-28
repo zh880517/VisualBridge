@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { createEntityDocument } from "./commands/createEntityDocument";
 import { createGraphDocument } from "./commands/createGraphDocument";
 import {
   DEFAULT_EDITOR_VIEW_TYPE,
@@ -69,6 +70,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand("visualbridge.createGraphDocument", async () => {
       await createGraphDocument(projects);
+    }),
+    vscode.commands.registerCommand("visualbridge.createEntityDocument", async () => {
+      await createEntityDocument(projects);
     }),
     vscode.window.registerCustomEditorProvider(DEFAULT_EDITOR_VIEW_TYPE, editorProvider, {
       supportsMultipleEditorsPerDocument: true,

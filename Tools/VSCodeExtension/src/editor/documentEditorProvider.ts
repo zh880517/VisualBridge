@@ -1,7 +1,9 @@
 import * as nodePath from "node:path";
 import * as vscode from "vscode";
+import { ENTITY_EDITOR_ID } from "@visualbridge/entity";
 import { GRAPH_EDITOR_ID } from "@visualbridge/graph";
 import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
+import { EntityEditorSession } from "./entityEditorSession";
 import { GraphEditorSession } from "./graphEditorSession";
 
 export const DEFAULT_EDITOR_VIEW_TYPE = "visualbridge.documentEditor";
@@ -29,6 +31,21 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     if (match.documentType.editor === GRAPH_EDITOR_ID) {
       webviewPanel.title = `${match.documentType.id}: ${nodePath.basename(document.uri.fsPath)}`;
       const session = new GraphEditorSession(
+        this.extensionUri,
+        document,
+        webviewPanel,
+        match,
+        this.projects,
+        this.diagnostics,
+        this.output,
+      );
+      await session.open();
+      return;
+    }
+
+    if (match.documentType.editor === ENTITY_EDITOR_ID) {
+      webviewPanel.title = `${match.documentType.id}: ${nodePath.basename(document.uri.fsPath)}`;
+      const session = new EntityEditorSession(
         this.extensionUri,
         document,
         webviewPanel,

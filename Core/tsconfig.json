@@ -8,6 +8,7 @@
   "include": [
     "index.ts",
     "Document/**/*.ts",
+    "Form/**/*.ts",
     "Project/**/*.ts"
   ]
 }

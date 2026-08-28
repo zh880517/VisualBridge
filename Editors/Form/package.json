@@ -1,0 +1,19 @@
+{
+  "name": "@visualbridge/form-editor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "index.ts",
+  "types": "index.ts",
+  "scripts": {
+    "build": "npm run check",
+    "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@visualbridge/core": "*",
+    "react": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18"
+  }
+}

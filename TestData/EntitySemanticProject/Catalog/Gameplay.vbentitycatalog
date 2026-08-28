@@ -1,0 +1,188 @@
+{
+  "formatVersion": 1,
+  "catalogId": "sample.entity.gameplay",
+  "title": "Gameplay",
+  "componentGroups": [],
+  "entityTypes": [],
+  "componentTypes": [
+    {
+      "id": "sample.component.health",
+      "title": "Health",
+      "aliases": [
+        "legacy.component.health"
+      ],
+      "description": "Health values used by gameplay runtime code.",
+      "groupId": "legacy.group.combat",
+      "menuPath": [
+        "Attributes"
+      ],
+      "source": {
+        "providerId": "csharp",
+        "typeName": "Game.HealthComponent"
+      },
+      "properties": [
+        {
+          "id": "maxHealth",
+          "title": "Max Health",
+          "aliases": [
+            "hp"
+          ],
+          "valueType": "number",
+          "dataTypeId": "float",
+          "defaultValue": 100,
+          "editor": {
+            "kind": "number",
+            "readOnly": false,
+            "integer": false,
+            "min": 0,
+            "step": 1
+          }
+        },
+        {
+          "id": "regeneration",
+          "title": "Regeneration",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "float",
+          "defaultValue": 0,
+          "editor": {
+            "kind": "number",
+            "readOnly": false,
+            "integer": false,
+            "min": 0,
+            "step": 0.1
+          }
+        }
+      ]
+    },
+    {
+      "id": "sample.component.attack",
+      "title": "Attack",
+      "aliases": [],
+      "groupId": "sample.group.combat",
+      "menuPath": [
+        "Abilities"
+      ],
+      "source": {
+        "providerId": "csharp",
+        "typeName": "Game.AttackComponent"
+      },
+      "properties": [
+        {
+          "id": "damageStages",
+          "title": "Damage Stages",
+          "aliases": [],
+          "valueType": "array",
+          "dataTypeId": "list.float",
+          "defaultValue": [
+            10
+          ],
+          "item": {
+            "valueType": "number",
+            "dataTypeId": "float",
+            "defaultValue": 0,
+            "editor": {
+              "kind": "number",
+              "readOnly": false,
+              "integer": false,
+              "min": 0,
+              "step": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "sample.component.move",
+      "title": "Move",
+      "aliases": [],
+      "groupId": "sample.group.movement",
+      "menuPath": [],
+      "source": {
+        "providerId": "csharp",
+        "typeName": "Game.MoveComponent"
+      },
+      "properties": [
+        {
+          "id": "speed",
+          "title": "Speed",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "float",
+          "defaultValue": 5,
+          "editor": {
+            "kind": "number",
+            "readOnly": false,
+            "integer": false,
+            "min": 0,
+            "step": 0.1
+          }
+        },
+        {
+          "id": "direction",
+          "title": "Direction",
+          "aliases": [],
+          "valueType": "object",
+          "dataTypeId": "UnityEngine.Vector3",
+          "defaultValue": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "fields": [
+            {
+              "id": "x",
+              "title": "X",
+              "aliases": [],
+              "valueType": "number",
+              "dataTypeId": "float",
+              "defaultValue": 0,
+              "editor": {
+                "kind": "number",
+                "readOnly": false,
+                "integer": false,
+                "step": 0.1
+              }
+            },
+            {
+              "id": "y",
+              "title": "Y",
+              "aliases": [],
+              "valueType": "number",
+              "dataTypeId": "float",
+              "defaultValue": 0,
+              "editor": {
+                "kind": "number",
+                "readOnly": false,
+                "integer": false,
+                "step": 0.1
+              }
+            },
+            {
+              "id": "z",
+              "title": "Z",
+              "aliases": [],
+              "valueType": "number",
+              "dataTypeId": "float",
+              "defaultValue": 1,
+              "editor": {
+                "kind": "number",
+                "readOnly": false,
+                "integer": false,
+                "step": 0.1
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sample.component.visual",
+      "title": "Visual",
+      "aliases": [],
+      "groupId": "sample.group.visual",
+      "menuPath": [],
+      "properties": []
+    }
+  ]
+}

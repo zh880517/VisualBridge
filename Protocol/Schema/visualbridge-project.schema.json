@@ -64,7 +64,7 @@
             "type": "array",
             "minItems": 1,
             "uniqueItems": true,
-            "description": "Project-relative Graph Catalog paths for this document type.",
+            "description": "Project-relative Catalog paths consumed by this document type's editor category.",
             "items": {
               "type": "string",
               "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
@@ -72,7 +72,7 @@
           },
           "catalog": {
             "type": "string",
-            "description": "Deprecated single Graph Catalog path retained for compatibility.",
+            "description": "Deprecated single Catalog path retained for compatibility.",
             "deprecated": true,
             "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
           }

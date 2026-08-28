@@ -155,11 +155,18 @@ export class ProjectRegistry implements vscode.Disposable {
         continue;
       }
 
-      const documentType = findMatchingDocumentTypes(
+      const documentTypes = findMatchingDocumentTypes(
         project.definition,
         relativePath,
         matches,
-      )[0];
+      );
+      if (documentTypes.length > 1) {
+        this.output.appendLine(
+          `[projects] '${relativePath}' matches multiple Document Types in '${project.definition.projectId}': ${documentTypes.map((documentType) => documentType.id).join(", ")}.`,
+        );
+        return undefined;
+      }
+      const documentType = documentTypes[0];
       if (documentType !== undefined) {
         return { project, documentType, relativePath };
       }

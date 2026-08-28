@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://visualbridge.dev/schema/visualbridge-entity.schema.json",
+  "title": "VisualBridge Entity Document",
+  "type": "object",
+  "required": [
+    "formatVersion",
+    "documentId",
+    "entityTypeId",
+    "title",
+    "properties",
+    "components"
+  ],
+  "properties": {
+    "formatVersion": {
+      "const": 1
+    },
+    "documentId": {
+      "$ref": "#/$defs/identifier"
+    },
+    "entityTypeId": {
+      "$ref": "#/$defs/identifier"
+    },
+    "title": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "properties": {
+      "$ref": "#/$defs/propertyValues"
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/component"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "propertyValues": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "component": {
+      "type": "object",
+      "required": [
+        "id",
+        "componentTypeId",
+        "enabled",
+        "properties"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "componentTypeId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "properties": {
+          "$ref": "#/$defs/propertyValues"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

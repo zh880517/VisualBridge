@@ -1,0 +1,156 @@
+{
+  "formatVersion": 1,
+  "catalogId": "sample.entity.common",
+  "title": "Common",
+  "componentGroups": [
+    {
+      "id": "sample.group.combat",
+      "title": "Combat",
+      "aliases": [
+        "legacy.group.combat"
+      ]
+    },
+    {
+      "id": "sample.group.movement",
+      "title": "Movement",
+      "aliases": []
+    },
+    {
+      "id": "sample.group.visual",
+      "title": "Visual",
+      "aliases": []
+    }
+  ],
+  "entityTypes": [
+    {
+      "id": "sample.entity.player",
+      "title": "Player",
+      "aliases": [
+        "legacy.entity.player"
+      ],
+      "description": "Player runtime configuration structure.",
+      "allowedComponentGroupIds": [
+        "sample.group.combat",
+        "sample.group.movement"
+      ],
+      "properties": [
+        {
+          "id": "displayName",
+          "title": "Display Name",
+          "aliases": [
+            "name"
+          ],
+          "valueType": "string",
+          "dataTypeId": "string",
+          "defaultValue": "Player",
+          "editor": {
+            "kind": "text",
+            "readOnly": false,
+            "integer": false
+          }
+        },
+        {
+          "id": "level",
+          "title": "Level",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "int",
+          "defaultValue": 1,
+          "editor": {
+            "kind": "number",
+            "readOnly": false,
+            "integer": true,
+            "min": 1,
+            "step": 1
+          }
+        },
+        {
+          "id": "tint",
+          "title": "Tint",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "color",
+          "defaultValue": "#FFFFFFFF",
+          "editor": {
+            "kind": "color",
+            "readOnly": false,
+            "integer": false
+          }
+        },
+        {
+          "id": "spawn",
+          "title": "Spawn",
+          "aliases": [],
+          "valueType": "object",
+          "dataTypeId": "sample.SpawnSettings",
+          "defaultValue": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            }
+          },
+          "fields": [
+            {
+              "id": "position",
+              "title": "Position",
+              "aliases": [],
+              "valueType": "object",
+              "dataTypeId": "UnityEngine.Vector3",
+              "defaultValue": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "fields": [
+                {
+                  "id": "x",
+                  "title": "X",
+                  "aliases": [],
+                  "valueType": "number",
+                  "dataTypeId": "float",
+                  "defaultValue": 0,
+                  "editor": {
+                    "kind": "number",
+                    "readOnly": false,
+                    "integer": false,
+                    "step": 0.1
+                  }
+                },
+                {
+                  "id": "y",
+                  "title": "Y",
+                  "aliases": [],
+                  "valueType": "number",
+                  "dataTypeId": "float",
+                  "defaultValue": 0,
+                  "editor": {
+                    "kind": "number",
+                    "readOnly": false,
+                    "integer": false,
+                    "step": 0.1
+                  }
+                },
+                {
+                  "id": "z",
+                  "title": "Z",
+                  "aliases": [],
+                  "valueType": "number",
+                  "dataTypeId": "float",
+                  "defaultValue": 0,
+                  "editor": {
+                    "kind": "number",
+                    "readOnly": false,
+                    "integer": false,
+                    "step": 0.1
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "componentTypes": []
+}

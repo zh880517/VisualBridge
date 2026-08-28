@@ -5,6 +5,7 @@
 - `VisualBridgeArchitecture.md`：平台总体架构与长期设计边界。
 - `GraphSemanticModel.md`：Graph V3 的稳定身份、Graph Type、连接、类型化子图、Catalog 与安全替换契约。
 - `VSCodeGraphEditor.md`：当前已落地的 Graph V3 格式和 VS Code 编辑能力。
+- `EntityComponentModel.md`：Entity / Component V1、共享字段模型、项目自定义后缀和 VS Code 编辑契约。
 - `VisualBridgeMcp.md`：项目级 stdio MCP 的工具边界、查询契约、`baseHash` 并发控制和原子写入语义。
 - `FlowGraphMigration.md`：ActionEditor FlowGraph 节点声明、功能对照和 Unity Catalog 导出迁移路线。
 

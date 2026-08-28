@@ -28,6 +28,8 @@ The `VisualBridge.project.vbjson` marker enables the editor and declares its Gra
 
 Catalog paths are relative to the marker. The host loads them into one registry. Catalog IDs and Data Type IDs must be globally unique; Node Type and Graph Type IDs and aliases must be globally unambiguous in their respective namespaces. Conflicts invalidate the registry instead of being resolved by load order. Without a valid registry, existing unknown nodes remain readable and editable, but new typed nodes and type replacement are unavailable.
 
+`editor: "graph"` selects the broad Graph editor category, while `id` is the project-defined Graph subtype. The `.vbgraph` suffix above is only the default convenience association: a project may declare any suffix in `include` / `exclude`. Custom suffixes use `VisualBridge: Open Document` or a workspace editor association and are then resolved by the same Project Registry. `VisualBridge: Create Graph Document` selects the subtype first and derives its suggested suffix from that subtype's include pattern.
+
 ## Catalog example
 
 ```json

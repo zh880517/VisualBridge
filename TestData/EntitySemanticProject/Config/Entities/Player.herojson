@@ -1,0 +1,42 @@
+{
+  "formatVersion": 1,
+  "documentId": "sample.player",
+  "entityTypeId": "legacy.entity.player",
+  "title": "Sample Player",
+  "properties": {
+    "displayName": "Knight",
+    "level": 8,
+    "spawn": {
+      "position": {
+        "x": 2,
+        "y": 0,
+        "z": 4
+      }
+    },
+    "tint": "#4D88FFFF"
+  },
+  "components": [
+    {
+      "id": "health",
+      "componentTypeId": "legacy.component.health",
+      "enabled": true,
+      "properties": {
+        "maxHealth": 250,
+        "regeneration": 2.5
+      }
+    },
+    {
+      "id": "move",
+      "componentTypeId": "sample.component.move",
+      "enabled": false,
+      "properties": {
+        "direction": {
+          "x": 0,
+          "y": 0,
+          "z": 1
+        },
+        "speed": 6.5
+      }
+    }
+  ]
+}

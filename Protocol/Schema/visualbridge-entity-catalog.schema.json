@@ -1,0 +1,409 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://visualbridge.dev/schema/visualbridge-entity-catalog.schema.json",
+  "title": "VisualBridge Entity Catalog",
+  "type": "object",
+  "required": [
+    "formatVersion",
+    "catalogId",
+    "title",
+    "componentGroups",
+    "entityTypes",
+    "componentTypes"
+  ],
+  "properties": {
+    "formatVersion": {
+      "const": 1
+    },
+    "catalogId": {
+      "$ref": "#/$defs/identifier"
+    },
+    "title": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "componentGroups": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/componentGroup"
+      }
+    },
+    "entityTypes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/entityType"
+      }
+    },
+    "componentTypes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/componentType"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "identifierArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/identifier"
+      }
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "componentGroup": {
+      "type": "object",
+      "required": [
+        "id",
+        "title"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "title": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "aliases": {
+          "$ref": "#/$defs/identifierArray",
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    },
+    "entityType": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "allowedComponentGroupIds",
+        "properties"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "title": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "aliases": {
+          "$ref": "#/$defs/identifierArray",
+          "default": []
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "allowedComponentGroupIds": {
+          "$ref": "#/$defs/identifierArray"
+        },
+        "properties": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "componentType": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "groupId",
+        "properties"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "title": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "aliases": {
+          "$ref": "#/$defs/identifierArray",
+          "default": []
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "groupId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "menuPath": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "default": []
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "properties": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "providerId",
+        "typeName"
+      ],
+      "properties": {
+        "providerId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "typeName": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "field": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "valueType",
+        "defaultValue"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "title": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "aliases": {
+          "$ref": "#/$defs/identifierArray",
+          "default": []
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "valueType": {
+          "$ref": "#/$defs/valueType"
+        },
+        "dataTypeId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "defaultValue": true,
+        "editor": {
+          "$ref": "#/$defs/editor"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field"
+          }
+        },
+        "item": {
+          "$ref": "#/$defs/valueDefinition"
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/valueShape"
+        }
+      ],
+      "additionalProperties": false
+    },
+    "valueDefinition": {
+      "type": "object",
+      "required": [
+        "valueType",
+        "defaultValue"
+      ],
+      "properties": {
+        "valueType": {
+          "$ref": "#/$defs/valueType"
+        },
+        "dataTypeId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "defaultValue": true,
+        "editor": {
+          "$ref": "#/$defs/editor"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field"
+          }
+        },
+        "item": {
+          "$ref": "#/$defs/valueDefinition"
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/valueShape"
+        }
+      ],
+      "additionalProperties": false
+    },
+    "valueType": {
+      "enum": [
+        "string",
+        "number",
+        "boolean",
+        "object",
+        "array",
+        "json"
+      ]
+    },
+    "valueShape": {
+      "type": "object",
+      "if": {
+        "type": "object",
+        "properties": {
+          "valueType": {
+            "const": "object"
+          }
+        },
+        "required": [
+          "valueType"
+        ]
+      },
+      "then": {
+        "type": "object",
+        "required": [
+          "fields"
+        ],
+        "properties": {
+          "fields": true,
+          "item": false
+        }
+      },
+      "else": {
+        "if": {
+          "type": "object",
+          "properties": {
+            "valueType": {
+              "const": "array"
+            }
+          },
+          "required": [
+            "valueType"
+          ]
+        },
+        "then": {
+          "type": "object",
+          "required": [
+            "item"
+          ],
+          "properties": {
+            "item": true,
+            "fields": false
+          }
+        },
+        "else": {
+          "type": "object",
+          "properties": {
+            "fields": false,
+            "item": false
+          }
+        }
+      }
+    },
+    "editor": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "text",
+            "multiline",
+            "number",
+            "checkbox",
+            "select",
+            "color",
+            "reference",
+            "json"
+          ]
+        },
+        "readOnly": {
+          "type": "boolean",
+          "default": false
+        },
+        "integer": {
+          "type": "boolean",
+          "default": false
+        },
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        },
+        "step": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "title",
+              "value"
+            ],
+            "properties": {
+              "title": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "value": true
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "select"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "options"
+            ],
+            "properties": {
+              "options": true
+            }
+          },
+          "else": {
+            "type": "object",
+            "properties": {
+              "options": false
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}
