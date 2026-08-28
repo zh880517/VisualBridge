@@ -1102,7 +1102,6 @@ function PortColumn({
           <span>{port.title}</span>
         </div>
       ))}
-      {ports.length === 0 && <span className="graph-no-ports">—</span>}
     </div>
   );
 }

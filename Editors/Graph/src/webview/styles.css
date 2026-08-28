@@ -573,11 +573,6 @@ button:disabled {
   color: var(--vscode-charts-orange);
 }
 
-.graph-no-ports {
-  padding: 2px 12px;
-  color: var(--vscode-descriptionForeground);
-}
-
 .react-flow__handle.graph-handle {
   z-index: 2;
   width: 15px;
