@@ -359,6 +359,16 @@ interface Selection {
   readonly edgeIds: readonly string[];
 }
 
+interface SelectionSnapshot {
+  readonly graphId: string;
+  readonly selection: Selection | undefined;
+}
+
+interface SelectionHistoryEntry {
+  before: SelectionSnapshot;
+  after: SelectionSnapshot;
+}
+
 interface DeleteSelectionPlan {
   readonly nodeIds: readonly string[];
   readonly edgeIds: readonly string[];
@@ -418,12 +428,16 @@ type HostMessage =
       readonly catalogRegistry: GraphCatalogRegistry;
       readonly catalogReady: boolean;
       readonly isDirty?: boolean;
+      readonly documentChanged?: boolean;
+      readonly historyAction?: "undo" | "redo";
       readonly diagnostics: readonly DocumentDiagnostic[];
     }
   | {
       readonly type: "graphInvalid";
       readonly documentVersion: number;
       readonly isDirty?: boolean;
+      readonly documentChanged?: boolean;
+      readonly historyAction?: "undo" | "redo";
       readonly diagnostics: readonly DocumentDiagnostic[];
     }
   | {
@@ -434,6 +448,7 @@ type HostMessage =
       readonly nodeTypeIds: readonly string[];
     }
   | { readonly type: "clipboardData"; readonly text: string }
+  | { readonly type: "operationCompleted"; readonly documentVersion: number; readonly changed: boolean }
   | { readonly type: "operationRejected"; readonly message: string };
 
 interface VsCodeApi {
@@ -1525,6 +1540,10 @@ function GraphEditorApp(): React.JSX.Element {
   const documentVersionRef = useRef(0);
   const pendingRef = useRef(false);
   const selectedRef = useRef<Selection | undefined>(undefined);
+  const undoSelectionHistoryRef = useRef<SelectionHistoryEntry[]>([]);
+  const redoSelectionHistoryRef = useRef<SelectionHistoryEntry[]>([]);
+  const pendingSelectionHistoryRef = useRef<SelectionHistoryEntry | undefined>(undefined);
+  const lastCompletedOperationVersionRef = useRef<number | undefined>(undefined);
   const clipboardPasteIndexRef = useRef(0);
   const [graphDocument, setGraphDocument] = useState<GraphDocument>();
   const [catalogRegistry, setCatalogRegistry] = useState<GraphCatalogRegistry>(emptyCatalogRegistry());
@@ -1552,7 +1571,27 @@ function GraphEditorApp(): React.JSX.Element {
     [activeGraphId, graphDocument],
   );
 
-  const updateSelection = useCallback((next: Selection | undefined, synchronizeFlow = true): void => {
+  const updateSelection = useCallback((
+    next: Selection | undefined,
+    synchronizeFlow = true,
+    recordHistory = true,
+  ): void => {
+    if (recordHistory) {
+      const snapshot = createSelectionSnapshot(activeGraphIdRef.current, next);
+      const pendingEntry = pendingSelectionHistoryRef.current;
+      if (pendingEntry !== undefined) {
+        pendingEntry.after = snapshot;
+      } else {
+        const undoEntry = undoSelectionHistoryRef.current.at(-1);
+        const redoEntry = redoSelectionHistoryRef.current.at(-1);
+        if (undoEntry !== undefined) {
+          undoEntry.after = snapshot;
+        }
+        if (redoEntry !== undefined) {
+          redoEntry.before = snapshot;
+        }
+      }
+    }
     const current = selectedRef.current;
     if (selectionsEqual(current, next)) {
       return;
@@ -1581,7 +1620,10 @@ function GraphEditorApp(): React.JSX.Element {
     setContextMenu(undefined);
   }, [updateSelection]);
 
-  const postOperations = useCallback((operations: readonly GraphOperation[]): void => {
+  const postOperations = useCallback((
+    operations: readonly GraphOperation[],
+    selectionBefore?: SelectionSnapshot,
+  ): void => {
     if (documentRef.current === undefined || pendingRef.current) {
       return;
     }
@@ -1592,6 +1634,11 @@ function GraphEditorApp(): React.JSX.Element {
     setSubgraphPickerOpen(false);
     setSubgraphPosition(undefined);
     setStatus({ message: "正在应用修改…", error: false });
+    const currentSelection = createSelectionSnapshot(activeGraphIdRef.current, selectedRef.current);
+    pendingSelectionHistoryRef.current = {
+      before: selectionBefore ?? currentSelection,
+      after: currentSelection,
+    };
     vscode.postMessage({
       type: "applyOperations",
       documentVersion: documentVersionRef.current,
@@ -1668,11 +1715,12 @@ function GraphEditorApp(): React.JSX.Element {
             target: { ...edge.target, nodeId: targetNodeId },
           }];
     });
-    updateSelection({ nodeIds: nodes.map((node) => node.id).sort(), edgeIds: edges.map((edge) => edge.id).sort() });
+    const selectionBefore = createSelectionSnapshot(activeGraphIdRef.current, selectedRef.current);
+    updateSelection({ nodeIds: nodes.map((node) => node.id).sort(), edgeIds: edges.map((edge) => edge.id).sort() }, true, false);
     postOperations([
       ...nodes.map((node) => ({ type: "graph.addNode" as const, graphId: graph.id, node })),
       ...edges.map((edge) => ({ type: "graph.addEdge" as const, graphId: graph.id, edge })),
-    ]);
+    ], selectionBefore);
   }, [postOperations, updateSelection]);
 
   const copySelection = useCallback((): void => {
@@ -1704,13 +1752,33 @@ function GraphEditorApp(): React.JSX.Element {
     const receiveMessage = (event: MessageEvent<HostMessage>): void => {
       const message = event.data;
       if (message.type === "graphState") {
+        if (message.documentChanged === true && message.historyAction === undefined) {
+          const ownOperation = pendingSelectionHistoryRef.current !== undefined
+            || lastCompletedOperationVersionRef.current === message.documentVersion;
+          if (lastCompletedOperationVersionRef.current === message.documentVersion) {
+            lastCompletedOperationVersionRef.current = undefined;
+          }
+          if (!ownOperation) {
+            undoSelectionHistoryRef.current = [];
+            redoSelectionHistoryRef.current = [];
+          }
+        }
+        const restoredSelection = consumeSelectionHistory(
+          message.historyAction,
+          undoSelectionHistoryRef.current,
+          redoSelectionHistoryRef.current,
+        );
         documentRef.current = message.document;
         catalogRegistryRef.current = message.catalogRegistry;
         catalogReadyRef.current = message.catalogReady;
         documentVersionRef.current = message.documentVersion;
-        pendingRef.current = false;
-        const currentGraphId = message.document.graphs.some((graph) => graph.id === activeGraphIdRef.current)
-          ? activeGraphIdRef.current
+        if (pendingSelectionHistoryRef.current === undefined) {
+          pendingRef.current = false;
+          setPending(false);
+        }
+        const preferredGraphId = restoredSelection?.graphId ?? activeGraphIdRef.current;
+        const currentGraphId = message.document.graphs.some((graph) => graph.id === preferredGraphId)
+          ? preferredGraphId
           : message.document.rootGraphId;
         activeGraphIdRef.current = currentGraphId;
         setGraphDocument(message.document);
@@ -1719,7 +1787,6 @@ function GraphEditorApp(): React.JSX.Element {
         setDocumentDirty(Boolean(message.isDirty));
         setReplacementCandidates({});
         setActiveGraphIdValue(currentGraphId);
-        setPending(false);
         setInvalidDiagnostics([]);
         setContextMenu(undefined);
         if (!message.catalogReady) {
@@ -1728,10 +1795,11 @@ function GraphEditorApp(): React.JSX.Element {
         }
 
         const currentGraph = message.document.graphs.find((graph) => graph.id === currentGraphId);
+        const requestedSelection = restoredSelection?.selection ?? selectedRef.current;
         const nextSelection = currentGraph === undefined
           ? undefined
-          : keepValidSelection(selectedRef.current, currentGraph);
-        updateSelection(nextSelection);
+          : keepValidSelection(requestedSelection, currentGraph);
+        updateSelection(nextSelection, true, false);
         const firstError = message.diagnostics.find((diagnostic) => diagnostic.severity === "error");
         const firstWarning = message.diagnostics.find((diagnostic) => diagnostic.severity === "warning");
         const firstDiagnostic = firstError ?? firstWarning;
@@ -1760,12 +1828,37 @@ function GraphEditorApp(): React.JSX.Element {
         }
         return;
       }
+      if (message.type === "operationCompleted") {
+        const pendingEntry = pendingSelectionHistoryRef.current;
+        pendingSelectionHistoryRef.current = undefined;
+        pendingRef.current = false;
+        setPending(false);
+        if (message.changed && pendingEntry !== undefined) {
+          undoSelectionHistoryRef.current.push(pendingEntry);
+          redoSelectionHistoryRef.current = [];
+          lastCompletedOperationVersionRef.current = message.documentVersion;
+        }
+        return;
+      }
       if (message.type === "graphInvalid") {
+        if (message.documentChanged === true && message.historyAction === undefined) {
+          const ownOperation = pendingSelectionHistoryRef.current !== undefined
+            || lastCompletedOperationVersionRef.current === message.documentVersion;
+          if (!ownOperation) {
+            undoSelectionHistoryRef.current = [];
+            redoSelectionHistoryRef.current = [];
+          }
+        }
+        consumeSelectionHistory(
+          message.historyAction,
+          undoSelectionHistoryRef.current,
+          redoSelectionHistoryRef.current,
+        );
         documentRef.current = undefined;
         catalogReadyRef.current = false;
         documentVersionRef.current = message.documentVersion;
         pendingRef.current = false;
-        updateSelection(undefined);
+        updateSelection(undefined, true, false);
         setGraphDocument(undefined);
         setCatalogReady(false);
         setDocumentDirty(Boolean(message.isDirty));
@@ -1777,6 +1870,13 @@ function GraphEditorApp(): React.JSX.Element {
         return;
       }
       if (message.type === "operationRejected") {
+        const rejectedEntry = pendingSelectionHistoryRef.current;
+        pendingSelectionHistoryRef.current = undefined;
+        if (rejectedEntry !== undefined) {
+          activeGraphIdRef.current = rejectedEntry.before.graphId;
+          setActiveGraphIdValue(rejectedEntry.before.graphId);
+          updateSelection(rejectedEntry.before.selection, true, false);
+        }
         pendingRef.current = false;
         setPending(false);
         setStatus({ message: message.message, error: true });
@@ -1810,7 +1910,7 @@ function GraphEditorApp(): React.JSX.Element {
   const handleSelectionChange = useCallback((selection: { nodes: GraphFlowNode[]; edges: GraphFlowEdge[] }): void => {
     const nodeIds = selection.nodes.filter((candidate) => candidate.data.flavor === "node").map((node) => node.id).sort();
     const edgeIds = selection.edges.map((edge) => edge.id).sort();
-    updateSelection(nodeIds.length === 0 && edgeIds.length === 0 ? undefined : { nodeIds, edgeIds }, false);
+    updateSelection(nodeIds.length === 0 && edgeIds.length === 0 ? undefined : { nodeIds, edgeIds }, false, true);
   }, [updateSelection]);
 
   const handleConnect = useCallback((connection: Connection): void => {
@@ -2033,7 +2133,8 @@ function GraphEditorApp(): React.JSX.Element {
       setStatus({ message: plan.issue, error: true });
       return;
     }
-    updateSelection({ nodeIds: [nodeId], edgeIds: [edgeId] });
+    const selectionBefore = createSelectionSnapshot(activeGraphIdRef.current, selectedRef.current);
+    updateSelection({ nodeIds: [nodeId], edgeIds: [edgeId] }, true, false);
     postOperations([
       ...plan.replacementEdgeIds.map((replacementEdgeId) => ({
         type: "graph.removeEdge" as const,
@@ -2054,7 +2155,7 @@ function GraphEditorApp(): React.JSX.Element {
         },
       },
       { type: "graph.addEdge", graphId: currentGraph.id, edge },
-    ]);
+    ], selectionBefore);
   }, [postOperations, updateSelection]);
 
   const addSubgraph = useCallback((graphTypeId?: string, nodeTypeId?: string, position?: GraphPosition): void => {
@@ -2135,10 +2236,11 @@ function GraphEditorApp(): React.JSX.Element {
       ...plan.nodeIds.map((nodeId) => ({ type: "graph.removeNode" as const, graphId, nodeId })),
     ];
     if (operations.length > 0) {
+      const selectionBefore = createSelectionSnapshot(activeGraphIdRef.current, current);
       updateSelection(plan.retainedNodeIds.length === 0
         ? undefined
-        : { nodeIds: plan.retainedNodeIds, edgeIds: [] });
-      postOperations(operations);
+        : { nodeIds: plan.retainedNodeIds, edgeIds: [] }, true, false);
+      postOperations(operations, selectionBefore);
     }
   }, [postOperations, updateSelection]);
 
@@ -2393,6 +2495,7 @@ function GraphEditorApp(): React.JSX.Element {
                         selectionOnDrag
                         selectionMode={SelectionMode.Partial}
                         panOnDrag={[1]}
+                        panActivationKeyCode={null}
                         deleteKeyCode={null}
                         connectionRadius={24}
                         snapToGrid
@@ -3256,6 +3359,37 @@ function keepValidSelection(selection: Selection | undefined, graph: GraphDefini
   const nodeIds = selection.nodeIds.filter((nodeId) => graph.nodes.some((node) => node.id === nodeId));
   const edgeIds = selection.edgeIds.filter((edgeId) => graph.edges.some((edge) => edge.id === edgeId));
   return nodeIds.length === 0 && edgeIds.length === 0 ? undefined : { nodeIds, edgeIds };
+}
+
+function createSelectionSnapshot(graphId: string, selection: Selection | undefined): SelectionSnapshot {
+  return {
+    graphId,
+    selection: selection === undefined
+      ? undefined
+      : { nodeIds: [...selection.nodeIds], edgeIds: [...selection.edgeIds] },
+  };
+}
+
+function consumeSelectionHistory(
+  action: "undo" | "redo" | undefined,
+  undoStack: SelectionHistoryEntry[],
+  redoStack: SelectionHistoryEntry[],
+): SelectionSnapshot | undefined {
+  if (action === "undo") {
+    const entry = undoStack.pop();
+    if (entry !== undefined) {
+      redoStack.push(entry);
+      return entry.before;
+    }
+  }
+  if (action === "redo") {
+    const entry = redoStack.pop();
+    if (entry !== undefined) {
+      undoStack.push(entry);
+      return entry.after;
+    }
+  }
+  return undefined;
 }
 
 function selectionsEqual(left: Selection | undefined, right: Selection | undefined): boolean {

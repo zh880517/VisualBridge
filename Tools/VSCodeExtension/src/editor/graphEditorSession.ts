@@ -25,6 +25,11 @@ interface WebviewMessage {
   readonly text?: unknown;
 }
 
+interface GraphStateOptions {
+  readonly documentChanged?: boolean;
+  readonly historyAction?: "undo" | "redo";
+}
+
 export class GraphEditorSession {
   private readonly disposables: vscode.Disposable[] = [];
   private readonly catalogDisposables: vscode.Disposable[] = [];
@@ -78,7 +83,14 @@ export class GraphEditorSession {
       }),
       vscode.workspace.onDidChangeTextDocument((event) => {
         if (sameUri(event.document.uri, this.document.uri)) {
-          void this.sendState();
+          void this.sendState({
+            documentChanged: true,
+            ...(event.reason === vscode.TextDocumentChangeReason.Undo
+              ? { historyAction: "undo" as const }
+              : event.reason === vscode.TextDocumentChangeReason.Redo
+                ? { historyAction: "redo" as const }
+                : {}),
+          });
           if (!event.document.isDirty) {
             void this.updateDiskBaseline();
           }
@@ -168,6 +180,11 @@ export class GraphEditorSession {
 
     const nextText = serializeGraphDocument(operationResult.document);
     if (nextText === this.document.getText()) {
+      await this.panel.webview.postMessage({
+        type: "operationCompleted",
+        documentVersion: this.document.version,
+        changed: false,
+      });
       await this.sendState();
       return;
     }
@@ -182,6 +199,11 @@ export class GraphEditorSession {
     this.output.appendLine(
       `[graph] Applied operations to ${this.match.relativePath} at document version ${this.document.version}.`,
     );
+    await this.panel.webview.postMessage({
+      type: "operationCompleted",
+      documentVersion: this.document.version,
+      changed: true,
+    });
     await this.sendState();
   }
 
@@ -243,14 +265,14 @@ export class GraphEditorSession {
     }
   }
 
-  private async sendState(): Promise<void> {
+  private async sendState(options: GraphStateOptions = {}): Promise<void> {
     if (this.disposed) {
       return;
     }
     const result = parseGraphDocument(this.document.getText());
     this.updateDiagnostics(result.diagnostics);
     if (!result.success) {
-      await this.sendInvalid(result.diagnostics);
+      await this.sendInvalid(result.diagnostics, options);
       return;
     }
     const catalogResult = await loadGraphCatalogRegistry(
@@ -270,6 +292,8 @@ export class GraphEditorSession {
       catalogRegistry: catalogResult.registry,
       catalogReady: catalogResult.ready,
       isDirty: this.document.isDirty,
+      ...(options.documentChanged === true ? { documentChanged: true } : {}),
+      ...(options.historyAction === undefined ? {} : { historyAction: options.historyAction }),
       diagnostics,
     });
   }
@@ -333,11 +357,16 @@ export class GraphEditorSession {
     });
   }
 
-  private async sendInvalid(diagnostics: readonly DocumentDiagnostic[]): Promise<void> {
+  private async sendInvalid(
+    diagnostics: readonly DocumentDiagnostic[],
+    options: GraphStateOptions = {},
+  ): Promise<void> {
     await this.panel.webview.postMessage({
       type: "graphInvalid",
       documentVersion: this.document.version,
       isDirty: this.document.isDirty,
+      ...(options.documentChanged === true ? { documentChanged: true } : {}),
+      ...(options.historyAction === undefined ? {} : { historyAction: options.historyAction }),
       diagnostics,
     });
   }

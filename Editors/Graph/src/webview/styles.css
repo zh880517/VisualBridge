@@ -200,6 +200,14 @@ button:disabled {
   --xy-controls-button-border-color: var(--vscode-panel-border);
 }
 
+.react-flow__pane.selection {
+  cursor: default;
+}
+
+.react-flow__pane.selection.dragging {
+  cursor: grabbing;
+}
+
 .react-flow__background pattern circle {
   fill: var(--vscode-editorWidget-border);
 }
