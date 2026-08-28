@@ -383,6 +383,11 @@ interface ConnectionCandidateEndpoint {
   readonly port: PortDefinition;
 }
 
+interface ConnectionPlan {
+  readonly replacementEdgeIds: readonly string[];
+  readonly issue?: string;
+}
+
 interface SubgraphTypeOption {
   readonly graphType: GraphTypeDefinition;
   readonly nodeType: NodeTypeDefinition;
@@ -1196,8 +1201,23 @@ function VisualBridgeInterfaceNode({ data }: NodeProps<GraphFlowNode>): React.JS
         <span>{data.title}</span>
         {data.editable && (
           <span className="graph-interface-actions nodrag nowheel">
-            <button type="button" disabled={pending} title={`添加${data.side === "inputs" ? "输入" : "输出"}参数`} onClick={addParameter}>+</button>
-            {selectedPortId !== undefined && <button type="button" className="secondary" disabled={pending} title="删除所选参数" onClick={deleteSelected}>−</button>}
+            <button
+              type="button"
+              disabled={pending}
+              aria-label={`添加${data.side === "inputs" ? "输入" : "输出"}参数`}
+              title={`添加${data.side === "inputs" ? "输入" : "输出"}参数`}
+              onClick={addParameter}
+            >+</button>
+            {selectedPortId !== undefined && (
+              <button
+                type="button"
+                className="secondary"
+                disabled={pending}
+                aria-label="删除所选参数"
+                title="删除所选参数"
+                onClick={deleteSelected}
+              >−</button>
+            )}
           </span>
         )}
       </header>
@@ -1215,8 +1235,8 @@ function VisualBridgeInterfaceNode({ data }: NodeProps<GraphFlowNode>): React.JS
               dropPosition={dropTarget?.portId === port.id ? dropTarget.position : undefined}
               onSelect={() => setSelectedPortId(port.id)}
               onDragStart={() => setDraggingPortId(port.id)}
-              onDragOver={(position) => setDropTarget({ portId: port.id, position })}
-              onDrop={(sourcePortId, position) => reorder(sourcePortId, port.id, position)}
+              onDragOver={(targetPortId, position) => setDropTarget({ portId: targetPortId, position })}
+              onDrop={(targetPortId, position) => reorder(port.id, targetPortId, position)}
               onDragEnd={() => {
                 setDraggingPortId(undefined);
                 setDropTarget(undefined);
@@ -1252,8 +1272,8 @@ function InterfaceParameterRow({
   readonly dropPosition: "before" | "after" | undefined;
   readonly onSelect: () => void;
   readonly onDragStart: () => void;
-  readonly onDragOver: (position: "before" | "after") => void;
-  readonly onDrop: (sourcePortId: string, position: "before" | "after") => void;
+  readonly onDragOver: (targetPortId: string, position: "before" | "after") => void;
+  readonly onDrop: (targetPortId: string, position: "before" | "after") => void;
   readonly onDragEnd: () => void;
   readonly onKeyboardMove: (offset: -1 | 1) => void;
 }): React.JSX.Element {
@@ -1284,34 +1304,56 @@ function InterfaceParameterRow({
       style={graphDataTypeStyle(port.dataTypeId, dataTypes)}
       role="option"
       aria-selected={selected}
+      data-interface-port-id={port.id}
       tabIndex={0}
       onClick={onSelect}
-      onDragOver={(event) => {
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "move";
-        const bounds = event.currentTarget.getBoundingClientRect();
-        onDragOver(event.clientY < bounds.top + bounds.height / 2 ? "before" : "after");
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        const bounds = event.currentTarget.getBoundingClientRect();
-        onDrop(event.dataTransfer.getData("text/plain"), event.clientY < bounds.top + bounds.height / 2 ? "before" : "after");
-      }}
     >
       <button
         type="button"
         className="graph-interface-parameter-drag"
-        draggable={!pending}
         disabled={pending}
         aria-label={`拖动排序 ${port.title}`}
         title="拖动排序；Alt+↑/↓ 也可移动"
-        onDragStart={(event) => {
-          event.dataTransfer.effectAllowed = "move";
-          event.dataTransfer.setData("text/plain", port.id);
+        onPointerDown={(event) => {
+          if (event.button !== 0 || pending) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          event.currentTarget.setPointerCapture(event.pointerId);
           onSelect();
           onDragStart();
         }}
-        onDragEnd={onDragEnd}
+        onPointerMove={(event) => {
+          if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
+            return;
+          }
+          const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-interface-port-id]");
+          const targetPortId = target?.dataset.interfacePortId;
+          if (target !== undefined && target !== null && targetPortId !== undefined) {
+            const bounds = target.getBoundingClientRect();
+            onDragOver(targetPortId, event.clientY < bounds.top + bounds.height / 2 ? "before" : "after");
+          }
+        }}
+        onPointerUp={(event) => {
+          if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
+            return;
+          }
+          const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-interface-port-id]");
+          const targetPortId = target?.dataset.interfacePortId;
+          if (target !== undefined && target !== null && targetPortId !== undefined) {
+            const bounds = target.getBoundingClientRect();
+            onDrop(targetPortId, event.clientY < bounds.top + bounds.height / 2 ? "before" : "after");
+          }
+          event.currentTarget.releasePointerCapture(event.pointerId);
+          onDragEnd();
+        }}
+        onPointerCancel={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+          onDragEnd();
+        }}
         onKeyDown={(event) => {
           if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
             event.preventDefault();
@@ -1686,26 +1728,33 @@ function GraphEditorApp(): React.JSX.Element {
       setStatus({ message: "无法解析连接端口。", error: true });
       return;
     }
-    const issue = validateConnectionCandidate(
+    const plan = planConnectionCandidate(
       currentGraph,
       registry,
       { canvasNodeId: connection.source, portId: connection.sourceHandle, port: sourcePort },
       { canvasNodeId: connection.target, portId: connection.targetHandle, port: targetPort },
     );
-    if (issue !== undefined) {
-      setStatus({ message: issue, error: true });
+    if (plan.issue !== undefined) {
+      setStatus({ message: plan.issue, error: true });
       return;
     }
-    postOperations([{
-      type: "graph.addEdge",
-      graphId: currentGraph.id,
-      edge: {
-        id: newId("edge"),
-        kind: sourcePort.kind,
-        source: toGraphEndpoint(connection.source, connection.sourceHandle),
-        target: toGraphEndpoint(connection.target, connection.targetHandle),
+    postOperations([
+      ...plan.replacementEdgeIds.map((edgeId) => ({
+        type: "graph.removeEdge" as const,
+        graphId: currentGraph.id,
+        edgeId,
+      })),
+      {
+        type: "graph.addEdge",
+        graphId: currentGraph.id,
+        edge: {
+          id: newId("edge"),
+          kind: sourcePort.kind,
+          source: toGraphEndpoint(connection.source, connection.sourceHandle),
+          target: toGraphEndpoint(connection.target, connection.targetHandle),
+        },
       },
-    }]);
+    ]);
   }, [postOperations]);
 
   const handleConnectEnd = useCallback((
@@ -1750,7 +1799,10 @@ function GraphEditorApp(): React.JSX.Element {
       { canvasNodeId: fromNodeId, portId: fromPortId, port: fromPort },
       fromRole,
     );
-    if (capacityIssue !== undefined) {
+    if (
+      capacityIssue !== undefined
+      && getEffectiveMaxConnections(currentGraph, catalogRegistryRef.current, fromPort) !== 1
+    ) {
       setStatus({ message: capacityIssue, error: true });
       return;
     }
@@ -1865,18 +1917,23 @@ function GraphEditorApp(): React.JSX.Element {
     const sourcePortId = connectionPicker.fromRole === "source" ? connectionPicker.fromPortId : option.port.id;
     const targetNodeId = connectionPicker.fromRole === "source" ? nodeId : connectionPicker.fromNodeId;
     const targetPortId = connectionPicker.fromRole === "source" ? option.port.id : connectionPicker.fromPortId;
-    const issue = validateConnectionCandidate(
+    const plan = planConnectionCandidate(
       currentGraph,
       catalogRegistryRef.current,
       { canvasNodeId: sourceNodeId, portId: sourcePortId, port: sourcePort },
       { canvasNodeId: targetNodeId, portId: targetPortId, port: targetPort },
     );
-    if (issue !== undefined) {
-      setStatus({ message: issue, error: true });
+    if (plan.issue !== undefined) {
+      setStatus({ message: plan.issue, error: true });
       return;
     }
     updateSelection({ nodeIds: [nodeId], edgeIds: [edgeId] });
     postOperations([
+      ...plan.replacementEdgeIds.map((replacementEdgeId) => ({
+        type: "graph.removeEdge" as const,
+        graphId: currentGraph.id,
+        edgeId: replacementEdgeId,
+      })),
       {
         type: "graph.addNode",
         graphId: currentGraph.id,
@@ -2720,7 +2777,7 @@ function toFlowNodes(
     nodes.push({
       id: INTERFACE_INPUT_NODE_ID,
       type: "visualBridgeInterface",
-      position: { x: -300, y: 40 },
+      position: { x: -100, y: 40 },
       draggable: false,
       selectable: false,
       data: {
@@ -2740,7 +2797,7 @@ function toFlowNodes(
     nodes.push({
       id: INTERFACE_OUTPUT_NODE_ID,
       type: "visualBridgeInterface",
-      position: { x: maxX + 360, y: 40 },
+      position: { x: maxX + 300, y: 40 },
       draggable: false,
       selectable: false,
       data: {
@@ -3198,18 +3255,21 @@ function arePortsCompatible(
     ?.accepts.includes(sourcePort.dataTypeId) ?? false;
 }
 
-function validateConnectionCandidate(
+function planConnectionCandidate(
   graph: GraphDefinition,
   catalogRegistry: GraphCatalogRegistry,
   source: ConnectionCandidateEndpoint,
   target: ConnectionCandidateEndpoint,
-): string | undefined {
+): ConnectionPlan {
   if (!arePortsCompatible(catalogRegistry, source.port, target.port)) {
-    return source.port.kind !== target.port.kind
-      ? "流程端口和数据端口不能互相连接。"
-      : source.port.kind === "data"
-        ? `数据类型“${source.port.dataTypeId ?? "any"}”不能连接到“${target.port.dataTypeId ?? "any"}”。`
-        : "端口方向不兼容。";
+    return {
+      replacementEdgeIds: [],
+      issue: source.port.kind !== target.port.kind
+        ? "流程端口和数据端口不能互相连接。"
+        : source.port.kind === "data"
+          ? `数据类型“${source.port.dataTypeId ?? "any"}”不能连接到“${target.port.dataTypeId ?? "any"}”。`
+          : "端口方向不兼容。",
+    };
   }
   const sourceEndpoint = toGraphEndpoint(source.canvasNodeId, source.portId);
   const targetEndpoint = toGraphEndpoint(target.canvasNodeId, target.portId);
@@ -3217,10 +3277,18 @@ function validateConnectionCandidate(
     endpointsEquivalent(edge.source, sourceEndpoint, graph, catalogRegistry)
     && endpointsEquivalent(edge.target, targetEndpoint, graph, catalogRegistry),
   )) {
-    return "这两个端口之间已经存在连接。";
+    return { replacementEdgeIds: [], issue: "这两个端口之间已经存在连接。" };
   }
-  return getConnectionCapacityIssue(graph, catalogRegistry, source, "source")
-    ?? getConnectionCapacityIssue(graph, catalogRegistry, target, "target");
+  const replacementEdgeIds = new Set([
+    ...getReplaceableConnectionEdgeIds(graph, catalogRegistry, source, "source"),
+    ...getReplaceableConnectionEdgeIds(graph, catalogRegistry, target, "target"),
+  ]);
+  const issue = getConnectionCapacityIssue(graph, catalogRegistry, source, "source", replacementEdgeIds)
+    ?? getConnectionCapacityIssue(graph, catalogRegistry, target, "target", replacementEdgeIds);
+  return {
+    replacementEdgeIds: [...replacementEdgeIds].sort(),
+    ...(issue === undefined ? {} : { issue }),
+  };
 }
 
 function endpointsEquivalent(
@@ -3258,15 +3326,34 @@ function getConnectionCapacityIssue(
   catalogRegistry: GraphCatalogRegistry,
   endpoint: ConnectionCandidateEndpoint,
   role: "source" | "target",
+  ignoredEdgeIds: ReadonlySet<string> = new Set(),
 ): string | undefined {
   const maxConnections = getEffectiveMaxConnections(graph, catalogRegistry, endpoint.port);
   if (
     maxConnections === undefined
-    || countCanvasPortConnections(graph, catalogRegistry, endpoint.canvasNodeId, endpoint.portId, role) < maxConnections
+    || countCanvasPortConnections(
+      graph,
+      catalogRegistry,
+      endpoint.canvasNodeId,
+      endpoint.portId,
+      role,
+      ignoredEdgeIds,
+    ) < maxConnections
   ) {
     return undefined;
   }
   return `${role === "source" ? "输出" : "输入"}端口“${endpoint.port.title}”已达到最大连接数。`;
+}
+
+function getReplaceableConnectionEdgeIds(
+  graph: GraphDefinition,
+  catalogRegistry: GraphCatalogRegistry,
+  endpoint: ConnectionCandidateEndpoint,
+  role: "source" | "target",
+): readonly string[] {
+  return getEffectiveMaxConnections(graph, catalogRegistry, endpoint.port) === 1
+    ? findCanvasPortConnections(graph, catalogRegistry, endpoint.canvasNodeId, endpoint.portId, role).map((edge) => edge.id)
+    : [];
 }
 
 function countCanvasPortConnections(
@@ -3275,10 +3362,25 @@ function countCanvasPortConnections(
   canvasNodeId: string,
   portId: string,
   role: "source" | "target",
+  ignoredEdgeIds: ReadonlySet<string> = new Set(),
 ): number {
+  return findCanvasPortConnections(graph, catalogRegistry, canvasNodeId, portId, role, ignoredEdgeIds).length;
+}
+
+function findCanvasPortConnections(
+  graph: GraphDefinition,
+  catalogRegistry: GraphCatalogRegistry,
+  canvasNodeId: string,
+  portId: string,
+  role: "source" | "target",
+  ignoredEdgeIds: ReadonlySet<string> = new Set(),
+): readonly GraphEdgeModel[] {
   const requestedEndpoint = toGraphEndpoint(canvasNodeId, portId);
   const canonicalPortId = canonicalCanvasPortId(requestedEndpoint, graph, catalogRegistry);
   return graph.edges.filter((edge) => {
+    if (ignoredEdgeIds.has(edge.id)) {
+      return false;
+    }
     const endpoint = role === "source" ? edge.source : edge.target;
     if (endpoint.kind !== requestedEndpoint.kind) {
       return false;
@@ -3291,7 +3393,7 @@ function countCanvasPortConnections(
       return false;
     }
     return canonicalCanvasPortId(endpoint, graph, catalogRegistry) === canonicalPortId;
-  }).length;
+  });
 }
 
 function eventClientPosition(event: MouseEvent | TouchEvent): GraphPosition | undefined {

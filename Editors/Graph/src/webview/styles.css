@@ -201,6 +201,7 @@ button:disabled {
 
 .react-flow__node-visualBridgeInterface {
   width: 250px;
+  pointer-events: all !important;
 }
 
 .graph-node {
@@ -719,6 +720,7 @@ button:disabled {
   background: transparent;
   cursor: grab;
   place-items: center;
+  touch-action: none;
 }
 
 .graph-interface-parameter-drag:active {
