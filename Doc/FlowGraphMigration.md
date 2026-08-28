@@ -64,7 +64,7 @@ Unity Package 未来应把 C# 声明导出为 Graph Catalog V4 `.vbgraphcatalog`
 | 多 Catalog Registry 与节点归属 | 已完成 | 全局校验稳定 ID/alias、跨 Catalog 引用及 Data Type 兼容 |
 | 节点字段内联编辑 | 已完成 | 支持 select、multiline、range、readonly 等显示提示 |
 | 节点类型安全替换、未知类型保留 | 已完成 | 校验与替换规则识别成员别名 |
-| 子图公开接口和内嵌导航 | 已完成 | typed subgraph 同时保留调用节点类型和目标 Graph Type；Inspector 不提供接口管理 |
+| 子图公开接口和内嵌导航 | 已完成 | 子图接口节点管理动态输入/输出参数；内外连接共同锁定类型，全部断开后解锁；typed subgraph 同时保留调用节点类型和目标 Graph Type |
 | Graph Inspector | 已完成 | 仅编辑 Graph 名称和 Graph Type 字段，不暴露原始 JSON |
 | 入口唯一性、节点数量规则 | 已完成 | 通用 selector + min/max，创建时生成初始节点 |
 | 实例级动态输出 | 已完成 | Catalog 组模板 + 实例稳定 ID + 原子增删改排序 |

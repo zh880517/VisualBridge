@@ -88,6 +88,7 @@ export interface GraphInterfacePort {
   readonly direction: GraphPortDirection;
   readonly dataTypeId?: string;
   readonly maxConnections?: number;
+  readonly dynamic?: boolean;
 }
 
 export interface GraphDefinition {
@@ -181,7 +182,8 @@ export type GraphOperation =
       readonly portId: string;
       readonly title: string;
     }
-  | { readonly type: "graph.removeInterfacePort"; readonly graphId: string; readonly portId: string };
+  | { readonly type: "graph.removeInterfacePort"; readonly graphId: string; readonly portId: string }
+  | { readonly type: "graph.reorderInterfacePorts"; readonly graphId: string; readonly portIds: readonly string[] };
 
 export interface GraphResolvedPort {
   readonly id: string;
@@ -281,16 +283,15 @@ export function serializeGraphDocument(document: GraphDocument): string {
         ...(graph.graphTypeId === undefined ? {} : { graphTypeId: graph.graphTypeId }),
         title: graph.title,
         properties: sortJsonObject(graph.properties),
-        interfacePorts: [...graph.interfacePorts]
-          .sort((left, right) => left.id.localeCompare(right.id))
-          .map((port) => ({
-            id: port.id,
-            title: port.title,
-            kind: port.kind,
-            direction: port.direction,
-            ...(port.dataTypeId === undefined ? {} : { dataTypeId: port.dataTypeId }),
-            ...(port.maxConnections === undefined ? {} : { maxConnections: port.maxConnections }),
-          })),
+        interfacePorts: graph.interfacePorts.map((port) => ({
+          id: port.id,
+          title: port.title,
+          kind: port.kind,
+          direction: port.direction,
+          ...(port.dataTypeId === undefined ? {} : { dataTypeId: port.dataTypeId }),
+          ...(port.maxConnections === undefined ? {} : { maxConnections: port.maxConnections }),
+          ...(port.dynamic === true ? { dynamic: true } : {}),
+        })),
         nodes: [...graph.nodes]
           .sort((left, right) => left.id.localeCompare(right.id))
           .map((node) => node.kind === "node"
@@ -357,6 +358,7 @@ export function applyGraphOperations(
     if (diagnostic !== undefined) {
       return { success: false, diagnostics: [diagnostic] };
     }
+    unlockUnconnectedDynamicInterfacePorts(working);
   }
 
   const diagnostics = validateGraphDocument(working, catalog);
@@ -410,6 +412,35 @@ export function validateGraphDocument(
         }
       });
     }
+    graph.interfacePorts.forEach((port, portIndex) => {
+      if (port.dynamic === true && graph.id === document.rootGraphId) {
+        diagnostics.push(error(
+          "graph.rootDynamicInterfacePort",
+          `graphs[${graphIndex}].interfacePorts[${portIndex}].dynamic`,
+          "Dynamic data parameters are only supported by embedded subgraphs.",
+        ));
+      }
+      if (port.dynamic === true && port.dataTypeId === "any") {
+        const connectedInside = graph.edges.some((edge) =>
+          edge.kind === "data"
+          && (edge.source.kind === "interface" && edge.source.portId === port.id
+            || edge.target.kind === "interface" && edge.target.portId === port.id),
+        );
+        const owner = ownerByGraphId.get(graph.id);
+        const connectedOutside = owner !== undefined && owner.graph.edges.some((edge) =>
+          edge.kind === "data"
+          && (edge.source.kind === "node" && edge.source.nodeId === owner.node.id && edge.source.portId === port.id
+            || edge.target.kind === "node" && edge.target.nodeId === owner.node.id && edge.target.portId === port.id),
+        );
+        if (connectedInside || connectedOutside) {
+          diagnostics.push(error(
+            "graph.unresolvedDynamicInterfaceType",
+            `graphs[${graphIndex}].interfacePorts[${portIndex}].dataTypeId`,
+            "A connected dynamic interface port must resolve to a concrete data type.",
+          ));
+        }
+      }
+    });
     graph.nodes.forEach((node, nodeIndex) => {
       if (node.kind === "node") {
         validateAtomicNode(node, `graphs[${graphIndex}].nodes[${nodeIndex}]`, catalog, diagnostics);
@@ -665,7 +696,7 @@ function readInterfacePorts(
       diagnostics.push(error("graph.invalidInterfacePort", path, "Expected an object."));
       return [];
     }
-    checkKeys(entry, ["id", "title", "kind", "direction", "dataTypeId", "maxConnections"], path, diagnostics);
+    checkKeys(entry, ["id", "title", "kind", "direction", "dataTypeId", "maxConnections", "dynamic"], path, diagnostics);
     const id = readIdentifier(entry.id, `${path}.id`, diagnostics);
     const title = readString(entry.title, `${path}.title`, diagnostics);
     const kind = readEnum(entry.kind, ["flow", "data"] as const, `${path}.kind`, diagnostics);
@@ -676,15 +707,29 @@ function readInterfacePorts(
     const maxConnections = entry.maxConnections === undefined
       ? undefined
       : readPositiveInteger(entry.maxConnections, `${path}.maxConnections`, diagnostics);
+    const dynamic = entry.dynamic === undefined
+      ? false
+      : readBoolean(entry.dynamic, `${path}.dynamic`, diagnostics);
     if (kind === "data" && dataTypeId === undefined) {
       diagnostics.push(error("graph.missingDataType", `${path}.dataTypeId`, "Data interface ports require dataTypeId."));
     }
     if (kind === "flow" && dataTypeId !== undefined) {
       diagnostics.push(error("graph.unexpectedDataType", `${path}.dataTypeId`, "Flow interface ports cannot declare dataTypeId."));
     }
-    return id === undefined || title === undefined || kind === undefined || direction === undefined
+    if (kind === "flow" && dynamic === true) {
+      diagnostics.push(error("graph.unexpectedDynamicInterfacePort", `${path}.dynamic`, "Flow interface ports cannot be dynamic."));
+    }
+    return id === undefined || title === undefined || kind === undefined || direction === undefined || dynamic === undefined
       ? []
-      : [{ id, title, kind, direction, ...(dataTypeId === undefined ? {} : { dataTypeId }), ...(maxConnections === undefined ? {} : { maxConnections }) }];
+      : [{
+          id,
+          title,
+          kind,
+          direction,
+          ...(dataTypeId === undefined ? {} : { dataTypeId }),
+          ...(maxConnections === undefined ? {} : { maxConnections }),
+          ...(dynamic ? { dynamic: true } : {}),
+        }];
   });
 }
 
@@ -815,6 +860,12 @@ function parseOperation(value: unknown, index: number, diagnostics: DocumentDiag
     case "graph.removeInterfacePort": {
       const portId = readIdentifier(value.portId, `${path}.portId`, diagnostics);
       return graphId === undefined || portId === undefined ? undefined : { type: value.type, graphId, portId };
+    }
+    case "graph.reorderInterfacePorts": {
+      const portIds = readIdentifierList(value.portIds, `${path}.portIds`, diagnostics);
+      return graphId === undefined || portIds === undefined
+        ? undefined
+        : { type: value.type, graphId, portIds };
     }
     default:
       diagnostics.push(error("graph.unknownOperation", `${path}.type`, `Unknown operation '${value.type}'.`));
@@ -1016,6 +1067,10 @@ function applyOperation(
         return error("graph.edgeAlreadyExists", path, `Edge '${operation.edge.id}' already exists.`);
       }
       {
+        const lockDiagnostic = lockDynamicInterfacePortsForEdge(document, graph, operation.edge, path, catalog);
+        if (lockDiagnostic !== undefined) {
+          return lockDiagnostic;
+        }
         const edgeDiagnostics: DocumentDiagnostic[] = [];
         const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
         const graphById = new Map(document.graphs.map((candidate) => [candidate.id, candidate]));
@@ -1099,7 +1154,112 @@ function applyOperation(
       }
       return undefined;
     }
+    case "graph.reorderInterfacePorts": {
+      const existingIds = new Set(graph.interfacePorts.map((port) => port.id));
+      const requestedIds = new Set(operation.portIds);
+      if (
+        requestedIds.size !== operation.portIds.length
+        || requestedIds.size !== existingIds.size
+        || operation.portIds.some((portId) => !existingIds.has(portId))
+      ) {
+        return error(
+          "graph.invalidInterfacePortOrder",
+          `${path}.portIds`,
+          "Interface port order must contain every current port id exactly once.",
+        );
+      }
+      const byId = new Map(graph.interfacePorts.map((port) => [port.id, port]));
+      graph.interfacePorts = operation.portIds.flatMap((portId) => {
+        const port = byId.get(portId);
+        return port === undefined ? [] : [port];
+      });
+      return undefined;
+    }
   }
+}
+
+function lockDynamicInterfacePortsForEdge(
+  document: MutableGraphDocument,
+  graph: MutableGraphDefinition,
+  edge: GraphEdge,
+  path: string,
+  catalog?: GraphCatalogRegistry,
+): DocumentDiagnostic | undefined {
+  if (edge.kind !== "data") {
+    return undefined;
+  }
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const graphById = new Map(document.graphs.map((candidate) => [candidate.id, candidate]));
+  const source = resolveEndpoint(graph, edge.source, nodeById, graphById, catalog).port;
+  const target = resolveEndpoint(graph, edge.target, nodeById, graphById, catalog).port;
+  const sourceDynamic = resolveMutableDynamicInterfacePort(document, graph, edge.source);
+  const targetDynamic = resolveMutableDynamicInterfacePort(document, graph, edge.target);
+  const sourceConcreteType = source?.dataTypeId === undefined || source.dataTypeId === "any"
+    ? undefined
+    : source.dataTypeId;
+  const targetConcreteType = target?.dataTypeId === undefined || target.dataTypeId === "any"
+    ? undefined
+    : target.dataTypeId;
+
+  if (sourceDynamic?.dataTypeId === "any" && targetConcreteType !== undefined) {
+    sourceDynamic.dataTypeId = targetConcreteType;
+  }
+  if (targetDynamic?.dataTypeId === "any" && sourceConcreteType !== undefined) {
+    targetDynamic.dataTypeId = sourceConcreteType;
+  }
+  if (sourceDynamic?.dataTypeId === "any" || targetDynamic?.dataTypeId === "any") {
+    return error(
+      "graph.unresolvedDynamicInterfaceType",
+      `${path}.edge`,
+      "A dynamic interface port must connect to a concrete data type before it can be used.",
+    );
+  }
+  return undefined;
+}
+
+function resolveMutableDynamicInterfacePort(
+  document: MutableGraphDocument,
+  graph: MutableGraphDefinition,
+  endpoint: GraphEndpoint,
+): MutableGraphInterfacePort | undefined {
+  if (endpoint.kind === "interface") {
+    return graph.interfacePorts.find(
+      (port) => port.id === endpoint.portId && port.kind === "data" && port.dynamic === true,
+    );
+  }
+  const node = graph.nodes.find((candidate) => candidate.id === endpoint.nodeId);
+  if (node?.kind !== "subgraph") {
+    return undefined;
+  }
+  return document.graphs.find((candidate) => candidate.id === node.subgraphId)?.interfacePorts.find(
+    (port) => port.id === endpoint.portId && port.kind === "data" && port.dynamic === true,
+  );
+}
+
+function unlockUnconnectedDynamicInterfacePorts(document: MutableGraphDocument): void {
+  document.graphs.forEach((graph) => graph.interfacePorts.forEach((port) => {
+    if (port.kind !== "data" || port.dynamic !== true || port.dataTypeId === "any") {
+      return;
+    }
+    const connectedInside = graph.edges.some((edge) =>
+      edge.kind === "data"
+      && (edge.source.kind === "interface" && edge.source.portId === port.id
+        || edge.target.kind === "interface" && edge.target.portId === port.id),
+    );
+    const connectedOutside = document.graphs.some((ownerGraph) => {
+      const ownerNodeIds = new Set(ownerGraph.nodes.flatMap((node) =>
+        node.kind === "subgraph" && node.subgraphId === graph.id ? [node.id] : [],
+      ));
+      return ownerNodeIds.size > 0 && ownerGraph.edges.some((edge) =>
+        edge.kind === "data"
+        && (edge.source.kind === "node" && ownerNodeIds.has(edge.source.nodeId) && edge.source.portId === port.id
+          || edge.target.kind === "node" && ownerNodeIds.has(edge.target.nodeId) && edge.target.portId === port.id),
+      );
+    });
+    if (!connectedInside && !connectedOutside) {
+      port.dataTypeId = "any";
+    }
+  }));
 }
 
 function validateStructure(document: GraphDocument): DocumentDiagnostic[] {
@@ -1954,6 +2114,7 @@ interface MutableGraphInterfacePort {
   direction: GraphPortDirection;
   dataTypeId?: string;
   maxConnections?: number;
+  dynamic?: boolean;
 }
 
 interface MutableGraphDocument {
@@ -2150,6 +2311,14 @@ function readIdentifierList(
 function readString(value: unknown, path: string, diagnostics: DocumentDiagnostic[]): string | undefined {
   if (typeof value !== "string") {
     diagnostics.push(error("graph.invalidString", path, "Expected a string."));
+    return undefined;
+  }
+  return value;
+}
+
+function readBoolean(value: unknown, path: string, diagnostics: DocumentDiagnostic[]): boolean | undefined {
+  if (typeof value !== "boolean") {
+    diagnostics.push(error("graph.invalidBoolean", path, "Expected a boolean."));
     return undefined;
   }
   return value;

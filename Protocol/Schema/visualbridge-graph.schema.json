@@ -41,13 +41,19 @@
         "kind": { "enum": ["flow", "data"] },
         "direction": { "enum": ["input", "output"] },
         "dataTypeId": { "$ref": "#/$defs/identifier" },
-        "maxConnections": { "type": "integer", "minimum": 1 }
+        "maxConnections": { "type": "integer", "minimum": 1 },
+        "dynamic": { "type": "boolean", "default": false }
       },
       "allOf": [
         {
           "if": { "properties": { "kind": { "const": "data" } } },
           "then": { "required": ["dataTypeId"] },
-          "else": { "not": { "required": ["dataTypeId"] } }
+          "else": {
+            "allOf": [
+              { "not": { "required": ["dataTypeId"] } },
+              { "not": { "properties": { "dynamic": { "const": true } }, "required": ["dynamic"] } }
+            ]
+          }
         }
       ],
       "additionalProperties": false

@@ -200,7 +200,7 @@ button:disabled {
 }
 
 .react-flow__node-visualBridgeInterface {
-  width: 180px;
+  width: 250px;
 }
 
 .graph-node {
@@ -619,6 +619,10 @@ button:disabled {
 }
 
 .graph-interface-node header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 7px 10px;
   color: var(--vscode-descriptionForeground);
   font-size: 11px;
@@ -627,8 +631,107 @@ button:disabled {
   border-bottom: 1px solid var(--vscode-panel-border);
 }
 
+.graph-interface-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.graph-interface-actions button {
+  width: 24px;
+  min-width: 24px;
+  min-height: 22px;
+  padding: 1px 5px;
+}
+
 .graph-interface-node .graph-port-column {
   padding: 5px 0;
+}
+
+.graph-interface-parameter-list {
+  display: grid;
+  gap: 5px;
+  padding: 6px 8px 8px;
+  border-top: 1px solid var(--vscode-panel-border);
+}
+
+.graph-interface-parameter {
+  position: relative;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 4px 6px;
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-left: 3px solid var(--graph-data-color, var(--vscode-charts-blue));
+  border-radius: 3px;
+}
+
+.graph-interface-parameter.selected {
+  background: var(--vscode-list-inactiveSelectionBackground);
+  border-color: var(--vscode-focusBorder);
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+}
+
+.graph-interface-parameter.dragging {
+  opacity: 0.45;
+}
+
+.graph-interface-parameter.drop-before {
+  box-shadow: inset 0 2px var(--graph-data-color, var(--vscode-charts-blue));
+}
+
+.graph-interface-parameter.drop-after {
+  box-shadow: inset 0 -2px var(--graph-data-color, var(--vscode-charts-blue));
+}
+
+.graph-interface-parameter > input {
+  width: 100%;
+  min-width: 0;
+  padding: 3px 5px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+  outline: none;
+}
+
+.graph-interface-parameter > input:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.graph-interface-parameter-type {
+  max-width: 72px;
+  overflow: hidden;
+  color: var(--graph-data-color, var(--vscode-descriptionForeground));
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-interface-parameter-drag {
+  display: grid;
+  width: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 4px;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  cursor: grab;
+  place-items: center;
+}
+
+.graph-interface-parameter-drag:active {
+  cursor: grabbing;
+}
+
+.graph-interface-parameter-drag svg {
+  width: 12px;
+  height: 16px;
+}
+
+.graph-interface-parameter-drag circle {
+  fill: currentColor;
 }
 
 .graph-inspector-shell {
