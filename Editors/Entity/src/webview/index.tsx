@@ -291,7 +291,12 @@ function ComponentCard(props: {
             : (
               <>
                 {props.componentType.source !== undefined && (
-                  <p className="component-source">{props.componentType.source.providerId} · {props.componentType.source.typeName}</p>
+                  <p className="component-source">
+                    {props.componentType.source.providerId === "csharp"
+                      ? <span className="csharp-source-icon" aria-label="C#" title="C#">C#</span>
+                      : <span className="component-source-provider">{props.componentType.source.providerId}</span>}
+                    <code>{props.componentType.source.typeName}</code>
+                  </p>
                 )}
                 <FieldsEditor
                   definitions={props.componentType.properties}
