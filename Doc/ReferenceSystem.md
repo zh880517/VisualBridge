@@ -115,10 +115,10 @@ Project Refactoring 使用解析候选的完整 Location，而不是仅按引用
 - `search`：传入 `kind`、`target`、可选 `query`、`limit` 和 `allowMissing`，返回结构化候选及定位。
 - `resolve`：传入相同 definition 与字符串或数值 `value`，返回解析状态和候选。
 
-Graph/Structured/Table 的读取与校验结果会附加共享 Reference 诊断。GraphOperation/StructuredOperation/TableOperation 写入在原有 `baseHash`、锁和原子替换之外，还会拒绝本次批次新引入的 Reference error。MCP 不重新实现 Table Registry、分表去重、行显示名或字段递归规则。
+Graph、Entity、Structured、Table 的读取与校验结果会附加共享 Reference 诊断。四类 Operation 写入在 `baseHash` 与可恢复 Project Transaction 之外，还会拒绝本次批次新引入的 Reference error。MCP 不重新实现任何类型的 Registry、分表去重、行显示名或字段递归规则。
 
-`visualbridge_refactor_reference` 提供 `preview` 和 `apply`。预览返回稳定 `previewHash`、完整影响列表、每个物理源的 `baseHash` 与预计结果哈希；提交必须原样提供 `previewHash` 和全部 `baseHashes`。服务端重新扫描 Project、重新解析同一目标并重建语义计划，任一来源、候选、Catalog 或分表成员变化都返回 `conflict`，不会自动套用旧计划。
+`visualbridge_refactor_reference` 提供 `preview` 和 `apply`。预览返回稳定 `previewHash`、完整影响列表、每个物理源的 `baseHash` 与预计结果哈希；提交必须原样提供 `previewHash` 和全部 `baseHashes`。服务端在 Project Transaction 锁内重新扫描 Project、重新解析同一目标并重建语义计划，最终复核 Project/Catalog 依赖和全部来源；任一来源、候选、Catalog 或分表成员变化都返回 `conflict`，不会自动套用旧计划。中断恢复发现未知外部字节时保留现场并返回 Tool Error。
 
 ## 7. 自动化基线
 
-`npm test` 覆盖 Field Definition 解析、嵌套 occurrence、四个 Provider 的稳定排序与完整定位、严格类型解析、缺失与歧义诊断、Entity / Graph 身份传播、Entity / Graph Editor 定位计划、Table 有效行候选和定位。Entity 定位测试固定验证完整所属文档、组件存在性和 Webview 请求生命周期；Graph 定位测试固定验证 Graph / Node / Interface Port / Dynamic Port 的画布目标以及陈旧完整作用域拒绝。真实 stdio MCP 测试会预览并提交 Entity Component、Graph Element、Document ID 和跨 Structured/Table 的 Row Key 重构，验证错误 `baseHash` 不会改写任何来源。测试不包含 Unity。
+`npm test` 覆盖 Field Definition 解析、嵌套 occurrence、四个 Provider 的稳定排序与完整定位、严格类型解析、缺失与歧义诊断、Entity / Graph 身份传播、Entity / Graph Editor 定位计划、Table 有效行候选和定位。Entity 定位测试固定验证完整所属文档、组件存在性和 Webview 请求生命周期；Graph 定位测试固定验证 Graph / Node / Interface Port / Dynamic Port 的画布目标以及陈旧完整作用域拒绝。真实 stdio MCP 测试覆盖 Graph Element 预览、Entity Component 提交、错误 `baseHash`、Project 锁与中断恢复；其余目标变换由对应 Built-in/Core 测试固定。测试不包含 Unity。

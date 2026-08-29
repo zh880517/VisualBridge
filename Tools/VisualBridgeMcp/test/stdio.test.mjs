@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import { once } from "node:events";
+import { cp, mkdtemp, readFile, readdir, rm, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,88 +12,144 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = path.resolve(packageRoot, "../..");
-const fixtureRoot = path.join(repositoryRoot, "TestData", "GraphSemanticProject");
-const entityFixtureRoot = path.join(repositoryRoot, "TestData", "EntitySemanticProject");
-const tableFixtureRoot = path.join(repositoryRoot, "TestData", "TableSemanticProject");
-const structuredFixtureRoot = path.join(repositoryRoot, "TestData", "StructuredSemanticProject");
 const serverPath = path.join(packageRoot, "dist", "server.js");
 
-test("stdio MCP discovers, queries, validates, and atomically edits a Graph with baseHash conflicts", async () => {
-  const temporaryRoot = await mkdtemp(path.join(tmpdir(), "visualbridge-mcp-"));
-  const projectRoot = path.join(temporaryRoot, "GraphSemanticProject");
-  await cp(fixtureRoot, projectRoot, { recursive: true });
-
-  const environment = Object.fromEntries(
-    Object.entries(process.env).filter((entry) => entry[1] !== undefined),
-  );
-  environment.VISUALBRIDGE_WORKSPACE = temporaryRoot;
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [serverPath],
-    env: environment,
-    stderr: "pipe",
-  });
-  let stderr = "";
-  transport.stderr?.on("data", (chunk) => {
-    stderr += chunk.toString();
-  });
-  const client = new Client({ name: "visualbridge-stdio-test", version: "0.1.0" });
-
-  try {
-    await client.connect(transport);
+test("MCP V2 exposes six stable tools and routes Graph semantics with real cross-process conflicts", async () => {
+  await withFixture("GraphSemanticProject", async ({ temporaryRoot, projectRoot, client, stderr }) => {
     const listed = await client.listTools();
     assert.deepEqual(
       listed.tools.map((tool) => tool.name).sort(),
       [
-        "visualbridge_apply_graph_operations",
-        "visualbridge_apply_structured_operations",
-        "visualbridge_apply_table_operations",
+        "visualbridge_apply_operations",
         "visualbridge_catalog",
-        "visualbridge_graph",
+        "visualbridge_document",
         "visualbridge_project",
         "visualbridge_refactor_reference",
         "visualbridge_references",
-        "visualbridge_search_nodes",
-        "visualbridge_search_table_rows",
-        "visualbridge_structured",
-        "visualbridge_structured_catalog",
-        "visualbridge_table",
-        "visualbridge_table_catalog",
-        "visualbridge_validate_graph",
-        "visualbridge_validate_structured",
-        "visualbridge_validate_table",
       ],
     );
     for (const tool of listed.tools) {
-      assert.equal(tool.inputSchema.type, "object", `${tool.name} must expose a structured object schema.`);
+      assert.equal(tool.inputSchema.type, "object", `${tool.name} input must be structured.`);
+      assert.equal(tool.inputSchema.additionalProperties, false, `${tool.name} input must reject unknown keys.`);
+      const outputBranches = tool.outputSchema.anyOf ?? tool.outputSchema.oneOf;
+      assert.equal(outputBranches.length, 2, `${tool.name} output must discriminate success and error.`);
+      assert.ok(outputBranches.every((branch) => branch.type === "object" && branch.additionalProperties === false));
     }
+    assert.equal(
+      listed.tools.find((tool) => tool.name === "visualbridge_apply_operations")?.annotations?.destructiveHint,
+      true,
+    );
 
-    const projects = await call(client, "visualbridge_project", {});
-    assert.equal(projects.projects.length, 1);
-    assert.equal(projects.projects[0].projectId, "GraphSemanticProject");
-    const projectFile = projects.projects[0].projectFile;
-
-    const project = await call(client, "visualbridge_project", { projectFile });
-    assert.equal(project.definition.documentTypes[0].catalogs.length, 3);
-
-    const catalog = await call(client, "visualbridge_catalog", { projectFile, view: "summary" });
-    assert.deepEqual(catalog.counts, { dataTypes: 5, graphTypes: 2, nodeTypes: 15 });
-
-    const search = await call(client, "visualbridge_search_nodes", {
+    const discovery = await call(client, "visualbridge_project", { action: "discover" });
+    assert.equal(discovery.projects.length, 1);
+    const projectFile = discovery.projects[0].projectFile;
+    const project = await call(client, "visualbridge_project", { action: "read", projectFile });
+    assert.equal(project.definition.projectId, "GraphSemanticProject");
+    assert.deepEqual(project.supportedEditors, ["entity", "graph", "structured", "table"]);
+    const documents = await call(client, "visualbridge_project", {
+      action: "listDocuments",
       projectFile,
-      query: "legacy.step",
-      graphTypeId: "legacy.root",
+      editor: "graph",
+      query: "semantic",
     });
-    assert.deepEqual(search.results.map((result) => result.id), ["sample.step"]);
+    assert.deepEqual(documents.results.map((entry) => entry.path), ["Graph/SemanticSample.vbgraph"]);
+
+    const selector = { projectFile, documentTypeId: "logicGraph", editor: "graph" };
+    const catalog = await call(client, "visualbridge_catalog", {
+      ...selector,
+      action: "read",
+      kind: "summary",
+    });
+    assert.deepEqual(catalog.counts, { dataTypes: 5, graphTypes: 2, nodeTypes: 15 });
+    const catalogSearch = await call(client, "visualbridge_catalog", {
+      ...selector,
+      action: "search",
+      kind: "nodeTypes",
+      query: "legacy.step",
+      selector: { graphTypeId: "legacy.root" },
+    });
+    assert.deepEqual(catalogSearch.results.map((entry) => entry.id), ["sample.step"]);
+    assert.deepEqual(await call(client, "visualbridge_catalog", {
+      ...selector,
+      action: "search",
+      kind: "nodeTypes",
+      query: "legacy.step",
+      selector: { graphTypeId: "legacy.root" },
+    }), catalogSearch);
 
     const graphPath = "Graph/SemanticSample.vbgraph";
-    const graph = await call(client, "visualbridge_graph", { projectFile, path: graphPath });
+    const graph = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "read",
+      path: graphPath,
+    });
+    assert.equal(graph.valid, true);
     assert.match(graph.baseHash, /^[a-f0-9]{64}$/);
     assert.equal(graph.document.documentId, "semantic-sample");
-
-    const validation = await call(client, "visualbridge_validate_graph", { projectFile, path: graphPath });
+    const search = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "search",
+      path: graphPath,
+      query: "step_b",
+      selector: { kind: "node" },
+      limit: 1,
+    });
+    assert.deepEqual(search.results.map((entry) => entry.nodeId), ["step_b"]);
+    assert.deepEqual(await call(client, "visualbridge_document", {
+      ...selector,
+      action: "search",
+      path: graphPath,
+      query: "step_b",
+      selector: { kind: "node" },
+      limit: 1,
+    }), search);
+    const validation = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "validate",
+      path: graphPath,
+    });
     assert.equal(validation.valid, true);
     assert.equal(validation.baseHash, graph.baseHash);
+
+    const wrongEditor = await client.callTool({
+      name: "visualbridge_document",
+      arguments: { ...selector, editor: "entity", action: "read", path: graphPath },
+    });
+    assert.equal(wrongEditor.isError, true);
+    assert.equal(wrongEditor.structuredContent.status, "error");
+    assert.equal(Object.hasOwn(wrongEditor.structuredContent, "data"), false);
+    assert.equal(Object.hasOwn(wrongEditor.structuredContent, "error"), true);
+    const unknownInput = await client.callTool({
+      name: "visualbridge_document",
+      arguments: { ...selector, action: "read", path: graphPath, unknown: true },
+    });
+    assert.equal(unknownInput.isError, true);
+    const driveQualifiedPath = await client.callTool({
+      name: "visualbridge_apply_operations",
+      arguments: {
+        ...selector,
+        path: "Graph/C:/secret.vbgraph",
+        baseHash: graph.baseHash,
+        operations: [{ type: "graph.updateGraph", graphId: "root", title: "Unsafe", properties: {} }],
+      },
+    });
+    assert.equal(driveQualifiedPath.isError, true);
+    const wrongCatalogEditor = await client.callTool({
+      name: "visualbridge_catalog",
+      arguments: { ...selector, editor: "entity", action: "read", kind: "summary" },
+    });
+    assert.equal(wrongCatalogEditor.isError, true);
+    const wrongApplyEditor = await client.callTool({
+      name: "visualbridge_apply_operations",
+      arguments: {
+        ...selector,
+        editor: "entity",
+        path: graphPath,
+        baseHash: graph.baseHash,
+        operations: [{ type: "graph.updateGraph", graphId: "root", title: "Wrong", properties: {} }],
+      },
+    });
+    assert.equal(wrongApplyEditor.isError, true);
 
     const documentReference = await call(client, "visualbridge_references", {
       projectFile,
@@ -101,664 +159,360 @@ test("stdio MCP discovers, queries, validates, and atomically edits a Graph with
       value: "semantic-sample",
     });
     assert.equal(documentReference.status, "resolved");
-    const elementReference = await call(client, "visualbridge_references", {
+    const refactor = await call(client, "visualbridge_refactor_reference", {
       projectFile,
-      action: "resolve",
+      action: "preview",
       kind: "graph.element",
       target: { documentTypeId: "logicGraph", elementKind: "node" },
-      value: "step_b",
+      oldValue: "step_b",
+      newValue: "step_second",
     });
-    assert.equal(elementReference.status, "resolved");
-    assert.equal(elementReference.candidates[0].location.nodeId, "step_b");
+    assert.match(refactor.previewHash, /^[a-f0-9]{64}$/);
+    assert.equal(refactor.sources.length, 1);
+
+    const graphFile = path.join(projectRoot, "Graph", "SemanticSample.vbgraph");
+    const beforeInvalid = await readFile(graphFile);
+    const invalid = await call(client, "visualbridge_apply_operations", {
+      ...selector,
+      path: graphPath,
+      baseHash: graph.baseHash,
+      operations: [
+        { type: "graph.updateGraph", graphId: "root", title: "Must Roll Back", properties: {} },
+        { type: "graph.removeNode", graphId: "root", nodeId: "missing" },
+      ],
+    });
+    assert.equal(invalid.status, "invalid");
+    assert.deepEqual(await readFile(graphFile), beforeInvalid);
+
+    const second = await startClient(temporaryRoot);
+    try {
+      const secondRead = await call(second.client, "visualbridge_document", {
+        ...selector,
+        action: "read",
+        path: graphPath,
+      });
+      assert.equal(secondRead.baseHash, graph.baseHash);
+      const applied = await call(client, "visualbridge_apply_operations", {
+        ...selector,
+        path: graphPath,
+        baseHash: graph.baseHash,
+        operations: [{
+          type: "graph.updateGraph",
+          graphId: "root",
+          title: "Updated Through MCP V2",
+          properties: { priority: 2 },
+        }],
+      });
+      assert.equal(applied.status, "applied");
+      const conflict = await call(second.client, "visualbridge_apply_operations", {
+        ...selector,
+        path: graphPath,
+        baseHash: secondRead.baseHash,
+        operations: [{
+          type: "graph.updateGraph",
+          graphId: "root",
+          title: "Stale Writer",
+          properties: { priority: 3 },
+        }],
+      });
+      assert.equal(conflict.status, "conflict");
+      assert.equal(conflict.reason, "baseHashMismatch");
+      const reread = await call(client, "visualbridge_document", {
+        ...selector,
+        action: "read",
+        path: graphPath,
+      });
+      assert.equal(reread.document.graphs.find((entry) => entry.id === "root").title, "Updated Through MCP V2");
+    } finally {
+      await second.client.close().catch(() => undefined);
+      assert.equal(second.stderr(), "", second.stderr());
+    }
+
+    const invalidPath = path.join(projectRoot, "Graph", "Invalid.vbgraph");
+    await writeFile(invalidPath, '{"formatVersion":3}\n', "utf8");
+    const invalidRead = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "read",
+      path: "Graph/Invalid.vbgraph",
+    });
+    assert.equal(invalidRead.valid, false);
+    assert.ok(invalidRead.diagnostics.some((diagnostic) => diagnostic.severity === "error"));
+    assert.equal(stderr(), "", stderr());
+  });
+});
+
+test("MCP V2 Entity adapter reads custom extensions, searches Catalog/Documents and applies atomic batches", async () => {
+  await withFixture("EntitySemanticProject", async ({ projectRoot, client }) => {
+    const discovery = await call(client, "visualbridge_project", { action: "discover" });
+    const projectFile = discovery.projects[0].projectFile;
+    const selector = { projectFile, documentTypeId: "hero-config", editor: "entity" };
+    const catalog = await call(client, "visualbridge_catalog", {
+      ...selector,
+      action: "read",
+      kind: "summary",
+    });
+    assert.deepEqual(catalog.counts, { componentGroups: 3, entityTypes: 1, componentTypes: 4 });
+    const componentTypes = await call(client, "visualbridge_catalog", {
+      ...selector,
+      action: "search",
+      kind: "componentTypes",
+      query: "health",
+      selector: { entityTypeId: "sample.entity.player" },
+    });
+    assert.deepEqual(componentTypes.results.map((entry) => entry.id), ["sample.component.health"]);
+
+    const entityPath = "Config/Entities/Player.herojson";
+    const entity = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "read",
+      path: entityPath,
+    });
+    assert.equal(entity.valid, true);
+    assert.equal(entity.document.documentId, "sample.player");
+    const fieldSearch = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "search",
+      path: entityPath,
+      query: "Knight",
+    });
+    assert.ok(fieldSearch.results.some((entry) => entry.path === "properties.displayName"));
+    const validation = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "validate",
+      path: entityPath,
+    });
+    assert.equal(validation.valid, true);
+
+    const entityFile = path.join(projectRoot, "Config", "Entities", "Player.herojson");
+    const beforeInvalid = await readFile(entityFile);
+    const invalid = await call(client, "visualbridge_apply_operations", {
+      ...selector,
+      path: entityPath,
+      baseHash: entity.baseHash,
+      operations: [
+        { type: "entity.setTitle", title: "Must Roll Back" },
+        { type: "entity.removeComponent", componentId: "missing" },
+      ],
+    });
+    assert.equal(invalid.status, "invalid");
+    assert.deepEqual(await readFile(entityFile), beforeInvalid);
+
+    const applied = await call(client, "visualbridge_apply_operations", {
+      ...selector,
+      path: entityPath,
+      baseHash: entity.baseHash,
+      operations: [
+        { type: "entity.setTitle", title: "Player MCP V2" },
+        { type: "entity.setComponentEnabled", componentId: "move", enabled: true },
+        { type: "entity.setComponentProperty", componentId: "health", propertyId: "regeneration", value: 3.5 },
+      ],
+    });
+    assert.equal(applied.status, "applied", JSON.stringify(applied.diagnostics));
+    const updated = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "read",
+      path: entityPath,
+    });
+    assert.equal(updated.document.title, "Player MCP V2");
+    assert.equal(updated.document.components.find((component) => component.id === "move").enabled, true);
+    assert.equal(updated.document.components.find((component) => component.id === "health").properties.regeneration, 3.5);
 
     const renamePreview = await call(client, "visualbridge_refactor_reference", {
       projectFile,
       action: "preview",
-      kind: "graph.element",
-      target: { documentTypeId: "logicGraph", elementKind: "node" },
-      oldValue: "step_b",
-      newValue: "step_second",
+      kind: "entity.component",
+      target: { documentTypeId: "hero-config" },
+      oldValue: "health",
+      newValue: "health_primary",
     });
-    assert.equal(renamePreview.status, "preview");
-    assert.equal(renamePreview.sources.length, 1);
-    assert.match(renamePreview.previewHash, /^[a-f0-9]{64}$/);
-    const staleRename = await call(client, "visualbridge_refactor_reference", {
+    const renamed = await call(client, "visualbridge_refactor_reference", {
       projectFile,
       action: "apply",
-      kind: "graph.element",
-      target: { documentTypeId: "logicGraph", elementKind: "node" },
-      oldValue: "step_b",
-      newValue: "step_second",
-      previewHash: renamePreview.previewHash,
-      baseHashes: { [graphPath]: "0".repeat(64) },
-    });
-    assert.equal(staleRename.status, "conflict");
-    assert.equal(staleRename.reason, "baseHashMismatch");
-    const refactorLock = path.join(projectRoot, ".visualbridge-refactor.lock");
-    await writeFile(refactorLock, "external refactor\n", "utf8");
-    const lockedRename = await call(client, "visualbridge_refactor_reference", {
-      projectFile,
-      action: "apply",
-      kind: "graph.element",
-      target: { documentTypeId: "logicGraph", elementKind: "node" },
-      oldValue: "step_b",
-      newValue: "step_second",
+      kind: "entity.component",
+      target: { documentTypeId: "hero-config" },
+      oldValue: "health",
+      newValue: "health_primary",
       previewHash: renamePreview.previewHash,
       baseHashes: renamePreview.baseHashes,
     });
-    assert.equal(lockedRename.status, "conflict");
-    assert.equal(await readFile(refactorLock, "utf8"), "external refactor\n");
-    await unlink(refactorLock);
-    const appliedRename = await call(client, "visualbridge_refactor_reference", {
-      projectFile,
-      action: "apply",
-      kind: "graph.element",
-      target: { documentTypeId: "logicGraph", elementKind: "node" },
-      oldValue: "step_b",
-      newValue: "step_second",
-      previewHash: renamePreview.previewHash,
-      baseHashes: renamePreview.baseHashes,
+    assert.equal(renamed.status, "applied");
+    const refactored = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "read",
+      path: entityPath,
     });
-    assert.equal(appliedRename.status, "applied");
-    const renamedGraph = await call(client, "visualbridge_graph", { projectFile, path: graphPath });
-    const renamedRoot = renamedGraph.document.graphs.find((candidate) => candidate.id === "root");
-    assert.ok(renamedRoot.nodes.some((node) => node.id === "step_second"));
-    assert.equal(
-      renamedRoot.edges.find((edge) => edge.id === "flow_step_a_step_b").target.nodeId,
-      "step_second",
-    );
-    const documentRenamePreview = await call(client, "visualbridge_refactor_reference", {
-      projectFile,
-      action: "preview",
-      kind: "document",
-      target: { documentTypeId: "logicGraph" },
-      oldValue: "semantic-sample",
-      newValue: "semantic-sample-renamed",
-    });
-    const documentRenameApplied = await call(client, "visualbridge_refactor_reference", {
-      projectFile,
-      action: "apply",
-      kind: "document",
-      target: { documentTypeId: "logicGraph" },
-      oldValue: "semantic-sample",
-      newValue: "semantic-sample-renamed",
-      previewHash: documentRenamePreview.previewHash,
-      baseHashes: documentRenamePreview.baseHashes,
-    });
-    assert.equal(documentRenameApplied.status, "applied");
-    const refactoredGraph = await call(client, "visualbridge_graph", { projectFile, path: graphPath });
-    assert.equal(refactoredGraph.document.documentId, "semantic-sample-renamed");
+    assert.equal(refactored.document.properties.primaryComponentId, "health_primary");
+    assert.ok(refactored.document.components.some((component) => component.id === "health_primary"));
 
-    const invalidGraphFile = path.join(projectRoot, "Graph", "Invalid.vbgraph");
-    await writeFile(invalidGraphFile, '{"formatVersion":3}\n', "utf8");
-    const invalidValidation = await call(client, "visualbridge_validate_graph", {
-      projectFile,
-      path: "Graph/Invalid.vbgraph",
+    const stale = await call(client, "visualbridge_apply_operations", {
+      ...selector,
+      path: entityPath,
+      baseHash: entity.baseHash,
+      operations: [{ type: "entity.setTitle", title: "Stale" }],
     });
-    assert.equal(invalidValidation.valid, false);
-    assert.ok(invalidValidation.diagnostics.some((diagnostic) => diagnostic.severity === "error"));
-
-    const graphFile = path.join(projectRoot, "Graph", "SemanticSample.vbgraph");
-    const beforeConflict = await readFile(graphFile, "utf8");
-    const conflict = await call(client, "visualbridge_apply_graph_operations", {
-      projectFile,
-      path: graphPath,
-      baseHash: "0".repeat(64),
-      operations: [{
-        type: "graph.updateGraph",
-        graphId: "root",
-        title: "Must Not Persist",
-        properties: { priority: 2 },
-      }],
-    });
-    assert.equal(conflict.status, "conflict");
-    assert.equal(conflict.reason, "baseHashMismatch");
-    assert.equal(await readFile(graphFile, "utf8"), beforeConflict);
-
-    const lockFile = path.join(path.dirname(graphFile), ".SemanticSample.vbgraph.visualbridge.lock");
-    await writeFile(lockFile, "external writer\n", "utf8");
-    const locked = await call(client, "visualbridge_apply_graph_operations", {
-      projectFile,
-      path: graphPath,
-      baseHash: refactoredGraph.baseHash,
-      operations: [{
-        type: "graph.updateGraph",
-        graphId: "root",
-        title: "Must Wait",
-        properties: { priority: 2 },
-      }],
-    });
-    assert.equal(locked.status, "conflict");
-    assert.equal(locked.reason, "writeInProgress");
-    assert.equal(await readFile(graphFile, "utf8"), beforeConflict);
-    await unlink(lockFile);
-
-    const applied = await call(client, "visualbridge_apply_graph_operations", {
-      projectFile,
-      path: graphPath,
-      baseHash: refactoredGraph.baseHash,
-      operations: [{
-        type: "graph.updateGraph",
-        graphId: "root",
-        title: "Updated Through MCP",
-        properties: { priority: 2 },
-      }],
-    });
-    assert.equal(applied.status, "applied");
-    assert.notEqual(applied.hash, refactoredGraph.baseHash);
-
-    const staleWrite = await call(client, "visualbridge_apply_graph_operations", {
-      projectFile,
-      path: graphPath,
-      baseHash: refactoredGraph.baseHash,
-      operations: [{
-        type: "graph.updateGraph",
-        graphId: "root",
-        title: "Stale Overwrite",
-        properties: { priority: 3 },
-      }],
-    });
-    assert.equal(staleWrite.status, "conflict");
-
-    const updated = await call(client, "visualbridge_graph", { projectFile, path: graphPath });
-    assert.equal(updated.document.graphs.find((candidate) => candidate.id === "root").title, "Updated Through MCP");
-    assert.equal(updated.baseHash, applied.hash);
-
-    const invalidBatch = await call(client, "visualbridge_apply_graph_operations", {
-      projectFile,
-      path: graphPath,
-      baseHash: updated.baseHash,
-      operations: [
-        { type: "graph.moveNode", graphId: "root", nodeId: "step_a", position: { x: 999, y: 999 } },
-        { type: "graph.removeEdge", graphId: "root", edgeId: "missing" },
-      ],
-    });
-    assert.equal(invalidBatch.status, "invalid");
-    const afterInvalid = await call(client, "visualbridge_graph", { projectFile, path: graphPath });
-    assert.equal(afterInvalid.baseHash, updated.baseHash);
-    assert.deepEqual(
-      afterInvalid.document.graphs
-        .find((candidate) => candidate.id === "root")
-        .nodes.find((candidate) => candidate.id === "step_a")
-        .position,
-      { x: 240, y: 0 },
-    );
-
-    const graphDirectoryEntries = await readdir(path.dirname(graphFile));
-    assert.ok(!graphDirectoryEntries.some((name) => name.includes(".visualbridge")));
-  } catch (error) {
-    assert.fail(`${error instanceof Error ? error.stack ?? error.message : String(error)}\nMCP stderr:\n${stderr}`);
-  } finally {
-    await client.close().catch(() => undefined);
-    await rm(temporaryRoot, { recursive: true, force: true });
-  }
+    assert.equal(stale.status, "conflict");
+  });
 });
 
-test("stdio MCP reads and atomically edits a Structured Config with shared references", async () => {
-  const temporaryRoot = await mkdtemp(path.join(tmpdir(), "visualbridge-structured-mcp-"));
-  const projectRoot = path.join(temporaryRoot, "StructuredSemanticProject");
-  await cp(structuredFixtureRoot, projectRoot, { recursive: true });
-
-  const environment = Object.fromEntries(
-    Object.entries(process.env).filter((entry) => entry[1] !== undefined),
-  );
-  environment.VISUALBRIDGE_WORKSPACE = temporaryRoot;
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [serverPath],
-    env: environment,
-    stderr: "pipe",
-  });
-  let stderr = "";
-  transport.stderr?.on("data", (chunk) => {
-    stderr += chunk.toString();
-  });
-  const client = new Client({ name: "visualbridge-structured-stdio-test", version: "0.1.0" });
-
-  try {
-    await client.connect(transport);
-    const projects = await call(client, "visualbridge_project", {});
-    assert.equal(projects.projects.length, 1);
-    assert.equal(projects.projects[0].projectId, "visualbridge.structured-semantics");
-    const projectFile = projects.projects[0].projectFile;
-
-    const catalog = await call(client, "visualbridge_structured_catalog", { projectFile });
-    assert.deepEqual(catalog.counts, { configTypes: 1 });
-    assert.equal(catalog.requiredConfigTypeId, "sample.game.settings");
-    const catalogTypes = await call(client, "visualbridge_structured_catalog", {
+test("MCP V2 Structured adapter uses one read/search/validate/apply contract", async () => {
+  await withFixture("StructuredSemanticProject", async ({ projectRoot, client }) => {
+    const discovery = await call(client, "visualbridge_project", { action: "discover" });
+    const projectFile = discovery.projects[0].projectFile;
+    const selector = {
       projectFile,
-      view: "configTypes",
-    });
-    assert.equal(catalogTypes.configTypes[0].source.typeName, "Game.GameSettings");
-
-    const referenceSearch = await call(client, "visualbridge_references", {
-      projectFile,
+      documentTypeId: "sample.game.settings",
+      editor: "structured",
+    };
+    const catalog = await call(client, "visualbridge_catalog", {
+      ...selector,
       action: "search",
-      kind: "table.row",
-      target: { tableTypeId: "sample.table.skills", sheetId: "skills" },
-      query: "Fireball",
+      kind: "configTypes",
+      query: "settings",
     });
-    assert.equal(referenceSearch.results[0].value, 101);
+    assert.deepEqual(catalog.results.map((entry) => entry.id), ["sample.game.settings"]);
 
-    const tableRenamePreview = await call(client, "visualbridge_refactor_reference", {
-      projectFile,
-      action: "preview",
-      kind: "table.row",
-      target: { tableTypeId: "sample.table.skills", sheetId: "skills" },
-      oldValue: 101,
-      newValue: 111,
+    const documentPath = "Config/Game.gamesettings";
+    const document = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "read",
+      path: documentPath,
     });
-    assert.equal(tableRenamePreview.status, "preview");
-    assert.deepEqual(tableRenamePreview.sources.map((source) => source.path), [
-      "Config/Game.gamesettings",
-      "Tables/Skills_Main.skillstable",
-    ]);
-    const tableRenameApplied = await call(client, "visualbridge_refactor_reference", {
-      projectFile,
-      action: "apply",
-      kind: "table.row",
-      target: { tableTypeId: "sample.table.skills", sheetId: "skills" },
-      oldValue: 101,
-      newValue: 111,
-      previewHash: tableRenamePreview.previewHash,
-      baseHashes: tableRenamePreview.baseHashes,
+    assert.equal(document.valid, true);
+    assert.equal(document.document.properties.maxPlayers, 5);
+    const search = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "search",
+      path: documentPath,
+      query: "maxPlayers 5",
     });
-    assert.equal(tableRenameApplied.status, "applied");
-    assert.match(await readFile(path.join(projectRoot, "Tables", "Skills_Main.skillstable"), "utf8"), /111\tFireball/);
-
-    const structuredPath = "Config/Game.gamesettings";
-    const document = await call(client, "visualbridge_structured", { projectFile, path: structuredPath });
-    assert.match(document.baseHash, /^[a-f0-9]{64}$/);
-    assert.equal(document.document.documentId, "sample.game.settings.default");
-    assert.equal(document.document.properties.primarySkillId, 111);
-    assert.equal(document.configType.title, "Game Settings");
-    assert.ok(!document.diagnostics.some((diagnostic) => diagnostic.severity === "error"));
-
-    const validation = await call(client, "visualbridge_validate_structured", {
-      projectFile,
-      path: structuredPath,
+    assert.deepEqual(search.results.map((entry) => entry.path), ["properties.maxPlayers"]);
+    const validation = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "validate",
+      path: documentPath,
     });
     assert.equal(validation.valid, true);
     assert.equal(validation.baseHash, document.baseHash);
 
-    const structuredFile = path.join(projectRoot, "Config", "Game.gamesettings");
-    const beforeConflict = await readFile(structuredFile, "utf8");
-    const conflict = await call(client, "visualbridge_apply_structured_operations", {
-      projectFile,
-      path: structuredPath,
-      baseHash: "0".repeat(64),
-      operations: [{ type: "structured.setField", fieldId: "maxPlayers", value: 7 }],
-    });
-    assert.equal(conflict.status, "conflict");
-    assert.equal(conflict.reason, "baseHashMismatch");
-    assert.equal(await readFile(structuredFile, "utf8"), beforeConflict);
-
-    const lockFile = path.join(path.dirname(structuredFile), ".Game.gamesettings.visualbridge.lock");
-    await writeFile(lockFile, "external writer\n", "utf8");
-    const locked = await call(client, "visualbridge_apply_structured_operations", {
-      projectFile,
-      path: structuredPath,
+    const sourceFile = path.join(projectRoot, "Config", "Game.gamesettings");
+    const beforeInvalid = await readFile(sourceFile);
+    const invalid = await call(client, "visualbridge_apply_operations", {
+      ...selector,
+      path: documentPath,
       baseHash: document.baseHash,
-      operations: [{ type: "structured.setField", fieldId: "maxPlayers", value: 7 }],
-    });
-    assert.equal(locked.status, "conflict");
-    assert.equal(locked.reason, "writeInProgress");
-    await unlink(lockFile);
-
-    const applied = await call(client, "visualbridge_apply_structured_operations", {
-      projectFile,
-      path: structuredPath,
-      baseHash: document.baseHash,
-      operations: [
-        { type: "structured.setField", fieldId: "maxPlayers", value: 7 },
-        { type: "structured.setField", fieldId: "checkpoints", value: [0, 12, 24] },
-      ],
-    });
-    assert.equal(applied.status, "applied");
-    assert.notEqual(applied.hash, document.baseHash);
-
-    const stale = await call(client, "visualbridge_apply_structured_operations", {
-      projectFile,
-      path: structuredPath,
-      baseHash: document.baseHash,
-      operations: [{ type: "structured.setField", fieldId: "maxPlayers", value: 8 }],
-    });
-    assert.equal(stale.status, "conflict");
-
-    const updated = await call(client, "visualbridge_structured", { projectFile, path: structuredPath });
-    assert.equal(updated.document.properties.maxPlayers, 7);
-    assert.deepEqual(updated.document.properties.checkpoints, [0, 12, 24]);
-    assert.equal(updated.baseHash, applied.hash);
-
-    const invalidBatch = await call(client, "visualbridge_apply_structured_operations", {
-      projectFile,
-      path: structuredPath,
-      baseHash: updated.baseHash,
       operations: [
         { type: "structured.setField", fieldId: "maxPlayers", value: 8 },
-        { type: "structured.setField", fieldId: "accent", value: 123 },
+        { type: "structured.setField", fieldId: "missing", value: 1 },
       ],
     });
-    assert.equal(invalidBatch.status, "invalid");
-    const afterInvalid = await call(client, "visualbridge_structured", { projectFile, path: structuredPath });
-    assert.equal(afterInvalid.baseHash, updated.baseHash);
-    assert.equal(afterInvalid.document.properties.maxPlayers, 7);
+    assert.equal(invalid.status, "invalid");
+    assert.deepEqual(await readFile(sourceFile), beforeInvalid);
 
-    const invalidReference = await call(client, "visualbridge_apply_structured_operations", {
-      projectFile,
-      path: structuredPath,
-      baseHash: updated.baseHash,
-      operations: [{ type: "structured.setField", fieldId: "primarySkillId", value: 999999 }],
-    });
-    assert.equal(invalidReference.status, "invalid");
-    assert.equal(
-      (await call(client, "visualbridge_structured", { projectFile, path: structuredPath })).baseHash,
-      updated.baseHash,
-    );
-
-    const directoryEntries = await readdir(path.dirname(structuredFile));
-    assert.ok(!directoryEntries.some((name) => name.includes(".visualbridge")));
-  } catch (error) {
-    assert.fail(`${error instanceof Error ? error.stack ?? error.message : String(error)}\nMCP stderr:\n${stderr}`);
-  } finally {
-    await client.close().catch(() => undefined);
-    await rm(temporaryRoot, { recursive: true, force: true });
-  }
-});
-
-test("stdio MCP resolves and atomically refactors Entity Component instance references", async () => {
-  const temporaryRoot = await mkdtemp(path.join(tmpdir(), "visualbridge-entity-mcp-"));
-  const projectRoot = path.join(temporaryRoot, "EntitySemanticProject");
-  await cp(entityFixtureRoot, projectRoot, { recursive: true });
-  const environment = Object.fromEntries(
-    Object.entries(process.env).filter((entry) => entry[1] !== undefined),
-  );
-  environment.VISUALBRIDGE_WORKSPACE = temporaryRoot;
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [serverPath],
-    env: environment,
-    stderr: "pipe",
-  });
-  let stderr = "";
-  transport.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
-  const client = new Client({ name: "visualbridge-entity-stdio-test", version: "0.1.0" });
-
-  try {
-    await client.connect(transport);
-    const projects = await call(client, "visualbridge_project", {});
-    const projectFile = projects.projects[0].projectFile;
-    const definition = { documentTypeId: "hero-config" };
-    const resolved = await call(client, "visualbridge_references", {
-      projectFile,
-      action: "resolve",
-      kind: "entity.component",
-      target: definition,
-      value: "health",
-    });
-    assert.equal(resolved.status, "resolved");
-    assert.deepEqual(resolved.candidates[0].location, {
-      projectId: "visualbridge.entity-semantics",
-      documentTypeId: "hero-config",
-      path: "Config/Entities/Player.herojson",
-      documentId: "sample.player",
-      componentId: "health",
-      elementKind: "component",
-      elementId: "health",
-    });
-
-    const preview = await call(client, "visualbridge_refactor_reference", {
-      projectFile,
-      action: "preview",
-      kind: "entity.component",
-      target: definition,
-      oldValue: "health",
-      newValue: "health_primary",
-    });
-    assert.equal(preview.status, "preview");
-    assert.deepEqual(preview.sources.map((source) => source.path), ["Config/Entities/Player.herojson"]);
-    assert.equal(preview.changes.length, 1);
-    assert.equal(preview.changes[0].occurrencePath, "properties.primaryComponentId");
-
-    const applied = await call(client, "visualbridge_refactor_reference", {
-      projectFile,
-      action: "apply",
-      kind: "entity.component",
-      target: definition,
-      oldValue: "health",
-      newValue: "health_primary",
-      previewHash: preview.previewHash,
-      baseHashes: preview.baseHashes,
+    const applied = await call(client, "visualbridge_apply_operations", {
+      ...selector,
+      path: documentPath,
+      baseHash: document.baseHash,
+      operations: [
+        { type: "structured.setField", fieldId: "maxPlayers", value: 8 },
+        { type: "structured.setField", fieldId: "accent", value: "#112233FF" },
+      ],
     });
     assert.equal(applied.status, "applied");
-    assert.equal(applied.referencesChanged, 1);
-    const entity = JSON.parse(await readFile(
-      path.join(projectRoot, "Config", "Entities", "Player.herojson"),
-      "utf8",
-    ));
-    assert.deepEqual(entity.components.map((component) => component.id), ["health_primary", "move"]);
-    assert.equal(entity.properties.primaryComponentId, "health_primary");
-    const renamed = await call(client, "visualbridge_references", {
-      projectFile,
-      action: "resolve",
-      kind: "entity.component",
-      target: definition,
-      value: "health_primary",
+    const updated = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "read",
+      path: documentPath,
     });
-    assert.equal(renamed.status, "resolved");
-  } catch (error) {
-    assert.fail(`${error instanceof Error ? error.stack ?? error.message : String(error)}\nMCP stderr:\n${stderr}`);
-  } finally {
-    await client.close().catch(() => undefined);
-    await rm(temporaryRoot, { recursive: true, force: true });
-  }
+    assert.equal(updated.document.properties.maxPlayers, 8);
+    assert.equal(updated.document.properties.accent, "#112233FF");
+  });
 });
 
-test("stdio MCP queries and atomically edits partitioned CSV and XLSX Tables", async () => {
-  const temporaryRoot = await mkdtemp(path.join(tmpdir(), "visualbridge-table-mcp-"));
-  const projectRoot = path.join(temporaryRoot, "TableSemanticProject");
-  await cp(tableFixtureRoot, projectRoot, { recursive: true });
-
-  const environment = Object.fromEntries(
-    Object.entries(process.env).filter((entry) => entry[1] !== undefined),
-  );
-  environment.VISUALBRIDGE_WORKSPACE = temporaryRoot;
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [serverPath],
-    env: environment,
-    stderr: "pipe",
-  });
-  let stderr = "";
-  transport.stderr?.on("data", (chunk) => {
-    stderr += chunk.toString();
-  });
-  const client = new Client({ name: "visualbridge-table-stdio-test", version: "0.1.0" });
-
-  try {
-    await client.connect(transport);
-    const projects = await call(client, "visualbridge_project", {});
-    assert.equal(projects.projects.length, 1);
-    assert.equal(projects.projects[0].projectId, "visualbridge.table-semantics");
-    const projectFile = projects.projects[0].projectFile;
-
-    const catalog = await call(client, "visualbridge_table_catalog", { projectFile, view: "summary" });
-    assert.deepEqual(catalog.counts, { tableTypes: 1 });
-    const catalogTypes = await call(client, "visualbridge_table_catalog", { projectFile, view: "tableTypes" });
-    assert.equal(catalogTypes.tableTypes[0].id, "game.table.skills");
-
-    const referenceSearch = await call(client, "visualbridge_references", {
-      projectFile,
+test("MCP V2 Table adapter preserves CSV families and XLSX through the shared contract", async () => {
+  await withFixture("TableSemanticProject", async ({ projectRoot, client }) => {
+    const discovery = await call(client, "visualbridge_project", { action: "discover" });
+    const projectFile = discovery.projects[0].projectFile;
+    const selector = { projectFile, documentTypeId: "game.table.skills", editor: "table" };
+    const catalog = await call(client, "visualbridge_catalog", {
+      ...selector,
+      action: "read",
+      kind: "summary",
+    });
+    assert.deepEqual(catalog.counts, { tableTypes: 1, sheets: 1, columns: 5 });
+    const columns = await call(client, "visualbridge_catalog", {
+      ...selector,
       action: "search",
-      kind: "table.row",
-      target: { tableTypeId: "game.table.skills", sheetId: "skills" },
-      query: "fireball 101",
+      kind: "columns",
+      query: "rewards",
     });
-    assert.ok(referenceSearch.results.length >= 1);
-    assert.equal(referenceSearch.results[0].value, 101);
-    assert.match(referenceSearch.results[0].title, /^101_Fireball/);
-    assert.equal(referenceSearch.results[0].location.documentTypeId, "game.table.skills");
-
-    const referenceResolution = await call(client, "visualbridge_references", {
-      projectFile,
-      action: "resolve",
-      kind: "table.row",
-      target: { tableTypeId: "game.table.skills", sheetId: "skills" },
-      value: 999999,
-    });
-    assert.equal(referenceResolution.status, "missing");
-    assert.deepEqual(referenceResolution.candidates, []);
+    assert.deepEqual(columns.results.map((entry) => entry.id), ["rewards"]);
 
     const csvPath = "Tables/Skills_A.csv";
-    const csv = await call(client, "visualbridge_table", { projectFile, path: csvPath });
-    assert.equal(csv.format, "csv");
-    assert.match(csv.baseHash, /^[a-f0-9]{64}$/);
-    assert.deepEqual(csv.sources.map((source) => source.path), ["Tables/Skills_A.csv", "Tables/Skills_B.csv"]);
-    assert.deepEqual(csv.sheets.map((sheet) => sheet.id), ["skills:Skills_A", "skills:Skills_B"]);
-
-    const csvPage = await call(client, "visualbridge_table", {
-      projectFile,
+    const csv = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "read",
       path: csvPath,
-      sheetId: "skills:Skills_A",
+      selector: { sheetId: "skills:Skills_A" },
+    });
+    assert.equal(csv.valid, true);
+    assert.equal(csv.format, "csv");
+    assert.equal(csv.sources.length, 2);
+    assert.equal(csv.page.rows[0].cells.name, "Fireball");
+    const rowSearch = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "search",
+      path: csvPath,
+      query: "Blink",
+      selector: { sheetDefinitionId: "skills", effectiveOnly: true },
+    });
+    assert.deepEqual(rowSearch.results.map((entry) => entry.rowId), ["Skills_A:key-102", "Skills_B:key-202"]);
+    const firstPage = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "search",
+      path: csvPath,
+      query: "Blink",
+      selector: { sheetDefinitionId: "skills", effectiveOnly: true },
       limit: 1,
     });
-    assert.equal(csvPage.page.total, 2);
-    assert.equal(csvPage.page.rows[0].id, "Skills_A:key-101");
-    assert.equal(csvPage.page.rows[0].cells.name, "Fireball");
-    assert.equal(csvPage.page.rows[0].rawCells, undefined);
-
-    const effectiveSearch = await call(client, "visualbridge_search_table_rows", {
-      projectFile,
+    assert.deepEqual(firstPage.results.map((entry) => entry.rowId), ["Skills_A:key-102"]);
+    assert.equal(typeof firstPage.nextCursor, "string");
+    const secondPage = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "search",
       path: csvPath,
-      query: "fireball",
-      sheetDefinitionId: "skills",
+      query: "Blink",
+      selector: { sheetDefinitionId: "skills", effectiveOnly: true },
+      limit: 1,
+      cursor: firstPage.nextCursor,
     });
-    assert.equal(effectiveSearch.matchedCount, 1);
-    assert.equal(effectiveSearch.results[0].sheetName, "Skills_A");
-    assert.equal(effectiveSearch.results[0].displayName, "101_Fireball");
-
-    const physicalSearch = await call(client, "visualbridge_search_table_rows", {
-      projectFile,
+    assert.deepEqual(secondPage.results.map((entry) => entry.rowId), ["Skills_B:key-202"]);
+    assert.equal(secondPage.nextCursor, undefined);
+    const mismatchedCursor = await client.callTool({
+      name: "visualbridge_document",
+      arguments: {
+        ...selector,
+        action: "search",
+        path: csvPath,
+        query: "Fireball",
+        selector: { sheetDefinitionId: "skills", effectiveOnly: true },
+        limit: 1,
+        cursor: firstPage.nextCursor,
+      },
+    });
+    assert.equal(mismatchedCursor.isError, true);
+    const validation = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "validate",
       path: csvPath,
-      query: "fireball",
-      sheetDefinitionId: "skills",
-      effectiveOnly: false,
     });
-    assert.equal(physicalSearch.matchedCount, 2);
+    assert.equal(validation.valid, true);
 
-    const csvValidation = await call(client, "visualbridge_validate_table", { projectFile, path: csvPath });
-    assert.equal(csvValidation.valid, true);
-    assert.equal(csvValidation.baseHash, csv.baseHash);
-    assert.ok(csvValidation.diagnostics.some((diagnostic) => diagnostic.code === "table.partitionDuplicateResolved"));
-
-    const invalidCsvFile = path.join(projectRoot, "Tables", "Skills_Invalid.csv");
-    await writeFile(invalidCsvFile, "description\nName\nInvalid\n", "utf8");
-    const invalidCsvValidation = await call(client, "visualbridge_validate_table", {
-      projectFile,
-      path: "Tables/Skills_Invalid.csv",
-    });
-    assert.equal(invalidCsvValidation.valid, false);
-    assert.ok(invalidCsvValidation.diagnostics.some((diagnostic) => diagnostic.severity === "error"));
-    await unlink(invalidCsvFile);
-
-    const csvAFile = path.join(projectRoot, "Tables", "Skills_A.csv");
     const csvBFile = path.join(projectRoot, "Tables", "Skills_B.csv");
-    const csvABefore = await readFile(csvAFile, "utf8");
-    const csvBBefore = await readFile(csvBFile, "utf8");
-    const staleCsv = await call(client, "visualbridge_apply_table_operations", {
-      projectFile,
-      path: csvPath,
-      baseHash: "0".repeat(64),
-      operations: [{
-        type: "table.setCell",
-        sheetId: "skills:Skills_B",
-        rowId: "Skills_B:key-202",
-        columnId: "name",
-        value: "Must Not Persist",
-      }],
-    });
-    assert.equal(staleCsv.status, "conflict");
-    assert.equal(staleCsv.reason, "baseHashMismatch");
-    assert.equal(await readFile(csvAFile, "utf8"), csvABefore);
-    assert.equal(await readFile(csvBFile, "utf8"), csvBBefore);
-
-    const csvCFile = path.join(projectRoot, "Tables", "Skills_C.csv");
-    await writeFile(csvCFile, csvABefore.replace("101", "501").replace("102", "502"), "utf8");
-    const membershipConflict = await call(client, "visualbridge_apply_table_operations", {
-      projectFile,
+    const beforeInvalid = await readFile(csvBFile);
+    const invalid = await call(client, "visualbridge_apply_operations", {
+      ...selector,
       path: csvPath,
       baseHash: csv.baseHash,
-      operations: [{
-        type: "table.setCell",
-        sheetId: "skills:Skills_B",
-        rowId: "Skills_B:key-202",
-        columnId: "name",
-        value: "Must Reject New Partition",
-      }],
-    });
-    assert.equal(membershipConflict.status, "conflict");
-    assert.equal(membershipConflict.reason, "baseHashMismatch");
-    await unlink(csvCFile);
-
-    const lockId = createHash("sha256")
-      .update("game.table.skills\0game.table.skills")
-      .digest("hex")
-      .slice(0, 16);
-    const tableLockFile = path.join(projectRoot, "Tables", `.visualbridge-table-${lockId}.lock`);
-    await writeFile(tableLockFile, "external writer\n", "utf8");
-    const lockedCsv = await call(client, "visualbridge_apply_table_operations", {
-      projectFile,
-      path: csvPath,
-      baseHash: csv.baseHash,
-      operations: [{
-        type: "table.setCell",
-        sheetId: "skills:Skills_B",
-        rowId: "Skills_B:key-202",
-        columnId: "name",
-        value: "Must Wait",
-      }],
-    });
-    assert.equal(lockedCsv.status, "conflict");
-    assert.equal(lockedCsv.reason, "writeInProgress");
-    await unlink(tableLockFile);
-
-    const appliedCsv = await call(client, "visualbridge_apply_table_operations", {
-      projectFile,
-      path: csvPath,
-      baseHash: csv.baseHash,
-      operations: [{
-        type: "table.setCell",
-        sheetId: "skills:Skills_B",
-        rowId: "Skills_B:key-202",
-        columnId: "name",
-        value: "Blink MCP",
-      }],
-    });
-    assert.equal(appliedCsv.status, "applied");
-    assert.notEqual(appliedCsv.hash, csv.baseHash);
-    assert.equal(await readFile(csvAFile, "utf8"), csvABefore);
-    assert.match(await readFile(csvBFile, "utf8"), /Blink MCP/);
-
-    const staleAfterApply = await call(client, "visualbridge_apply_table_operations", {
-      projectFile,
-      path: csvPath,
-      baseHash: csv.baseHash,
-      operations: [{
-        type: "table.setCell",
-        sheetId: "skills:Skills_B",
-        rowId: "Skills_B:key-202",
-        columnId: "name",
-        value: "Stale Overwrite",
-      }],
-    });
-    assert.equal(staleAfterApply.status, "conflict");
-
-    const updatedCsv = await call(client, "visualbridge_table", { projectFile, path: csvPath });
-    const csvBeforeInvalid = await readFile(csvBFile, "utf8");
-    const invalidCsvBatch = await call(client, "visualbridge_apply_table_operations", {
-      projectFile,
-      path: csvPath,
-      baseHash: updatedCsv.baseHash,
       operations: [
         {
           type: "table.setCell",
@@ -770,24 +524,82 @@ test("stdio MCP queries and atomically edits partitioned CSV and XLSX Tables", a
         { type: "table.removeRow", sheetId: "skills:Skills_B", rowId: "missing" },
       ],
     });
-    assert.equal(invalidCsvBatch.status, "invalid");
-    assert.equal(await readFile(csvBFile, "utf8"), csvBeforeInvalid);
+    assert.equal(invalid.status, "invalid");
+    assert.deepEqual(await readFile(csvBFile), beforeInvalid);
+
+    const appliedCsv = await call(client, "visualbridge_apply_operations", {
+      ...selector,
+      path: csvPath,
+      baseHash: csv.baseHash,
+      operations: [{
+        type: "table.setCell",
+        sheetId: "skills:Skills_B",
+        rowId: "Skills_B:key-202",
+        columnId: "name",
+        value: "Frost Nova MCP V2",
+      }],
+    });
+    assert.equal(appliedCsv.status, "applied");
+    const updatedCsv = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "read",
+      path: csvPath,
+      selector: { sheetId: "skills:Skills_B" },
+    });
+    assert.equal(updatedCsv.page.rows.find((row) => row.id === "Skills_B:key-202").cells.name, "Frost Nova MCP V2");
+
+    const recoverableBytes = await readFile(csvBFile);
+    const interruptedBytes = Buffer.from("broken during interrupted table transaction\n", "utf8");
+    const interruptedId = "00000000-0000-4000-8000-000000000005";
+    const interruptedTemporary = `${csvBFile}.visualbridge-${interruptedId}.tmp`;
+    const interruptedBackup = `${csvBFile}.visualbridge-${interruptedId}.rollback`;
+    await writeFile(interruptedTemporary, interruptedBytes);
+    await writeFile(interruptedBackup, recoverableBytes);
+    await unlink(csvBFile);
+    await writeFile(path.join(projectRoot, ".visualbridge-transaction.json"), `${JSON.stringify({
+      version: 1,
+      transactionId: interruptedId,
+      phase: "prepared",
+      entries: [{
+        path: "Tables/Skills_B.csv",
+        absolutePath: csvBFile,
+        temporaryPath: interruptedTemporary,
+        backupPath: interruptedBackup,
+        beforeHash: hash(recoverableBytes),
+        afterHash: hash(interruptedBytes),
+      }],
+    }, null, 2)}\n`, "utf8");
+    const deadTableOwner = spawn(process.execPath, ["-e", "process.exit(0)"]);
+    const deadTablePid = deadTableOwner.pid;
+    await once(deadTableOwner, "exit");
+    await writeFile(path.join(projectRoot, ".visualbridge-transaction.lock"), `${JSON.stringify({
+      version: 1,
+      token: "dead-table-owner",
+      pid: deadTablePid,
+      startedAt: new Date(0).toISOString(),
+    })}\n`, "utf8");
+    const recoveredBeforeTableLoad = await call(client, "visualbridge_apply_operations", {
+      ...selector,
+      path: csvPath,
+      baseHash: updatedCsv.baseHash,
+      operations: [{ type: "table.removeRow", sheetId: "skills:Skills_A", rowId: "missing" }],
+    });
+    assert.equal(recoveredBeforeTableLoad.status, "invalid");
+    assert.deepEqual(await readFile(csvBFile), recoverableBytes);
+    await assertNoActiveTransactionArtifacts(projectRoot);
 
     const xlsxPath = "Tables/Skills.xlsx";
-    const xlsx = await call(client, "visualbridge_table", {
-      projectFile,
+    const xlsx = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "read",
       path: xlsxPath,
-      sheetId: "skills:Skills_A",
+      selector: { sheetId: "skills:Skills_A" },
     });
     assert.equal(xlsx.format, "xlsx");
     assert.equal(xlsx.sources.length, 1);
-    assert.equal(xlsx.page.rows[0].id, "Skills_A:key-301");
     assert.equal(xlsx.page.rows[0].cells.name, "Ice Bolt");
-    const xlsxValidation = await call(client, "visualbridge_validate_table", { projectFile, path: xlsxPath });
-    assert.equal(xlsxValidation.valid, true);
-
-    const appliedXlsx = await call(client, "visualbridge_apply_table_operations", {
-      projectFile,
+    const appliedXlsx = await call(client, "visualbridge_apply_operations", {
+      ...selector,
       path: xlsxPath,
       baseHash: xlsx.baseHash,
       operations: [{
@@ -795,33 +607,384 @@ test("stdio MCP queries and atomically edits partitioned CSV and XLSX Tables", a
         sheetId: "skills:Skills_A",
         rowId: "Skills_A:key-301",
         columnId: "name",
-        value: "Ice Bolt MCP",
+        value: "Ice Bolt MCP V2",
       }],
     });
     assert.equal(appliedXlsx.status, "applied");
-    const updatedXlsx = await call(client, "visualbridge_table", {
-      projectFile,
+    const updatedXlsx = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "read",
       path: xlsxPath,
-      sheetId: "skills:Skills_A",
+      selector: { sheetId: "skills:Skills_A" },
     });
-    assert.equal(updatedXlsx.page.rows[0].cells.name, "Ice Bolt MCP");
-    assert.equal(updatedXlsx.baseHash, appliedXlsx.hash);
+    assert.equal(updatedXlsx.page.rows[0].cells.name, "Ice Bolt MCP V2");
+    const tableEntries = await readdir(path.join(projectRoot, "Tables"));
+    assert.ok(!tableEntries.some((name) => name.includes(".visualbridge")));
 
-    const tableDirectoryEntries = await readdir(path.join(projectRoot, "Tables"));
-    assert.ok(!tableDirectoryEntries.some((name) => name.includes(".visualbridge")));
+    await writeFile(csvBFile, "broken\n", "utf8");
+    const invalidRead = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "read",
+      path: csvPath,
+    });
+    assert.equal(invalidRead.valid, false);
+    assert.ok(invalidRead.diagnostics.some((diagnostic) => diagnostic.severity === "error"));
+    const invalidSearch = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "search",
+      path: csvPath,
+      query: "anything",
+    });
+    assert.equal(invalidSearch.valid, false);
+    assert.deepEqual(invalidSearch.results, []);
+    const invalidWrongCursor = await client.callTool({
+      name: "visualbridge_document",
+      arguments: {
+        ...selector,
+        action: "search",
+        path: csvPath,
+        query: "anything",
+        cursor: firstPage.nextCursor,
+      },
+    });
+    assert.equal(invalidWrongCursor.isError, true);
+    const invalidApply = await call(client, "visualbridge_apply_operations", {
+      ...selector,
+      path: csvPath,
+      baseHash: invalidRead.baseHash,
+      operations: [{ type: "table.removeRow", sheetId: "skills:Skills_A", rowId: "missing" }],
+    });
+    assert.equal(invalidApply.status, "invalid");
+  });
+});
+
+test("MCP project transactions recover dead-owner journals and preserve unknown external bytes", async () => {
+  await withFixture("GraphSemanticProject", async ({ projectRoot, client }) => {
+    const projectPath = path.join(projectRoot, "VisualBridge.project.vbjson");
+    const projectDefinition = JSON.parse(await readFile(projectPath, "utf8"));
+    projectDefinition.documentRoots = ["."];
+    projectDefinition.documentTypes[0].include.push(".visualbridge-*", "**/*.visualbridge-*");
+    await writeFile(projectPath, `${JSON.stringify(projectDefinition, null, 2)}\n`, "utf8");
+    const discovery = await call(client, "visualbridge_project", { action: "discover" });
+    const projectFile = discovery.projects[0].projectFile;
+    const selector = { projectFile, documentTypeId: "logicGraph", editor: "graph" };
+    const graphPath = "Graph/SemanticSample.vbgraph";
+    const graphFile = path.join(projectRoot, "Graph", "SemanticSample.vbgraph");
+    const baseline = await call(client, "visualbridge_document", { ...selector, action: "read", path: graphPath });
+    const before = await readFile(graphFile);
+    const outsideSentinel = path.join(projectRoot, "..", "outside-transaction-sentinel.txt");
+    await writeFile(outsideSentinel, "outside must survive\n", "utf8");
+    const internalSentinel = path.join(projectRoot, "Graph", "victim.tmp");
+    const internalRollbackSentinel = path.join(projectRoot, "Graph", "victim.rollback");
+    await writeFile(internalSentinel, "internal temp must survive\n", "utf8");
+    await writeFile(internalRollbackSentinel, "internal rollback must survive\n", "utf8");
+    const unsafeTransactionId = "ignored/../victim";
+    await writeFile(path.join(projectRoot, ".visualbridge-transaction.json"), `${JSON.stringify({
+      version: 1,
+      transactionId: unsafeTransactionId,
+      phase: "committed",
+      entries: [{
+        path: graphPath,
+        absolutePath: graphFile,
+        temporaryPath: `${graphFile}.visualbridge-${unsafeTransactionId}.tmp`,
+        backupPath: `${graphFile}.visualbridge-${unsafeTransactionId}.rollback`,
+        beforeHash: hash(Buffer.from("before")),
+        afterHash: hash(before),
+      }],
+    }, null, 2)}\n`, "utf8");
+    const unsafeIdRecovery = await client.callTool({
+      name: "visualbridge_apply_operations",
+      arguments: {
+        ...selector,
+        path: graphPath,
+        baseHash: baseline.baseHash,
+        operations: [{ type: "graph.updateGraph", graphId: "root", title: "Must not run", properties: {} }],
+      },
+    });
+    assert.equal(unsafeIdRecovery.isError, true);
+    assert.equal(await readFile(internalSentinel, "utf8"), "internal temp must survive\n");
+    assert.equal(await readFile(internalRollbackSentinel, "utf8"), "internal rollback must survive\n");
+    await unlink(path.join(projectRoot, ".visualbridge-transaction.json"));
+    await unlink(internalSentinel);
+    await unlink(internalRollbackSentinel);
+
+    const maliciousId = "00000000-0000-4000-8000-000000000001";
+    await writeFile(path.join(projectRoot, ".visualbridge-transaction.json"), `${JSON.stringify({
+      version: 1,
+      transactionId: maliciousId,
+      phase: "committed",
+      entries: [{
+        path: graphPath,
+        absolutePath: outsideSentinel,
+        temporaryPath: `${outsideSentinel}.visualbridge-${maliciousId}.tmp`,
+        backupPath: `${outsideSentinel}.visualbridge-${maliciousId}.rollback`,
+        beforeHash: hash(Buffer.from("before")),
+        afterHash: hash(Buffer.from("after")),
+      }],
+    }, null, 2)}\n`, "utf8");
+    const maliciousRecovery = await client.callTool({
+      name: "visualbridge_apply_operations",
+      arguments: {
+        ...selector,
+        path: graphPath,
+        baseHash: baseline.baseHash,
+        operations: [{ type: "graph.updateGraph", graphId: "root", title: "Must not run", properties: {} }],
+      },
+    });
+    assert.equal(maliciousRecovery.isError, true);
+    assert.equal(await readFile(outsideSentinel, "utf8"), "outside must survive\n");
+    await unlink(path.join(projectRoot, ".visualbridge-transaction.json"));
+    await unlink(outsideSentinel);
+
+    const committedId = "00000000-0000-4000-8000-000000000002";
+    const committedTemporary = `${graphFile}.visualbridge-${committedId}.tmp`;
+    const committedBackup = `${graphFile}.visualbridge-${committedId}.rollback`;
+    await writeFile(committedBackup, Buffer.from("old backup"));
+    await writeFile(path.join(projectRoot, ".visualbridge-transaction.json"), `${JSON.stringify({
+      version: 1,
+      transactionId: committedId,
+      phase: "committed",
+      entries: [{
+        path: graphPath,
+        absolutePath: graphFile,
+        temporaryPath: committedTemporary,
+        backupPath: committedBackup,
+        beforeHash: hash(Buffer.from("old backup")),
+        afterHash: hash(before),
+      }],
+    }, null, 2)}\n`, "utf8");
+    const finalized = await call(client, "visualbridge_apply_operations", {
+      ...selector,
+      path: graphPath,
+      baseHash: baseline.baseHash,
+      operations: [{ type: "graph.removeNode", graphId: "root", nodeId: "missing" }],
+    });
+    assert.equal(finalized.status, "invalid");
+    await assertNoActiveTransactionArtifacts(projectRoot);
+
+    const malformedLockPath = path.join(projectRoot, ".visualbridge-transaction.lock");
+    await writeFile(malformedLockPath, "", "utf8");
+    const oldTime = new Date(Date.now() - 10 * 60_000);
+    await utimes(malformedLockPath, oldTime, oldTime);
+    const recoveredMalformedLock = await call(client, "visualbridge_apply_operations", {
+      ...selector,
+      path: graphPath,
+      baseHash: baseline.baseHash,
+      operations: [{ type: "graph.removeNode", graphId: "root", nodeId: "missing" }],
+    });
+    assert.equal(recoveredMalformedLock.status, "invalid");
+    const lockedPreview = await call(client, "visualbridge_refactor_reference", {
+      projectFile,
+      action: "preview",
+      kind: "graph.element",
+      target: { documentTypeId: "logicGraph", elementKind: "node" },
+      oldValue: "step_b",
+      newValue: "locked_step",
+    });
+    const lockPath = path.join(projectRoot, ".visualbridge-transaction.lock");
+    await writeFile(lockPath, `${JSON.stringify({
+      version: 1,
+      token: "live-owner",
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+    })}\n`, "utf8");
+    const blockedApply = await call(client, "visualbridge_apply_operations", {
+      ...selector,
+      path: graphPath,
+      baseHash: baseline.baseHash,
+      operations: [{ type: "graph.updateGraph", graphId: "root", title: "Blocked", properties: {} }],
+    });
+    assert.equal(blockedApply.status, "conflict");
+    assert.equal(blockedApply.reason, "writeInProgress");
+    const blockedRefactor = await call(client, "visualbridge_refactor_reference", {
+      projectFile,
+      action: "apply",
+      kind: "graph.element",
+      target: { documentTypeId: "logicGraph", elementKind: "node" },
+      oldValue: "step_b",
+      newValue: "locked_step",
+      previewHash: lockedPreview.previewHash,
+      baseHashes: lockedPreview.baseHashes,
+    });
+    assert.equal(blockedRefactor.status, "conflict");
+    assert.equal(blockedRefactor.reason, "writeInProgress");
+    await unlink(lockPath);
+    const interruptedDocument = JSON.parse(before.toString("utf8"));
+    interruptedDocument.graphs[0].title = "Interrupted replacement";
+    const interrupted = Buffer.from(`${JSON.stringify(interruptedDocument, null, 2)}\n`, "utf8");
+    const transactionId = "00000000-0000-4000-8000-000000000003";
+    const temporaryPath = `${graphFile}.visualbridge-${transactionId}.tmp`;
+    const backupPath = `${graphFile}.visualbridge-${transactionId}.rollback`;
+    await writeFile(temporaryPath, interrupted);
+    await writeFile(backupPath, before);
+    await unlink(graphFile);
+    await writeFile(path.join(projectRoot, ".visualbridge-transaction.json"), `${JSON.stringify({
+      version: 1,
+      transactionId,
+      phase: "prepared",
+      entries: [{
+        path: graphPath,
+        absolutePath: graphFile,
+        temporaryPath,
+        backupPath,
+        beforeHash: hash(before),
+        afterHash: hash(interrupted),
+      }],
+    }, null, 2)}\n`, "utf8");
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"]);
+    const deadPid = child.pid;
+    await once(child, "exit");
+    await writeFile(path.join(projectRoot, ".visualbridge-transaction.lock"), `${JSON.stringify({
+      version: 1,
+      token: "dead-owner",
+      pid: deadPid,
+      startedAt: new Date(0).toISOString(),
+    })}\n`, "utf8");
+    const recoveredApply = await call(client, "visualbridge_apply_operations", {
+      ...selector,
+      path: graphPath,
+      baseHash: baseline.baseHash,
+      operations: [{ type: "graph.updateGraph", graphId: "root", title: "Recovered", properties: {} }],
+    });
+    assert.equal(recoveredApply.status, "applied");
+    await assertNoActiveTransactionArtifacts(projectRoot);
+
+    const committed = await readFile(graphFile);
+    const plannedDocument = JSON.parse(committed.toString("utf8"));
+    plannedDocument.graphs[0].title = "Planned";
+    const planned = Buffer.from(`${JSON.stringify(plannedDocument, null, 2)}\n`, "utf8");
+    const externalDocument = JSON.parse(committed.toString("utf8"));
+    externalDocument.graphs[0].title = "External bytes";
+    const external = Buffer.from(`${JSON.stringify(externalDocument, null, 2)}\n`, "utf8");
+    const unsafeId = "00000000-0000-4000-8000-000000000004";
+    const unsafeTemporary = `${graphFile}.visualbridge-${unsafeId}.tmp`;
+    const unsafeBackup = `${graphFile}.visualbridge-${unsafeId}.rollback`;
+    await writeFile(unsafeBackup, committed);
+    await writeFile(unsafeTemporary, planned);
+    await writeFile(graphFile, external);
+    await writeFile(path.join(projectRoot, ".visualbridge-transaction.json"), `${JSON.stringify({
+      version: 1,
+      transactionId: unsafeId,
+      phase: "prepared",
+      entries: [{
+        path: graphPath,
+        absolutePath: graphFile,
+        temporaryPath: unsafeTemporary,
+        backupPath: unsafeBackup,
+        beforeHash: hash(committed),
+        afterHash: hash(planned),
+      }],
+    }, null, 2)}\n`, "utf8");
+    const rejected = await client.callTool({
+      name: "visualbridge_apply_operations",
+      arguments: {
+        ...selector,
+        path: graphPath,
+        baseHash: recoveredApply.hash,
+        operations: [{ type: "graph.updateGraph", graphId: "root", title: "Must not write", properties: {} }],
+      },
+    });
+    assert.equal(rejected.isError, true);
+    assert.deepEqual(await readFile(graphFile), external);
+  });
+});
+
+test("MCP stale-lock recovery elects one writer across concurrent processes", async () => {
+  await withFixture("GraphSemanticProject", async ({ temporaryRoot, projectRoot, client }) => {
+    const second = await startClient(temporaryRoot);
+    try {
+      const discovery = await call(client, "visualbridge_project", { action: "discover" });
+      const projectFile = discovery.projects[0].projectFile;
+      const selector = { projectFile, documentTypeId: "logicGraph", editor: "graph" };
+      const graphPath = "Graph/SemanticSample.vbgraph";
+      const baseline = await call(client, "visualbridge_document", { ...selector, action: "read", path: graphPath });
+      const deadOwner = spawn(process.execPath, ["-e", "process.exit(0)"]);
+      const deadPid = deadOwner.pid;
+      await once(deadOwner, "exit");
+      await writeFile(path.join(projectRoot, ".visualbridge-transaction.lock"), `${JSON.stringify({
+        version: 1,
+        token: "dead-concurrent-owner",
+        pid: deadPid,
+        startedAt: new Date(0).toISOString(),
+      })}\n`, "utf8");
+      const operation = (title) => ({
+        ...selector,
+        path: graphPath,
+        baseHash: baseline.baseHash,
+        operations: [{ type: "graph.updateGraph", graphId: "root", title, properties: {} }],
+      });
+      const results = await Promise.all([
+        call(client, "visualbridge_apply_operations", operation("Concurrent A")),
+        call(second.client, "visualbridge_apply_operations", operation("Concurrent B")),
+      ]);
+      assert.deepEqual(results.map((result) => result.status).sort(), ["applied", "conflict"]);
+      const current = await call(client, "visualbridge_document", { ...selector, action: "read", path: graphPath });
+      assert.ok(["Concurrent A", "Concurrent B"].includes(
+        current.document.graphs.find((entry) => entry.id === "root").title,
+      ));
+      await assertNoActiveTransactionArtifacts(projectRoot);
+    } finally {
+      await second.client.close().catch(() => undefined);
+    }
+  });
+});
+
+async function assertNoActiveTransactionArtifacts(projectRoot) {
+  const recoveryDirectoryName = ".visualbridge-transaction-recovery";
+  const entries = await readdir(projectRoot);
+  assert.ok(!entries.some((name) => name !== recoveryDirectoryName && name.startsWith(".visualbridge-transaction")));
+  try {
+    assert.deepEqual(await readdir(path.join(projectRoot, recoveryDirectoryName)), []);
   } catch (error) {
-    assert.fail(`${error instanceof Error ? error.stack ?? error.message : String(error)}\nMCP stderr:\n${stderr}`);
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
+
+async function withFixture(name, action) {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), "visualbridge-mcp-v2-"));
+  const projectRoot = path.join(temporaryRoot, name);
+  await cp(path.join(repositoryRoot, "TestData", name), projectRoot, { recursive: true });
+  const running = await startClient(temporaryRoot);
+  try {
+    await action({ temporaryRoot, projectRoot, client: running.client, stderr: running.stderr });
+  } catch (error) {
+    assert.fail(`${error instanceof Error ? error.stack ?? error.message : String(error)}\nMCP stderr:\n${running.stderr()}`);
   } finally {
-    await client.close().catch(() => undefined);
+    await running.client.close().catch(() => undefined);
     await rm(temporaryRoot, { recursive: true, force: true });
   }
-});
+}
+
+async function startClient(workspaceRoot) {
+  const environment = Object.fromEntries(Object.entries(process.env).filter((entry) => entry[1] !== undefined));
+  environment.VISUALBRIDGE_WORKSPACE = workspaceRoot;
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [serverPath],
+    env: environment,
+    stderr: "pipe",
+  });
+  let stderrText = "";
+  transport.stderr?.on("data", (chunk) => {
+    stderrText += chunk.toString();
+  });
+  const client = new Client({ name: "visualbridge-stdio-test", version: "2.0.0" });
+  await client.connect(transport);
+  return { client, stderr: () => stderrText };
+}
 
 async function call(client, name, args) {
   const result = await client.callTool({ name, arguments: args });
   assert.equal(result.isError, undefined, textContent(result));
   assert.equal(typeof result.structuredContent, "object", textContent(result));
-  return result.structuredContent;
+  const envelope = result.structuredContent;
+  assert.equal(envelope.contractVersion, 2);
+  assert.notEqual(envelope.status, "error");
+  assert.equal(typeof envelope.data, "object");
+  if (envelope.status !== "ok") {
+    assert.equal(Object.hasOwn(envelope.data, "status"), false, "Envelope status must not be duplicated in data.");
+  }
+  return { ...envelope.data, status: envelope.status === "ok" ? envelope.data.status : envelope.status };
 }
 
 function textContent(result) {
@@ -829,4 +992,8 @@ function textContent(result) {
     .filter((entry) => entry.type === "text")
     .map((entry) => entry.text)
     .join("\n");
+}
+
+function hash(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
 }

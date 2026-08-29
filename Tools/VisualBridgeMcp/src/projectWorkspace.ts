@@ -10,7 +10,13 @@ import {
   type VisualBridgeProjectDefinition,
 } from "@visualbridge/core";
 
-const skippedDirectoryNames = new Set([".codegraph", ".git", "Library", "node_modules"]);
+const skippedDirectoryNames = new Set([
+  ".codegraph",
+  ".git",
+  ".visualbridge-transaction-recovery",
+  "Library",
+  "node_modules",
+]);
 
 export interface WorkspaceIssue {
   readonly projectFile: string;
@@ -30,32 +36,26 @@ export interface ProjectDiscoveryResult {
   readonly issues: readonly WorkspaceIssue[];
 }
 
-export interface GraphDocumentContext {
-  readonly project: ProjectContext;
-  readonly documentType: DocumentTypeDefinition;
-  readonly graphPath: string;
-  readonly absoluteGraphPath: string;
-}
-
-export interface TableDocumentContext {
-  readonly project: ProjectContext;
-  readonly documentType: DocumentTypeDefinition;
-  readonly tablePath: string;
-  readonly absoluteTablePath: string;
-}
-
-export interface StructuredDocumentContext {
-  readonly project: ProjectContext;
-  readonly documentType: DocumentTypeDefinition;
-  readonly structuredPath: string;
-  readonly absoluteStructuredPath: string;
-}
-
 export interface DeclaredDocumentContext {
   readonly project: ProjectContext;
   readonly documentType: DocumentTypeDefinition;
   readonly path: string;
   readonly absolutePath: string;
+}
+
+export interface GraphDocumentContext extends DeclaredDocumentContext {
+  readonly graphPath: string;
+  readonly absoluteGraphPath: string;
+}
+
+export interface TableDocumentContext extends DeclaredDocumentContext {
+  readonly tablePath: string;
+  readonly absoluteTablePath: string;
+}
+
+export interface StructuredDocumentContext extends DeclaredDocumentContext {
+  readonly structuredPath: string;
+  readonly absoluteStructuredPath: string;
 }
 
 export class VisualBridgeMcpError extends Error {
@@ -162,55 +162,83 @@ export class VisualBridgeWorkspace {
     return project;
   }
 
-  public async resolveGraphDocument(
-    graphPath: string,
+  public async resolveDocument(
+    documentPath: string,
+    editor: string | undefined,
     projectFile?: string,
     documentTypeId?: string,
-  ): Promise<GraphDocumentContext> {
+  ): Promise<DeclaredDocumentContext> {
+    const declared = await this.resolveDeclaredDocument(documentPath, editor, projectFile, documentTypeId);
+    return {
+      ...declared,
+      absolutePath: await resolveExistingProjectPath(declared.project, declared.path),
+    };
+  }
+
+  public async resolveDeclaredDocument(
+    documentPath: string,
+    editor: string | undefined,
+    projectFile?: string,
+    documentTypeId?: string,
+  ): Promise<DeclaredDocumentContext> {
     const project = await this.resolveProject(projectFile);
-    const normalizedGraphPath = normalizeRelativePath(graphPath, "path");
+    const normalizedPath = normalizeRelativePath(documentPath, "path");
     const candidates = findMatchingDocumentTypes(
       project.definition,
-      normalizedGraphPath,
+      normalizedPath,
       matches,
       {
-        editor: "graph",
+        ...(editor === undefined ? {} : { editor }),
         ...(documentTypeId === undefined ? {} : { documentTypeId }),
       },
     );
     if (candidates.length !== 1) {
+      const subject = editor === undefined ? "Document" : `${editor} Document`;
       throw new VisualBridgeMcpError(
-        candidates.length === 0 ? "graph.notDeclared" : "graph.ambiguousDocumentType",
+        candidates.length === 0 ? "document.notDeclared" : "document.ambiguousDocumentType",
         candidates.length === 0
-          ? `Graph '${normalizedGraphPath}' is not declared by the selected VisualBridge Project.`
-          : `Graph '${normalizedGraphPath}' matches multiple Graph Document Types; provide documentTypeId.`,
+          ? `${subject} '${normalizedPath}' is not declared by the selected VisualBridge Project.`
+          : `${subject} '${normalizedPath}' matches multiple Document Types; provide documentTypeId.`,
       );
     }
+    const absolutePath = path.resolve(project.projectRoot, ...normalizedPath.split("/"));
+    ensureInside(project.projectRoot, absolutePath, normalizedPath);
     return {
       project,
       documentType: candidates[0]!,
-      graphPath: normalizedGraphPath,
-      absoluteGraphPath: await resolveExistingProjectPath(project, normalizedGraphPath),
+      path: normalizedPath,
+      absolutePath,
     };
   }
 
-  public async resolveGraphDocumentType(
+  public async resolveDocumentType(
+    editor: string | undefined,
     projectFile?: string,
     documentTypeId?: string,
   ): Promise<{ readonly project: ProjectContext; readonly documentType: DocumentTypeDefinition }> {
     const project = await this.resolveProject(projectFile);
     const candidates = project.definition.documentTypes.filter((documentType) =>
-      documentType.editor === "graph" && (documentTypeId === undefined || documentType.id === documentTypeId),
+      (editor === undefined || documentType.editor === editor)
+      && (documentTypeId === undefined || documentType.id === documentTypeId),
     );
     if (candidates.length !== 1) {
       throw new VisualBridgeMcpError(
-        candidates.length === 0 ? "graph.documentTypeNotFound" : "graph.ambiguousDocumentType",
+        candidates.length === 0 ? "document.documentTypeNotFound" : "document.ambiguousDocumentType",
         candidates.length === 0
-          ? "The selected project does not declare the requested Graph Document Type."
-          : "The selected project declares multiple Graph Document Types; provide documentTypeId.",
+          ? "The selected project does not declare the requested Document Type."
+          : "The selected project declares multiple matching Document Types; provide documentTypeId or editor.",
       );
     }
     return { project, documentType: candidates[0]! };
+  }
+
+  public async resolveGraphDocument(
+    graphPath: string,
+    projectFile?: string,
+    documentTypeId?: string,
+  ): Promise<GraphDocumentContext> {
+    const context = await this.resolveDocument(graphPath, "graph", projectFile, documentTypeId);
+    return { ...context, graphPath: context.path, absoluteGraphPath: context.absolutePath };
   }
 
   public async resolveTableDocument(
@@ -218,50 +246,8 @@ export class VisualBridgeWorkspace {
     projectFile?: string,
     documentTypeId?: string,
   ): Promise<TableDocumentContext> {
-    const project = await this.resolveProject(projectFile);
-    const normalizedTablePath = normalizeRelativePath(tablePath, "path");
-    const candidates = findMatchingDocumentTypes(
-      project.definition,
-      normalizedTablePath,
-      matches,
-      {
-        editor: "table",
-        ...(documentTypeId === undefined ? {} : { documentTypeId }),
-      },
-    );
-    if (candidates.length !== 1) {
-      throw new VisualBridgeMcpError(
-        candidates.length === 0 ? "table.notDeclared" : "table.ambiguousDocumentType",
-        candidates.length === 0
-          ? `Table '${normalizedTablePath}' is not declared by the selected VisualBridge Project.`
-          : `Table '${normalizedTablePath}' matches multiple Table Document Types; provide documentTypeId.`,
-      );
-    }
-    return {
-      project,
-      documentType: candidates[0]!,
-      tablePath: normalizedTablePath,
-      absoluteTablePath: await resolveExistingProjectPath(project, normalizedTablePath),
-    };
-  }
-
-  public async resolveTableDocumentType(
-    projectFile?: string,
-    documentTypeId?: string,
-  ): Promise<{ readonly project: ProjectContext; readonly documentType: DocumentTypeDefinition }> {
-    const project = await this.resolveProject(projectFile);
-    const candidates = project.definition.documentTypes.filter((documentType) =>
-      documentType.editor === "table" && (documentTypeId === undefined || documentType.id === documentTypeId),
-    );
-    if (candidates.length !== 1) {
-      throw new VisualBridgeMcpError(
-        candidates.length === 0 ? "table.documentTypeNotFound" : "table.ambiguousDocumentType",
-        candidates.length === 0
-          ? "The selected project does not declare the requested Table Document Type."
-          : "The selected project declares multiple Table Document Types; provide documentTypeId.",
-      );
-    }
-    return { project, documentType: candidates[0]! };
+    const context = await this.resolveDocument(tablePath, "table", projectFile, documentTypeId);
+    return { ...context, tablePath: context.path, absoluteTablePath: context.absolutePath };
   }
 
   public async resolveStructuredDocument(
@@ -269,51 +255,8 @@ export class VisualBridgeWorkspace {
     projectFile?: string,
     documentTypeId?: string,
   ): Promise<StructuredDocumentContext> {
-    const project = await this.resolveProject(projectFile);
-    const normalizedStructuredPath = normalizeRelativePath(structuredPath, "path");
-    const candidates = findMatchingDocumentTypes(
-      project.definition,
-      normalizedStructuredPath,
-      matches,
-      {
-        editor: "structured",
-        ...(documentTypeId === undefined ? {} : { documentTypeId }),
-      },
-    );
-    if (candidates.length !== 1) {
-      throw new VisualBridgeMcpError(
-        candidates.length === 0 ? "structured.notDeclared" : "structured.ambiguousDocumentType",
-        candidates.length === 0
-          ? `Structured Config '${normalizedStructuredPath}' is not declared by the selected VisualBridge Project.`
-          : `Structured Config '${normalizedStructuredPath}' matches multiple Document Types; provide documentTypeId.`,
-      );
-    }
-    return {
-      project,
-      documentType: candidates[0]!,
-      structuredPath: normalizedStructuredPath,
-      absoluteStructuredPath: await resolveExistingProjectPath(project, normalizedStructuredPath),
-    };
-  }
-
-  public async resolveStructuredDocumentType(
-    projectFile?: string,
-    documentTypeId?: string,
-  ): Promise<{ readonly project: ProjectContext; readonly documentType: DocumentTypeDefinition }> {
-    const project = await this.resolveProject(projectFile);
-    const candidates = project.definition.documentTypes.filter((documentType) =>
-      documentType.editor === "structured"
-      && (documentTypeId === undefined || documentType.id === documentTypeId),
-    );
-    if (candidates.length !== 1) {
-      throw new VisualBridgeMcpError(
-        candidates.length === 0 ? "structured.documentTypeNotFound" : "structured.ambiguousDocumentType",
-        candidates.length === 0
-          ? "The selected project does not declare the requested Structured Document Type."
-          : "The selected project declares multiple Structured Document Types; provide documentTypeId.",
-      );
-    }
-    return { project, documentType: candidates[0]! };
+    const context = await this.resolveDocument(structuredPath, "structured", projectFile, documentTypeId);
+    return { ...context, structuredPath: context.path, absoluteStructuredPath: context.absolutePath };
   }
 
   public async listDeclaredDocuments(
@@ -392,7 +335,7 @@ async function collectDocumentFiles(projectRoot: string, directory: string, resu
       continue;
     }
     const entryPath = path.join(resolvedDirectory, entry.name);
-    if (entry.isFile()) {
+    if (entry.isFile() && !isVisualBridgeTransactionArtifact(entry.name)) {
       result.push(entryPath);
     } else if (entry.isDirectory() && !skippedDirectoryNames.has(entry.name)) {
       await collectDocumentFiles(projectRoot, entryPath, result);
@@ -400,10 +343,19 @@ async function collectDocumentFiles(projectRoot: string, directory: string, resu
   }
 }
 
+function isVisualBridgeTransactionArtifact(fileName: string): boolean {
+  return fileName === ".visualbridge-transaction.lock"
+    || fileName === ".visualbridge-transaction.json"
+    || fileName.startsWith(".visualbridge-transaction.lock.")
+    || fileName.startsWith(".visualbridge-transaction.json.")
+    || (fileName.includes(".visualbridge-") && (fileName.endsWith(".tmp") || fileName.endsWith(".rollback")));
+}
+
 function normalizeRelativePath(value: string, label: string): string {
   if (
     value.length === 0
     || value.includes("\\")
+    || value.includes(":")
     || value.startsWith("/")
     || path.isAbsolute(value)
     || value.split("/").some((segment) => segment.length === 0 || segment === "." || segment === "..")

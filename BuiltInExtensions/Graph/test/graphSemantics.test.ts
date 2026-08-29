@@ -10,6 +10,8 @@ import {
   createGraphElementReferenceProvider,
   getGraphNodePorts,
   getReplacementCandidates,
+  graphDocumentAdapter,
+  graphTextDocumentCodec,
   isDataTypeAssignable,
   parseGraphCatalog,
   parseGraphDocument,
@@ -48,6 +50,21 @@ function loadFixture(): Fixture {
   assert.equal(documentResult.success, true, formatDiagnostics(documentResult.diagnostics));
   return { catalogs, registry: registryResult.document, document: documentResult.document };
 }
+
+test("Graph semantic adapter composes the established parser, validator, operation and serializer", async () => {
+  const fixture = loadFixture();
+  const context = { registry: fixture.registry };
+  assert.deepEqual(
+    graphDocumentAdapter.validate(fixture.document, context),
+    validateGraphDocument(fixture.document, fixture.registry),
+  );
+  const parsed = await graphTextDocumentCodec.parse(serializeGraphDocument(fixture.document), context);
+  assert.equal(parsed.success, true);
+  assert.equal(
+    await graphTextDocumentCodec.render(fixture.document, "", context),
+    serializeGraphDocument(fixture.document),
+  );
+});
 
 function readFixture(...segments: string[]): string {
   return readFileSync(path.join(projectRoot, ...segments), "utf8");

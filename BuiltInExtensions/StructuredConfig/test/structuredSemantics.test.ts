@@ -14,6 +14,8 @@ import {
   replaceStructuredReferenceValues,
   serializeStructuredCatalog,
   serializeStructuredDocument,
+  structuredDocumentAdapter,
+  structuredTextDocumentCodec,
   validateStructuredDocument,
   type StructuredCatalog,
 } from "../index";
@@ -35,6 +37,21 @@ function load() {
   if (!parsedDocument.success) throw new Error("Document fixture failed.");
   return { catalog: parsedCatalog.document, registry: registry.document, document: parsedDocument.document };
 }
+
+test("Structured semantic adapter preserves Config Type binding across every operation", async () => {
+  const { document, registry } = load();
+  const context = { registry, configTypeId: documentTypeId };
+  assert.deepEqual(
+    structuredDocumentAdapter.validate(document, context),
+    validateStructuredDocument(document, registry, documentTypeId),
+  );
+  const parsed = await structuredTextDocumentCodec.parse(serializeStructuredDocument(document), context);
+  assert.equal(parsed.success, true);
+  assert.equal(
+    await structuredTextDocumentCodec.render(document, "", context),
+    serializeStructuredDocument(document),
+  );
+});
 
 test("Structured document IDs rename through validated document semantics", () => {
   const { document, registry } = load();

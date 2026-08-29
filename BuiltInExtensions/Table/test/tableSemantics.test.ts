@@ -15,6 +15,7 @@ import {
   resolveEffectiveTableRows,
   serializeCsvTable,
   serializeXlsxTable,
+  tableDocumentAdapter,
   validateTableDocument,
   type TableTypeDefinition,
 } from "../index";
@@ -52,6 +53,26 @@ async function loadFixture(): Promise<{
     csv: await readFile(path.join(fixtureRoot, "Tables", "Skills_A.csv"), "utf8"),
   };
 }
+
+test("Table semantic adapter retains the multi-source document operation contract", async () => {
+  const { tableType, layout, csv } = await loadFixture();
+  const parsed = parseCsvTable(csv, tableType, layout, "Skills_A");
+  assert.equal(parsed.success, true);
+  if (!parsed.success) throw new Error("CSV fixture failed.");
+  const context = { tableType };
+  assert.deepEqual(
+    tableDocumentAdapter.validate(parsed.document, context),
+    validateTableDocument(parsed.document, tableType),
+  );
+  const unchanged = tableDocumentAdapter.applyOperations(parsed.document, [{
+    type: "table.setCell",
+    sheetId: parsed.document.sheets[0]!.id,
+    rowId: parsed.document.sheets[0]!.rows[0]!.id,
+    columnId: "name",
+    value: parsed.document.sheets[0]!.rows[0]!.cells.name,
+  }], context);
+  assert.equal(unchanged.success, true);
+});
 
 test("Table Catalog uses stable aliases and explicit C# cell encodings", async () => {
   const { tableType } = await loadFixture();

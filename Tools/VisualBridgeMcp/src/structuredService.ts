@@ -1,19 +1,16 @@
 import { readFile } from "node:fs/promises";
-import type { DocumentDiagnostic } from "@visualbridge/core";
+import { buildCatalogBundle, type DocumentDiagnostic } from "@visualbridge/core";
 import {
-  applyStructuredOperations,
-  buildStructuredCatalogRegistry,
-  collectStructuredReferences,
-  parseStructuredCatalog,
-  parseStructuredDocument,
   resolveStructuredConfigType,
-  serializeStructuredDocument,
-  validateStructuredDocument,
-  type StructuredCatalog,
+  structuredCatalogAdapter,
+  structuredDocumentAdapter,
+  structuredTextDocumentCodec,
   type StructuredCatalogRegistry,
   type StructuredDocument,
 } from "@visualbridge/structured";
 import { applyAtomicTextFileEdit, hashBytes } from "./atomicTextFile.js";
+import type { DocumentCatalogRequest, DocumentRequest } from "./documentAdapterRegistry.js";
+import { pageItems } from "./pagination.js";
 import {
   VisualBridgeMcpError,
   VisualBridgeWorkspace,
@@ -31,99 +28,94 @@ interface CatalogContext {
   readonly diagnostics: readonly DocumentDiagnostic[];
 }
 
-interface LoadedStructuredDocument {
-  readonly context: StructuredDocumentContext;
-  readonly baseHash: string;
-  readonly document: StructuredDocument;
-  readonly parseDiagnostics: readonly DocumentDiagnostic[];
-  readonly catalog: CatalogContext;
-}
-
 export class StructuredService {
   public constructor(
     private readonly workspace: VisualBridgeWorkspace,
     private readonly references: VisualBridgeReferenceService,
   ) {}
 
-  public async queryCatalog(
-    projectFile: string | undefined,
-    documentTypeId: string | undefined,
-    view: "summary" | "configTypes",
-  ): Promise<Record<string, unknown>> {
-    const resolved = await this.workspace.resolveStructuredDocumentType(projectFile, documentTypeId);
+  public async queryCatalog(request: DocumentCatalogRequest): Promise<Record<string, unknown>> {
+    const resolved = await this.workspace.resolveDocumentType("structured", request.projectFile, request.documentTypeId);
     const catalog = await this.loadCatalog(resolved.project, resolved.documentType.id, resolved.documentType.catalogs);
     const requiredConfigType = resolveStructuredConfigType(catalog.registry, resolved.documentType.id);
     const base = {
+      projectId: resolved.project.definition.projectId,
       projectFile: resolved.project.projectFile,
       documentTypeId: resolved.documentType.id,
+      editor: resolved.documentType.editor,
       catalogPaths: catalog.catalogPaths,
       catalogs: catalog.registry.catalogs,
       requiredConfigTypeId: requiredConfigType?.id,
       diagnostics: catalog.diagnostics,
     };
-    return view === "configTypes"
-      ? { ...base, configTypes: catalog.registry.configTypes }
-      : { ...base, counts: { configTypes: catalog.registry.configTypes.length } };
+    const kind = request.kind ?? "summary";
+    if (request.action === "read") {
+      if (kind === "summary") {
+        return { ...base, counts: { configTypes: catalog.registry.configTypes.length } };
+      }
+      if (kind === "configTypes") {
+        return { ...base, definitions: catalog.registry.configTypes };
+      }
+      throw new VisualBridgeMcpError("catalog.kindUnsupported", `Structured Catalog kind '${kind}' is not supported.`);
+    }
+    if (kind !== "configTypes") {
+      throw new VisualBridgeMcpError("catalog.kindUnsupported", `Structured Catalog kind '${kind}' is not searchable.`);
+    }
+    const query = request.query.trim().toLocaleLowerCase();
+    const definitions = catalog.registry.configTypes
+      .filter((definition) => query.length === 0 || JSON.stringify(definition).toLocaleLowerCase().includes(query))
+      .sort((left, right) => left.title.localeCompare(right.title) || left.id.localeCompare(right.id));
+    const page = pageItems(definitions, request.cursor, request.limit, catalogCursorScope(request, kind));
+    return { ...base, kind, query: request.query, results: page.items, nextCursor: page.nextCursor };
   }
 
-  public async readDocument(
-    structuredPath: string,
-    projectFile?: string,
-    documentTypeId?: string,
-  ): Promise<Record<string, unknown>> {
-    const loaded = await this.loadDocument(structuredPath, projectFile, documentTypeId);
-    const diagnostics = await this.validateLoaded(loaded);
-    return {
-      projectFile: loaded.context.project.projectFile,
-      documentTypeId: loaded.context.documentType.id,
-      path: loaded.context.structuredPath,
-      baseHash: loaded.baseHash,
-      document: loaded.document,
-      configType: resolveStructuredConfigType(loaded.catalog.registry, loaded.context.documentType.id),
-      diagnostics,
-    };
-  }
-
-  public async validateDocument(
-    structuredPath: string,
-    projectFile?: string,
-    documentTypeId?: string,
-  ): Promise<Record<string, unknown>> {
-    const context = await this.workspace.resolveStructuredDocument(structuredPath, projectFile, documentTypeId);
-    const bytes = await readFile(context.absoluteStructuredPath);
-    const baseHash = hashBytes(bytes);
-    const catalog = await this.loadCatalog(
-      context.project,
-      context.documentType.id,
-      context.documentType.catalogs,
-    );
-    const parseResult = parseStructuredDocument(decodeUtf8(bytes, context.structuredPath));
-    if (!parseResult.success) {
-      const diagnostics = [...catalog.diagnostics, ...parseResult.diagnostics];
+  public async executeDocument(request: DocumentRequest): Promise<Record<string, unknown>> {
+    if (request.action === "apply") {
+      if (request.baseHash === undefined || request.operations === undefined) {
+        throw new VisualBridgeMcpError("document.invalidApply", "Apply requires baseHash and operations.");
+      }
+      return this.applyOperations({
+        ...(request.projectFile === undefined ? {} : { projectFile: request.projectFile }),
+        ...(request.documentTypeId === undefined ? {} : { documentTypeId: request.documentTypeId }),
+        structuredPath: request.path,
+        baseHash: request.baseHash,
+        operations: request.operations,
+      });
+    }
+    const loaded = await this.loadDocument(request.path, request.projectFile, request.documentTypeId);
+    if (request.action === "validate") {
+      return { ...structuredIdentity(loaded), valid: loaded.valid, diagnostics: loaded.diagnostics };
+    }
+    if (request.action === "read") {
       return {
-        projectFile: context.project.projectFile,
-        documentTypeId: context.documentType.id,
-        path: context.structuredPath,
-        baseHash,
-        valid: false,
-        diagnostics,
+        ...structuredIdentity(loaded),
+        valid: loaded.valid,
+        ...(loaded.document === undefined ? {} : {
+          document: loaded.document,
+          configType: loaded.configType,
+        }),
+        diagnostics: loaded.diagnostics,
       };
     }
-    const loaded: LoadedStructuredDocument = {
-      context,
-      baseHash,
-      document: parseResult.document,
-      parseDiagnostics: parseResult.diagnostics,
-      catalog,
-    };
-    const diagnostics = await this.validateLoaded(loaded);
+    const query = request.query.trim().toLocaleLowerCase();
+    const entries: (Record<string, unknown> & { searchText: string })[] = [];
+    if (loaded.document !== undefined) {
+      collectStructuredSearchValues(loaded.document.properties, "properties", entries);
+    }
+    const filtered = entries.filter((entry) => query.length === 0 || entry.searchText.includes(query));
+    const page = pageItems(
+      filtered.map(({ searchText: _searchText, ...entry }) => entry),
+      request.cursor,
+      request.limit,
+      documentCursorScope(request),
+    );
     return {
-      projectFile: context.project.projectFile,
-      documentTypeId: context.documentType.id,
-      path: context.structuredPath,
-      baseHash,
-      valid: !hasErrors(diagnostics),
-      diagnostics,
+      ...structuredIdentity(loaded),
+      valid: loaded.valid,
+      query: request.query,
+      results: page.items,
+      nextCursor: page.nextCursor,
+      diagnostics: loaded.diagnostics,
     };
   }
 
@@ -134,51 +126,62 @@ export class StructuredService {
     readonly baseHash: string;
     readonly operations: unknown;
   }): Promise<Record<string, unknown>> {
-    const context = await this.workspace.resolveStructuredDocument(
+    const context = await this.workspace.resolveDeclaredDocument(
       options.structuredPath,
+      "structured",
       options.projectFile,
       options.documentTypeId,
     );
     return applyAtomicTextFileEdit({
-      absolutePath: context.absoluteStructuredPath,
+      projectRoot: context.project.projectRoot,
+      absolutePath: context.absolutePath,
+      resolveAbsolutePath: () => resolveExistingProjectPath(context.project, context.path),
       expectedBaseHash: options.baseHash,
       metadata: {
+        projectId: context.project.definition.projectId,
         projectFile: context.project.projectFile,
         documentTypeId: context.documentType.id,
-        path: context.structuredPath,
+        editor: context.documentType.editor,
+        path: context.path,
       },
       verificationErrorCode: "structured.atomicWriteVerificationFailed",
-      subject: `Structured Config '${context.structuredPath}'`,
+      subject: `Structured Config '${context.path}'`,
     }, async (bytes) => {
       const catalog = await this.loadCatalog(
         context.project,
         context.documentType.id,
         context.documentType.catalogs,
       );
-      const parseResult = parseStructuredDocument(decodeUtf8(bytes, context.structuredPath));
+      const semanticContext = { registry: catalog.registry, configTypeId: context.documentType.id };
+      const parseResult = await structuredTextDocumentCodec.parse(
+        decodeUtf8(bytes, context.path),
+        semanticContext,
+      );
       if (!parseResult.success) {
         return { valid: false, diagnostics: [...catalog.diagnostics, ...parseResult.diagnostics] };
       }
-      const operationResult = applyStructuredOperations(
+      const operationResult = structuredDocumentAdapter.applyOperations(
         parseResult.document,
         options.operations,
-        catalog.registry,
-        context.documentType.id,
+        semanticContext,
       );
       if (!operationResult.success) {
         return { valid: false, diagnostics: operationResult.diagnostics };
       }
       const referenceResult = await this.references.validateChange(
         context.project.projectFile,
-        collectStructuredReferences(parseResult.document, catalog.registry, context.documentType.id),
-        collectStructuredReferences(operationResult.document, catalog.registry, context.documentType.id),
+        structuredDocumentAdapter.collectReferences(parseResult.document, semanticContext),
+        structuredDocumentAdapter.collectReferences(operationResult.document, semanticContext),
       );
       if (referenceResult.introducedErrors.length > 0) {
         return { valid: false, diagnostics: referenceResult.introducedErrors };
       }
       return {
         valid: true,
-        nextBytes: Buffer.from(serializeStructuredDocument(operationResult.document), "utf8"),
+        nextBytes: Buffer.from(
+          await structuredTextDocumentCodec.render(operationResult.document, "", semanticContext),
+          "utf8",
+        ),
         diagnostics: [...operationResult.diagnostics, ...referenceResult.diagnostics],
       };
     });
@@ -188,48 +191,41 @@ export class StructuredService {
     structuredPath: string,
     projectFile?: string,
     documentTypeId?: string,
-  ): Promise<LoadedStructuredDocument> {
+  ): Promise<{
+    readonly context: StructuredDocumentContext;
+    readonly baseHash: string;
+    readonly document?: StructuredDocument;
+    readonly configType?: unknown;
+    readonly diagnostics: readonly DocumentDiagnostic[];
+    readonly valid: boolean;
+  }> {
     const context = await this.workspace.resolveStructuredDocument(structuredPath, projectFile, documentTypeId);
     const bytes = await readFile(context.absoluteStructuredPath);
-    const parseResult = parseStructuredDocument(decodeUtf8(bytes, context.structuredPath));
-    if (!parseResult.success) {
-      throw new VisualBridgeMcpError(
-        "structured.parseFailed",
-        `Structured Config '${context.structuredPath}' is structurally invalid.`,
-        parseResult.diagnostics,
-      );
+    const baseHash = hashBytes(bytes);
+    const catalog = await this.loadCatalog(context.project, context.documentType.id, context.documentType.catalogs);
+    const semanticContext = { registry: catalog.registry, configTypeId: context.documentType.id };
+    const parsed = await structuredTextDocumentCodec.parse(decodeUtf8(bytes, context.structuredPath), semanticContext);
+    if (!parsed.success) {
+      const diagnostics = [...catalog.diagnostics, ...parsed.diagnostics];
+      return { context, baseHash, diagnostics, valid: false };
     }
-    return {
-      context,
-      baseHash: hashBytes(bytes),
-      document: parseResult.document,
-      parseDiagnostics: parseResult.diagnostics,
-      catalog: await this.loadCatalog(
-        context.project,
-        context.documentType.id,
-        context.documentType.catalogs,
-      ),
-    };
-  }
-
-  private async validateLoaded(loaded: LoadedStructuredDocument): Promise<readonly DocumentDiagnostic[]> {
-    return [
-      ...loaded.catalog.diagnostics,
-      ...loaded.parseDiagnostics,
-      ...validateStructuredDocument(
-        loaded.document,
-        loaded.catalog.registry,
-        loaded.context.documentType.id,
-      ),
+    const diagnostics = [
+      ...catalog.diagnostics,
+      ...parsed.diagnostics,
+      ...structuredDocumentAdapter.validate(parsed.document, semanticContext),
       ...await this.references.validate(
-        loaded.context.project.projectFile,
-        collectStructuredReferences(
-          loaded.document,
-          loaded.catalog.registry,
-          loaded.context.documentType.id,
-        ),
+        context.project.projectFile,
+        structuredDocumentAdapter.collectReferences(parsed.document, semanticContext),
       ),
     ];
+    return {
+      context,
+      baseHash,
+      document: parsed.document,
+      configType: resolveStructuredConfigType(catalog.registry, context.documentType.id),
+      diagnostics,
+      valid: !hasErrors(diagnostics),
+    };
   }
 
   private async loadCatalog(
@@ -243,37 +239,19 @@ export class StructuredService {
         `Structured Document Type '${documentTypeId}' does not declare any Catalogs.`,
       );
     }
-    const catalogs: StructuredCatalog[] = [];
-    const sourceIndexes: number[] = [];
-    const diagnostics: DocumentDiagnostic[] = [];
-    for (const [catalogIndex, catalogPath] of catalogPaths.entries()) {
-      const absoluteCatalogPath = await resolveExistingProjectPath(project, catalogPath);
-      const parseResult = parseStructuredCatalog(decodeUtf8(await readFile(absoluteCatalogPath), catalogPath));
-      diagnostics.push(...parseResult.diagnostics.map((diagnostic) => ({
-        ...diagnostic,
-        path: `catalogs[${catalogIndex}].${diagnostic.path}`,
-      })));
-      if (parseResult.success) {
-        catalogs.push(parseResult.document);
-        sourceIndexes.push(catalogIndex);
-      }
-    }
-    const registryResult = buildStructuredCatalogRegistry(catalogs);
-    diagnostics.push(...registryResult.diagnostics.map((diagnostic) => ({
-      ...diagnostic,
-      path: diagnostic.path.replace(/^catalogs\[(\d+)\]/, (match, indexText: string) => {
-        const sourceIndex = sourceIndexes[Number(indexText)];
-        return sourceIndex === undefined ? match : `catalogs[${sourceIndex}]`;
-      }),
+    const sources = await Promise.all(catalogPaths.map(async (catalogPath) => ({
+      path: catalogPath,
+      text: decodeUtf8(await readFile(await resolveExistingProjectPath(project, catalogPath)), catalogPath),
     })));
-    if (!registryResult.success || hasErrors(diagnostics)) {
+    const bundle = buildCatalogBundle(sources, structuredCatalogAdapter);
+    if (bundle.registry === undefined) {
       throw new VisualBridgeMcpError(
         "structured.catalogInvalid",
         `Structured Catalog Registry for Document Type '${documentTypeId}' is invalid.`,
-        diagnostics,
+        bundle.diagnostics,
       );
     }
-    if (resolveStructuredConfigType(registryResult.document, documentTypeId) === undefined) {
+    if (resolveStructuredConfigType(bundle.registry, documentTypeId) === undefined) {
       throw new VisualBridgeMcpError(
         "structured.documentTypeUnbound",
         `Structured Document Type '${documentTypeId}' does not resolve to a Config Type ID or alias.`,
@@ -282,11 +260,37 @@ export class StructuredService {
     return {
       project,
       documentTypeId,
-      catalogPaths,
-      registry: registryResult.document,
-      diagnostics,
+      catalogPaths: bundle.paths,
+      registry: bundle.registry,
+      diagnostics: bundle.diagnostics,
     };
   }
+}
+
+function catalogCursorScope(request: DocumentCatalogRequest, kind: string): unknown {
+  return {
+    tool: "visualbridge_catalog",
+    action: request.action,
+    projectFile: request.projectFile,
+    documentTypeId: request.documentTypeId,
+    editor: "structured",
+    kind,
+    query: request.query,
+    selector: request.selector,
+  };
+}
+
+function documentCursorScope(request: DocumentRequest): unknown {
+  return {
+    tool: "visualbridge_document",
+    action: request.action,
+    projectFile: request.projectFile,
+    documentTypeId: request.documentTypeId,
+    editor: "structured",
+    path: request.path,
+    query: request.query,
+    selector: request.selector,
+  };
 }
 
 function decodeUtf8(bytes: Uint8Array, displayPath: string): string {
@@ -302,4 +306,41 @@ function decodeUtf8(bytes: Uint8Array, displayPath: string): string {
 
 function hasErrors(diagnostics: readonly DocumentDiagnostic[]): boolean {
   return diagnostics.some((diagnostic) => diagnostic.severity === "error");
+}
+
+function structuredIdentity(loaded: {
+  readonly context: StructuredDocumentContext;
+  readonly baseHash: string;
+}): Record<string, unknown> {
+  return {
+    projectId: loaded.context.project.definition.projectId,
+    projectFile: loaded.context.project.projectFile,
+    documentTypeId: loaded.context.documentType.id,
+    editor: loaded.context.documentType.editor,
+    path: loaded.context.structuredPath,
+    baseHash: loaded.baseHash,
+    sources: [{ path: loaded.context.structuredPath, hash: loaded.baseHash }],
+  };
+}
+
+function collectStructuredSearchValues(
+  value: unknown,
+  path: string,
+  entries: (Record<string, unknown> & { searchText: string })[],
+): void {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => collectStructuredSearchValues(entry, `${path}[${index}]`, entries));
+    return;
+  }
+  if (typeof value === "object" && value !== null) {
+    Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).forEach(([key, entry]) =>
+      collectStructuredSearchValues(entry, `${path}.${key}`, entries));
+    return;
+  }
+  entries.push({
+    kind: "field",
+    path,
+    value,
+    searchText: `${path} ${String(value)}`.toLocaleLowerCase(),
+  });
 }

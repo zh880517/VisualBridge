@@ -98,7 +98,7 @@ V1 只暴露一个聚焦操作：
 
 共享 Form Editor 修改嵌套字段或 List 时，提交所属顶层字段的完整新值。一个非空 Operation 数组按顺序作用于文档副本：先严格解析并校验新值，再执行完整批次、校验修改后文档和引用，最后仅在没有新错误时提交。未知字段、alias 字段 ID 或任一无效操作会拒绝整个批次。
 
-VS Code 通过 `WorkspaceEdit` 保留 Undo/Redo，并在外部文件 Hash 改变时要求覆盖或刷新。MCP 必须携带读取/校验返回的 SHA-256 `baseHash`；单文件锁、写前二次 Hash 检查、同目录临时文件、原子替换和落盘 Hash 验证与 Graph 共用同一个宿主适配器。冲突或无效批次不修改源文件。
+VS Code 通过 `WorkspaceEdit` 保留 Undo/Redo，并在外部文件 Hash 改变时要求覆盖或刷新。MCP 必须携带读取/校验返回的 SHA-256 `baseHash`；它与 Graph、Entity、Table 和 Refactor 共用 Project Transaction 锁、写前 Hash 复核、同目录阶段文件、prepared/committed journal、持久化验证和条件回滚。冲突或无效批次不修改源文件；恢复发现未知外部字节时保留现场并返回 Tool Error。
 
 ## 6. VS Code 编辑器
 
@@ -110,17 +110,16 @@ Structured Editor 复用 `Editors/Form` 的 `FieldsEditor` 与 Reference Bridge�
 
 ## 7. MCP 工具
 
-Structured V1 提供四个稳定工具：
+Structured 使用 MCP V2 的统一工具，不再暴露类型专用工具：
 
-- `visualbridge_structured_catalog`：查询 Registry 摘要或完整 Config Type；
-- `visualbridge_structured`：读取语义文档、绑定类型、诊断和 `baseHash`；
-- `visualbridge_validate_structured`：只校验，不写入；
-- `visualbridge_apply_structured_operations`：用 `baseHash` 原子应用非空 Operation 批次。
+- `visualbridge_catalog` 以 `editor: "structured"` 读取或搜索 `configTypes`；
+- `visualbridge_document` 以 `read`、`search` 或 `validate` 访问语义实例；
+- `visualbridge_apply_operations` 用读取返回的 `baseHash` 原子应用非空 `structured.setField` 批次。
 
-MCP 只负责 Project/路径解析、结构化工具 Schema、并发控制和持久化，不复制 Catalog、Field、Operation 或 Reference 规则。
+请求必须显式带回 Project 发现结果中的 `projectFile`、`documentTypeId` 和 `editor`。最终类型绑定仍由 Project Registry 和 Structured Adapter 决定；MCP 只负责 Project/路径解析、结构化工具 Schema、并发控制和持久化，不复制 Catalog、Field、Operation 或 Reference 规则。完整 V2 信封与使用方式见 `VisualBridgeMcp.md`。
 
 ## 8. 固定样例与后续 Unity 约束
 
-`TestData/StructuredSemanticProject` 使用 `.gamesettings` 和 `.skillstable` 自定义后缀，覆盖嵌套结构、List、颜色、int/float 语义以及指向 Table Row 的引用。语义测试验证 Registry/alias、严格字段校验、默认值、引用收集、Operation 原子性和确定性序列化；stdio 测试验证真实 MCP Schema、读取、校验、冲突拒绝、引用拒绝和原子落盘。
+`TestData/StructuredSemanticProject` 使用 `.gamesettings` 和 `.skillstable` 自定义后缀，覆盖嵌套结构、List、颜色、int/float 语义以及指向 Table Row 的引用。语义测试验证 Registry/alias、严格字段校验、默认值、引用收集、Operation 原子性和确定性序列化；stdio 测试验证真实 MCP Schema、Catalog 搜索、读取、实例搜索、校验、无效批次不落盘和有效多字段原子写入。跨进程冲突、Reference 重构和事务恢复由同一 MCP 套件的 Graph/Entity/Project Transaction 固定样例覆盖。
 
 未来 Unity Catalog Exporter 应从游戏实际使用的普通 C# class/struct 生成同一 Catalog V1，并保持稳定 ID。它不得重新引入 `ScriptableObject` Authoring 资产、Unity 专属字段副本或另一套字段编辑协议；任何 Unity 实现开始前都应先更新本文件和总体架构边界。

@@ -2,13 +2,21 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
+import {
+  McpDocumentAdapterRegistry,
+  type DocumentCatalogRequest,
+  type DocumentRequest,
+} from "./documentAdapterRegistry.js";
+import { EntityService } from "./entityService.js";
 import { GraphService } from "./graphService.js";
+import { pageItems } from "./pagination.js";
 import { VisualBridgeMcpError, VisualBridgeWorkspace } from "./projectWorkspace.js";
-import { TableService } from "./tableService.js";
-import { VisualBridgeReferenceService, referenceDefinition } from "./referenceService.js";
 import { ReferenceRefactorService } from "./refactorService.js";
+import { VisualBridgeReferenceService, referenceDefinition } from "./referenceService.js";
 import { StructuredService } from "./structuredService.js";
+import { TableService } from "./tableService.js";
 
+const CONTRACT_VERSION = 2 as const;
 const workspaceRoot = process.env.VISUALBRIDGE_WORKSPACE === undefined
   ? process.cwd()
   : path.resolve(process.env.VISUALBRIDGE_WORKSPACE);
@@ -16,35 +24,56 @@ const workspace = await VisualBridgeWorkspace.create(workspaceRoot);
 const tableService = new TableService(workspace);
 const referenceService = new VisualBridgeReferenceService(workspace, tableService);
 tableService.setReferenceService(referenceService);
-const refactorService = new ReferenceRefactorService(workspace, referenceService, tableService);
 const graphService = new GraphService(workspace, referenceService);
+const entityService = new EntityService(workspace, referenceService);
 const structuredService = new StructuredService(workspace, referenceService);
+const refactorService = new ReferenceRefactorService(workspace, referenceService, tableService);
+const adapters = new McpDocumentAdapterRegistry([
+  {
+    editor: "entity",
+    queryCatalog: (request) => entityService.queryCatalog(request),
+    executeDocument: (request) => entityService.executeDocument(request),
+  },
+  {
+    editor: "graph",
+    queryCatalog: (request) => graphService.queryCatalog(request),
+    executeDocument: (request) => graphService.executeDocument(request),
+  },
+  {
+    editor: "structured",
+    queryCatalog: (request) => structuredService.queryCatalog(request),
+    executeDocument: (request) => structuredService.executeDocument(request),
+  },
+  {
+    editor: "table",
+    queryCatalog: (request) => tableService.queryCatalog(request),
+    executeDocument: (request) => tableService.executeDocument(request),
+  },
+]);
 
 function createServer(): McpServer {
   const server = new McpServer(
-    { name: "visualbridge", version: "0.1.0" },
+    { name: "visualbridge", version: "2.0.0" },
     {
       instructions:
-        "Discover a VisualBridge Project first. Use the Reference tool for stable cross-document targets. Preview project reference refactors and preserve their complete previewHash/baseHashes manifest before apply. Read or validate a Graph/Table/Structured Config to obtain baseHash before ordinary Operations. Never retry a conflict with stale baselines, and never edit declared carrier files outside their semantic tools.",
+        "Discover the VisualBridge Project, then use its exact projectFile, documentTypeId, editor, and normalized path selectors. Catalog and Document tools are read-only. All edits use visualbridge_apply_operations with the exact baseHash returned by Document read/validate. Conflicts and invalid operations are structured results and are never retried with stale state.",
     },
   );
 
   server.registerTool(
     "visualbridge_project",
     {
-      title: "Discover or read VisualBridge Projects",
+      title: "Discover and inspect VisualBridge Projects",
       description:
-        "Lists valid VisualBridge Project files and diagnostics, or returns one complete project definition when projectFile is provided.",
-      inputSchema: z.object({
-        projectFile: z.string().optional().describe("Workspace-relative VisualBridge.project.vbjson path."),
-      }),
+        "Discovers Projects, reads one Project definition and adapter capabilities, or lists its declared semantic documents with stable cursor pagination.",
+      inputSchema: projectInputSchema,
+      outputSchema: toolOutputSchema,
       annotations: { readOnlyHint: true },
     },
-    async ({ projectFile }) => handle(async () => {
-      if (projectFile === undefined) {
+    async ({ action, projectFile, editor, documentTypeId, query, cursor, limit }) => handle(async () => {
+      if (action === "discover") {
         const discovery = await workspace.discoverProjects();
         return {
-          workspaceRoot: discovery.workspaceRoot,
           projects: discovery.projects.map((project) => ({
             projectFile: project.projectFile,
             projectId: project.definition.projectId,
@@ -53,13 +82,128 @@ function createServer(): McpServer {
           issues: discovery.issues,
         };
       }
+      if (projectFile === undefined) {
+        throw new VisualBridgeMcpError("project.selectorRequired", `${action} requires projectFile.`);
+      }
       const project = await workspace.resolveProject(projectFile);
-      return {
-        workspaceRoot: workspace.root,
+      if (action === "read") {
+        return {
+          projectFile: project.projectFile,
+          definition: project.definition,
+          documentTypes: project.definition.documentTypes.map((documentType) => ({
+            ...documentType,
+            adapterAvailable: adapters.get(documentType.editor) !== undefined,
+          })),
+          supportedEditors: adapters.listEditors(),
+        };
+      }
+      const declared = await workspace.listDeclaredDocuments(project);
+      const normalizedQuery = query.toLocaleLowerCase();
+      const results = declared
+        .filter((entry) => editor === undefined || entry.documentType.editor === editor)
+        .filter((entry) => documentTypeId === undefined || entry.documentType.id === documentTypeId)
+        .filter((entry) => normalizedQuery.length === 0 || entry.path.toLocaleLowerCase().includes(normalizedQuery))
+        .map((entry) => ({
+          projectFile: entry.project.projectFile,
+          documentTypeId: entry.documentType.id,
+          editor: entry.documentType.editor,
+          path: entry.path,
+          adapterAvailable: adapters.get(entry.documentType.editor) !== undefined,
+        }));
+      const page = pageItems(results, cursor, limit, {
+        tool: "visualbridge_project",
+        action,
         projectFile: project.projectFile,
-        definition: project.definition,
-      };
+        editor,
+        documentTypeId,
+        query,
+      });
+      return { query, results: page.items, nextCursor: page.nextCursor };
     }),
+  );
+
+  server.registerTool(
+    "visualbridge_catalog",
+    {
+      title: "Read or search a VisualBridge Catalog Registry",
+      description:
+        "Uses the Project-selected built-in adapter to read one Registry section or search Catalog definitions. Catalog search is distinct from Document instance search.",
+      inputSchema: catalogInputSchema,
+      outputSchema: toolOutputSchema,
+      annotations: { readOnlyHint: true },
+    },
+    async ({ action, projectFile, documentTypeId, editor, kind, query, cursor, limit, selector }) =>
+      handle(async () => {
+        const resolved = await workspace.resolveDocumentType(editor, projectFile, documentTypeId);
+        const adapter = adapters.require(resolved.documentType.editor);
+        const request: DocumentCatalogRequest = {
+          action,
+          projectFile: resolved.project.projectFile,
+          documentTypeId: resolved.documentType.id,
+          ...(kind === undefined ? {} : { kind }),
+          query,
+          ...(cursor === undefined ? {} : { cursor }),
+          limit,
+          selector,
+        };
+        return adapter.queryCatalog(request);
+      }),
+  );
+
+  server.registerTool(
+    "visualbridge_document",
+    {
+      title: "Read, search or validate a VisualBridge Document",
+      description:
+        "Routes a declared path through its Project Document Type and shared built-in adapter. Search queries semantic instances; read and validate return the authoritative physical baseHash and diagnostics.",
+      inputSchema: documentInputSchema,
+      outputSchema: toolOutputSchema,
+      annotations: { readOnlyHint: true },
+    },
+    async ({ action, projectFile, documentTypeId, editor, path: documentPath, query, cursor, limit, selector }) =>
+      handle(async () => {
+        const resolved = await workspace.resolveDocument(documentPath, editor, projectFile, documentTypeId);
+        const adapter = adapters.require(resolved.documentType.editor);
+        const request: DocumentRequest = {
+          action,
+          projectFile: resolved.project.projectFile,
+          documentTypeId: resolved.documentType.id,
+          path: resolved.path,
+          query,
+          ...(cursor === undefined ? {} : { cursor }),
+          limit,
+          selector,
+        };
+        return adapter.executeDocument(request);
+      }),
+  );
+
+  server.registerTool(
+    "visualbridge_apply_operations",
+    {
+      title: "Atomically apply VisualBridge Document Operations",
+      description:
+        "Routes one ordered, non-empty Operation batch through the declared Document Type. Requires the exact physical baseHash and rejects conflicts or invalid batches without partial semantic writes.",
+      inputSchema: applyOperationsInputSchema,
+      outputSchema: toolOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    },
+    async ({ projectFile, documentTypeId, editor, path: documentPath, baseHash, operations }) =>
+      handle(async () => {
+        const resolved = await workspace.resolveDeclaredDocument(documentPath, editor, projectFile, documentTypeId);
+        const adapter = adapters.require(resolved.documentType.editor);
+        return adapter.executeDocument({
+          action: "apply",
+          projectFile: resolved.project.projectFile,
+          documentTypeId: resolved.documentType.id,
+          path: resolved.path,
+          query: "",
+          limit: 1,
+          selector: {},
+          baseHash,
+          operations,
+        });
+      }),
   );
 
   server.registerTool(
@@ -67,26 +211,14 @@ function createServer(): McpServer {
     {
       title: "Search or resolve VisualBridge references",
       description:
-        "Uses the shared project Reference Service to search candidates or resolve one typed stable value. Built-in document, entity.component, graph.element, and table.row providers use stable semantic selectors rather than filenames or display names.",
-      inputSchema: z.object({
-        projectFile: z.string().optional(),
-        action: z.enum(["search", "resolve"]),
-        kind: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
-        target: z.record(z.string(), z.json()).default({}),
-        allowMissing: z.boolean().default(false),
-        query: z.string().max(512).optional(),
-        value: z.union([z.string(), z.number().finite()]).optional(),
-        limit: z.number().int().min(1).max(200).default(50),
-      }).superRefine((value, context) => {
-        if (value.action === "resolve" && value.value === undefined) {
-          context.addIssue({ code: "custom", path: ["value"], message: "Resolve requires value." });
-        }
-      }),
+        "Uses the shared project Reference Service to search candidates or resolve one typed stable value without relying on filenames or display names.",
+      inputSchema: referenceInputSchema,
+      outputSchema: toolOutputSchema,
       annotations: { readOnlyHint: true },
     },
     async ({ projectFile, action, kind, target, allowMissing, query, value, limit }) => handle(() =>
       referenceService.query({
-        ...(projectFile === undefined ? {} : { projectFile }),
+        projectFile,
         action,
         definition: referenceDefinition(kind, target, allowMissing),
         ...(query === undefined ? {} : { query }),
@@ -100,32 +232,14 @@ function createServer(): McpServer {
     {
       title: "Preview or apply a VisualBridge reference refactor",
       description:
-        "Renames one uniquely resolved document, entity.component, graph.element, or table.row stable value and every reference resolved to that exact location. Preview returns source baseHashes and previewHash; apply requires both and rejects any changed project state before an atomic multi-file commit.",
-      inputSchema: z.object({
-        projectFile: z.string().optional(),
-        action: z.enum(["preview", "apply"]),
-        kind: z.enum(["document", "entity.component", "graph.element", "table.row"]),
-        target: z.record(z.string(), z.json()),
-        oldValue: z.union([z.string(), z.number().finite()]),
-        newValue: z.union([z.string(), z.number().finite()]),
-        previewHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-        baseHashes: z.record(z.string(), z.string().regex(/^[a-f0-9]{64}$/)).optional(),
-      }).superRefine((value, context) => {
-        if (typeof value.oldValue !== typeof value.newValue) {
-          context.addIssue({ code: "custom", path: ["newValue"], message: "Reference value type must not change." });
-        }
-        if (value.action === "apply" && value.previewHash === undefined) {
-          context.addIssue({ code: "custom", path: ["previewHash"], message: "Apply requires previewHash." });
-        }
-        if (value.action === "apply" && value.baseHashes === undefined) {
-          context.addIssue({ code: "custom", path: ["baseHashes"], message: "Apply requires every source baseHash from preview." });
-        }
-      }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+        "Renames one uniquely resolved stable value and all exact semantic references. Apply requires the complete previewHash and baseHashes manifest and performs an atomic project transaction.",
+      inputSchema: refactorInputSchema,
+      outputSchema: toolOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
     },
     async ({ projectFile, action, kind, target, oldValue, newValue, previewHash, baseHashes }) => handle(() =>
       refactorService.execute({
-        ...(projectFile === undefined ? {} : { projectFile }),
+        projectFile,
         action,
         definition: referenceDefinition(kind, target, false),
         oldValue,
@@ -135,301 +249,141 @@ function createServer(): McpServer {
       })),
   );
 
-  server.registerTool(
-    "visualbridge_catalog",
-    {
-      title: "Query a VisualBridge Graph Catalog Registry",
-      description:
-        "Loads the selected Graph Document Type's Catalogs into the shared Graph Registry and returns a summary or one full definition collection.",
-      inputSchema: z.object({
-        projectFile: z.string().optional(),
-        documentTypeId: z.string().optional(),
-        view: z.enum(["summary", "dataTypes", "graphTypes", "nodeTypes"]).default("summary"),
-      }),
-      annotations: { readOnlyHint: true },
-    },
-    async ({ projectFile, documentTypeId, view }) => handle(() =>
-      graphService.queryCatalog(projectFile, documentTypeId, view)),
-  );
-
-  server.registerTool(
-    "visualbridge_graph",
-    {
-      title: "Read a VisualBridge Graph",
-      description:
-        "Reads and parses one declared .vbgraph with its baseHash, semantic document, and shared Catalog diagnostics.",
-      inputSchema: graphPathSchema,
-      annotations: { readOnlyHint: true },
-    },
-    async ({ projectFile, documentTypeId, path: graphPath }) => handle(() =>
-      graphService.readGraph(graphPath, projectFile, documentTypeId)),
-  );
-
-  server.registerTool(
-    "visualbridge_search_nodes",
-    {
-      title: "Search registered Graph node types",
-      description:
-        "Searches shared Catalog Registry metadata and optionally applies Graph Type Catalog/selector restrictions.",
-      inputSchema: z.object({
-        projectFile: z.string().optional(),
-        documentTypeId: z.string().optional(),
-        query: z.string().max(512).default(""),
-        graphTypeId: z.string().optional(),
-        includeSubgraphNodeTypes: z.boolean().default(true),
-        limit: z.number().int().min(1).max(200).default(50),
-      }),
-      annotations: { readOnlyHint: true },
-    },
-    async ({ projectFile, documentTypeId, query, graphTypeId, includeSubgraphNodeTypes, limit }) => handle(() =>
-      graphService.searchNodes({
-        ...(projectFile === undefined ? {} : { projectFile }),
-        ...(documentTypeId === undefined ? {} : { documentTypeId }),
-        ...(graphTypeId === undefined ? {} : { graphTypeId }),
-        query,
-        includeSubgraphNodeTypes,
-        limit,
-      })),
-  );
-
-  server.registerTool(
-    "visualbridge_validate_graph",
-    {
-      title: "Validate a VisualBridge Graph",
-      description:
-        "Runs the shared Graph parser, Catalog Registry, and semantic validator without modifying the source file.",
-      inputSchema: graphPathSchema,
-      annotations: { readOnlyHint: true },
-    },
-    async ({ projectFile, documentTypeId, path: graphPath }) => handle(() =>
-      graphService.validateGraph(graphPath, projectFile, documentTypeId)),
-  );
-
-  server.registerTool(
-    "visualbridge_apply_graph_operations",
-    {
-      title: "Atomically apply VisualBridge Graph Operations",
-      description:
-        "Applies one non-empty GraphOperation batch through shared Core semantics. Requires the exact baseHash returned by read/validate, rejects conflicts, and atomically replaces the file only after complete validation.",
-      inputSchema: z.object({
-        projectFile: z.string().optional(),
-        documentTypeId: z.string().optional(),
-        path: z.string().describe("Project-relative declared .vbgraph path using '/' separators."),
-        baseHash: z.string().regex(/^[a-f0-9]{64}$/).describe("Exact SHA-256 hash returned by a prior read or validation."),
-        operations: z.array(z.unknown()).min(1).describe("Ordered GraphOperation batch applied as one transaction."),
-      }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-    },
-    async ({ projectFile, documentTypeId, path: graphPath, baseHash, operations }) => handle(() =>
-      graphService.applyOperations({
-        ...(projectFile === undefined ? {} : { projectFile }),
-        ...(documentTypeId === undefined ? {} : { documentTypeId }),
-        graphPath,
-        baseHash,
-        operations,
-      })),
-  );
-
-  server.registerTool(
-    "visualbridge_table_catalog",
-    {
-      title: "Query a VisualBridge Table Catalog Registry",
-      description:
-        "Loads the selected Table Document Type's Catalogs into the shared Table Registry and returns a summary or complete Table Type definitions.",
-      inputSchema: z.object({
-        projectFile: z.string().optional(),
-        documentTypeId: z.string().optional(),
-        view: z.enum(["summary", "tableTypes"]).default("summary"),
-      }),
-      annotations: { readOnlyHint: true },
-    },
-    async ({ projectFile, documentTypeId, view }) => handle(() =>
-      tableService.queryCatalog(projectFile, documentTypeId, view)),
-  );
-
-  server.registerTool(
-    "visualbridge_table",
-    {
-      title: "Read a VisualBridge Table",
-      description:
-        "Reads a declared CSV family or XLSX workbook through the shared Table codecs. Returns the combined baseHash, source hashes, physical sheets, diagnostics, and an optional semantic row page.",
-      inputSchema: tablePathSchema.extend({
-        sheetId: z.string().optional().describe("Physical sheet ID returned by a prior Table read."),
-        offset: z.number().int().min(0).default(0),
-        limit: z.number().int().min(1).max(1000).default(100),
-      }),
-      annotations: { readOnlyHint: true },
-    },
-    async ({ projectFile, documentTypeId, path: tablePath, sheetId, offset, limit }) => handle(() =>
-      tableService.readTable({
-        ...(projectFile === undefined ? {} : { projectFile }),
-        ...(documentTypeId === undefined ? {} : { documentTypeId }),
-        ...(sheetId === undefined ? {} : { sheetId }),
-        tablePath,
-        offset,
-        limit,
-      })),
-  );
-
-  server.registerTool(
-    "visualbridge_search_table_rows",
-    {
-      title: "Search VisualBridge Table rows",
-      description:
-        "Searches semantic row display names and typed cells. By default partition duplicate policy is applied and only the effective logical rows are returned.",
-      inputSchema: tablePathSchema.extend({
-        query: z.string().max(512).default(""),
-        sheetDefinitionId: z.string().optional().describe("Stable Sheet definition ID from the Table Catalog."),
-        effectiveOnly: z.boolean().default(true),
-        limit: z.number().int().min(1).max(200).default(50),
-      }),
-      annotations: { readOnlyHint: true },
-    },
-    async ({ projectFile, documentTypeId, path: tablePath, query, sheetDefinitionId, effectiveOnly, limit }) =>
-      handle(() => tableService.searchRows({
-        ...(projectFile === undefined ? {} : { projectFile }),
-        ...(documentTypeId === undefined ? {} : { documentTypeId }),
-        ...(sheetDefinitionId === undefined ? {} : { sheetDefinitionId }),
-        tablePath,
-        query,
-        effectiveOnly,
-        limit,
-      })),
-  );
-
-  server.registerTool(
-    "visualbridge_validate_table",
-    {
-      title: "Validate a VisualBridge Table",
-      description:
-        "Runs the shared Table Catalog, CSV/XLSX codec, partition, Field, and semantic validators without modifying any source.",
-      inputSchema: tablePathSchema,
-      annotations: { readOnlyHint: true },
-    },
-    async ({ projectFile, documentTypeId, path: tablePath }) => handle(() =>
-      tableService.validateTable(tablePath, projectFile, documentTypeId)),
-  );
-
-  server.registerTool(
-    "visualbridge_apply_table_operations",
-    {
-      title: "Atomically apply VisualBridge Table Operations",
-      description:
-        "Applies one non-empty TableOperation batch through shared semantics. Requires the combined baseHash returned by read/validate, rejects any changed CSV partition or workbook, and stages all changed sources before replacement.",
-      inputSchema: tablePathSchema.extend({
-        baseHash: z.string().regex(/^[a-f0-9]{64}$/).describe("Exact combined SHA-256 baseline returned by a prior Table read or validation."),
-        operations: z.array(z.unknown()).min(1).describe("Ordered TableOperation batch applied as one semantic transaction."),
-      }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-    },
-    async ({ projectFile, documentTypeId, path: tablePath, baseHash, operations }) => handle(() =>
-      tableService.applyOperations({
-        ...(projectFile === undefined ? {} : { projectFile }),
-        ...(documentTypeId === undefined ? {} : { documentTypeId }),
-        tablePath,
-        baseHash,
-        operations,
-      })),
-  );
-
-  server.registerTool(
-    "visualbridge_structured_catalog",
-    {
-      title: "Query a VisualBridge Structured Catalog Registry",
-      description:
-        "Loads the selected Structured Document Type's Catalogs and returns its required Config Type binding, summary, or complete Config Type definitions.",
-      inputSchema: z.object({
-        projectFile: z.string().optional(),
-        documentTypeId: z.string().optional(),
-        view: z.enum(["summary", "configTypes"]).default("summary"),
-      }),
-      annotations: { readOnlyHint: true },
-    },
-    async ({ projectFile, documentTypeId, view }) => handle(() =>
-      structuredService.queryCatalog(projectFile, documentTypeId, view)),
-  );
-
-  server.registerTool(
-    "visualbridge_structured",
-    {
-      title: "Read a VisualBridge Structured Config",
-      description:
-        "Reads one declared Structured Config with its baseHash, semantic document, bound Config Type, shared Field diagnostics, and reference diagnostics.",
-      inputSchema: structuredPathSchema,
-      annotations: { readOnlyHint: true },
-    },
-    async ({ projectFile, documentTypeId, path: structuredPath }) => handle(() =>
-      structuredService.readDocument(structuredPath, projectFile, documentTypeId)),
-  );
-
-  server.registerTool(
-    "visualbridge_validate_structured",
-    {
-      title: "Validate a VisualBridge Structured Config",
-      description:
-        "Runs the strict V1 parser, Project Document Type binding, shared Field validator, and Reference Service without modifying the source.",
-      inputSchema: structuredPathSchema,
-      annotations: { readOnlyHint: true },
-    },
-    async ({ projectFile, documentTypeId, path: structuredPath }) => handle(() =>
-      structuredService.validateDocument(structuredPath, projectFile, documentTypeId)),
-  );
-
-  server.registerTool(
-    "visualbridge_apply_structured_operations",
-    {
-      title: "Atomically apply Structured Config Operations",
-      description:
-        "Applies one non-empty structured.setField batch through shared Field semantics. Requires an exact baseHash, rejects new semantic/reference errors, and atomically replaces the source only after validation.",
-      inputSchema: structuredPathSchema.extend({
-        baseHash: z.string().regex(/^[a-f0-9]{64}$/).describe("Exact SHA-256 hash returned by a prior read or validation."),
-        operations: z.array(z.unknown()).min(1).describe("Ordered StructuredOperation batch applied as one transaction."),
-      }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-    },
-    async ({ projectFile, documentTypeId, path: structuredPath, baseHash, operations }) => handle(() =>
-      structuredService.applyOperations({
-        ...(projectFile === undefined ? {} : { projectFile }),
-        ...(documentTypeId === undefined ? {} : { documentTypeId }),
-        structuredPath,
-        baseHash,
-        operations,
-      })),
-  );
-
   return server;
 }
 
-const graphPathSchema = z.object({
-  projectFile: z.string().optional(),
-  documentTypeId: z.string().optional(),
-  path: z.string().describe("Project-relative declared .vbgraph path using '/' separators."),
+const stableId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
+const normalizedPath = z.string().min(1).max(1024).refine(
+  (value) => !value.includes("\\") && !value.includes(":") && !value.startsWith("/")
+    && value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== ".."),
+  "Expected a normalized project-relative path using '/' separators.",
+);
+const cursorSchema = z.string().min(1).max(256).optional();
+const selectorSchema = z.record(z.string(), z.json()).default({});
+const operationSchema = z.object({ type: stableId }).loose();
+const toolOutputSchema = z.discriminatedUnion("status", [
+  z.object({
+    contractVersion: z.literal(CONTRACT_VERSION),
+    status: z.enum(["ok", "applied", "unchanged", "invalid", "conflict"]),
+    data: z.record(z.string(), z.unknown()),
+  }).strict(),
+  z.object({
+    contractVersion: z.literal(CONTRACT_VERSION),
+    status: z.literal("error"),
+    error: z.object({
+      code: z.string(),
+      message: z.string(),
+      details: z.unknown().optional(),
+    }).strict(),
+  }).strict(),
+]);
+
+const projectInputSchema = z.object({
+  action: z.enum(["discover", "read", "listDocuments"]),
+  projectFile: normalizedPath.optional(),
+  editor: stableId.optional(),
+  documentTypeId: stableId.optional(),
+  query: z.string().max(512).default(""),
+  cursor: cursorSchema,
+  limit: z.number().int().min(1).max(200).default(50),
+}).strict().superRefine((value, context) => {
+  if (value.action !== "discover" && value.projectFile === undefined) {
+    context.addIssue({ code: "custom", path: ["projectFile"], message: `${value.action} requires projectFile.` });
+  }
 });
 
-const tablePathSchema = z.object({
-  projectFile: z.string().optional(),
-  documentTypeId: z.string().optional(),
-  path: z.string().describe("Project-relative declared CSV/XLSX Table path using '/' separators."),
+const catalogInputSchema = z.object({
+  action: z.enum(["read", "search"]),
+  projectFile: normalizedPath,
+  documentTypeId: stableId,
+  editor: stableId,
+  kind: stableId.optional(),
+  query: z.string().max(512).default(""),
+  cursor: cursorSchema,
+  limit: z.number().int().min(1).max(200).default(50),
+  selector: selectorSchema,
+}).strict().superRefine((value, context) => {
+  if (value.action === "search" && value.kind === undefined) {
+    context.addIssue({ code: "custom", path: ["kind"], message: "Catalog search requires a searchable kind." });
+  }
 });
 
-const structuredPathSchema = z.object({
-  projectFile: z.string().optional(),
-  documentTypeId: z.string().optional(),
-  path: z.string().describe("Project-relative declared Structured Config path using '/' separators."),
+const documentInputSchema = z.object({
+  action: z.enum(["read", "search", "validate"]),
+  projectFile: normalizedPath,
+  documentTypeId: stableId,
+  editor: stableId,
+  path: normalizedPath,
+  query: z.string().max(512).default(""),
+  cursor: cursorSchema,
+  limit: z.number().int().min(1).max(1000).default(100),
+  selector: selectorSchema,
+}).strict();
+
+const applyOperationsInputSchema = z.object({
+  projectFile: normalizedPath,
+  documentTypeId: stableId,
+  editor: stableId,
+  path: normalizedPath,
+  baseHash: z.string().regex(/^[a-f0-9]{64}$/),
+  operations: z.array(operationSchema).min(1),
+}).strict();
+
+const referenceInputSchema = z.object({
+  projectFile: normalizedPath,
+  action: z.enum(["search", "resolve"]),
+  kind: stableId,
+  target: z.record(z.string(), z.json()).default({}),
+  allowMissing: z.boolean().default(false),
+  query: z.string().max(512).optional(),
+  value: z.union([z.string(), z.number().finite()]).optional(),
+  limit: z.number().int().min(1).max(200).default(50),
+}).strict().superRefine((value, context) => {
+  if (value.action === "resolve" && value.value === undefined) {
+    context.addIssue({ code: "custom", path: ["value"], message: "Resolve requires value." });
+  }
+});
+
+const refactorInputSchema = z.object({
+  projectFile: normalizedPath,
+  action: z.enum(["preview", "apply"]),
+  kind: z.enum(["document", "entity.component", "graph.element", "table.row"]),
+  target: z.record(z.string(), z.json()),
+  oldValue: z.union([z.string(), z.number().finite()]),
+  newValue: z.union([z.string(), z.number().finite()]),
+  previewHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  baseHashes: z.record(z.string(), z.string().regex(/^[a-f0-9]{64}$/)).optional(),
+}).strict().superRefine((value, context) => {
+  if (typeof value.oldValue !== typeof value.newValue) {
+    context.addIssue({ code: "custom", path: ["newValue"], message: "Reference value type must not change." });
+  }
+  if (value.action === "apply" && value.previewHash === undefined) {
+    context.addIssue({ code: "custom", path: ["previewHash"], message: "Apply requires previewHash." });
+  }
+  if (value.action === "apply" && value.baseHashes === undefined) {
+    context.addIssue({ code: "custom", path: ["baseHashes"], message: "Apply requires every source baseHash." });
+  }
 });
 
 async function handle(action: () => Promise<Record<string, unknown>>) {
   try {
-    return toolResult(await action());
+    const result = await action();
+    const status = typeof result.status === "string" && ["applied", "unchanged", "invalid", "conflict"].includes(result.status)
+      ? result.status as "applied" | "unchanged" | "invalid" | "conflict"
+      : "ok";
+    const data = status === "ok"
+      ? result
+      : Object.fromEntries(Object.entries(result).filter(([key]) => key !== "status"));
+    return toolResult({ contractVersion: CONTRACT_VERSION, status, data });
   } catch (errorValue) {
     const error = errorValue instanceof VisualBridgeMcpError
-      ? { status: "error", code: errorValue.code, message: errorValue.message, details: errorValue.details }
-      : { status: "error", code: "internal", message: errorValue instanceof Error ? errorValue.message : String(errorValue) };
-    return toolResult(error, true);
+      ? { code: errorValue.code, message: errorValue.message, details: errorValue.details }
+      : { code: "internal", message: errorValue instanceof Error ? errorValue.message : String(errorValue) };
+    return toolResult({ contractVersion: CONTRACT_VERSION, status: "error", error }, true);
   }
 }
 
-function toolResult(value: Record<string, unknown>, isError = false) {
+function toolResult(value: z.infer<typeof toolOutputSchema>, isError = false) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value, undefined, 2) }],
     structuredContent: value,

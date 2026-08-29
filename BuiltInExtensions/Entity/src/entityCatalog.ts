@@ -266,7 +266,7 @@ export function searchEntityComponentTypes(
     .toLocaleLowerCase()
     .split(/\s+/)
     .filter((term) => term.length > 0);
-  const limit = Math.max(1, Math.min(200, options.limit ?? 50));
+  const limit = Math.max(1, Math.floor(options.limit ?? 50));
   return registry.componentTypes
     .filter((componentType) => entityType === undefined || isEntityComponentTypeAllowed(entityType, componentType, registry))
     .filter((componentType) => {

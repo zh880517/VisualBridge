@@ -8,6 +8,8 @@ import {
   buildEntityCatalogRegistry,
   collectEntityReferences,
   createEntityComponentReferenceProvider,
+  entityDocumentAdapter,
+  entityTextDocumentCodec,
   parseEntityCatalog,
   parseEntityDocument,
   renameEntityDocumentId,
@@ -43,6 +45,21 @@ function loadFixture(): Fixture {
   assert.equal(documentResult.success, true, formatDiagnostics(documentResult.diagnostics));
   return { catalogs, registry: registryResult.document, document: documentResult.document };
 }
+
+test("Entity semantic adapter composes the established document semantics", async () => {
+  const fixture = loadFixture();
+  const context = { registry: fixture.registry };
+  assert.deepEqual(
+    entityDocumentAdapter.validate(fixture.document, context),
+    validateEntityDocument(fixture.document, fixture.registry),
+  );
+  const parsed = await entityTextDocumentCodec.parse(serializeEntityDocument(fixture.document), context);
+  assert.equal(parsed.success, true);
+  assert.equal(
+    await entityTextDocumentCodec.render(fixture.document, "", context),
+    serializeEntityDocument(fixture.document),
+  );
+});
 
 function readFixture(...segments: string[]): string {
   return readFileSync(path.join(projectRoot, ...segments), "utf8");

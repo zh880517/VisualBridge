@@ -45,17 +45,17 @@ Document Browser 的 `References` 和 `Referenced By` 项提供通用 Replace �
 提交遵守以下顺序：
 
 1. 拒绝 Project 内任何未保存的 VisualBridge Text Document，并要求关闭该 Project 的全部 Table Custom Editor，避免尚未进入 Workspace Index 的引用变化被遗漏或覆盖宿主内存状态；确认预览后提交前再次检查。
-2. 在 Project 根目录取得单一 refactor lock。
+2. VS Code Host 取得自己的交互式 refactor lock；MCP 取得所有 MCP 写者共享的 Project Transaction lock。两者当前不宣称共享同一个物理锁。
 3. 对所有载体再次比较基线哈希，并在原目录写入、同步临时文件。
 4. 每次替换前再次检查源哈希，将旧文件移动为 rollback 副本，再将临时文件原子改名为目标文件。
-5. 校验全部落盘哈希；任何失败都按逆序恢复已经替换的源文件。
+5. 校验全部落盘哈希；任何失败都按逆序恢复已经替换的源文件。MCP 额外使用 prepared/committed journal，并在下次写入前恢复死亡持锁进程留下的事务。
 6. 成功后清除 Reference 缓存并刷新 Workspace Document Index。
 
 这是单机本地工作区事务；不承诺跨 Remote Workspace 或不遵守文件锁的外部进程具备数据库级隔离。`baseHash` 检查仍保证已检测到的并发修改不会被静默覆盖。
 
 ## 6. MCP 非交互入口
 
-`visualbridge_refactor_reference` 使用与 VS Code 相同的 Core 影响计划、Reference Provider、Document Parser/Registry/Operation/Serializer 和物理 Table Codec。`preview` 不写文件，返回 `previewHash`、影响 occurrence、Project/Catalog 依赖哈希，以及物理源 `baseHash` 和 `nextHash`。`apply` 必须提交同一请求、`previewHash` 和完整 `baseHashes`；服务端重新建立计划，取得 Project 级 refactor lock，阶段化全部来源并在任一失败时逆序回滚。
+`visualbridge_refactor_reference` 使用与 VS Code 相同的 Core 影响计划、Reference Provider、Document Parser/Registry/Operation/Serializer 和物理 Table Codec。`preview` 不写文件，返回 `previewHash`、影响 occurrence、Project/Catalog 依赖哈希，以及物理源 `baseHash` 和 `nextHash`。`apply` 必须提交同一请求、`previewHash` 和完整 `baseHashes`；服务端取得所有 MCP 修改共用的 Project Transaction lock，在锁内重新建立计划并最终复核依赖，阶段化全部来源、记录恢复 journal，并在任一失败时条件逆序回滚。恢复遇到未知外部字节时不会删除它，而是保留 journal/rollback 并返回 Tool Error。
 
 调用者不得把单文件 Graph/Table 写入工具的旧哈希代替项目重构的来源清单。项目重构的并发基线按物理源逐一记录，CSV 分表中的每个成员都必须匹配。
 

@@ -294,6 +294,24 @@ Serializer 固定顶层字段顺序，按字段键确定性排序，并保留 Co
 
 一批 Operation 先在副本上完整执行和校验。任一操作失败或引入新的语义 error 时，整批拒绝且原文档不变。添加 Component 会从 Catalog 字段创建默认属性；复制 Component 使用新的实例 ID 并深复制 JSON 值；项目级 Component 重命名通过 `entity.renameComponent` 修改目标实例，再由统一重构计划更新所有解析到该完整位置的引用。
 
+## MCP V2 映射
+
+Entity 不定义专用顶层 Tool。`visualbridge_catalog` 读取或搜索 Component Group、Entity Type 和 Component Type；Component Type 搜索可通过 `selector.entityTypeId` 应用当前 Entity Type 的 Group 限制。`visualbridge_document` 读取、搜索或校验由 Project Registry 声明的任意扩展名 Entity 文件；搜索结果包含 Entity、Component 和递归字段路径。`visualbridge_apply_operations` 接收有序非空 Entity Operation 数组以及读取返回的精确 `baseHash`。
+
+| `type` | 必填字段 | 可选字段 |
+| --- | --- | --- |
+| `entity.setTitle` | `title` | — |
+| `entity.setProperty` | `propertyId`, `value` | — |
+| `entity.addComponent` | `componentId`, `componentTypeId` | `index` |
+| `entity.renameComponent` | `componentId`, `newComponentId` | — |
+| `entity.removeComponent` | `componentId` | — |
+| `entity.moveComponent` | `componentId`, `index` | — |
+| `entity.setComponentEnabled` | `componentId`, `enabled` | — |
+| `entity.setComponentProperty` | `componentId`, `propertyId`, `value` | — |
+| `entity.duplicateComponent` | `componentId`, `newComponentId` | `index` |
+
+陈旧 Hash 或正在进行的 Project Transaction 返回 `conflict`；Parser、Operation、字段结构或新引入 Reference 错误返回 `invalid`，权威文件不变。成功写入与 Graph、Structured、Table 和项目级重构共用可恢复 Project Transaction。真实 stdio 测试使用 `.herojson` 固定样例覆盖 Catalog 搜索、读取、搜索、校验、原子批次、Component 引用重命名和 stale Hash 冲突；不包含 Unity 测试。完整请求和结果信封见 `VisualBridgeMcp.md`。
+
 ## VS Code 编辑器
 
 当前 Entity Webview 提供：

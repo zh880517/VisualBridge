@@ -41,23 +41,23 @@
 - `npm run test:vscode:cli` 对刚打包的 VSIX 完成隔离安装验证。
 - 临时目录可安全清理；失败时保留足够的结构化日志。
 
-### VB-PU-02 内置 Document 能力对齐与 MCP V2 — `in_progress`
+### VB-PU-02 内置 Document 能力对齐与 MCP V2 — `complete`
 
 范围：
 
 - 补齐 Entity Catalog 查询、文档读取、校验、搜索和 EntityOperation 批量修改。
 - 不继续复制每种 Document Type 的工具组；建立共享 Document Adapter Registry。
-- 将 MCP 收敛为少量稳定的 Project、Catalog、Document、Reference 和 Refactor 工具，使用结构化 action / editor 判别。
+- 将 MCP 收敛为少量稳定的 Project、Catalog、只读 Document、Apply Operations、Reference 和 Refactor 工具，使用结构化 action / editor 判别。
 - Graph、Entity、Structured、Table Adapter 只调用各领域既有 Parser、Catalog Registry、Validator、Operation 和 Serializer。
 - 所有修改继续使用 `baseHash`、锁、原子替换和冲突拒绝。
 
 验收：
 
-- 四种内置 Document 均能通过同一 MCP Document 契约读取、搜索、校验和修改。
+- 四种内置 Document 均通过同一 MCP selector 与 Adapter 契约读取、搜索和校验；修改统一通过独立 Apply Operations 工具。
 - 旧的重复工具在开发阶段直接移除，不保留不合理兼容层。
 - 真实 stdio 测试覆盖四类文档、并发冲突、原子性和确定性结果。
 
-### VB-PU-03 文档生命周期与安全删除 — `pending`
+### VB-PU-03 文档生命周期与安全删除 — `in_progress`
 
 范围：
 

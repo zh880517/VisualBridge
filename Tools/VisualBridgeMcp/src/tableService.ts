@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-import { open, readdir, readFile, rename, stat, unlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   referenceValuesEqual,
@@ -24,6 +24,7 @@ import {
   resolveTableType,
   serializeCsvTable,
   serializeXlsxTable,
+  tableDocumentAdapter,
   validateTableDocument,
   type RegisteredTableTypeDefinition,
   type TableCatalog,
@@ -41,6 +42,13 @@ import {
   type TableDocumentContext,
 } from "./projectWorkspace.js";
 import type { VisualBridgeReferenceService } from "./referenceService.js";
+import type { DocumentCatalogRequest, DocumentRequest } from "./documentAdapterRegistry.js";
+import { pageItems } from "./pagination.js";
+import {
+  ProjectTransactionConflict,
+  ProjectTransactionFailure,
+  withProjectTransaction,
+} from "./projectTransaction.js";
 
 interface TableCatalogContext {
   readonly project: ProjectContext;
@@ -92,87 +100,104 @@ export class TableService {
     this.references = references;
   }
 
-  public async queryCatalog(
-    projectFile: string | undefined,
-    documentTypeId: string | undefined,
-    view: "summary" | "tableTypes",
-  ): Promise<Record<string, unknown>> {
-    const resolved = await this.workspace.resolveTableDocumentType(projectFile, documentTypeId);
+  public async queryCatalog(request: DocumentCatalogRequest): Promise<Record<string, unknown>> {
+    const resolved = await this.workspace.resolveDocumentType("table", request.projectFile, request.documentTypeId);
     const catalog = await this.loadCatalog(resolved.project, resolved.documentType.id, resolved.documentType.catalogs);
     const base = {
+      projectId: resolved.project.definition.projectId,
       projectFile: resolved.project.projectFile,
       documentTypeId: resolved.documentType.id,
+      editor: resolved.documentType.editor,
       catalogPaths: catalog.catalogPaths,
       catalogs: catalog.registry.catalogs,
       diagnostics: catalog.diagnostics,
     };
-    return view === "tableTypes"
-      ? { ...base, tableTypes: catalog.registry.tableTypes }
-      : { ...base, counts: { tableTypes: catalog.registry.tableTypes.length } };
+    const kind = request.kind ?? "summary";
+    const definitions = tableCatalogDefinitions(catalog.registry.tableTypes, kind);
+    if (request.action === "read") {
+      return kind === "summary"
+        ? { ...base, counts: tableCatalogCounts(catalog.registry.tableTypes) }
+        : { ...base, kind, definitions };
+    }
+    if (kind === "summary") {
+      throw new VisualBridgeMcpError("catalog.kindUnsupported", "Table Catalog summary is not searchable.");
+    }
+    const query = request.query.trim().toLocaleLowerCase();
+    const filtered = definitions
+      .filter((definition) => query.length === 0 || JSON.stringify(definition).toLocaleLowerCase().includes(query))
+      .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
+    const page = pageItems(filtered, request.cursor, request.limit, catalogCursorScope(request, kind));
+    return { ...base, kind, query: request.query, results: page.items, nextCursor: page.nextCursor };
   }
 
-  public async readTable(options: {
-    readonly projectFile?: string;
-    readonly documentTypeId?: string;
-    readonly tablePath: string;
-    readonly sheetId?: string;
-    readonly offset: number;
-    readonly limit: number;
-  }): Promise<Record<string, unknown>> {
-    const loaded = await this.loadTableForUse(options.tablePath, options.projectFile, options.documentTypeId);
+  public async executeDocument(request: DocumentRequest): Promise<Record<string, unknown>> {
+    if (request.action === "apply") {
+      if (request.baseHash === undefined || request.operations === undefined) {
+        throw new VisualBridgeMcpError("document.invalidApply", "Apply requires baseHash and operations.");
+      }
+      return this.applyOperations({
+        ...(request.projectFile === undefined ? {} : { projectFile: request.projectFile }),
+        ...(request.documentTypeId === undefined ? {} : { documentTypeId: request.documentTypeId }),
+        tablePath: request.path,
+        baseHash: request.baseHash,
+        operations: request.operations,
+      });
+    }
+    if (request.action === "validate") {
+      return this.validateTable(request.path, request.projectFile, request.documentTypeId);
+    }
+    let loaded: LoadedTable;
+    try {
+      loaded = await this.loadTable(request.path, request.projectFile, request.documentTypeId);
+    } catch (errorValue) {
+      if (!(errorValue instanceof TableLoadError)) throw errorValue;
+      const invalid = invalidTableLoadResult(errorValue);
+      if (request.action !== "search") return invalid;
+      const page = pageItems([], request.cursor, request.limit, documentCursorScope(request));
+      return { ...invalid, query: request.query, results: page.items };
+    }
     const referenceDiagnostics = await this.referenceDiagnostics(loaded);
-    const sheet = options.sheetId === undefined
-      ? undefined
-      : this.requirePhysicalSheet(loaded, options.sheetId);
-    const rows = sheet === undefined
-      ? undefined
-      : sheet.rows.slice(options.offset, options.offset + options.limit).map(semanticRow);
-    return {
-      ...tableIdentity(loaded),
-      tableType: {
-        id: loaded.catalog.tableType.id,
-        title: loaded.catalog.tableType.title,
-        catalogId: loaded.catalog.tableType.catalogId,
-      },
-      sheets: loaded.document.sheets.map((candidate) => ({
-        id: candidate.id,
-        definitionId: candidate.definitionId,
-        title: candidate.title,
-        name: candidate.name,
-        rowCount: candidate.rows.length,
-      })),
-      ...(sheet === undefined ? {} : {
-        page: {
-          sheetId: sheet.id,
-          offset: options.offset,
-          limit: options.limit,
-          total: sheet.rows.length,
-          rows,
+    const diagnostics = [...loaded.diagnostics, ...referenceDiagnostics];
+    if (request.action === "read") {
+      const sheetId = optionalString(request.selector.sheetId, "selector.sheetId");
+      const sheet = sheetId === undefined ? undefined : this.requirePhysicalSheet(loaded, sheetId);
+      const page = sheet === undefined
+        ? undefined
+        : pageItems(sheet.rows.map(semanticRow), request.cursor, request.limit, documentCursorScope(request));
+      return {
+        ...tableIdentity(loaded),
+        valid: !diagnostics.some((diagnostic) => diagnostic.severity === "error"),
+        tableType: {
+          id: loaded.catalog.tableType.id,
+          title: loaded.catalog.tableType.title,
+          catalogId: loaded.catalog.tableType.catalogId,
         },
-      }),
-      diagnostics: [...loaded.diagnostics, ...referenceDiagnostics],
-    };
-  }
-
-  public async searchRows(options: {
-    readonly projectFile?: string;
-    readonly documentTypeId?: string;
-    readonly tablePath: string;
-    readonly query: string;
-    readonly sheetDefinitionId?: string;
-    readonly effectiveOnly: boolean;
-    readonly limit: number;
-  }): Promise<Record<string, unknown>> {
-    const loaded = await this.loadTableForUse(options.tablePath, options.projectFile, options.documentTypeId);
-    const referenceDiagnostics = await this.referenceDiagnostics(loaded);
-    const definitions = options.sheetDefinitionId === undefined
+        sheets: loaded.document.sheets.map((candidate) => ({
+          id: candidate.id,
+          definitionId: candidate.definitionId,
+          title: candidate.title,
+          name: candidate.name,
+          rowCount: candidate.rows.length,
+        })),
+        ...(sheet === undefined || page === undefined ? {} : {
+          page: {
+            sheetId: sheet.id,
+            rows: page.items,
+            nextCursor: page.nextCursor,
+          },
+        }),
+        diagnostics,
+      };
+    }
+    const sheetDefinitionId = optionalString(request.selector.sheetDefinitionId, "selector.sheetDefinitionId");
+    const effectiveOnly = optionalBoolean(request.selector.effectiveOnly, "selector.effectiveOnly") ?? true;
+    const definitions = sheetDefinitionId === undefined
       ? loaded.catalog.tableType.sheets
-      : [this.requireSheetDefinition(loaded, options.sheetDefinitionId)];
-    const terms = options.query.toLocaleLowerCase().split(/\s+/).filter((term) => term.length > 0);
+      : [this.requireSheetDefinition(loaded, sheetDefinitionId)];
+    const terms = request.query.toLocaleLowerCase().split(/\s+/).filter((term) => term.length > 0);
     const results: Record<string, unknown>[] = [];
-    let matchedCount = 0;
     for (const definition of definitions) {
-      const entries = options.effectiveOnly
+      const entries = effectiveOnly
         ? resolveEffectiveTableRows(loaded.document, loaded.catalog.tableType, definition.id).rows
         : loaded.document.sheets
             .filter((sheet) => sheet.definitionId === definition.id)
@@ -180,12 +205,9 @@ export class TableService {
       for (const entry of entries) {
         const displayName = formatTableRowDisplayName(entry.row.cells, definition);
         const searchText = `${displayName}\n${stableJson(entry.row.cells)}`.toLocaleLowerCase();
-        if (!terms.every((term) => searchText.includes(term))) {
-          continue;
-        }
-        matchedCount += 1;
-        if (results.length < options.limit) {
+        if (terms.every((term) => searchText.includes(term))) {
           results.push({
+            kind: "row",
             sheetDefinitionId: definition.id,
             sheetId: entry.sheetId,
             sheetName: entry.sheetName,
@@ -196,15 +218,16 @@ export class TableService {
         }
       }
     }
+    const page = pageItems(results, request.cursor, request.limit, documentCursorScope(request));
     return {
       ...tableIdentity(loaded),
-      query: options.query,
-      sheetDefinitionId: options.sheetDefinitionId,
-      effectiveOnly: options.effectiveOnly,
-      matchedCount,
-      truncated: matchedCount > results.length,
-      results,
-      diagnostics: [...loaded.diagnostics, ...referenceDiagnostics],
+      valid: !diagnostics.some((diagnostic) => diagnostic.severity === "error"),
+      query: request.query,
+      sheetDefinitionId,
+      effectiveOnly,
+      results: page.items,
+      nextCursor: page.nextCursor,
+      diagnostics,
     };
   }
 
@@ -227,8 +250,10 @@ export class TableService {
         throw errorValue;
       }
       return {
+        projectId: errorValue.context.project.definition.projectId,
         projectFile: errorValue.context.project.projectFile,
         documentTypeId: errorValue.context.documentType.id,
+        editor: errorValue.context.documentType.editor,
         path: errorValue.context.tablePath,
         baseHash: errorValue.baseHash,
         sources: errorValue.sources.map(sourceIdentity),
@@ -245,132 +270,99 @@ export class TableService {
     readonly baseHash: string;
     readonly operations: unknown;
   }): Promise<Record<string, unknown>> {
-    const preliminary = await this.loadTableForUse(options.tablePath, options.projectFile, options.documentTypeId);
-    const lockPath = tableLockPath(preliminary);
-    let lockHandle;
+    const project = await this.workspace.resolveProject(options.projectFile);
+    let latest: LoadedTable | undefined;
     try {
-      lockHandle = await open(lockPath, "wx");
-      await lockHandle.writeFile(`${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, "utf8");
-      await lockHandle.sync();
+      return await withProjectTransaction(project.projectRoot, async (transaction) => {
+        let loaded: LoadedTable;
+        try {
+          loaded = await this.loadTable(options.tablePath, options.projectFile, options.documentTypeId);
+        } catch (errorValue) {
+          if (errorValue instanceof TableLoadError) return invalidTableLoadResult(errorValue, options.baseHash);
+          throw errorValue;
+        }
+        latest = loaded;
+        if (loaded.baseHash !== options.baseHash) {
+          return conflictResult(loaded, options.baseHash, "baseHashMismatch");
+        }
+        const semanticContext = { tableType: loaded.catalog.tableType };
+        const operationResult = tableDocumentAdapter.applyOperations(
+          loaded.document,
+          options.operations,
+          semanticContext,
+        );
+        if (!operationResult.success
+          || operationResult.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+          return invalidResult(loaded, operationResult.diagnostics);
+        }
+        const referenceResult = this.references === undefined
+          ? { diagnostics: [], introducedErrors: [] }
+          : await this.references.validateChange(
+            loaded.context.project.projectFile,
+            tableDocumentAdapter.collectReferences(loaded.document, semanticContext),
+            tableDocumentAdapter.collectReferences(operationResult.document, semanticContext),
+          );
+        if (referenceResult.introducedErrors.length > 0) {
+          return invalidResult(loaded, referenceResult.introducedErrors);
+        }
+        const operationDiagnostics = [...operationResult.diagnostics, ...referenceResult.diagnostics];
+        const rendered = await this.renderSources(loaded, operationResult.document);
+        const changed = rendered.filter((entry) => !entry.bytes.equals(entry.source.bytes));
+        if (changed.length === 0) {
+          return {
+            status: "unchanged",
+            ...tableIdentity(loaded),
+            hash: loaded.baseHash,
+            diagnostics: operationDiagnostics,
+          };
+        }
+        const committed = await transaction.commit(changed.map((entry) => ({
+          path: entry.source.path,
+          absolutePath: entry.source.absolutePath,
+          before: entry.source.bytes,
+          after: entry.bytes,
+        })));
+        const changedByPath = new Map(changed.map((entry) => [entry.source.path, entry]));
+        const nextSources = loaded.sources.map((source) => {
+          const replacement = changedByPath.get(source.path);
+          return replacement === undefined ? source : { ...source, bytes: replacement.bytes, hash: replacement.hash };
+        });
+        const nextHash = hashSourceManifest(nextSources);
+        return {
+          status: "applied",
+          ...tableIdentity(loaded),
+          baseHash: loaded.baseHash,
+          hash: nextHash,
+          sources: nextSources.map(sourceIdentity),
+          diagnostics: operationDiagnostics,
+          ...(committed.maintenance === undefined ? {} : { maintenance: committed.maintenance }),
+        };
+      });
     } catch (errorValue) {
-      if (isNodeError(errorValue, "EEXIST")) {
-        return conflictResult(preliminary, options.baseHash, "writeInProgress");
+      if (errorValue instanceof ProjectTransactionConflict) {
+        let actual = latest;
+        try {
+          actual = await this.loadTable(options.tablePath, options.projectFile, options.documentTypeId);
+        } catch {
+          // The conflict still reports the last complete semantic snapshot when the current carrier is invalid.
+        }
+        return actual === undefined
+          ? {
+              status: "conflict",
+              projectId: project.definition.projectId,
+              projectFile: project.projectFile,
+              documentTypeId: options.documentTypeId,
+              editor: "table",
+              path: options.tablePath,
+              expectedBaseHash: options.baseHash,
+              reason: errorValue.reason,
+            }
+          : conflictResult(actual, options.baseHash, errorValue.reason);
       }
-      if (lockHandle !== undefined) {
-        await lockHandle.close().catch(() => undefined);
-        await unlink(lockPath).catch(() => undefined);
+      if (errorValue instanceof ProjectTransactionFailure) {
+        throw new VisualBridgeMcpError(errorValue.code, errorValue.message, errorValue.details);
       }
       throw errorValue;
-    }
-
-    const temporaryPaths = new Set<string>();
-    try {
-      const loaded = await this.loadTableForUse(options.tablePath, options.projectFile, options.documentTypeId);
-      if (loaded.baseHash !== options.baseHash) {
-        return conflictResult(loaded, options.baseHash, "baseHashMismatch");
-      }
-      const operationResult = applyTableOperations(
-        loaded.document,
-        options.operations,
-        loaded.catalog.tableType,
-      );
-      if (!operationResult.success
-        || operationResult.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
-        return invalidResult(loaded, operationResult.diagnostics);
-      }
-      const referenceResult = this.references === undefined
-        ? { diagnostics: [], introducedErrors: [] }
-        : await this.references.validateChange(
-            loaded.context.project.projectFile,
-            collectTableReferences(loaded.document, loaded.catalog.tableType),
-            collectTableReferences(operationResult.document, loaded.catalog.tableType),
-          );
-      if (referenceResult.introducedErrors.length > 0) {
-        return invalidResult(loaded, referenceResult.introducedErrors);
-      }
-      const operationDiagnostics = [...operationResult.diagnostics, ...referenceResult.diagnostics];
-
-      const rendered = await this.renderSources(loaded, operationResult.document);
-      const changed = rendered.filter((entry) => !entry.bytes.equals(entry.source.bytes));
-      if (changed.length === 0) {
-        return {
-          status: "unchanged",
-          ...tableIdentity(loaded),
-          hash: loaded.baseHash,
-          diagnostics: operationDiagnostics,
-        };
-      }
-
-      const staged = new Map<string, string>();
-      for (const entry of changed) {
-        const temporaryPath = await stageBytes(entry.source.absolutePath, entry.bytes);
-        temporaryPaths.add(temporaryPath);
-        staged.set(entry.source.absolutePath, temporaryPath);
-      }
-
-      const beforeReplace = await this.loadTableForUse(options.tablePath, options.projectFile, options.documentTypeId);
-      if (beforeReplace.baseHash !== loaded.baseHash) {
-        return conflictResult(beforeReplace, options.baseHash, "changedBeforeReplace");
-      }
-
-      const replaced: TableSource[] = [];
-      try {
-        for (const entry of changed) {
-          const temporaryPath = staged.get(entry.source.absolutePath)!;
-          await rename(temporaryPath, entry.source.absolutePath);
-          temporaryPaths.delete(temporaryPath);
-          replaced.push(entry.source);
-        }
-      } catch (errorValue) {
-        const rollbackFailures: string[] = [];
-        for (const source of replaced.reverse()) {
-          try {
-            const rollbackPath = await stageBytes(source.absolutePath, source.bytes);
-            temporaryPaths.add(rollbackPath);
-            await rename(rollbackPath, source.absolutePath);
-            temporaryPaths.delete(rollbackPath);
-          } catch (rollbackError) {
-            rollbackFailures.push(`${source.path}: ${formatError(rollbackError)}`);
-          }
-        }
-        throw new VisualBridgeMcpError(
-          rollbackFailures.length === 0 ? "table.atomicWriteFailed" : "table.atomicRollbackFailed",
-          rollbackFailures.length === 0
-            ? `Table '${loaded.context.tablePath}' could not be atomically replaced; prior sources were restored.`
-            : `Table '${loaded.context.tablePath}' failed during replacement and rollback.`,
-          { writeError: formatError(errorValue), rollbackFailures },
-        );
-      }
-
-      const persisted = await this.loadTableForUse(options.tablePath, options.projectFile, options.documentTypeId);
-      const expectedHashes = new Map(rendered.map((entry) => [entry.source.path, entry.hash]));
-      const persistedHashes = new Map(persisted.sources.map((source) => [source.path, source.hash]));
-      const mismatchedPaths = [...new Set([
-        ...[...expectedHashes].flatMap(([sourcePath, sourceHash]) =>
-          persistedHashes.get(sourcePath) === sourceHash ? [] : [sourcePath]),
-        ...[...persistedHashes].flatMap(([sourcePath, sourceHash]) =>
-          expectedHashes.get(sourcePath) === sourceHash ? [] : [sourcePath]),
-      ])];
-      if (mismatchedPaths.length > 0) {
-        throw new VisualBridgeMcpError(
-          "table.atomicWriteVerificationFailed",
-          `Table '${loaded.context.tablePath}' did not match the serialized transaction after replacement.`,
-          mismatchedPaths,
-        );
-      }
-      return {
-        status: "applied",
-        ...tableIdentity(persisted),
-        previousHash: loaded.baseHash,
-        hash: persisted.baseHash,
-        diagnostics: operationDiagnostics,
-      };
-    } finally {
-      await Promise.all([...temporaryPaths].map((temporaryPath) => unlink(temporaryPath).catch(() => undefined)));
-      if (lockHandle !== undefined) {
-        await lockHandle.close().catch(() => undefined);
-        await unlink(lockPath).catch(() => undefined);
-      }
     }
   }
 
@@ -657,7 +649,7 @@ export class TableService {
         candidates.push(candidatePath);
       } catch (errorValue) {
         if (!(errorValue instanceof VisualBridgeMcpError)
-          || !["table.notDeclared", "path.notFound"].includes(errorValue.code)) {
+          || !["document.notDeclared", "path.notFound"].includes(errorValue.code)) {
           throw errorValue;
         }
       }
@@ -770,8 +762,10 @@ class TableLoadError extends Error {
 
 function tableIdentity(loaded: LoadedTable) {
   return {
+    projectId: loaded.context.project.definition.projectId,
     projectFile: loaded.context.project.projectFile,
     documentTypeId: loaded.context.documentType.id,
+    editor: loaded.context.documentType.editor,
     path: loaded.context.tablePath,
     format: loaded.document.format,
     baseHash: loaded.baseHash,
@@ -779,8 +773,34 @@ function tableIdentity(loaded: LoadedTable) {
   };
 }
 
+function catalogCursorScope(request: DocumentCatalogRequest, kind: string): unknown {
+  return {
+    tool: "visualbridge_catalog",
+    action: request.action,
+    projectFile: request.projectFile,
+    documentTypeId: request.documentTypeId,
+    editor: "table",
+    kind,
+    query: request.query,
+    selector: request.selector,
+  };
+}
+
+function documentCursorScope(request: DocumentRequest): unknown {
+  return {
+    tool: "visualbridge_document",
+    action: request.action,
+    projectFile: request.projectFile,
+    documentTypeId: request.documentTypeId,
+    editor: "table",
+    path: request.path,
+    query: request.query,
+    selector: request.selector,
+  };
+}
+
 function sourceIdentity(source: TableSource) {
-  return { path: source.path, baseHash: source.hash, sheetIds: source.sheetIds };
+  return { path: source.path, hash: source.hash, sheetIds: source.sheetIds };
 }
 
 function assertOccurrenceValues(
@@ -814,14 +834,74 @@ function semanticRow(row: TableRow) {
   };
 }
 
+function tableCatalogCounts(tableTypes: readonly RegisteredTableTypeDefinition[]): Record<string, number> {
+  return {
+    tableTypes: tableTypes.length,
+    sheets: tableTypes.reduce((count, tableType) => count + tableType.sheets.length, 0),
+    columns: tableTypes.reduce(
+      (count, tableType) => count + tableType.sheets.reduce((sheetCount, sheet) => sheetCount + sheet.columns.length, 0),
+      0,
+    ),
+  };
+}
+
+function tableCatalogDefinitions(
+  tableTypes: readonly RegisteredTableTypeDefinition[],
+  kind: string,
+): readonly Record<string, unknown>[] {
+  switch (kind) {
+    case "summary":
+      return [];
+    case "tableTypes":
+      return tableTypes.map((tableType) => ({ ...tableType }));
+    case "sheets":
+      return tableTypes.flatMap((tableType) => tableType.sheets.map((sheet) => ({
+        tableTypeId: tableType.id,
+        catalogId: tableType.catalogId,
+        ...sheet,
+      })));
+    case "columns":
+      return tableTypes.flatMap((tableType) => tableType.sheets.flatMap((sheet) => sheet.columns.map((column) => ({
+        tableTypeId: tableType.id,
+        sheetId: sheet.id,
+        catalogId: tableType.catalogId,
+        ...column,
+      }))));
+    default:
+      throw new VisualBridgeMcpError("catalog.kindUnsupported", `Table Catalog kind '${kind}' is not supported.`);
+  }
+}
+
+function optionalString(value: unknown, path: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    throw new VisualBridgeMcpError("request.invalidSelector", `${path} must be a string.`);
+  }
+  return value;
+}
+
+function optionalBoolean(value: unknown, path: string): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new VisualBridgeMcpError("request.invalidSelector", `${path} must be a boolean.`);
+  }
+  return value;
+}
+
 function conflictResult(loaded: LoadedTable, requestedHash: string, reason: string) {
   return {
     status: "conflict",
+    projectId: loaded.context.project.definition.projectId,
     projectFile: loaded.context.project.projectFile,
     documentTypeId: loaded.context.documentType.id,
+    editor: loaded.context.documentType.editor,
     path: loaded.context.tablePath,
-    baseHash: requestedHash,
-    hash: loaded.baseHash,
+    expectedBaseHash: requestedHash,
+    actualHash: loaded.baseHash,
     sources: loaded.sources.map(sourceIdentity),
     reason,
   };
@@ -836,39 +916,33 @@ function invalidResult(loaded: LoadedTable, diagnostics: readonly DocumentDiagno
   };
 }
 
-function tableLockPath(loaded: LoadedTable): string {
-  if (loaded.document.format === "xlsx") {
-    return path.join(
-      path.dirname(loaded.context.absoluteTablePath),
-      `.${path.basename(loaded.context.absoluteTablePath)}.visualbridge.lock`,
-    );
+function invalidTableLoadResult(errorValue: TableLoadError, requestedHash?: string): Record<string, unknown> {
+  if (requestedHash !== undefined && requestedHash !== errorValue.baseHash) {
+    return {
+      status: "conflict",
+      projectId: errorValue.context.project.definition.projectId,
+      projectFile: errorValue.context.project.projectFile,
+      documentTypeId: errorValue.context.documentType.id,
+      editor: errorValue.context.documentType.editor,
+      path: errorValue.context.tablePath,
+      expectedBaseHash: requestedHash,
+      actualHash: errorValue.baseHash,
+      sources: errorValue.sources.map(sourceIdentity),
+      reason: "baseHashMismatch",
+    };
   }
-  const lockId = createHash("sha256")
-    .update(`${loaded.context.documentType.id}\0${loaded.catalog.tableType.id}`)
-    .digest("hex")
-    .slice(0, 16);
-  return path.join(path.dirname(loaded.context.absoluteTablePath), `.visualbridge-table-${lockId}.lock`);
-}
-
-async function stageBytes(targetPath: string, bytes: Buffer): Promise<string> {
-  const temporaryPath = path.join(
-    path.dirname(targetPath),
-    `.${path.basename(targetPath)}.visualbridge-${randomUUID()}.tmp`,
-  );
-  try {
-    const targetStat = await stat(targetPath);
-    const handle = await open(temporaryPath, "wx", targetStat.mode);
-    try {
-      await handle.writeFile(bytes);
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    return temporaryPath;
-  } catch (errorValue) {
-    await unlink(temporaryPath).catch(() => undefined);
-    throw errorValue;
-  }
+  return {
+    ...(requestedHash === undefined ? {} : { status: "invalid" }),
+    projectId: errorValue.context.project.definition.projectId,
+    projectFile: errorValue.context.project.projectFile,
+    documentTypeId: errorValue.context.documentType.id,
+    editor: errorValue.context.documentType.editor,
+    path: errorValue.context.tablePath,
+    baseHash: errorValue.baseHash,
+    sources: errorValue.sources.map(sourceIdentity),
+    valid: false,
+    diagnostics: errorValue.diagnostics,
+  };
 }
 
 function hashSourceManifest(sources: readonly TableSource[]): string {
@@ -927,10 +1001,6 @@ function stableJson(value: unknown): string {
       .join(",")}}`;
   }
   return JSON.stringify(value);
-}
-
-function isNodeError(errorValue: unknown, code: string): errorValue is NodeJS.ErrnoException {
-  return errorValue instanceof Error && "code" in errorValue && errorValue.code === code;
 }
 
 function formatError(errorValue: unknown): string {

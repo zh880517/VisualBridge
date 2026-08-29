@@ -2,7 +2,7 @@
 
 ## 1. Scope
 
-Table V1 edits constrained game-data tables carried by UTF-8 CSV-compatible text files or `.xlsx` workbooks. The editor, validation, future MCP adapter and future Unity compiler share one semantic model and one Table Operation API. They do not implement separate CSV and Excel business rules.
+Table V1 edits constrained game-data tables carried by UTF-8 CSV-compatible text files or `.xlsx` workbooks. The editor, validation and current MCP V2 adapter share one semantic model and one Table Operation API; a future Unity compiler must consume the same model. They do not implement separate CSV and Excel business rules.
 
 The current implementation includes Table Catalog V1, CSV and XLSX codecs, atomic Table Operation batches, a record-oriented VS Code table editor, project-defined file associations, partitioned logical tables, fixed semantic fixtures and a stdio MCP adapter for semantic query/search/validation/editing. It does not add Unity code. Unity Catalog export, authoring import, runtime compilation and debugging remain future work.
 
@@ -137,6 +137,18 @@ V1 operations are:
 - `table.moveRow`;
 - `table.duplicateRow`.
 
+MCP 与 VS Code 使用相同结构化字段：
+
+| `type` | 必填字段 | 可选字段 |
+| --- | --- | --- |
+| `table.setCell` | `sheetId`, `rowId`, `columnId`, `value` | — |
+| `table.insertRow` | `sheetId`, `rowId` | `index`, `cells` |
+| `table.removeRow` | `sheetId`, `rowId` | — |
+| `table.moveRow` | `sheetId`, `rowId`, `index` | — |
+| `table.duplicateRow` | `sheetId`, `rowId`, `newRowId` | `index` |
+
+针对既有行的 Operation，其 `sheetId` 和 `rowId` 必须原样取自 `visualbridge_document.read` 返回的语义页，而不是 Catalog 的 `sheetDefinitionId` 或业务 key。CSV 分表常见形态分别为 `skills:Skills_B` 和 `Skills_B:key-202`；调用方不得自行拼接或只传 `skills` / `202`。`table.insertRow.rowId` 和 `table.duplicateRow.newRowId` 则由调用方生成，必须是同一物理 Sheet 内唯一的非空新 ID。`cells` 是以稳定 Column ID 为键的 JSON object，`index` 是从零开始的目标位置。
+
 The Core clones the document, applies the whole batch, validates the result and publishes it only if the batch introduces no new errors. This gives Table Operations atomic semantic behavior and keeps the record editor as a view layer. VS Code undo and redo restore complete semantic snapshots.
 
 ## 8. VS Code editor and persistence
@@ -163,4 +175,6 @@ Macros, `.xls`, pivot tables, charts, external links, formula authoring and arbi
 
 No Unity Table Exporter, importer, runtime, `ScriptableObject` layer or Debug feature is implemented in this phase. Future Unity integration must export Table Catalog JSON from ordinary game structures and consume the same effective logical rows and encodings documented here.
 
-The stdio MCP adapter exposes Table Catalog query, document/sheet reading, semantic row search, shared reference search/resolve, validation and TableOperation batch tools. It returns typed cells rather than raw CSV rows or workbook objects. Partitioned CSV families use one combined `baseHash` over the sorted member paths and source hashes; XLSX uses the workbook hash. Any changed source, added/removed partition, held logical-table lock or newly introduced reference error rejects the complete modification request. Writes stage all affected outputs before replacement and verify every persisted hash. AI must not bypass this semantic layer by editing workbook bytes or raw CSV cells directly.
+The stdio MCP V2 adapter uses the same unified tools as the other document types: `visualbridge_catalog` reads/searches Table Type, Sheet and Column definitions; `visualbridge_document` reads/searches/validates semantic tables; and `visualbridge_apply_operations` applies a non-empty TableOperation batch with the `baseHash` returned by the read. Table read uses `selector.sheetId`; search uses `selector.sheetDefinitionId` and `selector.effectiveOnly`. It returns typed cells rather than raw CSV rows or workbook objects.
+
+Partitioned CSV families use one combined `baseHash` over sorted member paths and source hashes; XLSX uses the workbook hash. Any changed source, added/removed partition, active Project Transaction or newly introduced reference error rejects the complete modification request. All Graph, Entity, Structured, Table and Refactor writes share one Project Transaction lock. Changed sources are staged before replacement, recorded in a recoverable journal and verified after persistence. A failed prepared transaction restores backups in reverse order; if recovery encounters unknown external bytes it preserves them and returns a Tool Error instead of overwriting them. The public outcomes are `applied`, `unchanged`, `invalid` and `conflict`; I/O, verification or recovery uncertainty is an error. AI must not bypass this semantic layer by editing workbook bytes or raw CSV cells directly.

@@ -908,7 +908,7 @@ export function searchGraphNodeTypes(
   }
 
   const queryTerms = options.query?.trim().toLowerCase().split(/\s+/).filter(Boolean) ?? [];
-  const limit = Math.max(1, Math.min(options.limit ?? 50, 200));
+  const limit = Math.max(1, Math.floor(options.limit ?? 50));
   return catalog.nodeTypes
     .filter((nodeType) => options.includeSubgraphNodeTypes !== false || nodeType.subgraph === undefined)
     .filter((nodeType) => graphType === undefined || isNodeTypeAllowed(graphType, nodeType))

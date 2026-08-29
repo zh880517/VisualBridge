@@ -1,15 +1,10 @@
 import { readFile } from "node:fs/promises";
-import type { DocumentDiagnostic } from "@visualbridge/core";
+import { buildCatalogBundle, type DocumentDiagnostic } from "@visualbridge/core";
 import {
-  applyGraphOperations,
-  collectGraphReferences,
-  buildGraphCatalogRegistry,
-  parseGraphCatalog,
-  parseGraphDocument,
+  graphCatalogAdapter,
+  graphDocumentAdapter,
+  graphTextDocumentCodec,
   searchGraphNodeTypes,
-  serializeGraphDocument,
-  validateGraphDocument,
-  type GraphCatalog,
   type GraphCatalogRegistry,
   type GraphDocument,
 } from "@visualbridge/graph";
@@ -22,6 +17,8 @@ import {
 } from "./projectWorkspace.js";
 import type { VisualBridgeReferenceService } from "./referenceService.js";
 import { applyAtomicTextFileEdit, hashBytes } from "./atomicTextFile.js";
+import type { DocumentCatalogRequest, DocumentRequest } from "./documentAdapterRegistry.js";
+import { pageItems } from "./pagination.js";
 
 interface CatalogContext {
   readonly project: ProjectContext;
@@ -31,159 +28,126 @@ interface CatalogContext {
   readonly diagnostics: readonly DocumentDiagnostic[];
 }
 
-interface LoadedGraph {
-  readonly context: GraphDocumentContext;
-  readonly bytes: Buffer;
-  readonly baseHash: string;
-  readonly document: GraphDocument;
-  readonly parseDiagnostics: readonly DocumentDiagnostic[];
-  readonly catalog: CatalogContext;
-}
-
 export class GraphService {
   public constructor(
     private readonly workspace: VisualBridgeWorkspace,
     private readonly references: VisualBridgeReferenceService,
   ) {}
 
-  public async queryCatalog(
-    projectFile: string | undefined,
-    documentTypeId: string | undefined,
-    view: "summary" | "dataTypes" | "graphTypes" | "nodeTypes",
-  ): Promise<Record<string, unknown>> {
-    const resolved = await this.workspace.resolveGraphDocumentType(projectFile, documentTypeId);
+  public async queryCatalog(request: DocumentCatalogRequest): Promise<Record<string, unknown>> {
+    const resolved = await this.workspace.resolveDocumentType("graph", request.projectFile, request.documentTypeId);
     const catalog = await this.loadCatalog(resolved.project, resolved.documentType.id, resolved.documentType.catalogs);
     const base = {
+      projectId: resolved.project.definition.projectId,
       projectFile: resolved.project.projectFile,
       documentTypeId: resolved.documentType.id,
+      editor: resolved.documentType.editor,
       catalogPaths: catalog.catalogPaths,
       catalogs: catalog.registry.catalogs,
       diagnostics: catalog.diagnostics,
     };
-    switch (view) {
-      case "dataTypes":
-        return { ...base, dataTypes: catalog.registry.dataTypes };
-      case "graphTypes":
-        return { ...base, graphTypes: catalog.registry.graphTypes };
-      case "nodeTypes":
-        return { ...base, nodeTypes: catalog.registry.nodeTypes };
-      default:
-        return {
-          ...base,
-          counts: {
-            dataTypes: catalog.registry.dataTypes.length,
-            graphTypes: catalog.registry.graphTypes.length,
-            nodeTypes: catalog.registry.nodeTypes.length,
-          },
-        };
+    const kind = request.kind ?? "summary";
+    if (request.action === "read") {
+      switch (kind) {
+        case "summary":
+          return {
+            ...base,
+            counts: {
+              dataTypes: catalog.registry.dataTypes.length,
+              graphTypes: catalog.registry.graphTypes.length,
+              nodeTypes: catalog.registry.nodeTypes.length,
+            },
+          };
+        case "dataTypes":
+          return { ...base, definitions: catalog.registry.dataTypes };
+        case "graphTypes":
+          return { ...base, definitions: catalog.registry.graphTypes };
+        case "nodeTypes":
+          return { ...base, definitions: catalog.registry.nodeTypes };
+        default:
+          throw new VisualBridgeMcpError("catalog.kindUnsupported", `Graph Catalog kind '${kind}' is not supported.`);
+      }
     }
+    const query = request.query.trim().toLocaleLowerCase();
+    let definitions: readonly unknown[];
+    if (kind === "nodeTypes") {
+      const graphTypeId = optionalString(request.selector.graphTypeId, "selector.graphTypeId");
+      const includeSubgraphNodeTypes = optionalBoolean(
+        request.selector.includeSubgraphNodeTypes,
+        "selector.includeSubgraphNodeTypes",
+      ) ?? true;
+      definitions = searchGraphNodeTypes(catalog.registry, {
+        query: request.query,
+        ...(graphTypeId === undefined ? {} : { graphTypeId }),
+        includeSubgraphNodeTypes,
+        limit: Math.max(1, catalog.registry.nodeTypes.length),
+      });
+    } else {
+      const source = kind === "dataTypes"
+        ? catalog.registry.dataTypes
+        : kind === "graphTypes"
+          ? catalog.registry.graphTypes
+          : undefined;
+      if (source === undefined) {
+        throw new VisualBridgeMcpError("catalog.kindUnsupported", `Graph Catalog kind '${kind}' is not searchable.`);
+      }
+      definitions = source
+        .filter((definition) => query.length === 0 || JSON.stringify(definition).toLocaleLowerCase().includes(query))
+        .sort((left, right) => left.id.localeCompare(right.id));
+    }
+    const page = pageItems(definitions, request.cursor, request.limit, catalogCursorScope(request, "graph", kind));
+    return { ...base, kind, query: request.query, results: page.items, nextCursor: page.nextCursor };
   }
 
-  public async readGraph(
-    graphPath: string,
-    projectFile?: string,
-    documentTypeId?: string,
-  ): Promise<Record<string, unknown>> {
-    const loaded = await this.loadGraph(graphPath, projectFile, documentTypeId);
-    const diagnostics = [
-      ...loaded.catalog.diagnostics,
-      ...loaded.parseDiagnostics,
-      ...validateGraphDocument(loaded.document, loaded.catalog.registry),
-      ...await this.references.validate(
-        loaded.context.project.projectFile,
-        collectGraphReferences(loaded.document, loaded.catalog.registry),
-      ),
-    ];
-    return {
-      projectFile: loaded.context.project.projectFile,
-      documentTypeId: loaded.context.documentType.id,
-      path: loaded.context.graphPath,
-      baseHash: loaded.baseHash,
-      document: loaded.document,
-      diagnostics,
-    };
-  }
-
-  public async validateGraph(
-    graphPath: string,
-    projectFile?: string,
-    documentTypeId?: string,
-  ): Promise<Record<string, unknown>> {
-    const context = await this.workspace.resolveGraphDocument(graphPath, projectFile, documentTypeId);
-    const bytes = await readFile(context.absoluteGraphPath);
-    const baseHash = hashBytes(bytes);
-    const catalog = await this.loadCatalog(
-      context.project,
-      context.documentType.id,
-      context.documentType.catalogs,
-    );
-    const parseResult = parseGraphDocument(decodeUtf8(bytes, context.graphPath));
-    if (!parseResult.success) {
-      const diagnostics = [...catalog.diagnostics, ...parseResult.diagnostics];
+  public async executeDocument(request: DocumentRequest): Promise<Record<string, unknown>> {
+    if (request.action === "apply") {
+      if (request.baseHash === undefined || request.operations === undefined) {
+        throw new VisualBridgeMcpError("document.invalidApply", "Apply requires baseHash and operations.");
+      }
+      return this.applyOperations({
+        ...(request.projectFile === undefined ? {} : { projectFile: request.projectFile }),
+        ...(request.documentTypeId === undefined ? {} : { documentTypeId: request.documentTypeId }),
+        graphPath: request.path,
+        baseHash: request.baseHash,
+        operations: request.operations,
+      });
+    }
+    const loaded = await this.loadDocument(request.path, request.projectFile, request.documentTypeId);
+    if (request.action === "validate") {
+      return { ...graphIdentity(loaded), valid: loaded.valid, diagnostics: loaded.diagnostics };
+    }
+    if (request.action === "read") {
       return {
-        projectFile: context.project.projectFile,
-        documentTypeId: context.documentType.id,
-        path: context.graphPath,
-        baseHash,
-        valid: false,
-        diagnostics,
+        ...graphIdentity(loaded),
+        valid: loaded.valid,
+        ...(loaded.document === undefined ? {} : { document: loaded.document }),
+        diagnostics: loaded.diagnostics,
       };
     }
-    const diagnostics = [
-      ...catalog.diagnostics,
-      ...parseResult.diagnostics,
-      ...validateGraphDocument(parseResult.document, catalog.registry),
-      ...await this.references.validate(
-        context.project.projectFile,
-        collectGraphReferences(parseResult.document, catalog.registry),
-      ),
-    ];
+    const query = request.query.trim().toLocaleLowerCase();
+    const kind = optionalString(request.selector.kind, "selector.kind") ?? "all";
+    if (!GRAPH_SEARCH_KINDS.has(kind)) {
+      throw new VisualBridgeMcpError(
+        "document.searchKindUnsupported",
+        `Graph Document search kind '${kind}' is not supported.`,
+      );
+    }
+    const entries = loaded.document === undefined ? [] : graphSearchEntries(loaded.document)
+      .filter((entry) => kind === "all" || entry.kind === kind)
+      .filter((entry) => query.length === 0 || entry.searchText.includes(query));
+    const page = pageItems(
+      entries.map(({ searchText: _searchText, ...entry }) => entry),
+      request.cursor,
+      request.limit,
+      documentCursorScope(request, "graph"),
+    );
     return {
-      projectFile: context.project.projectFile,
-      documentTypeId: context.documentType.id,
-      path: context.graphPath,
-      baseHash,
-      valid: !diagnostics.some((diagnostic) => diagnostic.severity === "error"),
-      diagnostics,
-    };
-  }
-
-  public async searchNodes(options: {
-    readonly projectFile?: string;
-    readonly documentTypeId?: string;
-    readonly query: string;
-    readonly graphTypeId?: string;
-    readonly includeSubgraphNodeTypes: boolean;
-    readonly limit: number;
-  }): Promise<Record<string, unknown>> {
-    const resolved = await this.workspace.resolveGraphDocumentType(options.projectFile, options.documentTypeId);
-    const catalog = await this.loadCatalog(resolved.project, resolved.documentType.id, resolved.documentType.catalogs);
-    const nodeTypes = searchGraphNodeTypes(catalog.registry, {
-      query: options.query,
-      ...(options.graphTypeId === undefined ? {} : { graphTypeId: options.graphTypeId }),
-      includeSubgraphNodeTypes: options.includeSubgraphNodeTypes,
-      limit: options.limit,
-    });
-    return {
-      projectFile: resolved.project.projectFile,
-      documentTypeId: resolved.documentType.id,
-      query: options.query,
-      graphTypeId: options.graphTypeId,
-      results: nodeTypes.map((nodeType) => ({
-        catalogId: nodeType.catalogId,
-        catalogTitle: nodeType.catalogTitle,
-        id: nodeType.id,
-        aliases: nodeType.aliases,
-        title: nodeType.title,
-        displayPath: [nodeType.catalogTitle, ...nodeType.menuPath, nodeType.title],
-        category: nodeType.category,
-        tags: nodeType.tags,
-        traits: nodeType.traits,
-        subgraph: nodeType.subgraph,
-        ports: nodeType.ports,
-        dynamicPortGroups: nodeType.dynamicPortGroups,
-        properties: nodeType.properties,
-      })),
+      ...graphIdentity(loaded),
+      valid: loaded.valid,
+      query: request.query,
+      results: page.items,
+      nextCursor: page.nextCursor,
+      diagnostics: loaded.diagnostics,
     };
   }
 
@@ -194,32 +158,38 @@ export class GraphService {
     readonly baseHash: string;
     readonly operations: unknown;
   }): Promise<Record<string, unknown>> {
-    const context = await this.workspace.resolveGraphDocument(
+    const context = await this.workspace.resolveDeclaredDocument(
       options.graphPath,
+      "graph",
       options.projectFile,
       options.documentTypeId,
     );
     return applyAtomicTextFileEdit({
-      absolutePath: context.absoluteGraphPath,
+      projectRoot: context.project.projectRoot,
+      absolutePath: context.absolutePath,
+      resolveAbsolutePath: () => resolveExistingProjectPath(context.project, context.path),
       expectedBaseHash: options.baseHash,
       metadata: {
+        projectId: context.project.definition.projectId,
         projectFile: context.project.projectFile,
         documentTypeId: context.documentType.id,
-        path: context.graphPath,
+        editor: context.documentType.editor,
+        path: context.path,
       },
       verificationErrorCode: "graph.atomicWriteVerificationFailed",
-      subject: `Graph '${context.graphPath}'`,
+      subject: `Graph '${context.path}'`,
     }, async (bytes) => {
       const catalog = await this.loadCatalog(
         context.project,
         context.documentType.id,
         context.documentType.catalogs,
       );
-      const parseResult = parseGraphDocument(decodeUtf8(bytes, context.graphPath));
+      const semanticContext = { registry: catalog.registry };
+      const parseResult = await graphTextDocumentCodec.parse(decodeUtf8(bytes, context.path), semanticContext);
       if (!parseResult.success) {
         return { valid: false, diagnostics: [...catalog.diagnostics, ...parseResult.diagnostics] };
       }
-      const operationResult = applyGraphOperations(parseResult.document, options.operations, catalog.registry);
+      const operationResult = graphDocumentAdapter.applyOperations(parseResult.document, options.operations, semanticContext);
       if (!operationResult.success) {
         return { valid: false, diagnostics: operationResult.diagnostics };
       }
@@ -228,8 +198,8 @@ export class GraphService {
       }
       const referenceResult = await this.references.validateChange(
         context.project.projectFile,
-        collectGraphReferences(parseResult.document, catalog.registry),
-        collectGraphReferences(operationResult.document, catalog.registry),
+        graphDocumentAdapter.collectReferences(parseResult.document, semanticContext),
+        graphDocumentAdapter.collectReferences(operationResult.document, semanticContext),
       );
       if (referenceResult.introducedErrors.length > 0) {
         return { valid: false, diagnostics: referenceResult.introducedErrors };
@@ -237,38 +207,48 @@ export class GraphService {
       const operationDiagnostics = [...operationResult.diagnostics, ...referenceResult.diagnostics];
       return {
         valid: true,
-        nextBytes: Buffer.from(serializeGraphDocument(operationResult.document), "utf8"),
+        nextBytes: Buffer.from(await graphTextDocumentCodec.render(operationResult.document, "", semanticContext), "utf8"),
         diagnostics: operationDiagnostics,
       };
     });
   }
 
-  private async loadGraph(
+  private async loadDocument(
     graphPath: string,
     projectFile?: string,
     documentTypeId?: string,
-  ): Promise<LoadedGraph> {
+  ): Promise<{
+    readonly context: GraphDocumentContext;
+    readonly baseHash: string;
+    readonly document?: GraphDocument;
+    readonly diagnostics: readonly DocumentDiagnostic[];
+    readonly valid: boolean;
+  }> {
     const context = await this.workspace.resolveGraphDocument(graphPath, projectFile, documentTypeId);
     const bytes = await readFile(context.absoluteGraphPath);
-    const parseResult = parseGraphDocument(decodeUtf8(bytes, context.graphPath));
-    if (!parseResult.success) {
-      throw new VisualBridgeMcpError(
-        "graph.parseFailed",
-        `Graph '${context.graphPath}' is structurally invalid.`,
-        parseResult.diagnostics,
-      );
+    const baseHash = hashBytes(bytes);
+    const catalog = await this.loadCatalog(context.project, context.documentType.id, context.documentType.catalogs);
+    const semanticContext = { registry: catalog.registry };
+    const parsed = await graphTextDocumentCodec.parse(decodeUtf8(bytes, context.graphPath), semanticContext);
+    if (!parsed.success) {
+      const diagnostics = [...catalog.diagnostics, ...parsed.diagnostics];
+      return { context, baseHash, diagnostics, valid: false };
     }
+    const diagnostics = [
+      ...catalog.diagnostics,
+      ...parsed.diagnostics,
+      ...graphDocumentAdapter.validate(parsed.document, semanticContext),
+      ...await this.references.validate(
+        context.project.projectFile,
+        graphDocumentAdapter.collectReferences(parsed.document, semanticContext),
+      ),
+    ];
     return {
       context,
-      bytes,
-      baseHash: hashBytes(bytes),
-      document: parseResult.document,
-      parseDiagnostics: parseResult.diagnostics,
-      catalog: await this.loadCatalog(
-        context.project,
-        context.documentType.id,
-        context.documentType.catalogs,
-      ),
+      baseHash,
+      document: parsed.document,
+      diagnostics,
+      valid: !diagnostics.some((diagnostic) => diagnostic.severity === "error"),
     };
   }
 
@@ -283,44 +263,54 @@ export class GraphService {
         `Graph Document Type '${documentTypeId}' does not declare any Catalogs.`,
       );
     }
-    const catalogs: GraphCatalog[] = [];
-    const sourceIndexes: number[] = [];
-    const diagnostics: DocumentDiagnostic[] = [];
-    for (const [catalogIndex, catalogPath] of catalogPaths.entries()) {
-      const absoluteCatalogPath = await resolveExistingProjectPath(project, catalogPath);
-      const parseResult = parseGraphCatalog(decodeUtf8(await readFile(absoluteCatalogPath), catalogPath));
-      diagnostics.push(...parseResult.diagnostics.map((diagnostic) => ({
-        ...diagnostic,
-        path: `catalogs[${catalogIndex}].${diagnostic.path}`,
-      })));
-      if (parseResult.success) {
-        catalogs.push(parseResult.document);
-        sourceIndexes.push(catalogIndex);
-      }
-    }
-    const registryResult = buildGraphCatalogRegistry(catalogs);
-    diagnostics.push(...registryResult.diagnostics.map((diagnostic) => ({
-      ...diagnostic,
-      path: diagnostic.path.replace(/^catalogs\[(\d+)\]/, (match, indexText: string) => {
-        const sourceIndex = sourceIndexes[Number(indexText)];
-        return sourceIndex === undefined ? match : `catalogs[${sourceIndex}]`;
-      }),
+    const sources = await Promise.all(catalogPaths.map(async (catalogPath) => ({
+      path: catalogPath,
+      text: decodeUtf8(await readFile(await resolveExistingProjectPath(project, catalogPath)), catalogPath),
     })));
-    if (!registryResult.success || diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+    const bundle = buildCatalogBundle(sources, graphCatalogAdapter);
+    if (bundle.registry === undefined) {
       throw new VisualBridgeMcpError(
         "graph.catalogInvalid",
         `Graph Catalog Registry for Document Type '${documentTypeId}' is invalid.`,
-        diagnostics,
+        bundle.diagnostics,
       );
     }
     return {
       project,
       documentTypeId,
-      catalogPaths,
-      registry: registryResult.document,
-      diagnostics,
+      catalogPaths: bundle.paths,
+      registry: bundle.registry,
+      diagnostics: bundle.diagnostics,
     };
   }
+}
+
+const GRAPH_SEARCH_KINDS = new Set(["all", "graph", "node", "port", "edge", "field"]);
+
+function catalogCursorScope(request: DocumentCatalogRequest, editor: string, kind: string): unknown {
+  return {
+    tool: "visualbridge_catalog",
+    action: request.action,
+    projectFile: request.projectFile,
+    documentTypeId: request.documentTypeId,
+    editor,
+    kind,
+    query: request.query,
+    selector: request.selector,
+  };
+}
+
+function documentCursorScope(request: DocumentRequest, editor: string): unknown {
+  return {
+    tool: "visualbridge_document",
+    action: request.action,
+    projectFile: request.projectFile,
+    documentTypeId: request.documentTypeId,
+    editor,
+    path: request.path,
+    query: request.query,
+    selector: request.selector,
+  };
 }
 
 function decodeUtf8(bytes: Uint8Array, displayPath: string): string {
@@ -332,4 +322,121 @@ function decodeUtf8(bytes: Uint8Array, displayPath: string): string {
       `File '${displayPath}' is not valid UTF-8: ${errorValue instanceof Error ? errorValue.message : String(errorValue)}`,
     );
   }
+}
+
+function graphIdentity(loaded: {
+  readonly context: GraphDocumentContext;
+  readonly baseHash: string;
+}): Record<string, unknown> {
+  return {
+    projectId: loaded.context.project.definition.projectId,
+    projectFile: loaded.context.project.projectFile,
+    documentTypeId: loaded.context.documentType.id,
+    editor: loaded.context.documentType.editor,
+    path: loaded.context.graphPath,
+    baseHash: loaded.baseHash,
+    sources: [{ path: loaded.context.graphPath, hash: loaded.baseHash }],
+  };
+}
+
+function graphSearchEntries(document: GraphDocument): readonly (Record<string, unknown> & {
+  readonly kind: string;
+  readonly searchText: string;
+})[] {
+  const entries: (Record<string, unknown> & { kind: string; searchText: string })[] = [];
+  document.graphs.forEach((graph, graphIndex) => {
+    const graphPath = `graphs[${graphIndex}]`;
+    entries.push({
+      kind: "graph",
+      graphId: graph.id,
+      graphTypeId: graph.graphTypeId,
+      title: graph.title,
+      path: graphPath,
+      searchText: `${graph.id} ${graph.graphTypeId ?? ""} ${graph.title}`.toLocaleLowerCase(),
+    });
+    collectSearchValues(graph.properties, `${graphPath}.properties`, { graphId: graph.id }, entries);
+    graph.interfacePorts.forEach((port, portIndex) => entries.push({
+      kind: "port",
+      graphId: graph.id,
+      portId: port.id,
+      title: port.title,
+      path: `${graphPath}.interfacePorts[${portIndex}]`,
+      searchText: `${port.id} ${port.title} ${port.kind} ${port.direction} ${port.dataTypeId ?? ""}`.toLocaleLowerCase(),
+    }));
+    graph.nodes.forEach((node, nodeIndex) => {
+      const nodePath = `${graphPath}.nodes[${nodeIndex}]`;
+      entries.push({
+        kind: "node",
+        graphId: graph.id,
+        nodeId: node.id,
+        nodeTypeId: node.nodeTypeId,
+        title: node.title,
+        path: nodePath,
+        searchText: `${node.id} ${node.nodeTypeId ?? ""} ${node.title}`.toLocaleLowerCase(),
+      });
+      collectSearchValues(node.properties, `${nodePath}.properties`, { graphId: graph.id, nodeId: node.id }, entries);
+      node.dynamicPorts.forEach((port, portIndex) => entries.push({
+        kind: "port",
+        graphId: graph.id,
+        nodeId: node.id,
+        portId: port.id,
+        title: port.title,
+        path: `${nodePath}.dynamicPorts[${portIndex}]`,
+        searchText: `${port.id} ${port.groupId} ${port.title}`.toLocaleLowerCase(),
+      }));
+    });
+    graph.edges.forEach((edge, edgeIndex) => entries.push({
+      kind: "edge",
+      graphId: graph.id,
+      edgeId: edge.id,
+      edgeKind: edge.kind,
+      path: `${graphPath}.edges[${edgeIndex}]`,
+      searchText: JSON.stringify(edge).toLocaleLowerCase(),
+    }));
+  });
+  return entries;
+}
+
+function collectSearchValues(
+  value: unknown,
+  path: string,
+  location: Readonly<Record<string, unknown>>,
+  entries: (Record<string, unknown> & { kind: string; searchText: string })[],
+): void {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => collectSearchValues(entry, `${path}[${index}]`, location, entries));
+    return;
+  }
+  if (typeof value === "object" && value !== null) {
+    Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).forEach(([key, entry]) =>
+      collectSearchValues(entry, `${path}.${key}`, location, entries));
+    return;
+  }
+  entries.push({
+    kind: "field",
+    ...location,
+    path,
+    value,
+    searchText: `${path} ${String(value)}`.toLocaleLowerCase(),
+  });
+}
+
+function optionalString(value: unknown, path: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    throw new VisualBridgeMcpError("request.invalidSelector", `${path} must be a string.`);
+  }
+  return value;
+}
+
+function optionalBoolean(value: unknown, path: string): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new VisualBridgeMcpError("request.invalidSelector", `${path} must be a boolean.`);
+  }
+  return value;
 }

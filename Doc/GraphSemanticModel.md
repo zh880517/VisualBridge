@@ -82,7 +82,7 @@ A Graph document type declares one or more project-relative `.vbgraphcatalog` fi
 
 Each node type belongs to the Catalog file that declares it. The registry combines all loaded Catalogs and is the authority for Graph Types, node types, ports, Data Types, properties, defaults, aliases, and cross-Catalog references. A Catalog's required `title` is its display name and the root path for its own nodes. A node's optional `menuPath` extends that root and never repeats it; the node `title` is the final path segment. For example, Catalog `通用`, node path `操作 / 整数`, and node title `加法` produce `通用 / 操作 / 整数 / 加法`. Categories, tags, capability traits, source-code provenance, descriptions, and property editor hints remain searchable metadata. Editor hints affect presentation only; the declared value type remains authoritative.
 
-VS Code and future MCP adapters use the same parser, registry, and validators. Catalog files are text contracts and should be committed when editing must work without Unity. Legacy Catalog V1-V3 files remain readable. V1/V2 use `catalogId` as a fallback display title. A legacy Graph Type defaults `supportedCatalogIds` to its declaring Catalog and defaults both connection directions to `multiple`; serialization upgrades it to V4.
+VS Code and the current MCP V2 adapter use the same parser, registry, operations, validators and serializer. Catalog files are text contracts and should be committed when editing must work without Unity. Legacy Catalog V1-V3 files remain readable. V1/V2 use `catalogId` as a fallback display title. A legacy Graph Type defaults `supportedCatalogIds` to its declaring Catalog and defaults both connection directions to `multiple`; serialization upgrades it to V4.
 
 Catalog serialization is deterministic: unordered type collections and identity aliases are sorted, JSON object keys in defaults are normalized, and the output ends with a newline. Port, dynamic-group, and property arrays preserve declaration order because that order controls the editor layout. This lets a future Unity exporter regenerate the same file without noisy diffs while retaining C# field and branch order.
 
@@ -135,6 +135,49 @@ Multi-selection, viewport, MiniMap position, menus, and clipboard contents are e
 `graph.renameElement` atomically renames one instance `graph`, `node`, `interfacePort`, or `dynamicPort` stable ID. Graph renames update `rootGraphId` and every owning `subgraphId`; node renames update matching edge endpoints; interface ports update both child interface endpoints and the parent subgraph-call endpoints; dynamic ports update endpoints on their owning node. The operation rejects collisions and incomplete owner scope, then runs the same complete Graph validation as every other operation. Catalog type IDs and static Catalog port IDs are not instance elements and are not renamed by this operation.
 
 The clipboard V1 payload contains selected atomic nodes and only edges whose two endpoints are in that copied set. Paste assigns fresh stable IDs and remaps its internal endpoints. Singleton nodes required by a Graph Type and embedded subgraphs are excluded until a future payload can preserve ownership and required-instance semantics without ambiguity. Clipboard input is treated as untrusted and rejected unless its format, version, identifiers, JSON values, nodes, and edges are structurally valid.
+
+## MCP V2 mapping
+
+Graph uses the unified MCP tools rather than Graph-specific top-level tools. `visualbridge_catalog` reads/searches Data Type, Graph Type and Node Type definitions; Node Type search accepts `selector.graphTypeId` and `selector.includeSubgraphNodeTypes`. `visualbridge_document` reads/searches/validates one declared Graph; instance search accepts `selector.kind` with `graph`, `node`, `port`, `edge`, `field` or `all`. `visualbridge_apply_operations` accepts an ordered non-empty GraphOperation array and the exact `baseHash` returned by read/validate. A stale hash or active Project Transaction returns `conflict`; parser, operation or newly introduced reference errors return `invalid` without modifying bytes. Persisted writes use the shared recoverable Project Transaction described in `VisualBridgeMcp.md`.
+
+GraphOperation 的结构化字段如下；`node`、`subgraph`、`edge` 和 `port` 必须使用本文对应 Document 结构的完整对象，不能只传显示名：
+
+| `type` | 必填字段 | 可选字段 |
+| --- | --- | --- |
+| `graph.renameElement` | `graphId`, `elementKind`, `elementId`, `newElementId` | dynamic port 时的 `nodeId` |
+| `graph.addNode` | `graphId`, `node` | — |
+| `graph.addSubgraph` | `graphId`, `node`, `subgraph` | — |
+| `graph.removeNode` | `graphId`, `nodeId` | — |
+| `graph.moveNode` | `graphId`, `nodeId`, `position: {x,y}` | — |
+| `graph.updateNode` | `graphId`, `nodeId`, `title`, `properties` | — |
+| `graph.replaceNodeType` | `graphId`, `nodeId`, `nodeTypeId` | — |
+| `graph.addDynamicPort` | `graphId`, `nodeId`, `port` | — |
+| `graph.updateDynamicPort` | `graphId`, `nodeId`, `portId`, `title`, `value` | — |
+| `graph.removeDynamicPort` | `graphId`, `nodeId`, `portId` | — |
+| `graph.reorderDynamicPorts` | `graphId`, `nodeId`, `portIds` | — |
+| `graph.addEdge` | `graphId`, `edge` | — |
+| `graph.removeEdge` | `graphId`, `edgeId` | — |
+| `graph.assignType` | `graphId`, `graphTypeId` | — |
+| `graph.updateGraph` | `graphId`, `title`, `properties` | — |
+| `graph.addInterfacePort` | `graphId`, `port` | — |
+| `graph.updateInterfacePort` | `graphId`, `portId`, `title` | — |
+| `graph.removeInterfacePort` | `graphId`, `portId` | — |
+| `graph.reorderInterfacePorts` | `graphId`, `portIds` | — |
+
+Operation 中复用的完整对象结构如下。所有 ID 都是稳定 ID；`nodeTypeId`、`groupId` 和数据类型必须来自当前 Graph Type 允许的 Catalog 定义：
+
+| 对象 | 必填字段 | 可选字段 |
+| --- | --- | --- |
+| `GraphAtomicNode` | `kind: "node"`, `id`, `nodeTypeId`, `title`, `position: {x,y}`, `properties`, `dynamicPorts` | — |
+| `GraphSubgraphNode` | `kind: "subgraph"`, `id`, `subgraphId`, `title`, `position: {x,y}`, `properties`, `dynamicPorts` | `nodeTypeId` |
+| `GraphDefinition` | `id`, `title`, `properties`, `interfacePorts`, `nodes`, `edges` | `graphTypeId` |
+| `GraphDynamicPort` | `id`, `groupId`, `title`, `value` | — |
+| `GraphEdge` | `id`, `kind: "flow" \| "data"`, `source`, `target` | — |
+| node endpoint | `kind: "node"`, `nodeId`, `portId` | — |
+| interface endpoint | `kind: "interface"`, `portId` | — |
+| `GraphInterfacePort` | `id`, `title`, `kind`, `direction: "input" \| "output"` | `dataTypeId`, `maxConnections`, `dynamic` |
+
+`properties` 是 JSON object，`dynamicPorts`、`interfacePorts`、`nodes` 和 `edges` 即使为空也必须显式传数组。`graph.addSubgraph` 的 `node.subgraphId` 必须等于 `subgraph.id`，并且两个对象在同一 Operation 中原子加入。
 
 ## Automated semantic baseline
 

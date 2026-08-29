@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-import { open, readFile, rename, unlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   createReferenceValueRenamePlan,
@@ -55,6 +55,11 @@ import type { VisualBridgeReferenceService } from "./referenceService.js";
 import type { TableService } from "./tableService.js";
 import { hashBytes } from "./atomicTextFile.js";
 import { loadMcpEntityRegistry } from "./entityRegistry.js";
+import {
+  ProjectTransactionConflict,
+  ProjectTransactionFailure,
+  withProjectTransaction,
+} from "./projectTransaction.js";
 
 interface PreparedWrite {
   readonly path: string;
@@ -89,53 +94,73 @@ export class ReferenceRefactorService {
   ) {}
 
   public async execute(request: ReferenceRefactorRequest): Promise<Record<string, unknown>> {
-    let prepared: PreparedRefactor;
+    if (request.action === "preview") {
+      return previewResult(await this.prepare(request));
+    }
+    const project = await this.workspace.resolveProject(request.projectFile);
     try {
-      prepared = await this.prepare(request);
+      return await withProjectTransaction(project.projectRoot, async (transaction) => {
+        let prepared: PreparedRefactor;
+        try {
+          prepared = await this.prepare(request);
+        } catch (errorValue) {
+          if (!(errorValue instanceof VisualBridgeMcpError) || !isPreviewInvalidation(errorValue.code)) throw errorValue;
+          return {
+            status: "conflict",
+            reason: "previewInvalidated",
+            message: formatError(errorValue),
+          };
+        }
+        const preview = previewResult(prepared);
+        if (request.previewHash !== prepared.previewHash) {
+          return { ...preview, status: "conflict", reason: "previewHashMismatch" };
+        }
+        const expected = request.baseHashes ?? {};
+        const actual = Object.fromEntries(prepared.writes.map((write) => [write.path, hashBytes(write.before)]));
+        if (!sameHashManifest(expected, actual)) {
+          return { ...preview, status: "conflict", reason: "baseHashMismatch" };
+        }
+        const dependencies = await Promise.all(prepared.dependencies.map(async (dependency) => {
+          const absolutePath = dependency.path === prepared.project.projectFile
+            ? prepared.project.absoluteProjectFile
+            : await resolveExistingProjectPath(prepared.project, dependency.path);
+          return {
+            path: path.relative(prepared.project.projectRoot, absolutePath).replaceAll("\\", "/"),
+            absolutePath,
+            hash: dependency.baseHash,
+          };
+        }));
+        const committed = await transaction.commit(prepared.writes, dependencies);
+        return {
+          status: "applied",
+          projectFile: prepared.project.projectFile,
+          previewHash: prepared.previewHash,
+          kind: prepared.plan.kind,
+          oldValue: prepared.plan.oldValue,
+          newValue: prepared.plan.newValue,
+          referencesChanged: prepared.plan.changes.length,
+          sources: prepared.writes.map((write) => ({
+            path: write.path,
+            previousHash: hashBytes(write.before),
+            hash: hashBytes(write.after),
+          })),
+          ...(committed.maintenance === undefined ? {} : { maintenance: committed.maintenance }),
+        };
+      });
     } catch (errorValue) {
-      if (request.action === "apply") {
+      if (errorValue instanceof ProjectTransactionConflict) {
         return {
           status: "conflict",
-          reason: "previewInvalidated",
-          message: formatError(errorValue),
+          reason: errorValue.reason,
+          message: errorValue.message,
+          details: errorValue.details,
         };
+      }
+      if (errorValue instanceof ProjectTransactionFailure) {
+        throw new VisualBridgeMcpError(errorValue.code, errorValue.message, errorValue.details);
       }
       throw errorValue;
     }
-    const preview = previewResult(prepared);
-    if (request.action === "preview") return preview;
-    if (request.previewHash !== prepared.previewHash) {
-      return { ...preview, status: "conflict", reason: "previewHashMismatch" };
-    }
-    const expected = request.baseHashes ?? {};
-    const actual = Object.fromEntries(prepared.writes.map((write) => [write.path, hashBytes(write.before)]));
-    if (!sameHashManifest(expected, actual)) {
-      return { ...preview, status: "conflict", reason: "baseHashMismatch" };
-    }
-    try {
-      await commitWrites(prepared.project, prepared.writes);
-    } catch (errorValue) {
-      return {
-        ...preview,
-        status: "conflict",
-        reason: "changedBeforeReplace",
-        message: formatError(errorValue),
-      };
-    }
-    return {
-      status: "applied",
-      projectFile: prepared.project.projectFile,
-      previewHash: prepared.previewHash,
-      kind: prepared.plan.kind,
-      oldValue: prepared.plan.oldValue,
-      newValue: prepared.plan.newValue,
-      referencesChanged: prepared.plan.changes.length,
-      sources: await Promise.all(prepared.writes.map(async (write) => ({
-        path: write.path,
-        previousHash: hashBytes(write.before),
-        hash: hashBytes(await readFile(write.absolutePath)),
-      }))),
-    };
   }
 
   private async prepare(request: ReferenceRefactorRequest): Promise<PreparedRefactor> {
@@ -419,6 +444,22 @@ export class ReferenceRefactorService {
 }
 
 const SUPPORTED_KINDS = new Set(["document", "entity.component", "graph.element", "table.row"]);
+const PREVIEW_INVALIDATION_CODES = new Set([
+  "file.invalidUtf8",
+  "path.notFound",
+  "project.notFound",
+  "refactor.catalogUnavailable",
+  "refactor.duplicateTarget",
+  "refactor.invalidSource",
+  "refactor.noChanges",
+  "refactor.occurrenceChanged",
+  "refactor.targetNotIndexed",
+  "refactor.unresolvedTarget",
+]);
+
+function isPreviewInvalidation(code: string): boolean {
+  return PREVIEW_INVALIDATION_CODES.has(code) || code.startsWith("document.");
+}
 
 function previewResult(prepared: PreparedRefactor): Record<string, unknown> {
   return {
@@ -567,67 +608,6 @@ function sameHashManifest(left: Readonly<Record<string, string>>, right: Readonl
   const leftEntries = Object.entries(left).sort(([a], [b]) => a.localeCompare(b));
   const rightEntries = Object.entries(right).sort(([a], [b]) => a.localeCompare(b));
   return JSON.stringify(leftEntries) === JSON.stringify(rightEntries);
-}
-
-async function commitWrites(project: ProjectContext, writes: readonly PreparedWrite[]): Promise<void> {
-  const lockPath = path.join(project.projectRoot, ".visualbridge-refactor.lock");
-  let lock;
-  const staged: { readonly write: PreparedWrite; readonly temporary: string; readonly backup: string }[] = [];
-  const committed: typeof staged = [];
-  try {
-    lock = await open(lockPath, "wx");
-    await lock.writeFile(`${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, "utf8");
-    await lock.sync();
-    for (const write of writes) {
-      const current = await readFile(write.absolutePath);
-      if (hashBytes(current) !== hashBytes(write.before)) throw new Error(`'${write.path}' changed after preview.`);
-      const nonce = randomUUID();
-      const temporary = `${write.absolutePath}.visualbridge-${nonce}.tmp`;
-      const backup = `${write.absolutePath}.visualbridge-${nonce}.rollback`;
-      const handle = await open(temporary, "wx");
-      try {
-        await handle.writeFile(write.after);
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      staged.push({ write, temporary, backup });
-    }
-    for (const entry of staged) {
-      if (hashBytes(await readFile(entry.write.absolutePath)) !== hashBytes(entry.write.before)) {
-        throw new Error(`'${entry.write.path}' changed during the transaction.`);
-      }
-      await rename(entry.write.absolutePath, entry.backup);
-      committed.push(entry);
-      await rename(entry.temporary, entry.write.absolutePath);
-    }
-    for (const entry of committed) {
-      if (hashBytes(await readFile(entry.write.absolutePath)) !== hashBytes(entry.write.after)) {
-        throw new Error(`Atomic replacement verification failed for '${entry.write.path}'.`);
-      }
-    }
-    await Promise.all(committed.map((entry) => unlink(entry.backup).catch(() => undefined)));
-  } catch (errorValue) {
-    const failures: string[] = [];
-    for (const entry of [...committed].reverse()) {
-      try {
-        await unlink(entry.write.absolutePath).catch(() => undefined);
-        await rename(entry.backup, entry.write.absolutePath);
-      } catch (rollbackError) {
-        failures.push(`${entry.write.path}: ${formatError(rollbackError)}`);
-      }
-    }
-    if (failures.length > 0) {
-      throw new VisualBridgeMcpError("refactor.rollbackFailed", "Project refactor failed and could not fully roll back.", failures);
-    }
-    throw errorValue;
-  } finally {
-    await Promise.all(staged.map((entry) => unlink(entry.temporary).catch(() => undefined)));
-    if (lock !== undefined) {
-      await lock.close().catch(() => undefined);
-      await unlink(lockPath).catch(() => undefined);
-    }
-  }
 }
 
 function formatError(errorValue: unknown): string {
