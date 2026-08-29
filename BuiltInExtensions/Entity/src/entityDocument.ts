@@ -171,6 +171,21 @@ export function validateEntityDocument(
   return diagnostics;
 }
 
+export function renameEntityDocumentId(
+  document: EntityDocument,
+  documentId: string,
+  registry?: EntityCatalogRegistry,
+): DocumentOperationResult<EntityDocument> {
+  if (!isStableIdentifier(documentId)) {
+    return { success: false, diagnostics: [error("entity.invalidIdentifier", "documentId", "Expected a stable identifier.")] };
+  }
+  if (document.documentId === documentId) {
+    return { success: false, diagnostics: [error("entity.sameDocumentId", "documentId", "The new document ID must be different.")] };
+  }
+  const next: EntityDocument = { ...document, documentId };
+  return { success: true, document: next, diagnostics: validateEntityDocument(next, registry) };
+}
+
 export function collectEntityReferences(
   document: EntityDocument,
   registry: EntityCatalogRegistry,
@@ -575,11 +590,15 @@ function readJsonValue(value: unknown, path: string, diagnostics: DocumentDiagno
 }
 
 function readIdentifier(value: unknown, path: string, diagnostics: DocumentDiagnostic[]): string | undefined {
-  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) {
+  if (!isStableIdentifier(value)) {
     diagnostics.push(error("entity.invalidIdentifier", path, "Expected a stable identifier."));
     return undefined;
   }
   return value;
+}
+
+function isStableIdentifier(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 }
 
 function readNonEmptyString(value: unknown, path: string, diagnostics: DocumentDiagnostic[]): string | undefined {

@@ -48,6 +48,7 @@ test("stdio MCP discovers, queries, validates, and atomically edits a Graph with
         "visualbridge_catalog",
         "visualbridge_graph",
         "visualbridge_project",
+        "visualbridge_refactor_reference",
         "visualbridge_references",
         "visualbridge_search_nodes",
         "visualbridge_search_table_rows",
@@ -91,6 +92,102 @@ test("stdio MCP discovers, queries, validates, and atomically edits a Graph with
     assert.equal(validation.valid, true);
     assert.equal(validation.baseHash, graph.baseHash);
 
+    const documentReference = await call(client, "visualbridge_references", {
+      projectFile,
+      action: "resolve",
+      kind: "document",
+      target: { documentTypeId: "logicGraph" },
+      value: "semantic-sample",
+    });
+    assert.equal(documentReference.status, "resolved");
+    const elementReference = await call(client, "visualbridge_references", {
+      projectFile,
+      action: "resolve",
+      kind: "graph.element",
+      target: { documentTypeId: "logicGraph", elementKind: "node" },
+      value: "step_b",
+    });
+    assert.equal(elementReference.status, "resolved");
+    assert.equal(elementReference.candidates[0].location.nodeId, "step_b");
+
+    const renamePreview = await call(client, "visualbridge_refactor_reference", {
+      projectFile,
+      action: "preview",
+      kind: "graph.element",
+      target: { documentTypeId: "logicGraph", elementKind: "node" },
+      oldValue: "step_b",
+      newValue: "step_second",
+    });
+    assert.equal(renamePreview.status, "preview");
+    assert.equal(renamePreview.sources.length, 1);
+    assert.match(renamePreview.previewHash, /^[a-f0-9]{64}$/);
+    const staleRename = await call(client, "visualbridge_refactor_reference", {
+      projectFile,
+      action: "apply",
+      kind: "graph.element",
+      target: { documentTypeId: "logicGraph", elementKind: "node" },
+      oldValue: "step_b",
+      newValue: "step_second",
+      previewHash: renamePreview.previewHash,
+      baseHashes: { [graphPath]: "0".repeat(64) },
+    });
+    assert.equal(staleRename.status, "conflict");
+    assert.equal(staleRename.reason, "baseHashMismatch");
+    const refactorLock = path.join(projectRoot, ".visualbridge-refactor.lock");
+    await writeFile(refactorLock, "external refactor\n", "utf8");
+    const lockedRename = await call(client, "visualbridge_refactor_reference", {
+      projectFile,
+      action: "apply",
+      kind: "graph.element",
+      target: { documentTypeId: "logicGraph", elementKind: "node" },
+      oldValue: "step_b",
+      newValue: "step_second",
+      previewHash: renamePreview.previewHash,
+      baseHashes: renamePreview.baseHashes,
+    });
+    assert.equal(lockedRename.status, "conflict");
+    assert.equal(await readFile(refactorLock, "utf8"), "external refactor\n");
+    await unlink(refactorLock);
+    const appliedRename = await call(client, "visualbridge_refactor_reference", {
+      projectFile,
+      action: "apply",
+      kind: "graph.element",
+      target: { documentTypeId: "logicGraph", elementKind: "node" },
+      oldValue: "step_b",
+      newValue: "step_second",
+      previewHash: renamePreview.previewHash,
+      baseHashes: renamePreview.baseHashes,
+    });
+    assert.equal(appliedRename.status, "applied");
+    const renamedGraph = await call(client, "visualbridge_graph", { projectFile, path: graphPath });
+    const renamedRoot = renamedGraph.document.graphs.find((candidate) => candidate.id === "root");
+    assert.ok(renamedRoot.nodes.some((node) => node.id === "step_second"));
+    assert.equal(
+      renamedRoot.edges.find((edge) => edge.id === "flow_step_a_step_b").target.nodeId,
+      "step_second",
+    );
+    const documentRenamePreview = await call(client, "visualbridge_refactor_reference", {
+      projectFile,
+      action: "preview",
+      kind: "document",
+      target: { documentTypeId: "logicGraph" },
+      oldValue: "semantic-sample",
+      newValue: "semantic-sample-renamed",
+    });
+    const documentRenameApplied = await call(client, "visualbridge_refactor_reference", {
+      projectFile,
+      action: "apply",
+      kind: "document",
+      target: { documentTypeId: "logicGraph" },
+      oldValue: "semantic-sample",
+      newValue: "semantic-sample-renamed",
+      previewHash: documentRenamePreview.previewHash,
+      baseHashes: documentRenamePreview.baseHashes,
+    });
+    assert.equal(documentRenameApplied.status, "applied");
+    const refactoredGraph = await call(client, "visualbridge_graph", { projectFile, path: graphPath });
+    assert.equal(refactoredGraph.document.documentId, "semantic-sample-renamed");
+
     const invalidGraphFile = path.join(projectRoot, "Graph", "Invalid.vbgraph");
     await writeFile(invalidGraphFile, '{"formatVersion":3}\n', "utf8");
     const invalidValidation = await call(client, "visualbridge_validate_graph", {
@@ -122,7 +219,7 @@ test("stdio MCP discovers, queries, validates, and atomically edits a Graph with
     const locked = await call(client, "visualbridge_apply_graph_operations", {
       projectFile,
       path: graphPath,
-      baseHash: graph.baseHash,
+      baseHash: refactoredGraph.baseHash,
       operations: [{
         type: "graph.updateGraph",
         graphId: "root",
@@ -138,7 +235,7 @@ test("stdio MCP discovers, queries, validates, and atomically edits a Graph with
     const applied = await call(client, "visualbridge_apply_graph_operations", {
       projectFile,
       path: graphPath,
-      baseHash: graph.baseHash,
+      baseHash: refactoredGraph.baseHash,
       operations: [{
         type: "graph.updateGraph",
         graphId: "root",
@@ -147,12 +244,12 @@ test("stdio MCP discovers, queries, validates, and atomically edits a Graph with
       }],
     });
     assert.equal(applied.status, "applied");
-    assert.notEqual(applied.hash, graph.baseHash);
+    assert.notEqual(applied.hash, refactoredGraph.baseHash);
 
     const staleWrite = await call(client, "visualbridge_apply_graph_operations", {
       projectFile,
       path: graphPath,
-      baseHash: graph.baseHash,
+      baseHash: refactoredGraph.baseHash,
       operations: [{
         type: "graph.updateGraph",
         graphId: "root",
@@ -242,10 +339,37 @@ test("stdio MCP reads and atomically edits a Structured Config with shared refer
     });
     assert.equal(referenceSearch.results[0].value, 101);
 
+    const tableRenamePreview = await call(client, "visualbridge_refactor_reference", {
+      projectFile,
+      action: "preview",
+      kind: "table.row",
+      target: { tableTypeId: "sample.table.skills", sheetId: "skills" },
+      oldValue: 101,
+      newValue: 111,
+    });
+    assert.equal(tableRenamePreview.status, "preview");
+    assert.deepEqual(tableRenamePreview.sources.map((source) => source.path), [
+      "Config/Game.gamesettings",
+      "Tables/Skills_Main.skillstable",
+    ]);
+    const tableRenameApplied = await call(client, "visualbridge_refactor_reference", {
+      projectFile,
+      action: "apply",
+      kind: "table.row",
+      target: { tableTypeId: "sample.table.skills", sheetId: "skills" },
+      oldValue: 101,
+      newValue: 111,
+      previewHash: tableRenamePreview.previewHash,
+      baseHashes: tableRenamePreview.baseHashes,
+    });
+    assert.equal(tableRenameApplied.status, "applied");
+    assert.match(await readFile(path.join(projectRoot, "Tables", "Skills_Main.skillstable"), "utf8"), /111\tFireball/);
+
     const structuredPath = "Config/Game.gamesettings";
     const document = await call(client, "visualbridge_structured", { projectFile, path: structuredPath });
     assert.match(document.baseHash, /^[a-f0-9]{64}$/);
     assert.equal(document.document.documentId, "sample.game.settings.default");
+    assert.equal(document.document.properties.primarySkillId, 111);
     assert.equal(document.configType.title, "Game Settings");
     assert.ok(!document.diagnostics.some((diagnostic) => diagnostic.severity === "error"));
 

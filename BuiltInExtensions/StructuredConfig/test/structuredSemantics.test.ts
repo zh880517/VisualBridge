@@ -9,6 +9,7 @@ import {
   createEmptyStructuredDocument,
   parseStructuredCatalog,
   parseStructuredDocument,
+  renameStructuredDocumentId,
   resolveStructuredConfigType,
   replaceStructuredReferenceValues,
   serializeStructuredCatalog,
@@ -34,6 +35,14 @@ function load() {
   if (!parsedDocument.success) throw new Error("Document fixture failed.");
   return { catalog: parsedCatalog.document, registry: registry.document, document: parsedDocument.document };
 }
+
+test("Structured document IDs rename through validated document semantics", () => {
+  const { document, registry } = load();
+  const renamed = renameStructuredDocumentId(document, "sample.game.settings.renamed", registry, documentTypeId);
+  assert.equal(renamed.success, true);
+  assert.equal(renamed.success && renamed.document.documentId, "sample.game.settings.renamed");
+  assert.equal(renameStructuredDocumentId(document, "invalid id", registry, documentTypeId).success, false);
+});
 
 test("Structured Catalog Registry resolves canonical IDs and aliases without load-order ambiguity", () => {
   const { catalog, registry } = load();

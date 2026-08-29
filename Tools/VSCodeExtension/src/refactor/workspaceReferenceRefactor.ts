@@ -14,18 +14,22 @@ import {
 import {
   collectEntityReferences,
   parseEntityDocument,
+  renameEntityDocumentId,
   replaceEntityReferenceValues,
   serializeEntityDocument,
 } from "@visualbridge/entity";
 import {
+  applyGraphOperations,
   collectGraphReferences,
   parseGraphDocument,
+  renameGraphDocumentId,
   replaceGraphReferenceValues,
   serializeGraphDocument,
 } from "@visualbridge/graph";
 import {
   collectStructuredReferences,
   parseStructuredDocument,
+  renameStructuredDocumentId,
   replaceStructuredReferenceValues,
   serializeStructuredDocument,
 } from "@visualbridge/structured";
@@ -63,6 +67,8 @@ interface TableSourceSnapshot {
   readonly sheetIds: readonly string[];
 }
 
+const SUPPORTED_RENAME_KINDS = new Set(["document", "graph.element", "table.row"]);
+
 export class WorkspaceReferenceRefactor {
   public constructor(
     private readonly projects: ProjectRegistry,
@@ -97,9 +103,9 @@ export class WorkspaceReferenceRefactor {
       void vscode.window.showWarningMessage(planned.message);
       return;
     }
-    if (planned.plan.kind !== "table.row") {
+    if (!SUPPORTED_RENAME_KINDS.has(planned.plan.kind)) {
       void vscode.window.showWarningMessage(
-        `Reference Provider '${planned.plan.kind}' does not expose a rename adapter yet.`,
+        `Reference Provider '${planned.plan.kind}' does not expose a rename adapter.`,
       );
       return;
     }
@@ -120,8 +126,8 @@ export class WorkspaceReferenceRefactor {
       && document.documentTypeId === target.location!.documentTypeId
       && document.sourcePaths.includes(target.location!.path)
     ));
-    if (targetDocument === undefined || targetDocument.editor !== "table") {
-      void vscode.window.showWarningMessage("The resolved target is not an indexed Table row.");
+    if (targetDocument === undefined) {
+      void vscode.window.showWarningMessage("The resolved target is no longer an indexed document.");
       return;
     }
     const affected = uniqueDocuments([
@@ -206,9 +212,6 @@ export class WorkspaceReferenceRefactor {
     if (indexed.editor === "table") {
       return this.prepareTable(project, indexed, occurrencePaths, replacement, oldValue, targetPlan);
     }
-    if (targetPlan !== undefined) {
-      throw new Error("A table.row target must be stored in a Table document.");
-    }
     const uri = sourceUri(project, indexed.path);
     ensureDeclaredSource(this.projects, project, indexed, uri);
     const before = await vscode.workspace.fs.readFile(uri);
@@ -218,49 +221,101 @@ export class WorkspaceReferenceRefactor {
       if (!catalog.ready) throw new Error(firstDiagnostic(catalog.diagnostics, "Graph Catalog is unavailable."));
       const parsed = parseGraphDocument(text);
       if (!parsed.success) throw new Error(firstDiagnostic(parsed.diagnostics, "Graph source is invalid."));
-      assertOccurrenceValues(collectGraphReferences(parsed.document, catalog.registry), occurrencePaths, oldValue, indexed.path);
-      const replaced = replaceGraphReferenceValues(parsed.document, catalog.registry, occurrencePaths, replacement);
-      if (!replaced.success) throw new Error(firstDiagnostic(replaced.diagnostics, "Graph refactor is invalid."));
-      assertOccurrenceValues(collectGraphReferences(replaced.document, catalog.registry), occurrencePaths, replacement, indexed.path);
-      return [{ uri, before, after: encodeUtf8(serializeGraphDocument(replaced.document)) }];
+      let next = parsed.document;
+      if (occurrencePaths.size > 0) {
+        assertOccurrenceValues(collectGraphReferences(next, catalog.registry), occurrencePaths, oldValue, indexed.path);
+        const replaced = replaceGraphReferenceValues(next, catalog.registry, occurrencePaths, replacement);
+        if (!replaced.success) throw new Error(firstDiagnostic(replaced.diagnostics, "Graph refactor is invalid."));
+        next = replaced.document;
+        assertOccurrenceValues(collectGraphReferences(next, catalog.registry), occurrencePaths, replacement, indexed.path);
+      }
+      if (targetPlan?.kind === "document") {
+        assertDocumentTarget(next.documentId, targetPlan, indexed.path);
+        const renamed = renameGraphDocumentId(next, requireStringReplacement(targetPlan), catalog.registry);
+        if (!renamed.success) throw new Error(firstDiagnostic(renamed.diagnostics, "Graph document rename is invalid."));
+        next = renamed.document;
+      } else if (targetPlan?.kind === "graph.element") {
+        const location = targetPlan.target.location!;
+        const elementKind = readGraphElementKind(location.elementKind);
+        if (location.elementId !== targetPlan.oldValue || location.graphId === undefined || elementKind === undefined) {
+          throw new Error("The Graph element target location is incomplete or changed.");
+        }
+        const renamed = applyGraphOperations(next, [{
+          type: "graph.renameElement",
+          graphId: location.graphId,
+          elementKind,
+          elementId: requireStringValue(targetPlan.oldValue),
+          newElementId: requireStringReplacement(targetPlan),
+          ...(location.nodeId === undefined ? {} : { nodeId: location.nodeId }),
+        }], catalog.registry);
+        if (!renamed.success) throw new Error(firstDiagnostic(renamed.diagnostics, "Graph element rename is invalid."));
+        next = renamed.document;
+      } else if (targetPlan !== undefined) {
+        throw new Error(`Reference target '${targetPlan.kind}' cannot be stored in a Graph document.`);
+      }
+      return [{ uri, before, after: encodeUtf8(serializeGraphDocument(next)) }];
     }
     if (indexed.editor === "entity") {
       const catalog = await loadEntityCatalogRegistry(project, documentType.catalogs);
       if (!catalog.ready) throw new Error(firstDiagnostic(catalog.diagnostics, "Entity Catalog is unavailable."));
       const parsed = parseEntityDocument(text);
       if (!parsed.success) throw new Error(firstDiagnostic(parsed.diagnostics, "Entity source is invalid."));
-      assertOccurrenceValues(collectEntityReferences(parsed.document, catalog.registry), occurrencePaths, oldValue, indexed.path);
-      const replaced = replaceEntityReferenceValues(parsed.document, catalog.registry, occurrencePaths, replacement);
-      if (!replaced.success) throw new Error(firstDiagnostic(replaced.diagnostics, "Entity refactor is invalid."));
-      assertOccurrenceValues(collectEntityReferences(replaced.document, catalog.registry), occurrencePaths, replacement, indexed.path);
-      return [{ uri, before, after: encodeUtf8(serializeEntityDocument(replaced.document)) }];
+      let next = parsed.document;
+      if (occurrencePaths.size > 0) {
+        assertOccurrenceValues(collectEntityReferences(next, catalog.registry), occurrencePaths, oldValue, indexed.path);
+        const replaced = replaceEntityReferenceValues(next, catalog.registry, occurrencePaths, replacement);
+        if (!replaced.success) throw new Error(firstDiagnostic(replaced.diagnostics, "Entity refactor is invalid."));
+        next = replaced.document;
+        assertOccurrenceValues(collectEntityReferences(next, catalog.registry), occurrencePaths, replacement, indexed.path);
+      }
+      if (targetPlan?.kind === "document") {
+        assertDocumentTarget(next.documentId, targetPlan, indexed.path);
+        const renamed = renameEntityDocumentId(next, requireStringReplacement(targetPlan), catalog.registry);
+        if (!renamed.success) throw new Error(firstDiagnostic(renamed.diagnostics, "Entity document rename is invalid."));
+        next = renamed.document;
+      } else if (targetPlan !== undefined) {
+        throw new Error(`Reference target '${targetPlan.kind}' cannot be stored in an Entity document.`);
+      }
+      return [{ uri, before, after: encodeUtf8(serializeEntityDocument(next)) }];
     }
     if (indexed.editor === "structured") {
       const catalog = await loadStructuredCatalogRegistry(project, documentType.catalogs);
       if (!catalog.ready) throw new Error(firstDiagnostic(catalog.diagnostics, "Structured Catalog is unavailable."));
       const parsed = parseStructuredDocument(text);
       if (!parsed.success) throw new Error(firstDiagnostic(parsed.diagnostics, "Structured source is invalid."));
-      assertOccurrenceValues(
-        collectStructuredReferences(parsed.document, catalog.registry, documentType.id),
-        occurrencePaths,
-        oldValue,
-        indexed.path,
-      );
-      const replaced = replaceStructuredReferenceValues(
-        parsed.document,
-        catalog.registry,
-        documentType.id,
-        occurrencePaths,
-        replacement,
-      );
-      if (!replaced.success) throw new Error(firstDiagnostic(replaced.diagnostics, "Structured refactor is invalid."));
-      assertOccurrenceValues(
-        collectStructuredReferences(replaced.document, catalog.registry, documentType.id),
-        occurrencePaths,
-        replacement,
-        indexed.path,
-      );
-      return [{ uri, before, after: encodeUtf8(serializeStructuredDocument(replaced.document)) }];
+      let next = parsed.document;
+      if (occurrencePaths.size > 0) {
+        assertOccurrenceValues(
+          collectStructuredReferences(next, catalog.registry, documentType.id),
+          occurrencePaths,
+          oldValue,
+          indexed.path,
+        );
+        const replaced = replaceStructuredReferenceValues(
+          next,
+          catalog.registry,
+          documentType.id,
+          occurrencePaths,
+          replacement,
+        );
+        if (!replaced.success) throw new Error(firstDiagnostic(replaced.diagnostics, "Structured refactor is invalid."));
+        next = replaced.document;
+        assertOccurrenceValues(
+          collectStructuredReferences(next, catalog.registry, documentType.id),
+          occurrencePaths,
+          replacement,
+          indexed.path,
+        );
+      }
+      if (targetPlan?.kind === "document") {
+        assertDocumentTarget(next.documentId, targetPlan, indexed.path);
+        const renamed = renameStructuredDocumentId(next, requireStringReplacement(targetPlan), catalog.registry, documentType.id);
+        if (!renamed.success) throw new Error(firstDiagnostic(renamed.diagnostics, "Structured document rename is invalid."));
+        next = renamed.document;
+      } else if (targetPlan !== undefined) {
+        throw new Error(`Reference target '${targetPlan.kind}' cannot be stored in a Structured document.`);
+      }
+      return [{ uri, before, after: encodeUtf8(serializeStructuredDocument(next)) }];
     }
     throw new Error(`Editor '${indexed.editor}' does not support reference refactors.`);
   }
@@ -273,6 +328,9 @@ export class WorkspaceReferenceRefactor {
     oldValue: string | number,
     targetPlan: ReferenceValueRenamePlan | undefined,
   ): Promise<readonly PreparedWrite[]> {
+    if (targetPlan !== undefined && targetPlan.kind !== "table.row") {
+      throw new Error(`Reference target '${targetPlan.kind}' cannot be stored in a Table document.`);
+    }
     const documentType = project.definition.documentTypes.find((candidate) => candidate.id === indexed.documentTypeId)!;
     const layout = project.definition.tableLayout;
     if (layout === undefined) throw new Error("The project does not configure tableLayout.");
@@ -408,6 +466,33 @@ async function promptReplacement(oldValue: string | number): Promise<string | nu
   return typeof oldValue === "number" ? Number(input) : input;
 }
 
+function assertDocumentTarget(
+  currentDocumentId: string,
+  plan: ReferenceValueRenamePlan,
+  path: string,
+): void {
+  if (plan.target.location?.documentId !== plan.oldValue || currentDocumentId !== plan.oldValue) {
+    throw new Error(`The document ID in '${path}' changed after the refactor preview was created.`);
+  }
+}
+
+function requireStringReplacement(plan: ReferenceValueRenamePlan): string {
+  return requireStringValue(plan.newValue);
+}
+
+function requireStringValue(value: string | number): string {
+  if (typeof value !== "string") throw new Error("Document and Graph element IDs must be strings.");
+  return value;
+}
+
+function readGraphElementKind(
+  value: string | undefined,
+): "graph" | "node" | "interfacePort" | "dynamicPort" | undefined {
+  return value === "graph" || value === "node" || value === "interfacePort" || value === "dynamicPort"
+    ? value
+    : undefined;
+}
+
 async function previewPlan(plan: ReferenceValueRenamePlan, writes: readonly PreparedWrite[]): Promise<boolean> {
   const locations = plan.changes.slice(0, 20).map((change) => `• ${change.path}: ${change.occurrencePath}`);
   const remainder = plan.changes.length > locations.length
@@ -489,8 +574,10 @@ async function commitWrites(project: ProjectContext, writes: readonly PreparedWr
     throw errorValue;
   } finally {
     await Promise.all(staged.map((entry) => unlink(entry.temporary).catch(() => undefined)));
-    if (lock !== undefined) await lock.close().catch(() => undefined);
-    await unlink(lockPath).catch(() => undefined);
+    if (lock !== undefined) {
+      await lock.close().catch(() => undefined);
+      await unlink(lockPath).catch(() => undefined);
+    }
   }
 }
 

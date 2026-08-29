@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import type { ReferenceLocation } from "@visualbridge/core";
 import { TABLE_EDITOR_ID } from "@visualbridge/table";
 import { createDocument } from "./commands/createDocument";
 import { createEntityDocument } from "./commands/createEntityDocument";
@@ -123,7 +124,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await createDocument(projects);
     }),
     vscode.commands.registerCommand(REVEAL_REFERENCE_COMMAND, async (location) => {
-      await tableEditorProvider.revealReference(location);
+      if (isTableReferenceLocation(location)) {
+        await tableEditorProvider.revealReference(location);
+        return;
+      }
+      if (!isReferenceLocation(location)) {
+        throw new Error("Invalid VisualBridge reference location.");
+      }
+      const project = projects.projects.find((candidate) => candidate.definition.projectId === location.projectId);
+      if (project === undefined) throw new Error(`VisualBridge Project '${location.projectId}' is not open.`);
+      const uri = vscode.Uri.joinPath(project.rootUri, ...location.path.split("/"));
+      const match = projects.resolveDocument(uri);
+      if (match?.project.markerUri.toString() !== project.markerUri.toString()
+        || match.documentType.id !== location.documentTypeId) {
+        throw new Error("Reference location is outside its declared Project Document Type.");
+      }
+      await vscode.commands.executeCommand(
+        "vscode.openWith",
+        uri,
+        match.documentType.editor === TABLE_EDITOR_ID ? TABLE_EDITOR_VIEW_TYPE : OPTIONAL_EDITOR_VIEW_TYPE,
+      );
     }),
     vscode.window.registerCustomEditorProvider(DEFAULT_EDITOR_VIEW_TYPE, editorProvider, {
       supportsMultipleEditorsPerDocument: true,
@@ -147,3 +167,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 export function deactivate(): void {}
+
+function isReferenceLocation(value: unknown): value is ReferenceLocation {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const location = value as Record<string, unknown>;
+  return typeof location.projectId === "string"
+    && typeof location.documentTypeId === "string"
+    && typeof location.path === "string"
+    && !location.path.includes("\\")
+    && !location.path.split("/").some((segment) => segment.length === 0 || segment === "." || segment === "..");
+}
+
+function isTableReferenceLocation(value: unknown): boolean {
+  return isReferenceLocation(value) && value.sheetId !== undefined && value.rowId !== undefined;
+}

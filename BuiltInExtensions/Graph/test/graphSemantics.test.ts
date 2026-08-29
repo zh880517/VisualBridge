@@ -2,16 +2,19 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { ReferenceService } from "@visualbridge/core";
 import {
   applyGraphOperations,
   buildGraphCatalogRegistry,
   collectGraphReferences,
+  createGraphElementReferenceProvider,
   getGraphNodePorts,
   getReplacementCandidates,
   isDataTypeAssignable,
   parseGraphCatalog,
   parseGraphDocument,
   replaceGraphReferenceValues,
+  renameGraphDocumentId,
   resolveGraphType,
   resolveNodeType,
   searchGraphNodeTypes,
@@ -81,6 +84,127 @@ function makeEdge(
     target: { kind: "node", nodeId: targetNodeId, portId: targetPortId },
   };
 }
+
+test("graph element references preserve complete graph, node, and port locations", async () => {
+  const { document } = loadFixture();
+  const provider = createGraphElementReferenceProvider(async () => [{
+    projectId: "sample",
+    documentTypeId: "sample.graph",
+    path: "Graph/SemanticSample.vbgraph",
+    document,
+  }]);
+  const service = new ReferenceService([provider]);
+  const dynamicDefinition = {
+    kind: "graph.element",
+    target: {
+      documentTypeId: "sample.graph",
+      elementKind: "dynamicPort",
+    },
+    allowMissing: false,
+  } as const;
+  const dynamic = await service.resolve(dynamicDefinition, "element_a");
+  assert.equal(dynamic.status, "resolved");
+  assert.deepEqual(dynamic.candidates[0]?.location, {
+    projectId: "sample",
+    documentTypeId: "sample.graph",
+    path: "Graph/SemanticSample.vbgraph",
+    documentId: "semantic-sample",
+    elementKind: "dynamicPort",
+    elementId: "element_a",
+    graphId: "root",
+    nodeId: "list_node",
+    portId: "element_a",
+  });
+  const graphResults = await service.search({
+    kind: "graph.element",
+    target: { documentTypeId: "sample.graph", elementKind: "graph" },
+    allowMissing: false,
+  }, "child", 10);
+  assert.deepEqual(graphResults.map((candidate) => candidate.value), ["child"]);
+  const invalidTarget = await service.validate([{
+    definition: {
+      kind: "graph.element",
+      target: { documentTypeId: "sample.graph", elementKind: "node", graphId: "root" },
+      allowMissing: false,
+    },
+    value: "step_a",
+    path: "properties.node",
+  }]);
+  assert.equal(invalidTarget[0]?.code, "reference.invalidTarget");
+});
+
+test("Graph document IDs rename without changing contained element identities", () => {
+  const { document, registry } = loadFixture();
+  const renamed = renameGraphDocumentId(document, "semantic-sample-renamed", registry);
+  assert.equal(renamed.success, true);
+  assert.equal(renamed.success && renamed.document.documentId, "semantic-sample-renamed");
+  assert.equal(renamed.success && renamed.document.rootGraphId, document.rootGraphId);
+  assert.equal(renameGraphDocumentId(document, "invalid id", registry).success, false);
+});
+
+test("graph.renameElement updates every structural identity and connected endpoint atomically", () => {
+  const { document, registry } = loadFixture();
+  const connected = applyGraphOperations(document, [{
+    type: "graph.addEdge",
+    graphId: "child",
+    edge: {
+      id: "interface_to_sink",
+      kind: "data",
+      source: { kind: "interface", portId: "parameter" },
+      target: { kind: "node", nodeId: "child_int_sink", portId: "value" },
+    },
+  }, {
+    type: "graph.addEdge",
+    graphId: "root",
+    edge: {
+      id: "source_to_child",
+      kind: "data",
+      source: { kind: "node", nodeId: "int_source", portId: "value" },
+      target: { kind: "node", nodeId: "subgraph_call", portId: "parameter" },
+    },
+  }], registry);
+  assert.equal(connected.success, true, connected.success ? "" : formatDiagnostics(connected.diagnostics));
+  if (!connected.success) return;
+  const renamed = applyGraphOperations(connected.document, [{
+    type: "graph.renameElement",
+    graphId: "child",
+    elementKind: "graph",
+    elementId: "child",
+    newElementId: "child_renamed",
+  }, {
+    type: "graph.renameElement",
+    graphId: "child_renamed",
+    elementKind: "interfacePort",
+    elementId: "parameter",
+    newElementId: "input_value",
+  }, {
+    type: "graph.renameElement",
+    graphId: "root",
+    elementKind: "node",
+    elementId: "int_source",
+    newElementId: "int_source_renamed",
+  }, {
+    type: "graph.renameElement",
+    graphId: "root",
+    elementKind: "dynamicPort",
+    nodeId: "list_node",
+    elementId: "element_a",
+    newElementId: "element_first",
+  }], registry);
+  assert.equal(renamed.success, true, renamed.success ? "" : formatDiagnostics(renamed.diagnostics));
+  if (!renamed.success) return;
+  const child = renamed.document.graphs.find((graph) => graph.id === "child_renamed")!;
+  const root = renamed.document.graphs.find((graph) => graph.id === "root")!;
+  const call = root.nodes.find((node) => node.id === "subgraph_call");
+  assert.equal(call?.kind === "subgraph" && call.subgraphId, "child_renamed");
+  assert.equal(child.interfacePorts[0]?.id, "input_value");
+  assert.equal(child.edges[0]?.source.kind === "interface" && child.edges[0].source.portId, "input_value");
+  assert.equal(root.edges.find((edge) => edge.id === "source_to_child")?.target.portId, "input_value");
+  const renamedSource = root.edges.find((edge) => edge.id === "data_int_float")?.source;
+  assert.equal(renamedSource?.kind === "node" && renamedSource.nodeId, "int_source_renamed");
+  const list = root.nodes.find((node) => node.id === "list_node")!;
+  assert.ok(list.dynamicPorts.some((port) => port.id === "element_first"));
+});
 
 test("Catalog Registry resolves stable IDs and aliases without load-order ambiguity", () => {
   const { catalogs, registry } = loadFixture();

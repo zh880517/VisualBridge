@@ -18,7 +18,11 @@ export interface ReferenceLocation {
   readonly documentTypeId: string;
   readonly path: string;
   readonly documentId?: string;
+  readonly elementKind?: string;
   readonly elementId?: string;
+  readonly graphId?: string;
+  readonly nodeId?: string;
+  readonly portId?: string;
   readonly sheetId?: string;
   readonly rowId?: string;
 }
@@ -158,6 +162,12 @@ function candidateKey(candidate: ReferenceCandidate): string {
     location?.projectId ?? "",
     location?.documentTypeId ?? "",
     location?.path ?? "",
+    location?.documentId ?? "",
+    location?.elementKind ?? "",
+    location?.elementId ?? "",
+    location?.graphId ?? "",
+    location?.nodeId ?? "",
+    location?.portId ?? "",
     location?.sheetId ?? "",
     location?.rowId ?? "",
   ].join("\u0000");

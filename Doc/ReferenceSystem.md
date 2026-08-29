@@ -1,10 +1,10 @@
-# VisualBridge Reference System V1
+# VisualBridge Reference System
 
 ## 1. 范围
 
 Reference System 为 Graph、Entity、Structured 和 Table Document 提供同一套跨文档引用契约。字段所属模块只声明“引用什么”，不直接扫描文件、解析业务表或实现选择器。Core 负责稳定契约、Provider 注册、搜索、解析和诊断；VS Code 与 MCP 只负责宿主交互和持久化边界。
 
-V1 已实现 `table.row`：任意共享字段可以按 Table Type、逻辑 Sheet 和可选 Document Type 引用一条有效表格记录。Unity Asset、运行时实例、反向查找和预览 Provider 仍是后续能力；当前不增加 Unity Exporter、Importer、Runtime 或 Debug 代码。
+当前内置 `document`、`graph.element` 和 `table.row` 三类 Provider。它们分别引用 Project Document Type 下的稳定 Document ID、Graph 文档内部的稳定元素 ID，以及 Table Type/Sheet 下的有效记录。Unity Asset、运行时实例和项目自定义 Provider 仍是后续能力；当前不增加 Unity Exporter、Importer、Runtime 或 Debug 代码。
 
 ## 2. 字段契约
 
@@ -41,7 +41,19 @@ Reference 是共享 Field Definition 的可选语义，不是独立 JSON 对象�
 
 Graph 属性、Graph 动态端口值、Entity 根字段、Component 字段、Structured 字段和 Table 单元格均递归收集 Reference Occurrence。对象、List 和 Catalog 默认值沿用同一遍历规则，不为每种 Document 重复实现引用解析。
 
-## 3. `table.row` Provider
+## 3. 内置 Provider
+
+### `document`
+
+`document` 的 `target` 只包含必填的 `documentTypeId`。Provider 按 Project File 的 `include` / `exclude` 和 Document Type 大类加载 Graph、Entity 或 Structured 文档，候选值为文件内容中的 `documentId`；文件扩展名和路径不承担身份。相同 Document ID 出现在不同 Document Type 中不冲突，同一 Document Type 内重复则解析为 `ambiguous`。
+
+### `graph.element`
+
+`graph.element` 的 `target` 只包含 `documentTypeId` 和 `elementKind`，其中 `elementKind` 为 `graph`、`node`、`interfacePort` 或 `dynamicPort`。候选值始终是对应元素的稳定 ID。可重命名的 `documentId`、`graphId` 和 `nodeId` 不允许进入 target，否则重命名父级会让 Catalog 选择器自身悬空；同一 Document Type 与 Element Kind 下重复的值明确解析为 `ambiguous`。
+
+Graph 元素 Location 显式保存 `elementKind`、`elementId`、`graphId`、`nodeId` 和 `portId`。端口 ID 允许只在其 Graph 或 Node 作用域内唯一，因此不能退化为只有 `elementId` 的定位。
+
+### `table.row`
 
 `table.row` 的 `target` 为：
 
@@ -67,7 +79,7 @@ Reference Service 注册少量按 `kind` 唯一的 Provider：
 - `resolve` 按严格类型值返回 `resolved`、`missing`、`ambiguous` 或 `providerUnavailable`。
 - `validate` 将文档内 occurrence 转换为统一 `DocumentDiagnostic`。
 
-V1 诊断代码为：
+统一诊断代码为：
 
 | Code | Severity | Meaning |
 | --- | --- | --- |
@@ -82,13 +94,13 @@ Document Operation 仍先在副本上完整执行。宿主分别校验修改前�
 
 共享 Form Editor 用只读稳定值加通用搜索、跳转图标呈现引用，不允许绕过 Provider 手输不受约束的值。Graph 自有属性布局复用同一 Webview Reference Bridge，Entity、Structured 和 Table 直接复用共享字段控件。
 
-选择按钮向 Extension Host 发送结构化 definition 和当前值，由原生 Quick Pick 展示候选；Webview 只接收最终稳定值。跳转按钮先解析引用，歧义时要求选择具体目标，再由 Table Editor 打开对应载体并定位物理 Sheet/Row。
+选择按钮向 Extension Host 发送结构化 definition 和当前值，由原生 Quick Pick 展示候选；Webview 只接收最终稳定值。跳转按钮先解析引用，歧义时要求选择具体目标。Table 目标由 Table Editor 定位物理 Sheet/Row；Document 与 Graph Element 目标打开其声明的 Authoring Document，元素级画布聚焦可在后续扩展，不改变 Location 契约。
 
 工作区索引以磁盘上的 Project Table 文档为基线，并用已打开 Table Custom Document 的当前语义快照覆盖同一逻辑表。未保存的新增、删除或改单元格会立即参与其他编辑器的搜索与校验；关闭文档后移除覆盖并回到磁盘基线。
 
 Document Browser 使用同一 Reference Service 的解析候选展示每个文档的出站引用，并按候选 Location 的 Project、Document Type 与物理路径派生 `Referenced By` 关系。反向关系仅是工作区索引视图，不写回任何 Authoring Document；缺失或歧义引用继续使用本文件定义的诊断和解析状态。完整 Browser 契约见 `DocumentBrowser.md`。
 
-Project Refactoring V1 使用解析候选的完整 Location，而不是仅按引用值，批量重命名一个 `table.row` 目标键及所有唯一解析到该物理行的入站 occurrence。Graph、Entity、Structured 和 Table 分别通过既有 Operation 与 Serializer 修改；CSV 分表和 XLSX 参与同一个带哈希检查与回滚的 Host 事务。缺失、歧义、同值不同目标和已存在的新键都拒绝自动修改。完整契约见 `ProjectRefactoring.md`。
+Project Refactoring 使用解析候选的完整 Location，而不是仅按引用值，批量重命名 `document`、`graph.element` 或 `table.row` 目标及所有唯一解析到该位置的入站 occurrence。Graph 元素重命名通过 `graph.renameElement` 原子更新结构身份、连线端点和子图调用映射；CSV 分表和 XLSX 与文本 Document 参与同一个带哈希检查与回滚的 Host 事务。完整契约见 `ProjectRefactoring.md`。
 
 ## 6. MCP
 
@@ -99,6 +111,8 @@ Project Refactoring V1 使用解析候选的完整 Location，而不是仅按引
 
 Graph/Structured/Table 的读取与校验结果会附加共享 Reference 诊断。GraphOperation/StructuredOperation/TableOperation 写入在原有 `baseHash`、锁和原子替换之外，还会拒绝本次批次新引入的 Reference error。MCP 不重新实现 Table Registry、分表去重、行显示名或字段递归规则。
 
+`visualbridge_refactor_reference` 提供 `preview` 和 `apply`。预览返回稳定 `previewHash`、完整影响列表、每个物理源的 `baseHash` 与预计结果哈希；提交必须原样提供 `previewHash` 和全部 `baseHashes`。服务端重新扫描 Project、重新解析同一目标并重建语义计划，任一来源、候选、Catalog 或分表成员变化都返回 `conflict`，不会自动套用旧计划。
+
 ## 7. 自动化基线
 
-`npm test` 覆盖 Field Definition 解析、嵌套 occurrence、Provider 稳定排序、严格类型解析、缺失与歧义诊断、Table 有效行候选和定位。`TestData/EntitySemanticProject` 与 `TestData/StructuredSemanticProject` 都包含指向自定义扩展名分表的 `table.row` 引用；真实 stdio MCP 测试会搜索引用，并验证缺失目标不会被原子写入。测试不包含 Unity。
+`npm test` 覆盖 Field Definition 解析、嵌套 occurrence、三个 Provider 的稳定排序与完整定位、严格类型解析、缺失与歧义诊断、Graph 元素身份传播、Table 有效行候选和定位。真实 stdio MCP 测试会预览并提交 Graph Element、Document ID 和跨 Structured/Table 的 Row Key 重构，验证错误 `baseHash` 不会改写任何来源。测试不包含 Unity。

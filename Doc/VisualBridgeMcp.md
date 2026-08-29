@@ -33,7 +33,7 @@ Project discovery recursively searches for `VisualBridge.project.vbjson` and ski
 
 ## Stable tools
 
-The surface contains sixteen tools.
+The surface contains seventeen tools.
 
 | Tool | Required input | Purpose |
 | --- | --- | --- |
@@ -53,12 +53,13 @@ The surface contains sixteen tools.
 | `visualbridge_validate_structured` | `path` | Run the strict V1 parser, Project type binding, shared Field and Reference validators without writing. |
 | `visualbridge_apply_structured_operations` | `path`, `baseHash`, non-empty `operations` | Atomically apply one `structured.setField` batch through shared semantics. |
 | `visualbridge_references` | `action`, `kind`, `target`; action-specific query/value | Search or resolve a shared Reference Provider and return typed stable values plus target locations. |
+| `visualbridge_refactor_reference` | `action`, `kind`, `target`, `oldValue`, `newValue`; apply baseline | Preview or atomically apply one project-wide stable-reference rename. |
 
 `projectFile` is the workspace-relative path returned by `visualbridge_project`. It can be omitted when the workspace contains exactly one valid project. Domain and Catalog tools accept an optional `documentTypeId`; it can be omitted when selection is unambiguous. All paths use `/`, are resolved below the selected Project root, and are rejected if normalization or a resolved symlink leaves that root. Structured paths may use any extension declared by the Project.
 
 Catalog views return full Registry contracts rather than reinterpreted MCP-specific rules. Node search matches Catalog titles and IDs, node titles and IDs, aliases, category/menu path, tags, traits, and source provenance. Table search matches the Catalog-defined `rowDisplayNamePattern` plus typed semantic cells. Space-separated query terms are combined with AND. Search results are deterministic and limited to at most 200 entries.
 
-`visualbridge_references` currently exposes the shared `table.row` Provider. Its target requires stable `tableTypeId` and `sheetId`, with optional `documentTypeId`; search returns Catalog-formatted row titles, strictly typed key values and project-relative Table locations. Resolve distinguishes `resolved`, `missing`, `ambiguous` and `providerUnavailable`. Graph/Structured/Table reads and validation append the same Core Reference diagnostics, and write transactions reject new reference errors without reimplementing Provider rules in MCP. The contract is documented in `ReferenceSystem.md`.
+`visualbridge_references` exposes three built-in Providers. `document` targets one stable `documentTypeId`; `graph.element` targets a Graph Document Type and `graph`/`node`/`interfacePort`/`dynamicPort` kind, while complete owner scope is returned in Location instead of being stored as a rename-sensitive selector; `table.row` targets stable `tableTypeId` and `sheetId`, with optional `documentTypeId`. Resolve distinguishes `resolved`, `missing`, `ambiguous` and `providerUnavailable`. Graph/Structured/Table reads and validation append the same Core Reference diagnostics, and write transactions reject new reference errors without reimplementing Provider rules in MCP. The contract is documented in `ReferenceSystem.md`.
 
 `visualbridge_table` does not return raw CSV cells or workbook objects. Without `sheetId` it returns document/source/sheet metadata; with a physical `sheetId` it adds a bounded semantic row page. Each row contains its Operation-facing row ID and typed `cells`. AI callers must use these identities with Table Operations rather than editing carrier bytes.
 
@@ -118,6 +119,14 @@ For a CSV family, no replacement starts until every changed partition has serial
 
 Table writes use the same four statuses as Graph writes: `applied`, `unchanged`, `conflict`, or `invalid`. A conflict caused by any partition, changed family membership or another MCP writer rejects the complete request without applying Table Operations to disk.
 
+## Project reference refactor
+
+`visualbridge_refactor_reference` supports `document`, `graph.element`, and `table.row`. `preview` resolves the old value to exactly one complete Reference Location, rejects an already-resolved new value, indexes every declared Graph/Entity/Structured/Table source through its real Parser, Catalog Registry and Reference Collector, and builds the shared deterministic Core rename plan. It returns occurrence changes plus a sorted physical source manifest containing `baseHash` and `nextHash` for every file.
+
+`apply` requires the same semantic request, the exact `previewHash`, and the complete `baseHashes` object returned by preview. The server rebuilds the project index and plan instead of trusting serialized edits; `previewHash` also covers the Project File and every declared Catalog dependency hash. It rejects changed source contents, changed candidates, changed Catalogs, changed partition membership or a held Project refactor lock as `conflict`. A valid request stages and flushes all text/CSV/XLSX results, checks every baseline again, replaces sources under one Project lock, verifies persisted hashes and restores rollback copies in reverse order if any replacement fails.
+
+Graph element renames use `graph.renameElement`, which updates graph ownership, node endpoints, interface endpoints, child-call endpoints and dynamic-port endpoints in the same GraphOperation transaction. Document ID and Table row adapters use their existing document semantics and `table.setCell` respectively. The MCP layer never performs project-wide textual replacement.
+
 ## Validation
 
 The fixed projects under `TestData/GraphSemanticProject`, `TestData/StructuredSemanticProject` and `TestData/TableSemanticProject` are used by semantic and stdio integration tests:
@@ -126,8 +135,8 @@ The fixed projects under `TestData/GraphSemanticProject`, `TestData/StructuredSe
 npm test
 ```
 
-The MCP test launches `dist/server.js` through the official client stdio transport and lists every structured tool schema. The Graph flow queries Project/Catalog/Graph data, searches a node alias, validates the Graph, proves conflict rejection leaves bytes unchanged, commits a valid operation, rejects a stale follow-up, and proves an invalid multi-operation batch is atomic.
+The MCP test launches `dist/server.js` through the official client stdio transport and lists every structured tool schema. The Graph flow queries Project/Catalog/Graph data, resolves Document and Graph Element Providers, previews and commits Graph Node and Document ID refactors, proves a wrong refactor source hash is rejected, then exercises ordinary GraphOperation conflicts and atomicity.
 
-The Structured flow uses project-defined `.gamesettings` and `.skillstable` extensions, queries the bound Config Type, searches a real Table Row reference, validates the document, rejects stale hashes and held locks, commits a multi-field batch, rejects invalid values and missing references, and proves rejected batches leave bytes unchanged.
+The Structured flow uses project-defined `.gamesettings` and `.skillstable` extensions, queries the bound Config Type, searches a real Table Row reference, atomically renames its physical key and incoming Structured field together, validates the result, rejects stale hashes and held locks, commits a multi-field batch, rejects invalid values and missing references, and proves rejected batches leave bytes unchanged.
 
 The Table flow queries Catalog and paged semantic rows, compares effective and physical partition search, searches and resolves a real `table.row` reference through stdio, validates CSV/XLSX, rejects a stale hash, rejects changed partition membership, rejects a held logical-table lock, proves an invalid batch leaves source bytes unchanged, commits a CSV partition edit without rewriting its sibling, and round-trips an XLSX cell edit. All writes use temporary project copies. No Unity tests are added.

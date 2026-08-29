@@ -1,7 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { open, readdir, readFile, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
-import type { DocumentDiagnostic, TableLayoutDefinition } from "@visualbridge/core";
+import {
+  referenceValuesEqual,
+  type DocumentDiagnostic,
+  type ReferenceLocation,
+  type ReferenceOccurrence,
+  type TableLayoutDefinition,
+} from "@visualbridge/core";
 import {
   applyTableOperations,
   buildTableCatalogRegistry,
@@ -12,6 +18,7 @@ import {
   parseCsvTable,
   parseTableCatalog,
   parseXlsxTable,
+  replaceTableReferenceValues,
   resolveEffectiveTableRows,
   resolveTableSheet,
   resolveTableType,
@@ -67,6 +74,13 @@ interface RenderedSource {
   readonly source: TableSource;
   readonly bytes: Buffer;
   readonly hash: string;
+}
+
+export interface PreparedTableReferenceWrite {
+  readonly path: string;
+  readonly absolutePath: string;
+  readonly before: Buffer;
+  readonly after: Buffer;
 }
 
 export class TableService {
@@ -360,7 +374,10 @@ export class TableService {
     }
   }
 
-  public async loadReferenceDocuments(projectFile?: string): Promise<readonly TableReferenceDocument[]> {
+  public async loadReferenceDocuments(
+    projectFile?: string,
+    strict = false,
+  ): Promise<readonly TableReferenceDocument[]> {
     const project = await this.workspace.resolveProject(projectFile);
     const declared = await this.workspace.listDeclaredDocuments(project, "table");
     const result: TableReferenceDocument[] = [];
@@ -387,9 +404,83 @@ export class TableService {
         if (!(errorValue instanceof TableLoadError)) {
           throw errorValue;
         }
+        if (strict) {
+          throw new VisualBridgeMcpError(
+            "refactor.invalidSource",
+            `Table '${entry.path}' is invalid and cannot participate in a project refactor.`,
+            errorValue.diagnostics,
+          );
+        }
       }
     }
     return result.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
+  }
+
+  public async prepareReferenceRename(options: {
+    readonly projectFile: string;
+    readonly documentTypeId: string;
+    readonly tablePath: string;
+    readonly occurrencePaths: ReadonlySet<string>;
+    readonly oldValue: string | number;
+    readonly newValue: string | number;
+    readonly targetLocation?: ReferenceLocation;
+  }): Promise<readonly PreparedTableReferenceWrite[]> {
+    const loaded = await this.loadTableForUse(options.tablePath, options.projectFile, options.documentTypeId);
+    let next = loaded.document;
+    if (options.occurrencePaths.size > 0) {
+      assertOccurrenceValues(
+        collectTableReferences(next, loaded.catalog.tableType),
+        options.occurrencePaths,
+        options.oldValue,
+        options.tablePath,
+      );
+      const replaced = replaceTableReferenceValues(next, loaded.catalog.tableType, options.occurrencePaths, options.newValue);
+      if (!replaced.success) {
+        throw new VisualBridgeMcpError("refactor.invalid", "Table reference replacement is invalid.", replaced.diagnostics);
+      }
+      next = replaced.document;
+    }
+    if (options.targetLocation !== undefined) {
+      const sheet = next.sheets.find((candidate) => candidate.id === options.targetLocation?.sheetId);
+      const row = sheet?.rows.find((candidate) => candidate.id === options.targetLocation?.rowId);
+      const definition = sheet === undefined ? undefined : resolveTableSheet(loaded.catalog.tableType, sheet.definitionId);
+      const keyColumnId = definition?.keyColumnId;
+      if (sheet === undefined || row === undefined || keyColumnId === undefined) {
+        throw new VisualBridgeMcpError("refactor.targetChanged", "The target Table row or key column no longer exists.");
+      }
+      const keyValue = row.cells[keyColumnId];
+      if (!isReferenceValue(keyValue) || !referenceValuesEqual(keyValue, options.oldValue)) {
+        throw new VisualBridgeMcpError("refactor.targetChanged", "The target Table key changed after indexing.");
+      }
+      const duplicate = next.sheets.some((candidateSheet) => (
+        candidateSheet.definitionId === sheet.definitionId
+        && candidateSheet.rows.some((candidateRow) => {
+          const candidateValue = candidateRow.cells[keyColumnId];
+          return (candidateSheet.id !== sheet.id || candidateRow.id !== row.id)
+            && isReferenceValue(candidateValue)
+            && referenceValuesEqual(candidateValue, options.newValue);
+        })
+      ));
+      if (duplicate) throw new VisualBridgeMcpError("refactor.duplicateTarget", `Table key '${String(options.newValue)}' already exists.`);
+      const renamed = applyTableOperations(next, [{
+        type: "table.setCell",
+        sheetId: sheet.id,
+        rowId: row.id,
+        columnId: keyColumnId,
+        value: options.newValue,
+      }], loaded.catalog.tableType);
+      if (!renamed.success) {
+        throw new VisualBridgeMcpError("refactor.invalid", "Table key rename is invalid.", renamed.diagnostics);
+      }
+      next = renamed.document;
+    }
+    const rendered = await this.renderSources(loaded, next);
+    return rendered.map((entry) => ({
+      path: entry.source.path,
+      absolutePath: entry.source.absolutePath,
+      before: entry.source.bytes,
+      after: entry.bytes,
+    }));
   }
 
   private async referenceDiagnostics(loaded: LoadedTable): Promise<readonly DocumentDiagnostic[]> {
@@ -690,6 +781,29 @@ function tableIdentity(loaded: LoadedTable) {
 
 function sourceIdentity(source: TableSource) {
   return { path: source.path, baseHash: source.hash, sheetIds: source.sheetIds };
+}
+
+function assertOccurrenceValues(
+  occurrences: readonly ReferenceOccurrence[],
+  paths: ReadonlySet<string>,
+  expectedValue: string | number,
+  documentPath: string,
+): void {
+  for (const occurrencePath of paths) {
+    const matching = occurrences.filter((occurrence) => (
+      occurrence.path === occurrencePath && referenceValuesEqual(occurrence.value, expectedValue)
+    ));
+    if (matching.length !== 1) {
+      throw new VisualBridgeMcpError(
+        "refactor.occurrenceChanged",
+        `Reference occurrence '${documentPath}: ${occurrencePath}' changed after indexing.`,
+      );
+    }
+  }
+}
+
+function isReferenceValue(value: unknown): value is string | number {
+  return typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
 }
 
 function semanticRow(row: TableRow) {

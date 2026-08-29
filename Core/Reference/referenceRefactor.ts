@@ -92,7 +92,11 @@ export function referenceLocationKey(location: ReferenceLocation): string {
     location.documentTypeId,
     location.path,
     location.documentId ?? "",
+    location.elementKind ?? "",
     location.elementId ?? "",
+    location.graphId ?? "",
+    location.nodeId ?? "",
+    location.portId ?? "",
     location.sheetId ?? "",
     location.rowId ?? "",
   ].join("\u0000");

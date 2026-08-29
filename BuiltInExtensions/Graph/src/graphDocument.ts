@@ -111,6 +111,14 @@ export interface GraphDocument {
 }
 
 export type GraphOperation =
+  | {
+      readonly type: "graph.renameElement";
+      readonly graphId: string;
+      readonly elementKind: "graph" | "node" | "interfacePort" | "dynamicPort";
+      readonly elementId: string;
+      readonly newElementId: string;
+      readonly nodeId?: string;
+    }
   | { readonly type: "graph.addNode"; readonly graphId: string; readonly node: GraphAtomicNode }
   | {
       readonly type: "graph.addSubgraph";
@@ -337,6 +345,26 @@ export function serializeGraphDocument(document: GraphDocument): string {
       })),
   };
   return `${JSON.stringify(normalized, undefined, 2)}\n`;
+}
+
+export function renameGraphDocumentId(
+  document: GraphDocument,
+  documentId: string,
+  catalog?: GraphCatalogRegistry,
+): DocumentOperationResult<GraphDocument> {
+  if (!isStableIdentifier(documentId)) {
+    return { success: false, diagnostics: [error("graph.invalidIdentifier", "documentId", "Expected a stable identifier.")] };
+  }
+  if (document.documentId === documentId) {
+    return { success: false, diagnostics: [error("graph.sameDocumentId", "documentId", "The new document ID must be different.")] };
+  }
+  const next: GraphDocument = { ...document, documentId };
+  const diagnostics = validateGraphDocument(next, catalog);
+  return { success: true, document: next, diagnostics };
+}
+
+function isStableIdentifier(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 }
 
 export function applyGraphOperations(
@@ -851,6 +879,27 @@ function parseOperation(value: unknown, index: number, diagnostics: DocumentDiag
   }
   const graphId = readIdentifier(value.graphId, `${path}.graphId`, diagnostics);
   switch (value.type) {
+    case "graph.renameElement": {
+      const elementKind = value.elementKind === "graph"
+        || value.elementKind === "node"
+        || value.elementKind === "interfacePort"
+        || value.elementKind === "dynamicPort"
+        ? value.elementKind
+        : undefined;
+      if (elementKind === undefined) {
+        diagnostics.push(error("graph.invalidElementKind", `${path}.elementKind`, "Expected graph, node, interfacePort, or dynamicPort."));
+      }
+      const elementId = readIdentifier(value.elementId, `${path}.elementId`, diagnostics);
+      const newElementId = readIdentifier(value.newElementId, `${path}.newElementId`, diagnostics);
+      const nodeId = value.nodeId === undefined ? undefined : readIdentifier(value.nodeId, `${path}.nodeId`, diagnostics);
+      if (elementKind === "dynamicPort" && nodeId === undefined) {
+        diagnostics.push(error("graph.missingNodeId", `${path}.nodeId`, "A dynamicPort rename requires its owning nodeId."));
+      }
+      return graphId === undefined || elementKind === undefined || elementId === undefined || newElementId === undefined
+        || (elementKind === "dynamicPort" && nodeId === undefined)
+        ? undefined
+        : { type: value.type, graphId, elementKind, elementId, newElementId, ...(nodeId === undefined ? {} : { nodeId }) };
+    }
     case "graph.addNode": {
       const node = readNodes([value.node], `${path}.node`, diagnostics)[0];
       return graphId === undefined || node?.kind !== "node" ? undefined : { type: value.type, graphId, node };
@@ -981,6 +1030,8 @@ function applyOperation(
     return error("graph.graphNotFound", `${path}.graphId`, `Graph '${operation.graphId}' does not exist.`);
   }
   switch (operation.type) {
+    case "graph.renameElement":
+      return renameElement(document, graph, operation, path);
     case "graph.addNode":
       if (allNodes(document).some((node) => node.id === operation.node.id)) {
         return error("graph.nodeAlreadyExists", path, `Node '${operation.node.id}' already exists.`);
@@ -1272,6 +1323,106 @@ function applyOperation(
       });
       return undefined;
     }
+  }
+}
+
+function renameElement(
+  document: MutableGraphDocument,
+  graph: MutableGraphDefinition,
+  operation: Extract<GraphOperation, { readonly type: "graph.renameElement" }>,
+  path: string,
+): DocumentDiagnostic | undefined {
+  if (operation.elementId === operation.newElementId) {
+    return error("graph.sameElementId", `${path}.newElementId`, "The new element ID must be different.");
+  }
+  if (operation.elementKind === "graph") {
+    if (graph.id !== operation.elementId) {
+      return error("graph.graphNotFound", `${path}.elementId`, `Graph '${operation.elementId}' does not exist.`);
+    }
+    if (document.graphs.some((candidate) => candidate.id === operation.newElementId)) {
+      return error("graph.graphAlreadyExists", `${path}.newElementId`, `Graph '${operation.newElementId}' already exists.`);
+    }
+    graph.id = operation.newElementId;
+    if (document.rootGraphId === operation.elementId) document.rootGraphId = operation.newElementId;
+    document.graphs.forEach((owner) => owner.nodes.forEach((node) => {
+      if (node.kind === "subgraph" && node.subgraphId === operation.elementId) {
+        node.subgraphId = operation.newElementId;
+      }
+    }));
+    return undefined;
+  }
+  if (operation.elementKind === "node") {
+    const node = graph.nodes.find((candidate) => candidate.id === operation.elementId);
+    if (node === undefined) {
+      return error("graph.nodeNotFound", `${path}.elementId`, `Node '${operation.elementId}' does not exist in graph '${graph.id}'.`);
+    }
+    if (allNodes(document).some((candidate) => candidate.id === operation.newElementId)) {
+      return error("graph.nodeAlreadyExists", `${path}.newElementId`, `Node '${operation.newElementId}' already exists.`);
+    }
+    node.id = operation.newElementId;
+    graph.edges.forEach((edge) => {
+      renameNodeEndpoint(edge.source, operation.elementId, operation.newElementId);
+      renameNodeEndpoint(edge.target, operation.elementId, operation.newElementId);
+    });
+    return undefined;
+  }
+  if (operation.elementKind === "interfacePort") {
+    const port = graph.interfacePorts.find((candidate) => candidate.id === operation.elementId);
+    if (port === undefined) {
+      return error("graph.interfacePortNotFound", `${path}.elementId`, `Interface port '${operation.elementId}' does not exist.`);
+    }
+    if (graph.interfacePorts.some((candidate) => candidate.id === operation.newElementId)) {
+      return error("graph.interfacePortAlreadyExists", `${path}.newElementId`, `Interface port '${operation.newElementId}' already exists.`);
+    }
+    port.id = operation.newElementId;
+    graph.edges.forEach((edge) => {
+      renameInterfaceEndpoint(edge.source, operation.elementId, operation.newElementId);
+      renameInterfaceEndpoint(edge.target, operation.elementId, operation.newElementId);
+    });
+    document.graphs.forEach((ownerGraph) => ownerGraph.nodes.forEach((node) => {
+      if (node.kind !== "subgraph" || node.subgraphId !== graph.id) return;
+      ownerGraph.edges.forEach((edge) => {
+        renameNodePortEndpoint(edge.source, node.id, operation.elementId, operation.newElementId);
+        renameNodePortEndpoint(edge.target, node.id, operation.elementId, operation.newElementId);
+      });
+    }));
+    return undefined;
+  }
+  const node = graph.nodes.find((candidate) => candidate.id === operation.nodeId);
+  const port = node?.dynamicPorts.find((candidate) => candidate.id === operation.elementId);
+  if (node === undefined || port === undefined) {
+    return error(
+      "graph.dynamicPortNotFound",
+      `${path}.elementId`,
+      `Dynamic port '${operation.elementId}' does not exist on node '${operation.nodeId ?? ""}'.`,
+    );
+  }
+  if (node.dynamicPorts.some((candidate) => candidate.id === operation.newElementId)) {
+    return error("graph.dynamicPortAlreadyExists", `${path}.newElementId`, `Dynamic port '${operation.newElementId}' already exists.`);
+  }
+  port.id = operation.newElementId;
+  graph.edges.forEach((edge) => {
+    renameNodePortEndpoint(edge.source, node.id, operation.elementId, operation.newElementId);
+    renameNodePortEndpoint(edge.target, node.id, operation.elementId, operation.newElementId);
+  });
+  return undefined;
+}
+
+function renameNodeEndpoint(endpoint: GraphEndpoint, oldId: string, newId: string): void {
+  if (endpoint.kind === "node" && endpoint.nodeId === oldId) {
+    (endpoint as { nodeId: string }).nodeId = newId;
+  }
+}
+
+function renameInterfaceEndpoint(endpoint: GraphEndpoint, oldId: string, newId: string): void {
+  if (endpoint.kind === "interface" && endpoint.portId === oldId) {
+    (endpoint as { portId: string }).portId = newId;
+  }
+}
+
+function renameNodePortEndpoint(endpoint: GraphEndpoint, nodeId: string, oldId: string, newId: string): void {
+  if (endpoint.kind === "node" && endpoint.nodeId === nodeId && endpoint.portId === oldId) {
+    (endpoint as { portId: string }).portId = newId;
   }
 }
 

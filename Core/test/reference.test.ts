@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   ReferenceService,
   collectFieldReferences,
+  createDocumentReferenceProvider,
   createReferenceValueRenamePlan,
   parseFieldDefinitions,
   replaceFieldReferenceValues,
@@ -10,6 +11,44 @@ import {
   type ReferenceCandidate,
   type ReferenceProvider,
 } from "../index";
+
+test("document reference provider uses Document Type identity and stable document IDs", async () => {
+  const provider = createDocumentReferenceProvider(async () => [{
+    projectId: "sample",
+    documentTypeId: "game.entity.hero",
+    editor: "entity",
+    path: "Entities/Player.herojson",
+    documentId: "hero.player",
+    title: "Player",
+  }, {
+    projectId: "sample",
+    documentTypeId: "game.entity.enemy",
+    editor: "entity",
+    path: "Entities/Enemy.enemyjson",
+    documentId: "hero.player",
+    title: "Enemy",
+  }]);
+  const service = new ReferenceService([provider]);
+  const definition = {
+    kind: "document",
+    target: { documentTypeId: "game.entity.hero" },
+    allowMissing: false,
+  } as const;
+
+  const searched = await service.search(definition, "player", 10);
+  assert.equal(searched.length, 1);
+  assert.equal(searched[0]?.value, "hero.player");
+  assert.equal(searched[0]?.location?.path, "Entities/Player.herojson");
+  assert.equal((await service.resolve(definition, "hero.player")).status, "resolved");
+  assert.equal((await service.resolve(definition, 1)).status, "missing");
+
+  const invalid = await service.validate([{
+    definition: { kind: "document", target: {}, allowMissing: false },
+    value: "hero.player",
+    path: "properties.hero",
+  }]);
+  assert.equal(invalid[0]?.code, "reference.invalidTarget");
+});
 
 test("field reference definitions collect nested occurrences and reject incomplete contracts", () => {
   const diagnostics: DocumentDiagnostic[] = [];

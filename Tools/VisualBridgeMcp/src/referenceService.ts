@@ -1,10 +1,22 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import {
+  createDocumentReferenceProvider,
   ReferenceService,
+  type DocumentReferenceDocument,
   type DocumentDiagnostic,
   type JsonValue,
   type ReferenceDefinition,
   type ReferenceOccurrence,
+  type ReferenceResolution,
 } from "@visualbridge/core";
+import { parseEntityDocument } from "@visualbridge/entity";
+import {
+  createGraphElementReferenceProvider,
+  parseGraphDocument,
+  type GraphReferenceDocument,
+} from "@visualbridge/graph";
+import { parseStructuredDocument } from "@visualbridge/structured";
 import { createTableRowReferenceProvider } from "@visualbridge/table";
 import type { VisualBridgeWorkspace } from "./projectWorkspace.js";
 import type { TableService } from "./tableService.js";
@@ -24,9 +36,7 @@ export class VisualBridgeReferenceService {
     readonly limit: number;
   }): Promise<Record<string, unknown>> {
     const project = await this.workspace.resolveProject(options.projectFile);
-    const service = new ReferenceService([
-      createTableRowReferenceProvider(() => this.tables.loadReferenceDocuments(project.projectFile)),
-    ]);
+    const service = await this.createProjectService(project.projectFile);
     if (options.action === "search") {
       const results = await service.search(options.definition, options.query ?? "", options.limit);
       return {
@@ -54,7 +64,15 @@ export class VisualBridgeReferenceService {
     projectFile: string,
     occurrences: readonly ReferenceOccurrence[],
   ): Promise<readonly DocumentDiagnostic[]> {
-    return this.createService(projectFile).then((service) => service.validate(occurrences));
+    return this.createProjectService(projectFile).then((service) => service.validate(occurrences));
+  }
+
+  public async resolve(
+    projectFile: string,
+    definition: ReferenceDefinition,
+    value: string | number,
+  ): Promise<ReferenceResolution> {
+    return (await this.createProjectService(projectFile)).resolve(definition, value);
   }
 
   public async validateChange(
@@ -65,7 +83,7 @@ export class VisualBridgeReferenceService {
     readonly diagnostics: readonly DocumentDiagnostic[];
     readonly introducedErrors: readonly DocumentDiagnostic[];
   }> {
-    const service = await this.createService(projectFile);
+    const service = await this.createProjectService(projectFile);
     const baseline = diagnosticCounts(await service.validate(before));
     const diagnostics = await service.validate(after);
     const introducedErrors = diagnostics.filter((diagnostic) => {
@@ -83,12 +101,79 @@ export class VisualBridgeReferenceService {
     return { diagnostics, introducedErrors };
   }
 
-  private async createService(projectFile: string): Promise<ReferenceService> {
+  public async createProjectService(projectFile: string): Promise<ReferenceService> {
     const project = await this.workspace.resolveProject(projectFile);
+    let semanticDocuments: Promise<{
+      readonly documents: readonly DocumentReferenceDocument[];
+      readonly graphs: readonly GraphReferenceDocument[];
+    }> | undefined;
+    const loadSemanticDocuments = () => (semanticDocuments ??= this.loadSemanticDocuments(project.projectFile));
     return new ReferenceService([
+      createDocumentReferenceProvider(() => loadSemanticDocuments().then((loaded) => loaded.documents)),
+      createGraphElementReferenceProvider(() => loadSemanticDocuments().then((loaded) => loaded.graphs)),
       createTableRowReferenceProvider(() => this.tables.loadReferenceDocuments(project.projectFile)),
     ]);
   }
+
+  private async loadSemanticDocuments(projectFile: string): Promise<{
+    readonly documents: readonly DocumentReferenceDocument[];
+    readonly graphs: readonly GraphReferenceDocument[];
+  }> {
+    const project = await this.workspace.resolveProject(projectFile);
+    const declared = await this.workspace.listDeclaredDocuments(project);
+    const documents: DocumentReferenceDocument[] = [];
+    const graphs: GraphReferenceDocument[] = [];
+    for (const source of declared) {
+      if (source.documentType.editor !== "graph"
+        && source.documentType.editor !== "entity"
+        && source.documentType.editor !== "structured") continue;
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(await readFile(source.absolutePath));
+      if (source.documentType.editor === "graph") {
+        const parsed = parseGraphDocument(text);
+        if (!parsed.success) continue;
+        const title = parsed.document.graphs.find((graph) => graph.id === parsed.document.rootGraphId)?.title
+          ?? path.basename(source.path, path.extname(source.path));
+        documents.push(documentReference(project.definition.projectId, source.documentType.id, source.documentType.editor, source.path, parsed.document.documentId, title));
+        graphs.push({
+          projectId: project.definition.projectId,
+          documentTypeId: source.documentType.id,
+          path: source.path,
+          document: parsed.document,
+        });
+      } else if (source.documentType.editor === "entity") {
+        const parsed = parseEntityDocument(text);
+        if (parsed.success) {
+          documents.push(documentReference(project.definition.projectId, source.documentType.id, source.documentType.editor, source.path, parsed.document.documentId, parsed.document.title));
+        }
+      } else {
+        const parsed = parseStructuredDocument(text);
+        if (parsed.success) {
+          documents.push(documentReference(
+            project.definition.projectId,
+            source.documentType.id,
+            source.documentType.editor,
+            source.path,
+            parsed.document.documentId,
+            path.basename(source.path, path.extname(source.path)),
+          ));
+        }
+      }
+    }
+    documents.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
+    graphs.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
+    return { documents, graphs };
+  }
+}
+
+function documentReference(
+  projectId: string,
+  documentTypeId: string,
+  editor: string,
+  sourcePath: string,
+  documentId: string,
+  title: string,
+): DocumentReferenceDocument {
+  return { projectId, documentTypeId, editor, path: sourcePath, documentId, title };
 }
 
 export function referenceDefinition(

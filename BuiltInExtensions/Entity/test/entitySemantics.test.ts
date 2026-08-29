@@ -9,6 +9,7 @@ import {
   collectEntityReferences,
   parseEntityCatalog,
   parseEntityDocument,
+  renameEntityDocumentId,
   resolveEntityComponentType,
   resolveEntityType,
   replaceEntityReferenceValues,
@@ -49,6 +50,14 @@ function readFixture(...segments: string[]): string {
 function formatDiagnostics(diagnostics: readonly { readonly code: string; readonly message: string }[]): string {
   return diagnostics.map((diagnostic) => `${diagnostic.code}: ${diagnostic.message}`).join("\n");
 }
+
+test("Entity document IDs rename through validated document semantics", () => {
+  const { document, registry } = loadFixture();
+  const renamed = renameEntityDocumentId(document, "sample.entity.player.renamed", registry);
+  assert.equal(renamed.success, true);
+  assert.equal(renamed.success && renamed.document.documentId, "sample.entity.player.renamed");
+  assert.equal(renameEntityDocumentId(document, "invalid id", registry).success, false);
+});
 
 test("Entity Catalog Registry resolves stable IDs, aliases, and cross-Catalog groups", () => {
   const { catalogs, registry } = loadFixture();

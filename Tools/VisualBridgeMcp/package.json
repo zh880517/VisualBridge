@@ -15,6 +15,7 @@
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
     "@visualbridge/core": "*",
+    "@visualbridge/entity": "*",
     "@visualbridge/graph": "*",
     "@visualbridge/structured": "*",
     "@visualbridge/table": "*",

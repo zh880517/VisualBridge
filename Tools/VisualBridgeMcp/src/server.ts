@@ -6,6 +6,7 @@ import { GraphService } from "./graphService.js";
 import { VisualBridgeMcpError, VisualBridgeWorkspace } from "./projectWorkspace.js";
 import { TableService } from "./tableService.js";
 import { VisualBridgeReferenceService, referenceDefinition } from "./referenceService.js";
+import { ReferenceRefactorService } from "./refactorService.js";
 import { StructuredService } from "./structuredService.js";
 
 const workspaceRoot = process.env.VISUALBRIDGE_WORKSPACE === undefined
@@ -15,6 +16,7 @@ const workspace = await VisualBridgeWorkspace.create(workspaceRoot);
 const tableService = new TableService(workspace);
 const referenceService = new VisualBridgeReferenceService(workspace, tableService);
 tableService.setReferenceService(referenceService);
+const refactorService = new ReferenceRefactorService(workspace, referenceService, tableService);
 const graphService = new GraphService(workspace, referenceService);
 const structuredService = new StructuredService(workspace, referenceService);
 
@@ -23,7 +25,7 @@ function createServer(): McpServer {
     { name: "visualbridge", version: "0.1.0" },
     {
       instructions:
-        "Discover a VisualBridge Project first. Use the Reference tool for stable cross-document targets. Read or validate a Graph/Table/Structured Config to obtain baseHash before applying Operations. Never retry a conflict with a stale baseHash, and never edit declared carrier files outside their semantic tools.",
+        "Discover a VisualBridge Project first. Use the Reference tool for stable cross-document targets. Preview project reference refactors and preserve their complete previewHash/baseHashes manifest before apply. Read or validate a Graph/Table/Structured Config to obtain baseHash before ordinary Operations. Never retry a conflict with stale baselines, and never edit declared carrier files outside their semantic tools.",
     },
   );
 
@@ -90,6 +92,46 @@ function createServer(): McpServer {
         ...(query === undefined ? {} : { query }),
         ...(value === undefined ? {} : { value }),
         limit,
+      })),
+  );
+
+  server.registerTool(
+    "visualbridge_refactor_reference",
+    {
+      title: "Preview or apply a VisualBridge reference refactor",
+      description:
+        "Renames one uniquely resolved document, graph.element, or table.row stable value and every reference resolved to that exact location. Preview returns source baseHashes and previewHash; apply requires both and rejects any changed project state before an atomic multi-file commit.",
+      inputSchema: z.object({
+        projectFile: z.string().optional(),
+        action: z.enum(["preview", "apply"]),
+        kind: z.enum(["document", "graph.element", "table.row"]),
+        target: z.record(z.string(), z.json()),
+        oldValue: z.union([z.string(), z.number().finite()]),
+        newValue: z.union([z.string(), z.number().finite()]),
+        previewHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+        baseHashes: z.record(z.string(), z.string().regex(/^[a-f0-9]{64}$/)).optional(),
+      }).superRefine((value, context) => {
+        if (typeof value.oldValue !== typeof value.newValue) {
+          context.addIssue({ code: "custom", path: ["newValue"], message: "Reference value type must not change." });
+        }
+        if (value.action === "apply" && value.previewHash === undefined) {
+          context.addIssue({ code: "custom", path: ["previewHash"], message: "Apply requires previewHash." });
+        }
+        if (value.action === "apply" && value.baseHashes === undefined) {
+          context.addIssue({ code: "custom", path: ["baseHashes"], message: "Apply requires every source baseHash from preview." });
+        }
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    async ({ projectFile, action, kind, target, oldValue, newValue, previewHash, baseHashes }) => handle(() =>
+      refactorService.execute({
+        ...(projectFile === undefined ? {} : { projectFile }),
+        action,
+        definition: referenceDefinition(kind, target, false),
+        oldValue,
+        newValue,
+        ...(previewHash === undefined ? {} : { previewHash }),
+        ...(baseHashes === undefined ? {} : { baseHashes }),
       })),
   );
 

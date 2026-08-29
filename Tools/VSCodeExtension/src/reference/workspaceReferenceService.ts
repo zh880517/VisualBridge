@@ -2,13 +2,22 @@ import * as nodePath from "node:path";
 import * as vscode from "vscode";
 import { minimatch } from "minimatch";
 import {
+  createDocumentReferenceProvider,
   ReferenceService,
+  type DocumentReferenceDocument,
   type DocumentDiagnostic,
   type ReferenceCandidate,
   type ReferenceDefinition,
   type ReferenceOccurrence,
   type ReferenceResolution,
 } from "@visualbridge/core";
+import { parseEntityDocument } from "@visualbridge/entity";
+import {
+  createGraphElementReferenceProvider,
+  parseGraphDocument,
+  type GraphReferenceDocument,
+} from "@visualbridge/graph";
+import { parseStructuredDocument } from "@visualbridge/structured";
 import {
   createTableRowReferenceProvider,
   parseCsvTable,
@@ -31,6 +40,10 @@ interface ReferenceQuickPickItem extends vscode.QuickPickItem {
 export class WorkspaceReferenceService implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private readonly tableDocuments = new Map<string, Promise<readonly TableReferenceDocument[]>>();
+  private readonly semanticDocuments = new Map<string, Promise<{
+    readonly documents: readonly DocumentReferenceDocument[];
+    readonly graphs: readonly GraphReferenceDocument[];
+  }>>();
   private readonly openTableDocuments = new Map<string, {
     readonly projectKey: string;
     readonly sourcePaths: ReadonlySet<string>;
@@ -43,7 +56,7 @@ export class WorkspaceReferenceService implements vscode.Disposable {
     projects: ProjectRegistry,
     private readonly output: vscode.OutputChannel,
   ) {
-    const clear = (): void => this.tableDocuments.clear();
+    const clear = (): void => this.invalidate();
     this.disposables.push(
       projects.onDidChange(clear),
       vscode.workspace.onDidCreateFiles(clear),
@@ -73,6 +86,7 @@ export class WorkspaceReferenceService implements vscode.Disposable {
 
   public invalidate(): void {
     this.tableDocuments.clear();
+    this.semanticDocuments.clear();
   }
 
   public validate(
@@ -199,6 +213,7 @@ export class WorkspaceReferenceService implements vscode.Disposable {
 
   public dispose(): void {
     this.tableDocuments.clear();
+    this.semanticDocuments.clear();
     this.openTableDocuments.clear();
     for (const disposable of this.disposables.splice(0)) {
       disposable.dispose();
@@ -207,8 +222,25 @@ export class WorkspaceReferenceService implements vscode.Disposable {
 
   private createService(project: ProjectContext): ReferenceService {
     return new ReferenceService([
+      createDocumentReferenceProvider(() => this.loadSemanticDocuments(project).then((loaded) => loaded.documents)),
+      createGraphElementReferenceProvider(() => this.loadSemanticDocuments(project).then((loaded) => loaded.graphs)),
       createTableRowReferenceProvider(() => this.loadTableDocuments(project)),
     ]);
+  }
+
+  private loadSemanticDocuments(project: ProjectContext): Promise<{
+    readonly documents: readonly DocumentReferenceDocument[];
+    readonly graphs: readonly GraphReferenceDocument[];
+  }> {
+    const key = project.markerUri.toString();
+    const existing = this.semanticDocuments.get(key);
+    if (existing !== undefined) return existing;
+    const loading = loadProjectSemanticDocuments(project, this.output).catch((errorValue: unknown) => {
+      this.semanticDocuments.delete(key);
+      throw errorValue;
+    });
+    this.semanticDocuments.set(key, loading);
+    return loading;
   }
 
   private async loadTableDocuments(project: ProjectContext): Promise<readonly TableReferenceDocument[]> {
@@ -233,6 +265,75 @@ export class WorkspaceReferenceService implements vscode.Disposable {
     return [...visibleDiskDocuments, ...overrides.map((entry) => entry.document)]
       .sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
   }
+}
+
+async function loadProjectSemanticDocuments(
+  project: ProjectContext,
+  output: vscode.OutputChannel,
+): Promise<{
+  readonly documents: readonly DocumentReferenceDocument[];
+  readonly graphs: readonly GraphReferenceDocument[];
+}> {
+  const documents: DocumentReferenceDocument[] = [];
+  const graphs: GraphReferenceDocument[] = [];
+  for (const documentType of project.definition.documentTypes.filter((candidate) => (
+    candidate.editor === "graph" || candidate.editor === "entity" || candidate.editor === "structured"
+  ))) {
+    const uris = await findDocumentUris(project, documentType.id, documentType.include);
+    for (const uri of uris) {
+      const path = relativeProjectPath(project, uri);
+      try {
+        const text = await readText(uri);
+        if (documentType.editor === "graph") {
+          const parsed = parseGraphDocument(text);
+          if (!parsed.success) throw new Error(formatDiagnostics(parsed.diagnostics));
+          const title = parsed.document.graphs.find((graph) => graph.id === parsed.document.rootGraphId)?.title
+            ?? nodePath.basename(path, nodePath.extname(path));
+          documents.push({
+            projectId: project.definition.projectId,
+            documentTypeId: documentType.id,
+            editor: documentType.editor,
+            path,
+            documentId: parsed.document.documentId,
+            title,
+          });
+          graphs.push({
+            projectId: project.definition.projectId,
+            documentTypeId: documentType.id,
+            path,
+            document: parsed.document,
+          });
+        } else if (documentType.editor === "entity") {
+          const parsed = parseEntityDocument(text);
+          if (!parsed.success) throw new Error(formatDiagnostics(parsed.diagnostics));
+          documents.push({
+            projectId: project.definition.projectId,
+            documentTypeId: documentType.id,
+            editor: documentType.editor,
+            path,
+            documentId: parsed.document.documentId,
+            title: parsed.document.title,
+          });
+        } else {
+          const parsed = parseStructuredDocument(text);
+          if (!parsed.success) throw new Error(formatDiagnostics(parsed.diagnostics));
+          documents.push({
+            projectId: project.definition.projectId,
+            documentTypeId: documentType.id,
+            editor: documentType.editor,
+            path,
+            documentId: parsed.document.documentId,
+            title: nodePath.basename(path, nodePath.extname(path)),
+          });
+        }
+      } catch (errorValue) {
+        output.appendLine(`[reference] Skipped invalid ${documentType.editor} '${uri.fsPath}': ${formatError(errorValue)}`);
+      }
+    }
+  }
+  documents.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
+  graphs.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
+  return { documents, graphs };
 }
 
 async function loadProjectTableDocuments(
@@ -354,6 +455,11 @@ function referenceDocument(
 
 function relativeProjectPath(project: ProjectContext, uri: vscode.Uri): string {
   return nodePath.relative(project.rootUri.fsPath, uri.fsPath).replaceAll("\\", "/");
+}
+
+async function readText(uri: vscode.Uri): Promise<string> {
+  const open = vscode.workspace.textDocuments.find((document) => document.uri.toString() === uri.toString());
+  return open?.getText() ?? new TextDecoder("utf-8", { fatal: true }).decode(await vscode.workspace.fs.readFile(uri));
 }
 
 function documentSourcePaths(document: TableReferenceDocument): readonly string[] {

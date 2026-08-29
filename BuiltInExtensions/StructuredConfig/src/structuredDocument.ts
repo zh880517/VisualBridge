@@ -113,6 +113,22 @@ export function validateStructuredDocument(
   return diagnostics;
 }
 
+export function renameStructuredDocumentId(
+  document: StructuredDocument,
+  documentId: string,
+  registry: StructuredCatalogRegistry,
+  configTypeId: string,
+): DocumentOperationResult<StructuredDocument> {
+  if (!isStableIdentifier(documentId)) {
+    return { success: false, diagnostics: [error("structured.invalidIdentifier", "documentId", "Expected a stable identifier.")] };
+  }
+  if (document.documentId === documentId) {
+    return { success: false, diagnostics: [error("structured.sameDocumentId", "documentId", "The new document ID must be different.")] };
+  }
+  const next: StructuredDocument = { ...document, documentId };
+  return { success: true, document: next, diagnostics: validateStructuredDocument(next, registry, configTypeId) };
+}
+
 export function collectStructuredReferences(
   document: StructuredDocument,
   registry: StructuredCatalogRegistry,
@@ -286,11 +302,15 @@ function diagnosticKey(diagnostic: DocumentDiagnostic): string {
 }
 
 function readIdentifier(value: unknown, path: string, diagnostics: DocumentDiagnostic[]): string | undefined {
-  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) {
+  if (!isStableIdentifier(value)) {
     diagnostics.push(error("structured.invalidIdentifier", path, "Expected a stable identifier."));
     return undefined;
   }
   return value;
+}
+
+function isStableIdentifier(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 }
 
 function checkKeys(

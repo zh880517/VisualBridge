@@ -226,7 +226,7 @@ VisualBridge Project File 不保存编辑器窗口状态、连接端口、当前
 
 工程索引的宿主实现允许按规模选择概要扫描或完整语义快照，但索引结果必须使用各 Document Type 既有 Parser、Catalog Registry、Validator 和 Reference Collector，不允许另建简化语义。当前 VS Code Document Browser V1 在激活、Project 变化和匹配文件保存或增删后建立四类文档的完整语义快照，用于错误和引用入口；它不会在每次打开文档时重扫。后续大工程可改为按 Document Type 和文件增量刷新，但不得改变稳定排序、诊断和引用结果。
 
-项目级重构同样建立在语义索引和 Reference Provider 之上。当前 V1 只重命名唯一解析的 `table.row` 键值：Core 生成按目标位置匹配的确定性影响计划，各 Document Type 通过原有 Operation/Validator/Serializer 生成修改，Host 使用源哈希、临时载体和 rollback 副本提交多文件事务。不得退化为跨工程文本替换。完整约束见 `ProjectRefactoring.md`。
+项目级重构同样建立在语义索引和 Reference Provider 之上。当前支持唯一解析的 `document`、`graph.element` 和 `table.row`：Core 生成按完整目标位置匹配的确定性影响计划，各 Document Type 通过正式语义变换、Validator 和 Serializer 生成修改，VS Code 与 MCP Host 使用源哈希、临时载体和 rollback 副本提交多文件事务。不得退化为跨工程文本替换。完整约束见 `ProjectRefactoring.md`。
 
 ## Document System
 
@@ -274,7 +274,7 @@ DocumentType
 - 子图通过稳定公开接口与父图连接；跨图连接不能绕过接口直接指向内部节点。子图输入/输出接口节点可创建稳定 ID 的动态数据参数；其类型由子图内部或父图外部首次具体连接锁定，只要任一侧仍有连接就保持，全部断开后恢复 `any`。动态参数在子图接口节点和父图调用节点中始终显示，未锁定的 `any` 状态使用浅灰色。
 - Graph Webview 使用 React 与 React Flow 的受控模式实现画布交互；React Flow 状态仅作为视图状态，不作为文档格式或权威数据源。
 - Parser 拒绝未知结构，Serializer 对 Graph、节点、连线和属性键进行确定性排序；接口数组保留用户拖动后的声明顺序。找不到 Catalog 节点类型时仍保留全部原始节点数据。
-- Core Operation 覆盖 Graph、节点、内嵌子图、公开接口、连线和安全节点类型替换。
+- Core Operation 覆盖 Graph、节点、内嵌子图、公开接口、连线、安全节点类型替换和稳定元素 ID 重命名；`graph.renameElement` 会同步修正所有结构与连接端点。
 
 节点标题与 Catalog 字段直接在画布节点上编辑，节点类型只展示不可直接改写。用户通过节点右键菜单请求替换，Core 仅接受不会丢失属性或连线的候选，并以一个 Operation 完成替换。完整落地契约见 `GraphSemanticModel.md`。当前实现范围仍只包含离线编辑，不连接 Unity。
 
@@ -426,7 +426,7 @@ Reference Provider 提供：
 
 编辑器、MCP 和 AI 都使用相同 Reference Service，不直接理解各业务数据库。
 
-当前 Reference V1 已在 Core、Graph、Entity、Structured、Table、VS Code 与 stdio MCP 中落地。共享 Field Definition 使用 `reference.kind`、结构化 `target` 和 `allowMissing` 声明引用，文档只保存字符串或数值稳定键。首个 `table.row` Provider 按 Project Registry、Table Catalog、有效分表行与 `rowDisplayNamePattern` 搜索和解析记录；VS Code 提供原生选择、诊断和跳转，MCP 提供相同的结构化 search/resolve，并在 GraphOperation、StructuredOperation 和 TableOperation 写入时拒绝新引入的引用错误。完整契约见 `ReferenceSystem.md`。
+当前 Reference System 已在 Core、Graph、Entity、Structured、Table、VS Code 与 stdio MCP 中落地。共享 Field Definition 使用 `reference.kind`、结构化 `target` 和 `allowMissing` 声明引用，文档只保存字符串或数值稳定键。内置 `document`、`graph.element` 与 `table.row` Provider 分别按 Document Type、完整 Graph 元素作用域和 Table Catalog 有效分表行解析稳定目标；VS Code 提供原生选择、诊断和跳转，MCP 提供相同的结构化 search/resolve 与带预览基线的项目重构。完整契约见 `ReferenceSystem.md`。
 
 ## VS Code 基础插件
 
@@ -643,7 +643,7 @@ AI Host
 
 MCP Server 独立加载 Authoring Project，并按需连接 Unity，不要求 VS Code 正在运行。多个 AI Agent 启动各自的 MCP Server，通过 `baseHash`、原子文件写入和调试 Lease 协调。
 
-当前已落地的 `Tools/VisualBridgeMcp` 是仅面向本地 Authoring Project 的 stdio 垂直切片。它从进程工作目录或 `VISUALBRIDGE_WORKSPACE` 环境变量确定发现根目录，复用 Core Project File Parser、Built-in Graph 的 Parser/Catalog/Validator/GraphOperation/Serializer，以及 Built-in Table 的 Catalog、CSV/XLSX Codec、有效分表行、Validator 和 TableOperation。当前不提供独立 CLI，不连接 Unity，也不包含 Runtime/Debug 能力。具体工具与写入结果契约见 `VisualBridgeMcp.md`。
+当前已落地的 `Tools/VisualBridgeMcp` 是仅面向本地 Authoring Project 的 stdio 垂直切片。它从进程工作目录或 `VISUALBRIDGE_WORKSPACE` 环境变量确定发现根目录，复用 Core Project/Reference/Refactor、Built-in Graph/Entity/Structured/Table 的 Parser、Catalog、Operation、Validator、Serializer 与 Table Codec。MCP 支持按来源 `baseHash` 预览并原子提交项目级引用重构。当前不提供独立 CLI，不连接 Unity，也不包含 Runtime/Debug 能力。具体工具与写入结果契约见 `VisualBridgeMcp.md`。
 
 ### MCP 能力边界
 
@@ -830,7 +830,7 @@ VisualBridge/
 
 阶段目标是证明“文本源文件 -> VisualBridgeCore -> 校验与确定性修改”。
 
-Project、Graph Core、Entity Core、Structured Core、Table Core、共享 Form Field、Reference V1、Document Index 和最小 stdio MCP 垂直切片现已落地。四类文档分别由 `TestData` 固定样例及 Node 自动化测试持续验证；Unity Catalog Exporter、Importer、Runtime 和 Debug 仍不在本阶段范围内。
+Project、Graph Core、Entity Core、Structured Core、Table Core、共享 Form Field、Reference System、Project Refactoring、Document Index 和 stdio MCP 垂直切片现已落地。四类文档分别由 `TestData` 固定样例及 Node 自动化测试持续验证；Unity Catalog Exporter、Importer、Runtime 和 Debug 仍不在本阶段范围内。
 
 ### 阶段二：VS Code 编辑闭环
 
@@ -869,7 +869,7 @@ Project、Graph Core、Entity Core、Structured Core、Table Core、共享 Form 
 
 ### 阶段六：更多 Document Type
 
-- Graph、Entity、Structured、Table 与 `table.row` 引用已完成首个版本；继续增加新的 Document Type 或 Reference Provider。
+- Graph、Entity、Structured、Table 与 `document`/`graph.element`/`table.row` 引用和项目级重构已完成当前版本；继续增加新的 Document Type 或 Reference Provider。
 - 验证 Form、Reference、Validation 和扩展机制是否真正通用。
 - 根据两个垂直切片提炼共享 API，避免只为 Graph 过度抽象。
 
