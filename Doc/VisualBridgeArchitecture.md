@@ -224,7 +224,7 @@ VisualBridge Project File 不保存编辑器窗口状态、连接端口、当前
   -> 监听文件变化
 ```
 
-首次建立工程索引时只读取文档概要。当前打开、被引用或参与校验的文档再完整解析。后续使用文件监听增量更新，不在每次打开文档时全量重扫。
+工程索引的宿主实现允许按规模选择概要扫描或完整语义快照，但索引结果必须使用各 Document Type 既有 Parser、Catalog Registry、Validator 和 Reference Collector，不允许另建简化语义。当前 VS Code Document Browser V1 在激活、Project 变化和匹配文件保存或增删后建立四类文档的完整语义快照，用于错误和引用入口；它不会在每次打开文档时重扫。后续大工程可改为按 Document Type 和文件增量刷新，但不得改变稳定排序、诊断和引用结果。
 
 ## Document System
 
@@ -445,7 +445,7 @@ Reference Provider 提供：
 
 ### 插件生命周期
 
-- 基础插件是一个 N 合一 VS Code 扩展，Graph、Entity、Table/Excel、Structured Config、Debug 和 Unity Connection 是其内部功能模块。
+- 基础插件是一个 N 合一 VS Code 扩展，Document Browser、Graph、Entity、Table/Excel、Structured Config、Debug 和 Unity Connection 是其内部功能模块。
 - 插件实例按 VS Code Extension Host/窗口创建。
 - 一个插件实例只有一个项目注册表和连接管理器。
 - 一个窗口可以持有多个 ProjectContext 和多个 UnityConnection。
@@ -459,7 +459,7 @@ VS Code 扩展一旦在某个窗口内激活，通常持续到该窗口关闭或
 
 ### 原生 Explorer 与文件编辑器关联
 
-用户直接使用 VS Code 原生 Explorer，不要求使用平台自定义文件树，也不要求先执行“启动插件”命令。VS Code 工作区中只有发现并成功解析 VisualBridge Project File 后，才启用 VisualBridge 工程功能。插件启用后，用户在 Explorer、Quick Open、搜索结果或引用跳转中打开该工程声明的指定类型文件时，才创建对应的编辑窗口：
+用户继续使用 VS Code 原生 Explorer 处理普通文件，不要求先执行“启动插件”命令。基础插件同时提供补充性的 Document Browser，以 Project / Document Type 语义组织 Authoring Document、诊断和引用；它不是第二份文件所有权或权威状态。VS Code 工作区中只有发现并成功解析 VisualBridge Project File 后，才启用这些功能。插件启用后，用户在 Explorer、Document Browser、Quick Open、搜索结果或引用跳转中打开该工程声明的指定类型文件时，才创建对应的编辑窗口：
 
 ```text
 VS Code 原生 Explorer
@@ -469,9 +469,14 @@ VS Code 原生 Explorer
   -> Custom Editor 匹配并校验文件归属
   -> 按需加载 Document Type 模块
   -> 创建 DocumentSession 和 Webview
+
+VisualBridge Document Browser
+  -> 共享索引按 Project / Document Type 聚合
+  -> 搜索、创建、校验、引用与错误入口
+  -> 打开时仍交回同一 Project Registry 路由
 ```
 
-插件工程功能的启用条件是“当前 Workspace 中存在有效的 VisualBridge Project File”；具体编辑窗口的创建条件是“有效 ProjectContext 内的指定类型文件被打开”。打开入口不依赖 Explorer；Quick Open、搜索结果、引用跳转和命令打开应获得相同行为。
+插件工程功能的启用条件是“当前 Workspace 中存在有效的 VisualBridge Project File”；具体编辑窗口的创建条件是“有效 ProjectContext 内的指定类型文件被打开”。打开入口不依赖 Explorer；Document Browser、Quick Open、搜索结果、引用跳转和命令打开应获得相同行为。
 
 文件关联遵循以下规则：
 
@@ -480,7 +485,7 @@ VS Code 原生 Explorer
 - Authoring Project 需要默认接管通用格式时，应通过 `.code-workspace` 或工作区级 `workbench.editorAssociations` 只影响当前工程窗口。
 - VisualBridge Project File 负责声明该工程启用的 Document Type、文件匹配规则和功能模块；Custom Editor 打开后仍需验证文件属于有效 ProjectContext。
 - 插件不得用扩展名直接推断 `graph`、`entity` 等编辑器大类；必须由 Project Registry 先解析匹配的 Document Type，再读取其 `editor` 和稳定 `id`。
-- VS Code 扩展清单中的 Custom Editor selector 是静态的。`.vbgraph`、`.vbentity` 等只提供默认便利关联；Project 自定义扩展名通过可选的通配 Custom Editor、`VisualBridge: Open Document` 或工程级 `workbench.editorAssociations` 进入相同路由。
+- VS Code 扩展清单中的 Custom Editor selector 是静态的。`.vbgraph`、`.vbentity` 等只提供默认便利关联；Project 自定义扩展名通过 Document Browser、可选的通配 Custom Editor、`VisualBridge: Open Document` 或工程级 `workbench.editorAssociations` 进入相同路由。
 - 未发现有效 VisualBridge Project File 时不启用工程功能；不属于有效 ProjectContext 的通用文件不创建业务 DocumentSession，并使用默认编辑器打开。
 - Custom Editor 的静态声明即使存在，也只表示编辑器可用；没有打开对应文件时不加载 Excel、Graph 等重模块。
 
@@ -823,7 +828,7 @@ VisualBridge/
 
 阶段目标是证明“文本源文件 -> VisualBridgeCore -> 校验与确定性修改”。
 
-Project、Graph Core、Entity Core、Table Core、共享 Form Field、Reference V1 和最小 stdio MCP 垂直切片现已落地。Graph、Entity 与 Table 分别由 `TestData/GraphSemanticProject`、`TestData/EntitySemanticProject` 和 `TestData/TableSemanticProject` 固定样例及 Node 自动化测试持续验证；Unity Catalog Exporter、Importer、Runtime 和 Debug 仍不在本阶段范围内。
+Project、Graph Core、Entity Core、Structured Core、Table Core、共享 Form Field、Reference V1、Document Index 和最小 stdio MCP 垂直切片现已落地。四类文档分别由 `TestData` 固定样例及 Node 自动化测试持续验证；Unity Catalog Exporter、Importer、Runtime 和 Debug 仍不在本阶段范围内。
 
 ### 阶段二：VS Code 编辑闭环
 
@@ -832,7 +837,7 @@ Project、Graph Core、Entity Core、Table Core、共享 Form Field、Reference 
 - 实现 Entity / Component 卡片编辑和共享 Form Field 的最小能力。
 - 实现 CSV/XLSX Table、项目级表头行、分表标签与共享字段检查器。
 - 通过 `WorkspaceEdit` 完成文本 Document 的保存和 Undo/Redo，并实现外部变更检测、覆盖确认与放弃刷新。
-- 建立 Project Tree、Problems 和状态栏。
+- 建立统一 Document Browser、跨文档搜索/创建、Problems、引用关系和状态栏。
 
 阶段目标是人工与 AI 能编辑同一源文件，并得到一致结果。
 
@@ -862,7 +867,7 @@ Project、Graph Core、Entity Core、Table Core、共享 Form Field、Reference 
 
 ### 阶段六：更多 Document Type
 
-- Table Document 与 `table.row` 引用已完成首个版本；继续实现 Structured Config 或增加新的 Reference Provider。
+- Graph、Entity、Structured、Table 与 `table.row` 引用已完成首个版本；继续增加新的 Document Type 或 Reference Provider。
 - 验证 Form、Reference、Validation 和扩展机制是否真正通用。
 - 根据两个垂直切片提炼共享 API，避免只为 Graph 过度抽象。
 
@@ -901,7 +906,7 @@ Domain Reload 会中断连接。Unity Bridge 重新登记实例，VS Code 和 MC
 
 ### 大型工程性能
 
-工程索引只读取概要，文档按需完整解析。Provider 和 Webview 不因任意文件变化重建全部工程状态。
+索引语义必须来自正式 Parser、Catalog Registry、Validator 和 Reference Collector。Document Browser V1 在激活、Project 变化和匹配源保存或增删后重建完整语义快照，不因每次文件打开或键盘输入重建；大工程后续按 Document Type 和单文件增量刷新。Provider 和 Webview 不因无关文件变化重建全部工程状态。
 
 ## 已确定的架构决策
 
@@ -914,7 +919,7 @@ Domain Reload 会中断连接。Unity Bridge 重新登记实例，VS Code 和 MC
 - Document Type 是核心扩展点。
 - 基础插件提供 Graph、Form、Table、Reference 等通用原语。
 - 基础插件采用 N 合一扩展形式，各 Document Type 模块按文件打开事件延迟加载。
-- 用户使用 VS Code 原生 Explorer；默认 VisualBridge 后缀可以直接进入对应 Custom Editor。Project 自定义后缀由 `VisualBridge: Open Document` 或工程级编辑器关联进入通配 Custom Editor，随后统一由 Project Registry 按 Document Type 路由，不使用自定义文件树。
+- 用户使用 VS Code 原生 Explorer 处理普通文件，并可使用补充性的 Document Browser 浏览语义文档、诊断和引用。默认 VisualBridge 后缀可以直接进入对应 Custom Editor；Project 自定义后缀由 Document Browser、`VisualBridge: Open Document` 或工程级编辑器关联进入通配 Custom Editor，随后统一由 Project Registry 按 Document Type 路由。
 - 插件实例按 VS Code 窗口隔离，每个文件创建独立 DocumentSession，多个文件共享当前窗口的 Extension Host。
 - 平台专属格式可以默认关联自定义编辑器，`.xlsx` 等通用格式只通过 Authoring Project 的工作区级关联在当前工程窗口接管。
 - Table Document 提供统一语义模型，Excel 是可选权威载体或导入导出 Codec；AI 不直接读写 `.xlsx` 和 `.csv`，必须通过 MCP 的搜索、查询和修改能力访问。

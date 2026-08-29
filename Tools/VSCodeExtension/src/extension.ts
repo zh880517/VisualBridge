@@ -1,8 +1,12 @@
 import * as vscode from "vscode";
 import { TABLE_EDITOR_ID } from "@visualbridge/table";
+import { createDocument } from "./commands/createDocument";
 import { createEntityDocument } from "./commands/createEntityDocument";
 import { createGraphDocument } from "./commands/createGraphDocument";
 import { createStructuredDocument } from "./commands/createStructuredDocument";
+import { createTableDocument } from "./commands/createTableDocument";
+import { DocumentBrowser } from "./document/documentBrowser";
+import { WorkspaceDocumentIndex } from "./document/workspaceDocumentIndex";
 import {
   DEFAULT_EDITOR_VIEW_TYPE,
   DocumentEditorProvider,
@@ -19,8 +23,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const output = vscode.window.createOutputChannel("VisualBridge", { log: true });
   const projectDiagnostics = vscode.languages.createDiagnosticCollection("visualbridge-project");
   const documentDiagnostics = vscode.languages.createDiagnosticCollection("visualbridge-document");
+  const workspaceDiagnostics = vscode.languages.createDiagnosticCollection("visualbridge-workspace");
   const projects = new ProjectRegistry(projectDiagnostics, output);
   const references = new WorkspaceReferenceService(projects, output);
+  const documents = new WorkspaceDocumentIndex(projects, references, workspaceDiagnostics, output);
+  const browser = new DocumentBrowser(projects, documents, references);
   const editorProvider = new DocumentEditorProvider(
     context.extensionUri,
     projects,
@@ -57,8 +64,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     output,
     projectDiagnostics,
     documentDiagnostics,
+    workspaceDiagnostics,
     projects,
     references,
+    documents,
+    browser,
     status,
     projects.onDidChange(updateStatus),
     vscode.commands.registerCommand("visualbridge.refreshProjects", async () => {
@@ -98,6 +108,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("visualbridge.createStructuredDocument", async () => {
       await createStructuredDocument(projects);
     }),
+    vscode.commands.registerCommand("visualbridge.createTableDocument", async () => {
+      await createTableDocument(projects);
+    }),
+    vscode.commands.registerCommand("visualbridge.createDocument", async () => {
+      await createDocument(projects);
+    }),
     vscode.commands.registerCommand(REVEAL_REFERENCE_COMMAND, async (location) => {
       await tableEditorProvider.revealReference(location);
     }),
@@ -117,6 +133,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   await projects.initialize();
+  await documents.initialize();
   updateStatus();
   output.appendLine("[extension] VisualBridge extension shell activated.");
 }

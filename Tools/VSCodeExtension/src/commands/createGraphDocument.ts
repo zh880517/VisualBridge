@@ -10,15 +10,25 @@ import {
 import { loadGraphCatalogRegistry } from "../catalog/graphCatalogLoader";
 import type { ProjectRegistry } from "../project/projectRegistry";
 import { OPTIONAL_EDITOR_VIEW_TYPE } from "../editor/documentEditorProvider";
-import { selectDocumentType, selectProject, suggestDefaultTarget } from "./createDocumentSupport";
+import {
+  selectDocumentType,
+  selectProject,
+  suggestDefaultTarget,
+  validateCreateDocumentSelection,
+  type CreateDocumentSelection,
+} from "./createDocumentSupport";
 
-export async function createGraphDocument(projects: ProjectRegistry): Promise<void> {
-  const project = await selectProject(projects.projects, "Graph Document");
+export async function createGraphDocument(
+  projects: ProjectRegistry,
+  requestedSelection?: CreateDocumentSelection,
+): Promise<void> {
+  const selection = validateCreateDocumentSelection(requestedSelection, GRAPH_EDITOR_ID);
+  const project = selection?.project ?? await selectProject(projects.projects, "Graph Document");
   if (project === undefined) {
     return;
   }
 
-  const graphDocumentType = await selectDocumentType(project, GRAPH_EDITOR_ID, "Graph");
+  const graphDocumentType = selection?.documentType ?? await selectDocumentType(project, GRAPH_EDITOR_ID, "Graph");
   if (graphDocumentType === undefined) {
     return;
   }

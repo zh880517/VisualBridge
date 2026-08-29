@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build --workspace @visualbridge/core && npm run build && node --test dist/test/tableSemantics.test.js dist/test/tableReferences.test.js"
+    "test": "npm run build --workspace @visualbridge/core && npm run build && node --test dist/test/tableSemantics.test.js dist/test/tableReferences.test.js dist/test/tableSourceFactory.test.js"
   },
   "dependencies": {
     "csv-parse": "^7.0.2",

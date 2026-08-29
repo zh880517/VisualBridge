@@ -47,6 +47,71 @@
         "command": "visualbridge.createStructuredDocument",
         "title": "VisualBridge: Create Structured Config",
         "enablement": "visualbridge.hasProjects"
+      },
+      {
+        "command": "visualbridge.createTableDocument",
+        "title": "VisualBridge: Create Table Document",
+        "enablement": "visualbridge.hasProjects"
+      },
+      {
+        "command": "visualbridge.createDocument",
+        "title": "VisualBridge: Create Document",
+        "enablement": "visualbridge.hasProjects",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "visualbridge.documentBrowser.refresh",
+        "title": "Refresh Documents",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "visualbridge.documentBrowser.search",
+        "title": "Search Documents",
+        "icon": "$(search)"
+      },
+      {
+        "command": "visualbridge.documentBrowser.validateAll",
+        "title": "Validate All Documents",
+        "icon": "$(pass)"
+      },
+      {
+        "command": "visualbridge.documentBrowser.open",
+        "title": "Open Document",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "visualbridge.documentBrowser.create",
+        "title": "Create Document",
+        "icon": "$(add)"
+      },
+      {
+        "command": "visualbridge.documentBrowser.revealReference",
+        "title": "Reveal Reference",
+        "icon": "$(link-external)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "visualbridge",
+          "title": "VisualBridge",
+          "icon": "assets/visualbridge-view.svg"
+        }
+      ]
+    },
+    "views": {
+      "visualbridge": [
+        {
+          "id": "visualbridge.documents",
+          "name": "Documents"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "visualbridge.documents",
+        "contents": "No valid VisualBridge Project was found.\n[Refresh Projects](command:visualbridge.refreshProjects)",
+        "when": "!visualbridge.hasProjects"
       }
     ],
     "menus": {
@@ -55,6 +120,45 @@
           "command": "visualbridge.openDocument",
           "when": "visualbridge.hasProjects && resourceScheme == file",
           "group": "navigation@50"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "visualbridge.documentBrowser.search",
+          "when": "view == visualbridge.documents",
+          "group": "navigation@1"
+        },
+        {
+          "command": "visualbridge.documentBrowser.create",
+          "when": "view == visualbridge.documents && visualbridge.hasProjects",
+          "group": "navigation@2"
+        },
+        {
+          "command": "visualbridge.documentBrowser.validateAll",
+          "when": "view == visualbridge.documents && visualbridge.hasProjects",
+          "group": "navigation@3"
+        },
+        {
+          "command": "visualbridge.documentBrowser.refresh",
+          "when": "view == visualbridge.documents",
+          "group": "navigation@4"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "visualbridge.documentBrowser.create",
+          "when": "view == visualbridge.documents && viewItem == visualbridge.documentType",
+          "group": "inline@1"
+        },
+        {
+          "command": "visualbridge.documentBrowser.open",
+          "when": "view == visualbridge.documents && (viewItem == visualbridge.document || viewItem == visualbridge.source || viewItem == visualbridge.diagnostic || viewItem == visualbridge.incomingReference)",
+          "group": "inline@1"
+        },
+        {
+          "command": "visualbridge.documentBrowser.revealReference",
+          "when": "view == visualbridge.documents && viewItem == visualbridge.outgoingReference",
+          "group": "inline@1"
         }
       ]
     },

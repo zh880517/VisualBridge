@@ -9,14 +9,24 @@ import {
 import { loadStructuredCatalogRegistry } from "../catalog/structuredCatalogLoader";
 import type { ProjectRegistry } from "../project/projectRegistry";
 import { OPTIONAL_EDITOR_VIEW_TYPE } from "../editor/documentEditorProvider";
-import { selectDocumentType, selectProject, suggestDefaultTarget } from "./createDocumentSupport";
+import {
+  selectDocumentType,
+  selectProject,
+  suggestDefaultTarget,
+  validateCreateDocumentSelection,
+  type CreateDocumentSelection,
+} from "./createDocumentSupport";
 
-export async function createStructuredDocument(projects: ProjectRegistry): Promise<void> {
-  const project = await selectProject(projects.projects, "Structured Config");
+export async function createStructuredDocument(
+  projects: ProjectRegistry,
+  requestedSelection?: CreateDocumentSelection,
+): Promise<void> {
+  const selection = validateCreateDocumentSelection(requestedSelection, STRUCTURED_EDITOR_ID);
+  const project = selection?.project ?? await selectProject(projects.projects, "Structured Config");
   if (project === undefined) {
     return;
   }
-  const documentType = await selectDocumentType(project, STRUCTURED_EDITOR_ID, "Structured Config");
+  const documentType = selection?.documentType ?? await selectDocumentType(project, STRUCTURED_EDITOR_ID, "Structured Config");
   if (documentType === undefined) {
     return;
   }

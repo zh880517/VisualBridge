@@ -2,6 +2,18 @@ import * as vscode from "vscode";
 import type { DocumentTypeDefinition } from "@visualbridge/core";
 import type { ProjectContext } from "../project/projectRegistry";
 
+export interface CreateDocumentSelection {
+  readonly project: ProjectContext;
+  readonly documentType: DocumentTypeDefinition;
+}
+
+export function validateCreateDocumentSelection(
+  selection: CreateDocumentSelection | undefined,
+  editorId: string,
+): CreateDocumentSelection | undefined {
+  return selection?.documentType.editor === editorId ? selection : undefined;
+}
+
 export async function selectProject(
   projects: readonly ProjectContext[],
   purpose: string,

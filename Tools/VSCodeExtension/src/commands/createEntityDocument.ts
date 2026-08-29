@@ -10,14 +10,24 @@ import {
 import { loadEntityCatalogRegistry } from "../catalog/entityCatalogLoader";
 import type { ProjectRegistry } from "../project/projectRegistry";
 import { OPTIONAL_EDITOR_VIEW_TYPE } from "../editor/documentEditorProvider";
-import { selectDocumentType, selectProject, suggestDefaultTarget } from "./createDocumentSupport";
+import {
+  selectDocumentType,
+  selectProject,
+  suggestDefaultTarget,
+  validateCreateDocumentSelection,
+  type CreateDocumentSelection,
+} from "./createDocumentSupport";
 
-export async function createEntityDocument(projects: ProjectRegistry): Promise<void> {
-  const project = await selectProject(projects.projects, "Entity Document");
+export async function createEntityDocument(
+  projects: ProjectRegistry,
+  requestedSelection?: CreateDocumentSelection,
+): Promise<void> {
+  const selection = validateCreateDocumentSelection(requestedSelection, ENTITY_EDITOR_ID);
+  const project = selection?.project ?? await selectProject(projects.projects, "Entity Document");
   if (project === undefined) {
     return;
   }
-  const documentType = await selectDocumentType(project, ENTITY_EDITOR_ID, "Entity");
+  const documentType = selection?.documentType ?? await selectDocumentType(project, ENTITY_EDITOR_ID, "Entity");
   if (documentType === undefined) {
     return;
   }
