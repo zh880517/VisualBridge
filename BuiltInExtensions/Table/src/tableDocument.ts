@@ -1,4 +1,8 @@
-import type { DocumentDiagnostic, JsonValue } from "@visualbridge/core";
+import {
+  replaceFieldReferenceValues,
+  type DocumentDiagnostic,
+  type JsonValue,
+} from "@visualbridge/core";
 import { cloneJsonValue, createDefaultProperties, validateFieldValue } from "@visualbridge/core";
 import type { TableSheetDefinition, TableTypeDefinition } from "./tableCatalog";
 import { resolveTableColumn, resolveTableSheet } from "./tableCatalog";
@@ -260,6 +264,43 @@ export function applyTableOperations(
     return { success: false, diagnostics: newErrors };
   }
   return { success: true, document: working, diagnostics: validation };
+}
+
+export function replaceTableReferenceValues(
+  document: TableDocument,
+  tableType: TableTypeDefinition,
+  occurrencePaths: ReadonlySet<string>,
+  replacement: string | number,
+): TableOperationResult {
+  const operations: TableOperation[] = [];
+  for (const sheet of document.sheets) {
+    const definition = resolveTableSheet(tableType, sheet.definitionId);
+    if (definition === undefined) {
+      continue;
+    }
+    for (const row of sheet.rows) {
+      const basePath = `sheets.${sheet.id}.rows.${row.id}.cells`;
+      const cells = replaceFieldReferenceValues(
+        row.cells,
+        definition.columns,
+        basePath,
+        (occurrence) => occurrencePaths.has(occurrence.path),
+        replacement,
+      );
+      for (const column of definition.columns) {
+        if (cells.changedPaths.some((path) => path === `${basePath}.${column.id}` || path.startsWith(`${basePath}.${column.id}.`) || path.startsWith(`${basePath}.${column.id}[`))) {
+          operations.push({
+            type: "table.setCell",
+            sheetId: sheet.id,
+            rowId: row.id,
+            columnId: column.id,
+            value: cells.properties[column.id]!,
+          });
+        }
+      }
+    }
+  }
+  return applyTableOperations(document, operations, tableType);
 }
 
 function applyOperation(

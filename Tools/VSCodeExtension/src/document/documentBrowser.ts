@@ -9,6 +9,7 @@ import { createDocument } from "../commands/createDocument";
 import type { CreateDocumentSelection } from "../commands/createDocumentSupport";
 import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
 import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
+import type { WorkspaceReferenceRefactor } from "../refactor/workspaceReferenceRefactor";
 import {
   WorkspaceDocumentIndex,
   type IncomingDocumentReference,
@@ -93,6 +94,7 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
     private readonly projects: ProjectRegistry,
     private readonly documents: WorkspaceDocumentIndex,
     private readonly references: WorkspaceReferenceService,
+    private readonly refactors: WorkspaceReferenceRefactor,
   ) {
     this.tree = vscode.window.createTreeView(DOCUMENT_BROWSER_VIEW_ID, {
       treeDataProvider: this,
@@ -123,6 +125,9 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
       }),
       vscode.commands.registerCommand("visualbridge.documentBrowser.revealReference", async (node?: DocumentBrowserNode) => {
         await this.revealReference(node);
+      }),
+      vscode.commands.registerCommand("visualbridge.documentBrowser.renameReferenceTarget", async (node?: DocumentBrowserNode) => {
+        await this.renameReferenceTarget(node);
       }),
     );
   }
@@ -461,6 +466,17 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
       node.reference.occurrence.definition,
       node.reference.occurrence.value,
     );
+  }
+
+  private async renameReferenceTarget(node?: DocumentBrowserNode): Promise<void> {
+    if (node?.kind !== "reference") {
+      return;
+    }
+    const source = node.direction === "incoming" ? node.incoming?.source : node.document;
+    if (source === undefined) {
+      return;
+    }
+    await this.refactors.rename(source, node.reference);
   }
 
   private creationSelection(node?: DocumentBrowserNode): CreateDocumentSelection | undefined {

@@ -12,6 +12,7 @@ import {
   createDefaultProperties,
   isJsonValue,
   normalizeJsonValue,
+  replaceFieldReferenceValues,
   resolveFieldDefinition,
   validateFieldProperties,
   validateFieldValue,
@@ -187,6 +188,56 @@ export function collectEntityReferences(
         : collectFieldReferences(component.properties, componentType.properties, `components[${index}].properties`);
     }),
   ];
+}
+
+export function replaceEntityReferenceValues(
+  document: EntityDocument,
+  registry: EntityCatalogRegistry,
+  occurrencePaths: ReadonlySet<string>,
+  replacement: string | number,
+): DocumentOperationResult<EntityDocument> {
+  const entityType = resolveEntityType(registry, document.entityTypeId);
+  if (entityType === undefined) {
+    return { success: false, diagnostics: validateEntityDocument(document, registry) };
+  }
+  const operations: EntityOperation[] = [];
+  const entityProperties = replaceFieldReferenceValues(
+    document.properties,
+    entityType.properties,
+    "properties",
+    (occurrence) => occurrencePaths.has(occurrence.path),
+    replacement,
+  );
+  for (const definition of entityType.properties) {
+    if (entityProperties.changedPaths.some((path) => path === `properties.${definition.id}` || path.startsWith(`properties.${definition.id}.`) || path.startsWith(`properties.${definition.id}[`))) {
+      operations.push({ type: "entity.setProperty", propertyId: definition.id, value: entityProperties.properties[definition.id]! });
+    }
+  }
+  document.components.forEach((component, index) => {
+    const componentType = resolveEntityComponentType(registry, component.componentTypeId);
+    if (componentType === undefined) {
+      return;
+    }
+    const basePath = `components[${index}].properties`;
+    const properties = replaceFieldReferenceValues(
+      component.properties,
+      componentType.properties,
+      basePath,
+      (occurrence) => occurrencePaths.has(occurrence.path),
+      replacement,
+    );
+    for (const definition of componentType.properties) {
+      if (properties.changedPaths.some((path) => path === `${basePath}.${definition.id}` || path.startsWith(`${basePath}.${definition.id}.`) || path.startsWith(`${basePath}.${definition.id}[`))) {
+        operations.push({
+          type: "entity.setComponentProperty",
+          componentId: component.id,
+          propertyId: definition.id,
+          value: properties.properties[definition.id]!,
+        });
+      }
+    }
+  });
+  return applyEntityOperations(document, operations, registry);
 }
 
 export function applyEntityOperations(

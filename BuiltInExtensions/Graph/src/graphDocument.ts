@@ -506,6 +506,63 @@ export function collectGraphReferences(
   });
 }
 
+export function replaceGraphReferenceValues(
+  document: GraphDocument,
+  catalog: GraphCatalogRegistry,
+  occurrencePaths: ReadonlySet<string>,
+  replacement: string | number,
+): DocumentOperationResult<GraphDocument> {
+  const operations: GraphOperation[] = [];
+  document.graphs.forEach((graph, graphIndex) => {
+    const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphType(catalog, graph.graphTypeId);
+    if (graphType !== undefined) {
+      const properties = replaceGraphPropertyReferences(
+        graph.properties,
+        graphType.properties,
+        `graphs[${graphIndex}].properties`,
+        occurrencePaths,
+        replacement,
+      );
+      if (properties !== graph.properties) {
+        operations.push({ type: "graph.updateGraph", graphId: graph.id, title: graph.title, properties });
+      }
+    }
+    graph.nodes.forEach((node, nodeIndex) => {
+      if (node.nodeTypeId === undefined) {
+        return;
+      }
+      const nodeType = resolveNodeType(catalog, node.nodeTypeId);
+      if (nodeType === undefined) {
+        return;
+      }
+      const properties = replaceGraphPropertyReferences(
+        node.properties,
+        nodeType.properties,
+        `graphs[${graphIndex}].nodes[${nodeIndex}].properties`,
+        occurrencePaths,
+        replacement,
+      );
+      if (properties !== node.properties) {
+        operations.push({ type: "graph.updateNode", graphId: graph.id, nodeId: node.id, title: node.title, properties });
+      }
+      node.dynamicPorts.forEach((port, portIndex) => {
+        const path = `graphs[${graphIndex}].nodes[${nodeIndex}].dynamicPorts[${portIndex}].value`;
+        if (occurrencePaths.has(path)) {
+          operations.push({
+            type: "graph.updateDynamicPort",
+            graphId: graph.id,
+            nodeId: node.id,
+            portId: port.id,
+            title: port.title,
+            value: replacement,
+          });
+        }
+      });
+    });
+  });
+  return applyGraphOperations(document, operations, catalog);
+}
+
 export function getGraphNodePorts(
   document: GraphDocument,
   node: GraphNode,
@@ -2323,6 +2380,31 @@ function collectPropertyReferences(
       ? [{ definition: definition.reference, value, path: `${path}.${definition.id}` }]
       : [];
   });
+}
+
+function replaceGraphPropertyReferences(
+  properties: Readonly<Record<string, JsonValue>>,
+  definitions: readonly GraphPropertyDefinition[],
+  path: string,
+  occurrencePaths: ReadonlySet<string>,
+  replacement: string | number,
+): Readonly<Record<string, JsonValue>> {
+  let next: Record<string, JsonValue> | undefined;
+  for (const definition of definitions) {
+    if (!occurrencePaths.has(`${path}.${definition.id}`)) {
+      continue;
+    }
+    const value = properties[definition.id]
+      ?? definition.aliases.map((alias) => properties[alias]).find((entry) => entry !== undefined)
+      ?? definition.defaultValue;
+    if ((typeof value !== "string" && typeof value !== "number") || typeof value !== typeof replacement) {
+      continue;
+    }
+    next ??= { ...properties };
+    definition.aliases.forEach((alias) => delete next![alias]);
+    next[definition.id] = replacement;
+  }
+  return next ?? properties;
 }
 
 function diagnosticCounts(diagnostics: readonly DocumentDiagnostic[]): Map<string, number> {

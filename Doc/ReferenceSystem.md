@@ -88,6 +88,8 @@ Document Operation 仍先在副本上完整执行。宿主分别校验修改前�
 
 Document Browser 使用同一 Reference Service 的解析候选展示每个文档的出站引用，并按候选 Location 的 Project、Document Type 与物理路径派生 `Referenced By` 关系。反向关系仅是工作区索引视图，不写回任何 Authoring Document；缺失或歧义引用继续使用本文件定义的诊断和解析状态。完整 Browser 契约见 `DocumentBrowser.md`。
 
+Project Refactoring V1 使用解析候选的完整 Location，而不是仅按引用值，批量重命名一个 `table.row` 目标键及所有唯一解析到该物理行的入站 occurrence。Graph、Entity、Structured 和 Table 分别通过既有 Operation 与 Serializer 修改；CSV 分表和 XLSX 参与同一个带哈希检查与回滚的 Host 事务。缺失、歧义、同值不同目标和已存在的新键都拒绝自动修改。完整契约见 `ProjectRefactoring.md`。
+
 ## 6. MCP
 
 `visualbridge_references` 提供两个动作：

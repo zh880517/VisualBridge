@@ -94,6 +94,8 @@ Document Item 图标和 `Problems` 分组直接展示当前索引快照中的 er
 - 缺失、歧义或 Provider 不可用分别使用错误或警告图标；
 - `Referenced By` 根据已解析候选的 Project、Document Type 与物理路径反向聚合来源文档。
 
+`References` 与 `Referenced By` 中唯一解析的 `table.row` 还提供通用 Replace 图标。该入口调用 Project Refactoring：以解析后的完整目标位置建立影响计划，预览所有 occurrence 和物理载体，再原子修改目标键与入站引用。它不执行文本查找替换，也不会修改同值但指向另一目标的字段。完整事务契约见 `ProjectRefactoring.md`。
+
 反向关系是索引派生数据，不写入 Authoring Document。V1 的实际 Provider 仍只有 `table.row`，后续 Provider 自动沿用相同 Browser 结构。
 
 ## 7. 验证边界

@@ -11,6 +11,7 @@ import {
   parseEntityDocument,
   resolveEntityComponentType,
   resolveEntityType,
+  replaceEntityReferenceValues,
   searchEntityComponentTypes,
   serializeEntityCatalog,
   serializeEntityDocument,
@@ -104,6 +105,14 @@ test("shared fields validate numeric, color, list, and custom object structures"
     value: 101,
     path: "properties.primarySkillId",
   }]);
+  const renamed = replaceEntityReferenceValues(
+    document,
+    registry,
+    new Set(["properties.primarySkillId"]),
+    202,
+  );
+  assert.equal(renamed.success, true, formatDiagnostics(renamed.diagnostics));
+  assert.equal(renamed.success && renamed.document.properties.primarySkillId, 202);
 
   const invalidLevel = applyEntityOperations(document, [{
     type: "entity.setProperty",

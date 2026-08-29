@@ -71,6 +71,10 @@ export class WorkspaceReferenceService implements vscode.Disposable {
     return this.createService(project).resolve(definition, value);
   }
 
+  public invalidate(): void {
+    this.tableDocuments.clear();
+  }
+
   public validate(
     project: ProjectContext,
     occurrences: readonly ReferenceOccurrence[],

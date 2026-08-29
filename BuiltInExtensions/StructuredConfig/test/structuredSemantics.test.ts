@@ -10,6 +10,7 @@ import {
   parseStructuredCatalog,
   parseStructuredDocument,
   resolveStructuredConfigType,
+  replaceStructuredReferenceValues,
   serializeStructuredCatalog,
   serializeStructuredDocument,
   validateStructuredDocument,
@@ -60,6 +61,15 @@ test("Structured fields validate full runtime-shaped values and collect cross-do
     value: 101,
     path: "properties.primarySkillId",
   }]);
+  const renamed = replaceStructuredReferenceValues(
+    document,
+    registry,
+    documentTypeId,
+    new Set(["properties.primarySkillId"]),
+    202,
+  );
+  assert.equal(renamed.success, true);
+  assert.equal(renamed.success && renamed.document.properties.primarySkillId, 202);
   const missing = { ...document, properties: { ...document.properties } };
   delete (missing.properties as Record<string, unknown>).maxPlayers;
   assert.ok(validateStructuredDocument(missing, registry, documentTypeId).some(

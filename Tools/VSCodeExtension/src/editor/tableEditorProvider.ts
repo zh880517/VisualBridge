@@ -20,7 +20,7 @@ import {
 } from "@visualbridge/table";
 import { createTableEditorHtml } from "@visualbridge/table-editor";
 import { loadTableCatalogRegistry } from "../catalog/tableCatalogLoader";
-import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
+import type { DocumentMatch, ProjectContext, ProjectRegistry } from "../project/projectRegistry";
 import { handleReferenceMessage } from "../reference/referenceMessages";
 import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
 
@@ -250,6 +250,12 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
     }
     this.pendingReveals.set(uri.toString(), { sheetId: location.sheetId, rowId: location.rowId });
     await vscode.commands.executeCommand("vscode.openWith", uri, TABLE_EDITOR_VIEW_TYPE);
+  }
+
+  public hasOpenProject(project: ProjectContext): boolean {
+    return [...this.panels.keys()].some((document) => (
+      document.match.project.markerUri.toString() === project.markerUri.toString()
+    ));
   }
 
   public async saveCustomDocument(document: TableCustomDocument): Promise<void> {

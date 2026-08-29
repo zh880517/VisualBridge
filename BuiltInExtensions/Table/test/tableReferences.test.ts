@@ -4,6 +4,7 @@ import { ReferenceService } from "@visualbridge/core";
 import {
   collectTableReferences,
   createTableRowReferenceProvider,
+  replaceTableReferenceValues,
   type TableDocument,
   type TableTypeDefinition,
 } from "../index";
@@ -96,4 +97,12 @@ test("table fields expose nested reference occurrences", () => {
     value: 1001,
     path: "sheets.skills-a.rows.row-1.cells.id",
   }]);
+  const renamed = replaceTableReferenceValues(
+    document,
+    referencedType,
+    new Set(["sheets.skills-a.rows.row-1.cells.id"]),
+    2001,
+  );
+  assert.equal(renamed.success, true);
+  assert.equal(renamed.success && renamed.document.sheets[0]?.rows[0]?.cells.id, 2001);
 });

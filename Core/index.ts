@@ -4,3 +4,4 @@ export * from "./Form/field";
 export * from "./Project/projectFile";
 export * from "./Project/projectMatcher";
 export * from "./Reference/reference";
+export * from "./Reference/referenceRefactor";

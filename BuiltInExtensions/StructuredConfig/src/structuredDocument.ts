@@ -11,6 +11,7 @@ import {
   createDefaultProperties,
   isJsonValue,
   normalizeJsonValue,
+  replaceFieldReferenceValues,
   resolveFieldDefinition,
   validateFieldProperties,
   validateFieldValue,
@@ -121,6 +122,32 @@ export function collectStructuredReferences(
   return configType === undefined
     ? []
     : collectFieldReferences(document.properties, configType.properties, "properties");
+}
+
+export function replaceStructuredReferenceValues(
+  document: StructuredDocument,
+  registry: StructuredCatalogRegistry,
+  configTypeId: string,
+  occurrencePaths: ReadonlySet<string>,
+  replacement: string | number,
+): DocumentOperationResult<StructuredDocument> {
+  const configType = resolveStructuredConfigType(registry, configTypeId);
+  if (configType === undefined) {
+    return { success: false, diagnostics: validateStructuredDocument(document, registry, configTypeId) };
+  }
+  const properties = replaceFieldReferenceValues(
+    document.properties,
+    configType.properties,
+    "properties",
+    (occurrence) => occurrencePaths.has(occurrence.path),
+    replacement,
+  );
+  const operations: StructuredOperation[] = configType.properties.flatMap((definition) => (
+    properties.changedPaths.some((path) => path === `properties.${definition.id}` || path.startsWith(`properties.${definition.id}.`) || path.startsWith(`properties.${definition.id}[`))
+      ? [{ type: "structured.setField" as const, fieldId: definition.id, value: properties.properties[definition.id]! }]
+      : []
+  ));
+  return applyStructuredOperations(document, operations, registry, configTypeId);
 }
 
 export function applyStructuredOperations(

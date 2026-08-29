@@ -3,7 +3,9 @@ import test from "node:test";
 import {
   ReferenceService,
   collectFieldReferences,
+  createReferenceValueRenamePlan,
   parseFieldDefinitions,
+  replaceFieldReferenceValues,
   type DocumentDiagnostic,
   type ReferenceCandidate,
   type ReferenceProvider,
@@ -99,6 +101,79 @@ test("reference service searches deterministically and validates resolved, missi
   const ambiguous = await service.resolve(definition, 1001);
   assert.equal(ambiguous.status, "ambiguous");
   assert.equal(ambiguous.candidates.length, 2);
+});
+
+test("field reference replacement follows nested definitions and materializes defaults", () => {
+  const diagnostics: DocumentDiagnostic[] = [];
+  const definitions = parseFieldDefinitions([{
+    id: "settings",
+    title: "Settings",
+    aliases: [],
+    valueType: "object",
+    defaultValue: { skills: [1001, 1002] },
+    fields: [{
+      id: "skills",
+      title: "Skills",
+      aliases: [],
+      valueType: "array",
+      defaultValue: [],
+      item: {
+        valueType: "number",
+        defaultValue: 0,
+        editor: { kind: "reference" },
+        reference: { kind: "table.row", target: { tableTypeId: "skills", sheetId: "skills" } },
+      },
+    }],
+  }], "fields", diagnostics);
+  assert.deepEqual(diagnostics, []);
+  const replaced = replaceFieldReferenceValues({}, definitions, "properties", (occurrence) => (
+    occurrence.path === "properties.settings.skills[1]"
+  ), 2002);
+  assert.deepEqual(replaced, {
+    properties: { settings: { skills: [1001, 2002] } },
+    changedPaths: ["properties.settings.skills[1]"],
+  });
+});
+
+test("reference rename plan follows one resolved target and sorts impacted occurrences", () => {
+  const definition = {
+    kind: "table.row",
+    target: { tableTypeId: "skills", sheetId: "skills" },
+    allowMissing: false,
+  } as const;
+  const selected = {
+    occurrence: { definition, value: 1001, path: "properties.skillId" },
+    resolution: { status: "resolved" as const, candidates: [candidate(1001, "Fireball", "Tables/Skills.csv", "skills:key-1001")] },
+  };
+  const result = createReferenceValueRenamePlan([{
+    projectId: "sample",
+    documentTypeId: "entity.hero",
+    editor: "entity",
+    path: "Entities/Hero.vbentity",
+    sourcePaths: ["Entities/Hero.vbentity"],
+    title: "Hero",
+    diagnostics: [],
+    references: [selected],
+  }, {
+    projectId: "sample",
+    documentTypeId: "structured.settings",
+    editor: "structured",
+    path: "Config/Settings.vbconfig",
+    sourcePaths: ["Config/Settings.vbconfig"],
+    title: "Settings",
+    diagnostics: [],
+    references: [{
+      occurrence: { definition, value: 1001, path: "properties.defaultSkill" },
+      resolution: selected.resolution,
+    }],
+  }], selected, 2001);
+  assert.equal(result.success, true);
+  if (result.success) {
+    assert.deepEqual(result.plan.changes.map((change) => change.path), [
+      "Entities/Hero.vbentity",
+      "Config/Settings.vbconfig",
+    ]);
+  }
 });
 
 function candidate(value: number, title: string, path: string, rowId: string): ReferenceCandidate {

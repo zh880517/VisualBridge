@@ -18,6 +18,7 @@ import {
   REVEAL_REFERENCE_COMMAND,
   WorkspaceReferenceService,
 } from "./reference/workspaceReferenceService";
+import { WorkspaceReferenceRefactor } from "./refactor/workspaceReferenceRefactor";
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const output = vscode.window.createOutputChannel("VisualBridge", { log: true });
@@ -27,7 +28,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const projects = new ProjectRegistry(projectDiagnostics, output);
   const references = new WorkspaceReferenceService(projects, output);
   const documents = new WorkspaceDocumentIndex(projects, references, workspaceDiagnostics, output);
-  const browser = new DocumentBrowser(projects, documents, references);
   const editorProvider = new DocumentEditorProvider(
     context.extensionUri,
     projects,
@@ -42,6 +42,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     documentDiagnostics,
     output,
   );
+  const refactors = new WorkspaceReferenceRefactor(
+    projects,
+    documents,
+    references,
+    tableEditorProvider,
+    output,
+  );
+  const browser = new DocumentBrowser(projects, documents, references, refactors);
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   status.name = "VisualBridge Projects";
   status.command = "visualbridge.refreshProjects";

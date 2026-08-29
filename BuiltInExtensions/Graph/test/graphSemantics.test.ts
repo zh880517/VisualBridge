@@ -11,6 +11,7 @@ import {
   isDataTypeAssignable,
   parseGraphCatalog,
   parseGraphDocument,
+  replaceGraphReferenceValues,
   resolveGraphType,
   resolveNodeType,
   searchGraphNodeTypes,
@@ -408,6 +409,15 @@ test("Graph properties preserve declarative table-row reference contracts", () =
       { value: 101, path: "graphs[1].nodes[1].properties.skillId" },
       { value: 101, path: "graphs[1].nodes[2].properties.skillId" },
     ]);
+  const renamed = replaceGraphReferenceValues(
+    referencedDocument,
+    registryResult.document,
+    new Set(["graphs[1].nodes[1].properties.skillId"]),
+    202,
+  );
+  assert.equal(renamed.success, true, formatDiagnostics(renamed.diagnostics));
+  assert.equal(renamed.success && renamed.document.graphs[1]?.nodes[1]?.properties.skillId, 202);
+  assert.equal(renamed.success && renamed.document.graphs[1]?.nodes[2]?.properties.skillId, undefined);
   const serialized = serializeGraphCatalog(referencedCommon);
   const reparsed = parseGraphCatalog(serialized);
   assert.equal(reparsed.success, true, formatDiagnostics(reparsed.diagnostics));

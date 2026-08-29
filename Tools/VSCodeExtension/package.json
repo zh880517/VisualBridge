@@ -88,6 +88,11 @@
         "command": "visualbridge.documentBrowser.revealReference",
         "title": "Reveal Reference",
         "icon": "$(link-external)"
+      },
+      {
+        "command": "visualbridge.documentBrowser.renameReferenceTarget",
+        "title": "Rename Reference Target",
+        "icon": "$(replace)"
       }
     ],
     "viewsContainers": {
@@ -159,6 +164,11 @@
           "command": "visualbridge.documentBrowser.revealReference",
           "when": "view == visualbridge.documents && viewItem == visualbridge.outgoingReference",
           "group": "inline@1"
+        },
+        {
+          "command": "visualbridge.documentBrowser.renameReferenceTarget",
+          "when": "view == visualbridge.documents && (viewItem == visualbridge.outgoingReference || viewItem == visualbridge.incomingReference)",
+          "group": "inline@2"
         }
       ]
     },

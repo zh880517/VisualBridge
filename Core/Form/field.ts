@@ -162,6 +162,39 @@ export function collectFieldReferences(
   });
 }
 
+export interface FieldReferenceReplacementResult {
+  readonly properties: Readonly<Record<string, JsonValue>>;
+  readonly changedPaths: readonly string[];
+}
+
+export function replaceFieldReferenceValues(
+  properties: Readonly<Record<string, JsonValue>>,
+  definitions: readonly FieldDefinition[],
+  path: string,
+  shouldReplace: (occurrence: ReferenceOccurrence) => boolean,
+  replacement: string | number,
+): FieldReferenceReplacementResult {
+  const next = { ...properties };
+  const changedPaths: string[] = [];
+  for (const definition of definitions) {
+    const value = resolvePropertyValue(properties, definition);
+    const replaced = replaceValueReferences(
+      value,
+      definition,
+      `${path}.${definition.id}`,
+      shouldReplace,
+      replacement,
+      changedPaths,
+    );
+    if (!replaced.changed) {
+      continue;
+    }
+    definition.aliases.forEach((alias) => delete next[alias]);
+    next[definition.id] = replaced.value;
+  }
+  return { properties: next, changedPaths };
+}
+
 export function cloneJsonValue<T extends JsonValue>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
@@ -511,6 +544,58 @@ function collectValueReferences(
     value.forEach((entry, index) => result.push(...collectValueReferences(entry, definition.item!, `${path}[${index}]`)));
   }
   return result;
+}
+
+function replaceValueReferences(
+  value: JsonValue,
+  definition: FieldValueDefinition,
+  path: string,
+  shouldReplace: (occurrence: ReferenceOccurrence) => boolean,
+  replacement: string | number,
+  changedPaths: string[],
+): { readonly value: JsonValue; readonly changed: boolean } {
+  if (definition.reference !== undefined && (typeof value === "string" || typeof value === "number")) {
+    const occurrence = { definition: definition.reference, value, path };
+    if (shouldReplace(occurrence)) {
+      if (typeof value !== typeof replacement) {
+        throw new Error(`Reference replacement at '${path}' must preserve the value type.`);
+      }
+      changedPaths.push(path);
+      return { value: replacement, changed: true };
+    }
+  }
+  if (definition.valueType === "object" && isRecord(value)) {
+    const nested = replaceFieldReferenceValues(
+      value as Readonly<Record<string, JsonValue>>,
+      definition.fields,
+      path,
+      shouldReplace,
+      replacement,
+    );
+    if (nested.changedPaths.length > 0) {
+      changedPaths.push(...nested.changedPaths);
+      return { value: nested.properties, changed: true };
+    }
+  }
+  if (definition.valueType === "array" && definition.item !== undefined && Array.isArray(value)) {
+    let changed = false;
+    const items = value.map((item, index) => {
+      const replaced = replaceValueReferences(
+        item,
+        definition.item!,
+        `${path}[${index}]`,
+        shouldReplace,
+        replacement,
+        changedPaths,
+      );
+      changed ||= replaced.changed;
+      return replaced.value;
+    });
+    if (changed) {
+      return { value: items, changed: true };
+    }
+  }
+  return { value, changed: false };
 }
 
 function resolvePropertyValue(

@@ -226,6 +226,8 @@ VisualBridge Project File 不保存编辑器窗口状态、连接端口、当前
 
 工程索引的宿主实现允许按规模选择概要扫描或完整语义快照，但索引结果必须使用各 Document Type 既有 Parser、Catalog Registry、Validator 和 Reference Collector，不允许另建简化语义。当前 VS Code Document Browser V1 在激活、Project 变化和匹配文件保存或增删后建立四类文档的完整语义快照，用于错误和引用入口；它不会在每次打开文档时重扫。后续大工程可改为按 Document Type 和文件增量刷新，但不得改变稳定排序、诊断和引用结果。
 
+项目级重构同样建立在语义索引和 Reference Provider 之上。当前 V1 只重命名唯一解析的 `table.row` 键值：Core 生成按目标位置匹配的确定性影响计划，各 Document Type 通过原有 Operation/Validator/Serializer 生成修改，Host 使用源哈希、临时载体和 rollback 副本提交多文件事务。不得退化为跨工程文本替换。完整约束见 `ProjectRefactoring.md`。
+
 ## Document System
 
 ### Document Type
