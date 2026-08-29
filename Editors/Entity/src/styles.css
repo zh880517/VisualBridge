@@ -253,11 +253,22 @@ code {
   height: 18px;
   min-height: 18px;
   padding: 0;
-  color: var(--vscode-checkbox-foreground);
-  background: var(--vscode-checkbox-background);
-  border: 1px solid var(--vscode-checkbox-border);
+  color: var(--vscode-checkbox-foreground, var(--vscode-foreground));
+  background: var(--vscode-checkbox-background, var(--vscode-input-background));
+  border: 1px solid var(--vscode-checkbox-border, var(--vscode-input-border, var(--vscode-panel-border)));
   border-radius: 2px;
   place-items: center;
+}
+
+.component-enabled:hover:not(:disabled),
+.vb-checkbox:hover:not(:disabled) {
+  border-color: var(--vscode-focusBorder);
+}
+
+.component-enabled:focus-visible,
+.vb-checkbox:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
 }
 
 .component-enabled[data-checked],
@@ -465,14 +476,30 @@ code {
 
 .vb-color-picker-panel {
   display: grid;
-  grid-column: 1 / -1;
   gap: 10px;
-  width: min(280px, 100%);
+  width: 280px;
+  max-width: calc(100vw - 16px);
   padding: 10px;
   background: var(--vscode-editorWidget-background);
   border: 1px solid var(--vscode-editorWidget-border);
   border-radius: 5px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.vb-color-picker-positioner {
+  z-index: 20;
+}
+
+.vb-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .vb-color-picker-panel .react-colorful {

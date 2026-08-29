@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactElement } from "react";
 import { Button } from "@base-ui/react/button";
 import { Checkbox } from "@base-ui/react/checkbox";
+import { Popover } from "@base-ui/react/popover";
 import { HexAlphaColorPicker, HexColorPicker } from "react-colorful";
 import { CommonIcon, IconButton } from "./commonIcons";
 import type {
@@ -339,24 +340,52 @@ function ColorEditor(props: {
   };
   return (
     <div className="vb-color-editor">
-      <Button
-        type="button"
-        className="vb-color-swatch"
-        aria-label={`${props.ariaLabel ?? "颜色"} 选择器`}
-        aria-expanded={pickerOpen}
-        disabled={props.disabled}
-        title={pickerOpen ? "关闭颜色选择器" : "打开颜色选择器"}
-        onClick={() => {
-          if (pickerOpen) {
-            cancelPicker();
-          } else {
-            setDraft(props.value);
-            setPickerOpen(true);
-          }
+      <Popover.Root
+        open={pickerOpen}
+        onOpenChange={(open) => {
+          setDraft(props.value);
+          setPickerOpen(open);
         }}
       >
-        <span style={{ backgroundColor: previewValue }} />
-      </Button>
+        <Popover.Trigger
+          className="vb-color-swatch"
+          aria-label={`${props.ariaLabel ?? "颜色"} 选择器`}
+          disabled={props.disabled}
+          title={pickerOpen ? "关闭颜色选择器" : "打开颜色选择器"}
+        >
+          <span style={{ backgroundColor: previewValue }} />
+        </Popover.Trigger>
+        <Popover.Portal>
+          <Popover.Positioner className="vb-color-picker-positioner" sideOffset={6} align="start">
+            <Popover.Popup className="vb-color-picker-panel">
+              <Popover.Title className="vb-sr-only">{props.ariaLabel ?? "颜色"}选择器</Popover.Title>
+              {supportsAlpha
+                ? (
+                  <HexAlphaColorPicker
+                    aria-label={`${props.ariaLabel ?? "颜色"} RGBA`}
+                    color={pickerValue}
+                    onChange={updatePickerDraft}
+                  />
+                )
+                : (
+                  <HexColorPicker
+                    aria-label={`${props.ariaLabel ?? "颜色"} RGB`}
+                    color={pickerValue}
+                    onChange={updatePickerDraft}
+                  />
+                )}
+              <div className="vb-color-picker-preview">
+                <span style={{ backgroundColor: previewValue }} />
+                <code>{previewValue}</code>
+              </div>
+              <div className="vb-color-picker-actions">
+                <Popover.Close className="secondary">取消</Popover.Close>
+                <Button type="button" disabled={!validDraft} onClick={applyPicker}>应用</Button>
+              </div>
+            </Popover.Popup>
+          </Popover.Positioner>
+        </Popover.Portal>
+      </Popover.Root>
       <input
         type="text"
         aria-label={props.ariaLabel}
@@ -388,33 +417,6 @@ function ColorEditor(props: {
           }
         }}
       />
-      {pickerOpen && (
-        <div className="vb-color-picker-panel">
-          {supportsAlpha
-            ? (
-              <HexAlphaColorPicker
-                aria-label={`${props.ariaLabel ?? "颜色"} RGBA`}
-                color={pickerValue}
-                onChange={updatePickerDraft}
-              />
-            )
-            : (
-              <HexColorPicker
-                aria-label={`${props.ariaLabel ?? "颜色"} RGB`}
-                color={pickerValue}
-                onChange={updatePickerDraft}
-              />
-            )}
-          <div className="vb-color-picker-preview">
-            <span style={{ backgroundColor: previewValue }} />
-            <code>{previewValue}</code>
-          </div>
-          <div className="vb-color-picker-actions">
-            <Button type="button" className="secondary" onClick={cancelPicker}>取消</Button>
-            <Button type="button" disabled={!validDraft} onClick={applyPicker}>应用</Button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
