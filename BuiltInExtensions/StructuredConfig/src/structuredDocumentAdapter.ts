@@ -20,6 +20,11 @@ import {
   validateStructuredDocument,
   type StructuredDocument,
 } from "./structuredDocument";
+import {
+  collectStructuredOwnedIdentities,
+  deleteStructuredOwnedTarget,
+  remapStructuredOwnedIdentities,
+} from "./structuredLifecycle";
 
 export interface StructuredDocumentAdapterContext {
   readonly registry: StructuredCatalogRegistry;
@@ -53,6 +58,23 @@ SemanticDocumentAdapter<StructuredDocument, StructuredDocumentAdapterContext> = 
   },
   renameDocumentId(document, documentId, context) {
     return renameStructuredDocumentId(document, documentId, context.registry, context.configTypeId);
+  },
+  lifecycle: {
+    collectOwnedIdentities(document, documentTypeId) {
+      return collectStructuredOwnedIdentities(document, documentTypeId);
+    },
+    remapOwnedIdentities(document, documentTypeId, remap, context) {
+      return remapStructuredOwnedIdentities(
+        document,
+        documentTypeId,
+        remap,
+        context.registry,
+        context.configTypeId,
+      );
+    },
+    deleteOwnedTarget(document, target) {
+      return deleteStructuredOwnedTarget(document, target);
+    },
   },
 };
 

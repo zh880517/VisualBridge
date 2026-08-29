@@ -1,15 +1,22 @@
+import { randomUUID } from "node:crypto";
 import * as vscode from "vscode";
 import type {
   DocumentDiagnostic,
+  DocumentLifecyclePlan,
   DocumentTypeDefinition,
   IndexedDocument,
   IndexedDocumentReference,
+  StableIdentityRemap,
 } from "@visualbridge/core";
 import { createDocument } from "../commands/createDocument";
 import type { CreateDocumentSelection } from "../commands/createDocumentSupport";
 import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
 import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
 import type { WorkspaceReferenceRefactor } from "../refactor/workspaceReferenceRefactor";
+import {
+  WorkspaceDocumentLifecycle,
+  WorkspaceLifecycleError,
+} from "./workspaceDocumentLifecycle";
 import {
   WorkspaceDocumentIndex,
   type IncomingDocumentReference,
@@ -95,6 +102,7 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
     private readonly documents: WorkspaceDocumentIndex,
     private readonly references: WorkspaceReferenceService,
     private readonly refactors: WorkspaceReferenceRefactor,
+    private readonly lifecycle: WorkspaceDocumentLifecycle,
   ) {
     this.tree = vscode.window.createTreeView(DOCUMENT_BROWSER_VIEW_ID, {
       treeDataProvider: this,
@@ -121,7 +129,19 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
         await this.open(node);
       }),
       vscode.commands.registerCommand("visualbridge.documentBrowser.create", async (node?: DocumentBrowserNode) => {
-        await createDocument(this.projects, this.creationSelection(node));
+        await createDocument(this.projects, this.lifecycle, this.creationSelection(node));
+      }),
+      vscode.commands.registerCommand("visualbridge.documentBrowser.copy", async (node?: DocumentBrowserNode) => {
+        await this.copyDocument(node);
+      }),
+      vscode.commands.registerCommand("visualbridge.documentBrowser.renamePath", async (node?: DocumentBrowserNode) => {
+        await this.moveDocument(node, "Rename Path");
+      }),
+      vscode.commands.registerCommand("visualbridge.documentBrowser.move", async (node?: DocumentBrowserNode) => {
+        await this.moveDocument(node, "Move Document");
+      }),
+      vscode.commands.registerCommand("visualbridge.documentBrowser.safeDelete", async (node?: DocumentBrowserNode) => {
+        await this.safeDelete(node);
       }),
       vscode.commands.registerCommand("visualbridge.documentBrowser.revealReference", async (node?: DocumentBrowserNode) => {
         await this.revealReference(node);
@@ -479,11 +499,146 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
     await this.refactors.rename(source, node.reference);
   }
 
+  private async moveDocument(node: DocumentBrowserNode | undefined, title: string): Promise<void> {
+    if (node?.kind !== "document") return;
+    const project = this.projects.projects.find((entry) => entry.definition.projectId === node.document.projectId);
+    if (project === undefined) return;
+    const current = vscode.Uri.joinPath(project.rootUri, ...node.document.path.split("/"));
+    const target = await vscode.window.showSaveDialog({
+      title: `${title} — stable IDs and references remain unchanged`,
+      defaultUri: current,
+      saveLabel: title,
+    });
+    if (target === undefined || target.toString() === current.toString()) return;
+    try {
+      const preview = await this.lifecycle.previewMove(node.document, target);
+      if (this.showPreviewBlockers(preview.preview.plan.blockers)) return;
+      const physicalCount = preview.preview.plan.mutations.length;
+      const confirmed = await vscode.window.showInformationMessage(
+        `${title} changes only ${physicalCount} physical path${physicalCount === 1 ? "" : "s"}; stable IDs and reference values are unchanged.`,
+        { modal: true, detail: lifecyclePlanDetail(preview.preview.plan) },
+        title,
+      );
+      if (confirmed !== title) return;
+      const opened = await this.lifecycle.apply(preview);
+      if (opened !== undefined) await vscode.commands.executeCommand("visualbridge.openDocument", opened);
+    } catch (errorValue) {
+      this.showLifecycleError(errorValue);
+    }
+  }
+
+  private async copyDocument(node: DocumentBrowserNode | undefined): Promise<void> {
+    if (node?.kind !== "document") return;
+    const project = this.projects.projects.find((entry) => entry.definition.projectId === node.document.projectId);
+    if (project === undefined) return;
+    const current = vscode.Uri.joinPath(project.rootUri, ...node.document.path.split("/"));
+    try {
+      const target = await vscode.window.showSaveDialog({
+        title: "Copy Document — every stable identity will be remapped",
+        defaultUri: current,
+        saveLabel: "Copy Document",
+      });
+      if (target === undefined || target.toString() === current.toString()) return;
+      const identities = await this.lifecycle.collectOwnedIdentities(node.document);
+      const stableIdRemap = node.document.editor === "table"
+        ? await promptTableRemap(identities)
+        : identities.map((identity): StableIdentityRemap => ({
+            identityKey: identity.identityKey,
+            from: identity.value,
+            to: `${identity.kind.replace(/[^A-Za-z0-9._-]/g, "_")}_${randomUUID()}`,
+          }));
+      if (stableIdRemap === undefined) return;
+      const preview = await this.lifecycle.previewCopy(node.document, target, stableIdRemap);
+      if (this.showPreviewBlockers(preview.preview.plan.blockers)) return;
+      const confirmed = await vscode.window.showInformationMessage(
+        `Copy '${node.document.title}' with ${stableIdRemap.length} explicit stable-ID remap${stableIdRemap.length === 1 ? "" : "s"} and ${preview.preview.plan.mutations.length} new physical source${preview.preview.plan.mutations.length === 1 ? "" : "s"}.`,
+        { modal: true, detail: lifecyclePlanDetail(preview.preview.plan) },
+        "Copy Document",
+      );
+      if (confirmed !== "Copy Document") return;
+      const opened = await this.lifecycle.apply(preview);
+      if (opened !== undefined) await vscode.commands.executeCommand("visualbridge.openDocument", opened);
+    } catch (errorValue) {
+      this.showLifecycleError(errorValue);
+    }
+  }
+
+  private async safeDelete(node: DocumentBrowserNode | undefined): Promise<void> {
+    if (node?.kind !== "document") return;
+    try {
+      const preview = await this.lifecycle.previewDelete(node.document);
+      if (this.showPreviewBlockers(preview.preview.plan.blockers)) return;
+      const confirmed = await vscode.window.showWarningMessage(
+        `Safe Delete '${node.document.title}' removes ${preview.preview.plan.mutations.length} physical source${preview.preview.plan.mutations.length === 1 ? "" : "s"}. It will not cascade external references.`,
+        { modal: true, detail: lifecyclePlanDetail(preview.preview.plan) },
+        "Safe Delete",
+      );
+      if (confirmed !== "Safe Delete") return;
+      await this.lifecycle.apply(preview);
+    } catch (errorValue) {
+      this.showLifecycleError(errorValue);
+    }
+  }
+
+  private showLifecycleError(errorValue: unknown): void {
+    const error = errorValue instanceof WorkspaceLifecycleError
+      ? `${errorValue.code}: ${errorValue.message}`
+      : errorValue instanceof Error ? errorValue.message : String(errorValue);
+    void vscode.window.showWarningMessage(error);
+  }
+
+  private showPreviewBlockers(blockers: readonly { readonly code: string; readonly message: string }[]): boolean {
+    if (blockers.length === 0) return false;
+    void vscode.window.showWarningMessage(blockers.map((blocker) => `${blocker.code}: ${blocker.message}`).join("\n"));
+    return true;
+  }
+
   private creationSelection(node?: DocumentBrowserNode): CreateDocumentSelection | undefined {
     return node?.kind === "documentType"
       ? { project: node.project, documentType: node.documentType }
       : undefined;
   }
+}
+
+function lifecyclePlanDetail(plan: DocumentLifecyclePlan): string {
+  return [
+    "This is the canonical operation that will be revalidated under the Project lock:",
+    "",
+    JSON.stringify({
+      operation: plan.operation,
+      ownedIdentities: plan.ownedIdentities,
+      stableIdRemap: plan.stableIdRemap,
+      referenceImpacts: plan.referenceImpacts,
+      baseHashes: plan.baseHashes,
+      dependencies: plan.dependencies,
+      mutations: plan.mutations,
+    }, undefined, 2),
+  ].join("\n");
+}
+
+async function promptTableRemap(
+  identities: readonly { readonly identityKey: string; readonly kind: string; readonly value: string | number }[],
+): Promise<readonly StableIdentityRemap[] | undefined> {
+  const remap: StableIdentityRemap[] = [];
+  for (const identity of identities) {
+    const input = await vscode.window.showInputBox({
+      title: `Copy Table — remap ${identity.kind}`,
+      prompt: `${identity.identityKey}: enter a new ${typeof identity.value} key (current: ${String(identity.value)})`,
+      validateInput(value) {
+        if (value.length === 0) return "A new business key is required; VisualBridge will not guess it.";
+        if (typeof identity.value === "number" && !Number.isFinite(Number(value))) return "Enter a finite number.";
+        if ((typeof identity.value === "string" ? value : Number(value)) === identity.value) return "The new key must be different.";
+        return undefined;
+      },
+    });
+    if (input === undefined) return undefined;
+    remap.push({
+      identityKey: identity.identityKey,
+      from: identity.value,
+      to: typeof identity.value === "number" ? Number(input) : input,
+    });
+  }
+  return remap;
 }
 
 function diagnosticCounts(documents: readonly IndexedDocument[]): { readonly errors: number; readonly warnings: number } {

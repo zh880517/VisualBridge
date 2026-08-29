@@ -68,13 +68,14 @@ A Document Type selects the broad editor with `"editor": "table"`; its stable Do
 }
 ```
 
-Catalog IDs, Table Type IDs, Sheet IDs and Column IDs are persistent identities. Display titles, C# type names, physical sheet names and physical name keys are not identities. Aliases provide explicit migration without silently guessing renamed types or columns.
+Catalog IDs, Table Type IDs, Sheet IDs and Column IDs are persistent identities. Display titles, C# type names, physical sheet names and physical name keys are not identities. Aliases provide explicit migration without silently guessing renamed types, sheets or columns.
 
 Each Sheet definition also declares how a row is named in the editor:
 
 ```json
 {
   "id": "skills",
+  "aliases": ["legacy.skills"],
   "rowDisplayNamePattern": "{id}_{name}"
 }
 ```
@@ -171,7 +172,23 @@ V1 supports ordinary game-data worksheets. Known typed cells, worksheet ordering
 
 Macros, `.xls`, pivot tables, charts, external links, formula authoring and arbitrary workbook round-trip fidelity are outside V1. Formulas can be read through their cached result, but the Table editor does not promise to preserve complex formula-driven data-region semantics after structural row edits.
 
-## 10. MCP and deferred Unity work
+## 10. Document lifecycle target contract
+
+Table lifecycle uses the shared [`DocumentLifecycle.md`](DocumentLifecycle.md) and treats the complete logical carrier as one unit:
+
+- A partitioned CSV family includes every matched physical member in its source manifest. Copy, Move and Delete cannot operate on only the currently selected partition.
+- An XLSX logical Document moves or deletes the whole Workbook; worksheet names and unrelated worksheets remain workbook content, not independent lifecycle paths.
+- Path Move preserves all bytes and business keys. Every destination must still resolve to the same Project and Project Document Type; each CSV family destination must match the same partition naming rule.
+- Table has no invented Document ID. Whole-document Copy requires one complete `stableIdRemap` entry for every `kind: "table.row"` referenceable strict-type key-column identity. If `deduplicateByColumnId` differs from the key column, every `kind: "table.dedup"` identity also requires a same-type, non-conflicting target; the same physical column is never mapped twice. Internal `table.row` references use only the row-key mapping, while external references remain unchanged. The target carrier's operation-facing Row IDs and physical Sheet IDs are re-derived by the Table Codec and are not stable identities.
+- Safe Delete Document closes over all physical sources and effective rows. Safe Delete Row closes over the exact physical Row and its stable key target; any outside occurrence that can resolve to that target blocks deletion.
+
+`table.removeRow` remains the low-level semantic mutation used by an authorized Lifecycle plan. Under the PU-03 guard, direct public submission returns `lifecycle.required`; record-list Delete must use Lifecycle preview/apply. Existing-row Operation IDs remain operation-facing physical IDs, while Reference identity remains the strict typed key-column value.
+
+Row Safe Delete uses `{ "kind": "table.row", "sheetId": "...", "rowId": "..." }`, taking both IDs unchanged from the current semantic read; it does not accept a business key in place of `rowId`. Whole logical Table Delete instead uses `{ "kind": "document" }` and removes every CSV family member or the complete XLSX Workbook.
+
+Lifecycle preview/apply requires the related Table Custom Editor to be closed so the physical workbook/family manifest and the workspace reference index share one disk baseline. External Excel, Explorer or script writes are detected through member hashes and manifest/absence checks; they are not prevented by the cooperative Project lock.
+
+## 11. MCP and deferred Unity work
 
 No Unity Table Exporter, importer, runtime, `ScriptableObject` layer or Debug feature is implemented in this phase. Future Unity integration must export Table Catalog JSON from ordinary game structures and consume the same effective logical rows and encodings documented here.
 

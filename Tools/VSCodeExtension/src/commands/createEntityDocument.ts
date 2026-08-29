@@ -2,16 +2,16 @@ import { randomUUID } from "node:crypto";
 import * as vscode from "vscode";
 import {
   ENTITY_EDITOR_ID,
-  createEmptyEntityDocument,
-  serializeEntityDocument,
   type EntityCatalogRegistry,
   type RegisteredEntityTypeDefinition,
 } from "@visualbridge/entity";
 import { loadEntityCatalogRegistry } from "../catalog/entityCatalogLoader";
 import type { ProjectRegistry } from "../project/projectRegistry";
+import type { WorkspaceDocumentLifecycle } from "../document/workspaceDocumentLifecycle";
 import { OPTIONAL_EDITOR_VIEW_TYPE } from "../editor/documentEditorProvider";
 import {
   selectDocumentType,
+  createThroughLifecycle,
   selectProject,
   suggestDefaultTarget,
   validateCreateDocumentSelection,
@@ -20,6 +20,7 @@ import {
 
 export async function createEntityDocument(
   projects: ProjectRegistry,
+  lifecycle: WorkspaceDocumentLifecycle,
   requestedSelection?: CreateDocumentSelection,
 ): Promise<void> {
   const selection = validateCreateDocumentSelection(requestedSelection, ENTITY_EDITOR_ID);
@@ -62,14 +63,14 @@ export async function createEntityDocument(
     );
     return;
   }
-  const text = serializeEntityDocument(createEmptyEntityDocument(
-    `entity_${randomUUID()}`,
-    entityType.id,
-    catalogResult.registry,
-    entityType.title,
-  ));
-  await vscode.workspace.fs.writeFile(target, new TextEncoder().encode(text));
-  await vscode.commands.executeCommand("vscode.openWith", target, OPTIONAL_EDITOR_VIEW_TYPE);
+  await createThroughLifecycle(
+    lifecycle,
+    project,
+    documentType,
+    target,
+    { documentId: `entity_${randomUUID()}`, entityTypeId: entityType.id, title: entityType.title },
+    OPTIONAL_EDITOR_VIEW_TYPE,
+  );
 }
 
 async function selectEntityType(

@@ -1,10 +1,54 @@
 import * as vscode from "vscode";
-import type { DocumentTypeDefinition } from "@visualbridge/core";
+import type { DocumentLifecyclePlan, DocumentTypeDefinition, JsonValue } from "@visualbridge/core";
 import type { ProjectContext } from "../project/projectRegistry";
+import type { WorkspaceDocumentLifecycle } from "../document/workspaceDocumentLifecycle";
 
 export interface CreateDocumentSelection {
   readonly project: ProjectContext;
   readonly documentType: DocumentTypeDefinition;
+}
+
+export async function createThroughLifecycle(
+  lifecycle: WorkspaceDocumentLifecycle,
+  project: ProjectContext,
+  documentType: DocumentTypeDefinition,
+  target: vscode.Uri,
+  parameters: Readonly<Record<string, JsonValue>>,
+  viewType: string,
+): Promise<void> {
+  const preview = await lifecycle.previewCreate(project, documentType, target, parameters);
+  if (preview.preview.plan.blockers.length > 0) {
+    void vscode.window.showWarningMessage(preview.preview.plan.blockers
+      .map((blocker) => `${blocker.code}: ${blocker.message}`).join("\n"));
+    return;
+  }
+  const createdPath = preview.preview.plan.operation.kind === "create"
+    ? preview.preview.plan.operation.target.path
+    : target.path;
+  const confirmed = await vscode.window.showWarningMessage(
+    `Create '${createdPath}' from the exact lifecycle preview?`,
+    { modal: true, detail: lifecyclePlanDetail(preview.preview.plan) },
+    "Create Document",
+  );
+  if (confirmed !== "Create Document") return;
+  const opened = await lifecycle.apply(preview);
+  await vscode.commands.executeCommand("vscode.openWith", opened ?? target, viewType);
+}
+
+function lifecyclePlanDetail(plan: DocumentLifecyclePlan): string {
+  return [
+    "This is the canonical operation that will be revalidated under the Project lock:",
+    "",
+    JSON.stringify({
+      operation: plan.operation,
+      ownedIdentities: plan.ownedIdentities,
+      stableIdRemap: plan.stableIdRemap,
+      referenceImpacts: plan.referenceImpacts,
+      baseHashes: plan.baseHashes,
+      dependencies: plan.dependencies,
+      mutations: plan.mutations,
+    }, undefined, 2),
+  ].join("\n");
 }
 
 export function validateCreateDocumentSelection(

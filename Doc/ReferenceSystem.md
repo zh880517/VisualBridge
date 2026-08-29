@@ -96,6 +96,14 @@ Reference Service 注册少量按 `kind` 唯一的 Provider：
 
 Document Operation 仍先在副本上完整执行。宿主分别校验修改前后引用，只拒绝这次批次新引入的 reference error；既有坏引用会持续显示诊断，但不会阻止用户修复同一文档的其他问题。
 
+### Lifecycle 的 Reference coverage
+
+普通字段 Operation 的“只拒绝新错误”规则不能用于证明 Copy 或 Delete 安全。当前 Document Lifecycle contract 要求 preview 与 apply 都建立全 Project Reference 快照，并以 fail-closed 方式证明 coverage 完整：相关 Project、Catalog、Document、未知 Node/Component/字段结构、非法 target 或不可用 Provider 中任何一项无法解析，都会阻止可能改变或删除身份的 Lifecycle 操作。完整流程见 [`DocumentLifecycle.md`](DocumentLifecycle.md)。
+
+Copy 对每个 occurrence 使用正式 Provider 分类：唯一解析到 Copy closure 内的目标才按调用方显式提交的完整 `stableIdRemap` 更新；唯一解析到 closure 外的目标原样保留。`allowMissing: true` 的 missing occurrence 是已声明的可空外部引用，原样保留并记录 `outboundPreserved`；其他 missing、ambiguous、Provider unavailable 或 invalid target 必须阻止 Copy，不能通过字符串相等猜测副本内部引用。
+
+Safe Delete 先由领域 Adapter 建立删除闭包。闭包内互相引用随目标删除；闭包外 occurrence 只要解析候选与闭包相交就是 blocker。该规则同样适用于同一文档内引用和 `allowMissing: true` 字段；`allowMissing` 只控制目标已经缺失时的字段诊断，不授予删除现存目标的权限。Ambiguous occurrence 若包含闭包候选，或无法证明不包含，也必须拒绝删除。
+
 ## 5. VS Code 编辑闭环
 
 共享 Form Editor 用只读稳定值加通用搜索、跳转图标呈现引用，不允许绕过 Provider 手输不受约束的值。Graph 自有属性布局复用同一 Webview Reference Bridge，Entity、Structured 和 Table 直接复用共享字段控件。
@@ -107,6 +115,8 @@ Document Operation 仍先在副本上完整执行。宿主分别校验修改前�
 Document Browser 使用同一 Reference Service 的解析候选展示每个文档的出站引用，并按候选 Location 的 Project、Document Type 与物理路径派生 `Referenced By` 关系。反向关系仅是工作区索引视图，不写回任何 Authoring Document；缺失或歧义引用继续使用本文件定义的诊断和解析状态。完整 Browser 契约见 `DocumentBrowser.md`。
 
 Project Refactoring 使用解析候选的完整 Location，而不是仅按引用值，批量重命名 `document`、`entity.component`、`graph.element` 或 `table.row` 目标及所有唯一解析到该位置的入站 occurrence。Entity Component 通过 `entity.renameComponent` 修改实例身份；Graph 元素通过 `graph.renameElement` 原子更新结构身份、连线端点和子图调用映射；CSV 分表和 XLSX 与文本 Document 参与同一个带哈希检查与回滚的 Host 事务。完整契约见 `ProjectRefactoring.md`。
+
+Document Lifecycle 复用相同 Provider、Location 和 occurrence，不维护第二套引用扫描器。Stable ID Rename 进入 Project Refactoring；物理 Path Move 保持 Reference value 不变；Copy 与 Safe Delete 使用上面的 closure/coverage 规则。
 
 ## 6. MCP
 

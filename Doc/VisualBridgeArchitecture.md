@@ -228,6 +228,8 @@ VisualBridge Project File 不保存编辑器窗口状态、连接端口、当前
 
 项目级重构同样建立在语义索引和 Reference Provider 之上。当前支持唯一解析的 `document`、`entity.component`、`graph.element` 和 `table.row`：Core 生成按完整目标位置匹配的确定性影响计划，各 Document Type 通过正式语义变换、Validator 和 Serializer 生成修改，VS Code 与 MCP Host 使用源哈希、临时载体和 rollback 副本提交多文件事务。不得退化为跨工程文本替换。完整约束见 `ProjectRefactoring.md`。
 
+Document Lifecycle 负责创建、复制、物理路径移动和安全删除。它与稳定 ID 重构共享索引、Reference Provider 和 Project Transaction，但路径不承担身份：Path Move 保持字节与稳定 ID 不变，Stable ID Rename 继续走 Project Refactoring。V1 只允许一个宿主无关 Lifecycle Service，并要求 strict preview/apply、调用方完整提交 `stableIdRemap`、Delete closure 和 Reference coverage；VS Code、Browser 与 MCP 不分别实现文件操作规则。完整契约见 [`DocumentLifecycle.md`](DocumentLifecycle.md)。
+
 ## Document System
 
 ### Document Type
@@ -243,6 +245,7 @@ DocumentType
 ├─ Edit Operations
 ├─ Validators
 ├─ Reference Rules
+├─ Lifecycle Adapter / Stable ID Remap / Delete Closure
 ├─ Compiler / Exporter
 └─ Debug Mapping
 ```
@@ -372,6 +375,16 @@ DocumentSession 保存当前编辑基线的 Hash。VS Code 在实际写入前再
 用户未做出选择时不执行写入。MCP 遇到同类 `baseHash` 冲突时返回结构化冲突结果，不自动覆盖。
 
 VS Code 的文本 Document 通过 `WorkspaceEdit` 保留 Undo/Redo。`.xlsx` 等二进制 Document 通过 Custom Document 的编辑事件、保存和备份机制与 VS Code 协作。MCP 采用原子文件写入。两者使用同一 Operation 模型，但按文件载体使用不同的宿主持久化适配。
+
+### Document Lifecycle V1
+
+Lifecycle 不属于普通 Document Operation：它会改变物理 source manifest、创建新身份或删除可被 Reference Provider 寻址的目标，因此必须先 preview、后 apply。调用方在 preview operation 中完整提供 Copy `stableIdRemap` 或 Create `parameters`；preview 返回 `previewHash`、`planPayload` 和包含 dependencies/baseHashes/mutations 的规范 plan。Apply 原样带回 operation、hash、payload、bases 和 dependencies，并在 Project 锁内重建相同计划。任何变化都以 conflict 结束，不自动套用旧计划。
+
+V1 只允许同一 Project、同一 Project Document Type 内操作。Graph/Entity/Structured 的 Path Move 保持单文件字节不变；Table 的 CSV family 以完整分表 manifest 为一个逻辑 Document，XLSX 以整个 Workbook 为单位。Copy 由领域 Adapter 显式 remap 全部可寻址内部身份；Delete 在 Reference coverage 不完整或闭包外存在入站 occurrence 时拒绝，不提供通用级联。
+
+所有公开写入口都受 Safe Delete guard 约束。直接移除 Component、Graph Node/Interface/Dynamic Port 或 Table Row 的普通 Operation 在 Lifecycle apply 上下文外返回 `lifecycle.required`；领域编辑器、Document Browser 与目标 MCP 入口必须调用同一 Lifecycle Service。目标 Project Transaction 将 physical mutation 表达为 `replace`、`create`、`delete` 或 `move`，同时校验 `baseHash` 与 mutation 的 `targetMustBeAbsent`。
+
+Lifecycle preview/apply 要求没有未保存的 VisualBridge TextDocument，并关闭相关 Table Custom Editor。Explorer、Git 和外部脚本不是协作写者，只能依靠文件监听、Hash/absence 复核和重新索引检测；本地文件系统事务不承诺 Remote Workspace、突然断电或最后一次原子文件系统调用处的数据库级隔离。
 
 ### 数据所有权
 
@@ -664,7 +677,7 @@ MCP 提供少量稳定的项目级能力：
 - 搜索和解析数据引用。
 - 预览并执行项目级引用重构事务。
 
-Document Lifecycle 由 Unity 接入前路线图的下一阶段实现，不属于当前 MCP V2 工具面；格式化也未作为独立 Tool 暴露。
+当前 MCP V2 工具面尚未实现 Document Lifecycle；格式化也未作为独立 Tool 暴露。PU-03 目标是在 Schema、实现和 stdio 测试同时合入时增加一个统一的 `visualbridge_document_lifecycle` preview/apply 工具，不增加 Graph、Entity、Structured 或 Table 专用别名。合入前“当前六工具”陈述保持有效。
 
 后续 Unity/Debug 阶段可以在独立协议冻结后增加 Runtime 发现与 Attach、断点、执行控制、调用栈和变量；这些不是当前 `Tools/VisualBridgeMcp` 能力，也不是 Unity 接入前路线图的完成条件。
 
@@ -940,6 +953,8 @@ Domain Reload 会中断连接。Unity Bridge 重新登记实例，VS Code 和 MC
 - 插件实例按 VS Code 窗口隔离，每个文件创建独立 DocumentSession，多个文件共享当前窗口的 Extension Host。
 - 平台专属格式可以默认关联自定义编辑器，`.xlsx` 等通用格式只通过 Authoring Project 的工作区级关联在当前工程窗口接管。
 - Table Document 提供统一语义模型，Excel 是可选权威载体或导入导出 Codec；AI 不直接读写 `.xlsx` 和 `.csv`，必须通过 MCP 的搜索、查询和修改能力访问。
+- 物理路径不承担语义身份。Document Lifecycle 以一个共享 Service 承担 Create、Copy、Path Move 和 Safe Delete；稳定 ID Rename 继续使用 Project Refactoring。
+- Document Lifecycle V1 使用 strict preview/apply、调用方完整提交 `stableIdRemap`、Safe Delete closure、Reference coverage 和 `replace`/`create`/`delete`/`move` Project Transaction 状态；目标不存在性与来源 Hash 都是并发前置条件。
 - VS Code 写入前检测目标文件是否已被外部修改；发生冲突时必须由用户选择覆盖，或放弃本地变更并重新读取刷新。
 - VS Code 和 MCP 共享 VisualBridgeCore。
 - MCP 是 AI 的唯一交互 API。

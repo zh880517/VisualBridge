@@ -189,6 +189,10 @@ export class GraphService {
       if (!parseResult.success) {
         return { valid: false, diagnostics: [...catalog.diagnostics, ...parseResult.diagnostics] };
       }
+      const lifecycleGuard = graphLifecycleGuard(options.operations);
+      if (lifecycleGuard.length > 0) {
+        return { valid: false, diagnostics: lifecycleGuard };
+      }
       const operationResult = graphDocumentAdapter.applyOperations(parseResult.document, options.operations, semanticContext);
       if (!operationResult.success) {
         return { valid: false, diagnostics: operationResult.diagnostics };
@@ -283,6 +287,30 @@ export class GraphService {
       diagnostics: bundle.diagnostics,
     };
   }
+}
+
+function graphLifecycleGuard(value: unknown): readonly DocumentDiagnostic[] {
+  if (!Array.isArray(value)) return [];
+  const protectedTypes = new Set([
+    "graph.renameElement",
+    "graph.removeNode",
+    "graph.removeDynamicPort",
+    "graph.removeInterfacePort",
+  ]);
+  return value.flatMap((entry, index) => (
+    typeof entry === "object"
+      && entry !== null
+      && protectedTypes.has((entry as { readonly type?: unknown }).type as string)
+      ? [{
+          severity: "error" as const,
+          code: "lifecycle.required",
+          path: `operations[${index}].type`,
+          message: (entry as { readonly type: string }).type === "graph.renameElement"
+            ? "Stable Graph element IDs must be changed through visualbridge_refactor_reference."
+            : "Referenced Graph elements must be removed through visualbridge_document_lifecycle safe delete.",
+        }]
+      : []
+  ));
 }
 
 const GRAPH_SEARCH_KINDS = new Set(["all", "graph", "node", "port", "edge", "field"]);

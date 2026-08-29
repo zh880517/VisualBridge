@@ -2,27 +2,52 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   createDocumentReferenceProvider,
+  documentIndexKey,
   ReferenceService,
   type DocumentReferenceDocument,
   type DocumentDiagnostic,
   type JsonValue,
+  type IndexedDocument,
   type ReferenceDefinition,
   type ReferenceOccurrence,
   type ReferenceResolution,
 } from "@visualbridge/core";
 import {
   createEntityComponentReferenceProvider,
+  collectEntityReferences,
   parseEntityDocument,
+  validateEntityDocument,
   type EntityReferenceDocument,
+  type EntityCatalogRegistry,
 } from "@visualbridge/entity";
 import {
+  buildGraphCatalogRegistry,
+  collectGraphReferences,
   createGraphElementReferenceProvider,
+  parseGraphCatalog,
   parseGraphDocument,
+  validateGraphDocument,
+  type GraphCatalog,
+  type GraphCatalogRegistry,
   type GraphReferenceDocument,
 } from "@visualbridge/graph";
-import { parseStructuredDocument } from "@visualbridge/structured";
-import { createTableRowReferenceProvider } from "@visualbridge/table";
-import type { VisualBridgeWorkspace } from "./projectWorkspace.js";
+import {
+  buildStructuredCatalogRegistry,
+  collectStructuredReferences,
+  parseStructuredCatalog,
+  parseStructuredDocument,
+  validateStructuredDocument,
+  type StructuredCatalog,
+  type StructuredCatalogRegistry,
+} from "@visualbridge/structured";
+import { collectTableReferences, createTableRowReferenceProvider } from "@visualbridge/table";
+import {
+  VisualBridgeMcpError,
+  resolveExistingProjectPath,
+  type DeclaredDocumentContext,
+  type ProjectContext,
+  type VisualBridgeWorkspace,
+} from "./projectWorkspace.js";
 import type { TableService } from "./tableService.js";
 import { loadMcpEntityRegistry } from "./entityRegistry.js";
 
@@ -122,6 +147,98 @@ export class VisualBridgeReferenceService {
     ]);
   }
 
+  public async buildProjectIndex(projectFile: string): Promise<readonly IndexedDocument[]> {
+    const project = await this.workspace.resolveProject(projectFile);
+    const references = await this.createProjectService(project.projectFile);
+    const declared = await this.workspace.listDeclaredDocuments(project);
+    const documents: IndexedDocument[] = [];
+    const graphRegistries = new Map<string, Promise<GraphCatalogRegistry>>();
+    const entityRegistries = new Map<string, Promise<EntityCatalogRegistry>>();
+    const structuredRegistries = new Map<string, Promise<StructuredCatalogRegistry>>();
+    for (const source of declared) {
+      if (source.documentType.editor === "table") continue;
+      const text = decodeUtf8(await readFile(source.absolutePath), source.path);
+      let documentId: string;
+      let title: string;
+      let occurrences: readonly ReferenceOccurrence[];
+      let semanticDiagnostics: readonly DocumentDiagnostic[];
+      if (source.documentType.editor === "graph") {
+        const parsed = parseGraphDocument(text);
+        if (!parsed.success) throw invalidIndexedSource(source.path, parsed.diagnostics);
+        const registry = await cachedRegistry(
+          graphRegistries,
+          source.documentType.id,
+          () => loadMcpGraphRegistry(project, source),
+        );
+        documentId = parsed.document.documentId;
+        title = parsed.document.graphs.find((graph) => graph.id === parsed.document.rootGraphId)?.title
+          ?? fileTitle(source.path);
+        semanticDiagnostics = validateGraphDocument(parsed.document, registry);
+        occurrences = collectGraphReferences(parsed.document, registry);
+      } else if (source.documentType.editor === "entity") {
+        const parsed = parseEntityDocument(text);
+        if (!parsed.success) throw invalidIndexedSource(source.path, parsed.diagnostics);
+        const registry = await cachedRegistry(
+          entityRegistries,
+          source.documentType.id,
+          () => loadMcpEntityRegistry(project, source.documentType),
+        );
+        documentId = parsed.document.documentId;
+        title = parsed.document.title;
+        semanticDiagnostics = validateEntityDocument(parsed.document, registry);
+        occurrences = collectEntityReferences(parsed.document, registry);
+      } else if (source.documentType.editor === "structured") {
+        const parsed = parseStructuredDocument(text);
+        if (!parsed.success) throw invalidIndexedSource(source.path, parsed.diagnostics);
+        const registry = await cachedRegistry(
+          structuredRegistries,
+          source.documentType.id,
+          () => loadMcpStructuredRegistry(project, source),
+        );
+        documentId = parsed.document.documentId;
+        title = fileTitle(source.path);
+        semanticDiagnostics = validateStructuredDocument(parsed.document, registry, source.documentType.id);
+        occurrences = collectStructuredReferences(parsed.document, registry, source.documentType.id);
+      } else {
+        continue;
+      }
+      assertIndexable(source.path, semanticDiagnostics);
+      const referenceDiagnostics = await references.validate(occurrences);
+      assertIndexable(source.path, referenceDiagnostics);
+      documents.push({
+        projectId: project.definition.projectId,
+        documentTypeId: source.documentType.id,
+        editor: source.documentType.editor,
+        path: source.path,
+        sourcePaths: [source.path],
+        documentId,
+        title,
+        diagnostics: [...semanticDiagnostics, ...referenceDiagnostics],
+        references: await resolveOccurrences(references, occurrences),
+      });
+    }
+    for (const table of await this.tables.loadReferenceDocuments(project.projectFile, true)) {
+      const sourcePaths = [...new Set([table.path, ...Object.values(table.sheetPaths ?? {})])].sort();
+      const occurrences = collectTableReferences(table.document, table.tableType);
+      const referenceDiagnostics = await references.validate(occurrences);
+      assertIndexable(sourcePaths[0] ?? table.path, referenceDiagnostics);
+      documents.push({
+        projectId: table.projectId,
+        documentTypeId: table.documentTypeId,
+        editor: "table",
+        path: sourcePaths[0] ?? table.path,
+        sourcePaths,
+        title: table.tableType.title,
+        diagnostics: referenceDiagnostics,
+        references: await resolveOccurrences(
+          references,
+          occurrences,
+        ),
+      });
+    }
+    return documents.sort((left, right) => documentIndexKey(left).localeCompare(documentIndexKey(right)));
+  }
+
   private async loadSemanticDocuments(projectFile: string): Promise<{
     readonly documents: readonly DocumentReferenceDocument[];
     readonly entities: readonly EntityReferenceDocument[];
@@ -218,4 +335,108 @@ function diagnosticCounts(diagnostics: readonly DocumentDiagnostic[]): Map<strin
 
 function diagnosticKey(diagnostic: DocumentDiagnostic): string {
   return `${diagnostic.code}\u0000${diagnostic.path}\u0000${diagnostic.message}`;
+}
+
+function assertIndexable(sourcePath: string, diagnostics: readonly DocumentDiagnostic[]): void {
+  const blocking = diagnostics.filter((diagnostic) => (
+    diagnostic.severity === "error"
+    || diagnostic.code === "reference.providerUnavailable"
+    || diagnostic.code === "reference.invalidTarget"
+  ));
+  if (blocking.length > 0) throw invalidIndexedSource(sourcePath, blocking);
+}
+
+async function resolveOccurrences(
+  references: ReferenceService,
+  occurrences: readonly ReferenceOccurrence[],
+) {
+  return Promise.all(occurrences.map(async (occurrence) => ({
+    occurrence,
+    resolution: await references.resolve(occurrence.definition, occurrence.value),
+  })));
+}
+
+export async function loadMcpGraphRegistry(
+  project: ProjectContext,
+  source: DeclaredDocumentContext,
+): Promise<GraphCatalogRegistry> {
+  if (source.documentType.catalogs.length === 0) {
+    throw new VisualBridgeMcpError(
+      "lifecycle.catalogUnavailable",
+      `Graph Document Type '${source.documentType.id}' has no Catalogs.`,
+    );
+  }
+  const catalogs: GraphCatalog[] = [];
+  for (const catalogPath of source.documentType.catalogs) {
+    const parsed = parseGraphCatalog(decodeUtf8(
+      await readFile(await resolveExistingProjectPath(project, catalogPath)),
+      catalogPath,
+    ));
+    if (!parsed.success) throw invalidIndexedSource(catalogPath, parsed.diagnostics);
+    catalogs.push(parsed.document);
+  }
+  const built = buildGraphCatalogRegistry(catalogs);
+  if (!built.success) throw invalidIndexedSource(`${source.documentType.id} Graph Catalog Registry`, built.diagnostics);
+  return built.document;
+}
+
+export async function loadMcpStructuredRegistry(
+  project: ProjectContext,
+  source: DeclaredDocumentContext,
+): Promise<StructuredCatalogRegistry> {
+  if (source.documentType.catalogs.length === 0) {
+    throw new VisualBridgeMcpError(
+      "lifecycle.catalogUnavailable",
+      `Structured Document Type '${source.documentType.id}' has no Catalogs.`,
+    );
+  }
+  const catalogs: StructuredCatalog[] = [];
+  for (const catalogPath of source.documentType.catalogs) {
+    const parsed = parseStructuredCatalog(decodeUtf8(
+      await readFile(await resolveExistingProjectPath(project, catalogPath)),
+      catalogPath,
+    ));
+    if (!parsed.success) throw invalidIndexedSource(catalogPath, parsed.diagnostics);
+    catalogs.push(parsed.document);
+  }
+  const built = buildStructuredCatalogRegistry(catalogs);
+  if (!built.success) {
+    throw invalidIndexedSource(`${source.documentType.id} Structured Catalog Registry`, built.diagnostics);
+  }
+  return built.document;
+}
+
+async function cachedRegistry<T>(
+  cache: Map<string, Promise<T>>,
+  key: string,
+  load: () => Promise<T>,
+): Promise<T> {
+  const existing = cache.get(key);
+  if (existing !== undefined) return existing;
+  const loading = load();
+  cache.set(key, loading);
+  return loading;
+}
+
+function invalidIndexedSource(sourcePath: string, diagnostics: readonly unknown[]): VisualBridgeMcpError {
+  return new VisualBridgeMcpError(
+    "lifecycle.invalidSource",
+    `Source '${sourcePath}' is invalid and cannot participate in Document Lifecycle.`,
+    diagnostics,
+  );
+}
+
+function fileTitle(sourcePath: string): string {
+  return path.basename(sourcePath, path.extname(sourcePath));
+}
+
+function decodeUtf8(bytes: Uint8Array, sourcePath: string): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch (errorValue) {
+    throw new VisualBridgeMcpError(
+      "file.invalidUtf8",
+      `File '${sourcePath}' is not valid UTF-8: ${errorValue instanceof Error ? errorValue.message : String(errorValue)}`,
+    );
+  }
 }

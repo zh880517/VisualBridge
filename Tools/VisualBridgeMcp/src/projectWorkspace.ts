@@ -1,4 +1,4 @@
-import { readdir, readFile, realpath } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { minimatch } from "minimatch";
 import {
@@ -304,6 +304,30 @@ export async function resolveExistingProjectPath(project: ProjectContext, relati
   return resolved;
 }
 
+export async function resolveAbsentProjectPath(project: ProjectContext, relativePath: string): Promise<string> {
+  const normalizedPath = normalizeRelativePath(relativePath, "path");
+  const candidate = path.resolve(project.projectRoot, ...normalizedPath.split("/"));
+  ensureInside(project.projectRoot, candidate, normalizedPath);
+  try {
+    await stat(candidate);
+    throw new VisualBridgeMcpError("target.exists", `Project path '${normalizedPath}' already exists.`);
+  } catch (errorValue) {
+    if (errorValue instanceof VisualBridgeMcpError) throw errorValue;
+    if (!isNodeError(errorValue, "ENOENT")) throw errorValue;
+  }
+  let resolvedParent: string;
+  try {
+    resolvedParent = await realpath(path.dirname(candidate));
+  } catch (errorValue) {
+    throw new VisualBridgeMcpError(
+      "path.parentNotFound",
+      `Parent directory for project path '${normalizedPath}' is unavailable: ${formatError(errorValue)}`,
+    );
+  }
+  ensureInside(project.projectRoot, resolvedParent, normalizedPath);
+  return path.join(resolvedParent, path.basename(candidate));
+}
+
 async function collectProjectFiles(directory: string, result: string[]): Promise<void> {
   const entries = await readdir(directory, { withFileTypes: true });
   entries.sort((left, right) => left.name.localeCompare(right.name));
@@ -393,4 +417,8 @@ function decodeUtf8(bytes: Uint8Array, displayPath: string): string {
   } catch (errorValue) {
     throw new Error(`File '${displayPath}' is not valid UTF-8: ${formatError(errorValue)}`);
   }
+}
+
+function isNodeError(errorValue: unknown, code: string): errorValue is NodeJS.ErrnoException {
+  return errorValue instanceof Error && "code" in errorValue && errorValue.code === code;
 }

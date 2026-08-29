@@ -7,12 +7,14 @@ import {
   applyEntityOperations,
   buildEntityCatalogRegistry,
   collectEntityReferences,
+  collectEntityOwnedIdentities,
   createEntityComponentReferenceProvider,
   entityDocumentAdapter,
   entityTextDocumentCodec,
   parseEntityCatalog,
   parseEntityDocument,
   renameEntityDocumentId,
+  remapEntityOwnedIdentities,
   resolveEntityComponentType,
   resolveEntityType,
   replaceEntityReferenceValues,
@@ -75,6 +77,27 @@ test("Entity document IDs rename through validated document semantics", () => {
   assert.equal(renamed.success, true);
   assert.equal(renamed.success && renamed.document.documentId, "sample.entity.player.renamed");
   assert.equal(renameEntityDocumentId(document, "invalid id", registry).success, false);
+});
+
+test("Entity copy requires and applies a complete Document and Component remap", () => {
+  const { document, registry } = loadFixture();
+  const identities = collectEntityOwnedIdentities(document, "sample.entity.player");
+  const result = remapEntityOwnedIdentities(
+    document,
+    "sample.entity.player",
+    identities.map((entry) => ({
+      identityKey: entry.identityKey,
+      from: entry.value,
+      to: `${entry.value}.copy`,
+    })),
+    registry,
+  );
+  assert.equal(result.success, true);
+  assert.deepEqual(
+    result.success ? result.document.components.map((component) => component.id) : [],
+    document.components.map((component) => `${component.id}.copy`),
+  );
+  assert.equal(remapEntityOwnedIdentities(document, "sample.entity.player", [], registry).success, false);
 });
 
 test("Entity Catalog Registry resolves stable IDs, aliases, and cross-Catalog groups", () => {

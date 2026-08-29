@@ -53,6 +53,11 @@ export interface IncomingDocumentReference {
   readonly reference: IndexedDocumentReference;
 }
 
+export type DocumentIndexRefreshResult =
+  | { readonly status: "applied"; readonly epoch: number; readonly documents: readonly IndexedDocument[] }
+  | { readonly status: "superseded"; readonly epoch: number }
+  | { readonly status: "failed"; readonly epoch: number; readonly message: string };
+
 export class WorkspaceDocumentIndex implements vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   private readonly disposables: vscode.Disposable[] = [];
@@ -130,14 +135,18 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
     return this.summary;
   }
 
-  public async refresh(): Promise<void> {
+  public async refresh(): Promise<DocumentIndexRefreshResult> {
+    if (this.refreshTimer !== undefined) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = undefined;
+    }
     const refreshVersion = ++this.refreshVersion;
     this.loadingValue = true;
     this.changeEmitter.fire();
     try {
       const loaded = (await Promise.all(this.projects.projects.map((project) => this.loadProject(project)))).flat();
       if (refreshVersion !== this.refreshVersion) {
-        return;
+        return { status: "superseded", epoch: refreshVersion };
       }
       this.documentsValue = sortIndexedDocuments(loaded);
       if (this.validationPublished) {
@@ -147,10 +156,13 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
       this.output.appendLine(
         `[documents] Indexed ${summary.documentCount} document(s): ${summary.errorCount} error(s), ${summary.warningCount} warning(s), ${summary.referenceCount} reference(s).`,
       );
+      return { status: "applied", epoch: refreshVersion, documents: this.documentsValue };
     } catch (errorValue) {
+      const message = formatError(errorValue);
       if (refreshVersion === this.refreshVersion) {
-        this.output.appendLine(`[documents] Index refresh failed: ${formatError(errorValue)}`);
+        this.output.appendLine(`[documents] Index refresh failed: ${message}`);
       }
+      return { status: "failed", epoch: refreshVersion, message };
     } finally {
       if (refreshVersion === this.refreshVersion) {
         this.loadingValue = false;

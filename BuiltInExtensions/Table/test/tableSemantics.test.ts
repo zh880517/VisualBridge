@@ -7,11 +7,14 @@ import ExcelJS = require("exceljs");
 import {
   applyTableOperations,
   buildTableCatalogRegistry,
+  collectAddressableTableIdentityKeys,
+  collectTableOwnedIdentities,
   formatTableRowDisplayName,
   parseCsvTable,
   parseTableCatalog,
   parseXlsxTable,
   resolveTableType,
+  remapTableOwnedIdentities,
   resolveEffectiveTableRows,
   serializeCsvTable,
   serializeXlsxTable,
@@ -74,6 +77,146 @@ test("Table semantic adapter retains the multi-source document operation contrac
   assert.equal(unchanged.success, true);
 });
 
+test("Table copy requires an explicit type-preserving remap for every row key", async () => {
+  const { tableType, layout, csv } = await loadFixture();
+  const parsed = parseCsvTable(csv, tableType, layout, "Skills_A");
+  assert.equal(parsed.success, true);
+  if (!parsed.success) return;
+  const identities = collectTableOwnedIdentities(parsed.document, tableType, "game.table.skills");
+  const result = remapTableOwnedIdentities(
+    parsed.document,
+    tableType,
+    "game.table.skills",
+    identities.map((entry, index) => ({
+      identityKey: entry.identityKey,
+      from: entry.value,
+      to: typeof entry.value === "number" ? entry.value + 10_000 + index : `${entry.value}.copy`,
+    })),
+  );
+  assert.equal(result.success, true);
+  assert.equal(remapTableOwnedIdentities(parsed.document, tableType, "game.table.skills", []).success, false);
+
+  const distinctDedupType: TableTypeDefinition = {
+    ...tableType,
+    sheets: tableType.sheets.map((sheet) => ({
+      ...sheet,
+      ...(sheet.partition === undefined ? {} : {
+        partition: { ...sheet.partition, deduplicateByColumnId: "name" },
+      }),
+    })),
+  };
+  const dedupIdentities = collectTableOwnedIdentities(
+    parsed.document,
+    distinctDedupType,
+    "game.table.skills",
+  );
+  assert.ok(dedupIdentities.some((entry) => entry.kind === "table.dedup" && entry.value === "Fireball"));
+});
+
+test("Table copy resolves key and deduplicate aliases to one canonical column", async () => {
+  const { tableType, layout, csv } = await loadFixture();
+  const parsed = parseCsvTable(csv, tableType, layout, "Skills_A");
+  assert.equal(parsed.success, true);
+  if (!parsed.success) return;
+  const aliasType: TableTypeDefinition = {
+    ...tableType,
+    sheets: tableType.sheets.map((sheet) => ({
+      ...sheet,
+      keyColumnId: "skillId",
+      ...(sheet.partition === undefined ? {} : {
+        partition: { ...sheet.partition, deduplicateByColumnId: "skillId" },
+      }),
+    })),
+  };
+  const identities = collectTableOwnedIdentities(parsed.document, aliasType, "game.table.skills");
+  assert.equal(identities.length, parsed.document.sheets[0]!.rows.length);
+  assert.ok(identities.every((entry) => entry.kind === "table.row"));
+  const remapped = remapTableOwnedIdentities(
+    parsed.document,
+    aliasType,
+    "game.table.skills",
+    identities.map((entry) => ({ identityKey: entry.identityKey, from: entry.value, to: Number(entry.value) + 1_000 })),
+  );
+  assert.equal(remapped.success, true, remapped.success ? "" : remapped.diagnostics.map((entry) => entry.message).join("\n"));
+  if (!remapped.success) return;
+  assert.deepEqual(remapped.document.sheets[0]!.rows.map((row) => row.cells.id), [1101, 1102]);
+});
+
+test("Table partition copy remaps every physical row while effective policy selects the visible duplicate", async () => {
+  const { tableType, layout, csv } = await loadFixture();
+  const first = parseCsvTable(csv, tableType, layout, "Skills_A");
+  const second = parseCsvTable(
+    await readFile(path.join(fixtureRoot, "Tables", "Skills_B.csv"), "utf8"),
+    tableType,
+    layout,
+    "Skills_B",
+  );
+  assert.equal(first.success, true);
+  assert.equal(second.success, true);
+  if (!first.success || !second.success) return;
+  const secondSheet = second.document.sheets[0]!;
+  const partitioned = {
+    format: "csv" as const,
+    sheets: [
+      ...first.document.sheets,
+      {
+        ...secondSheet,
+        rows: secondSheet.rows.map((row, index) => index === 0
+          ? { ...row, cells: { ...row.cells, id: 201 } }
+          : row),
+      },
+    ],
+  };
+
+  for (const duplicatePolicy of ["keepFirst", "keepLast"] as const) {
+    const policyType: TableTypeDefinition = {
+      ...tableType,
+      sheets: tableType.sheets.map((sheet) => ({
+        ...sheet,
+        ...(sheet.partition === undefined ? {} : {
+          partition: { ...sheet.partition, deduplicateByColumnId: "name", duplicatePolicy },
+        }),
+      })),
+    };
+    const identities = collectTableOwnedIdentities(partitioned, policyType, "game.table.skills");
+    const addressable = collectAddressableTableIdentityKeys(partitioned, policyType);
+    assert.deepEqual(
+      identities.filter((entry) => entry.kind === "table.row").map((entry) => entry.value).sort((a, b) => Number(a) - Number(b)),
+      [101, 102, 201, 202],
+    );
+    assert.deepEqual(
+      identities.filter((entry) => entry.kind === "table.dedup").map((entry) => entry.value).sort(),
+      ["Blink", "Fireball", "Fireball Override"],
+    );
+    assert.deepEqual(
+      identities.filter((entry) => entry.kind === "table.row" && addressable.has(entry.identityKey))
+        .map((entry) => entry.value).sort((a, b) => Number(a) - Number(b)),
+      duplicatePolicy === "keepFirst" ? [101, 102, 201] : [101, 201, 202],
+    );
+    const remapped = remapTableOwnedIdentities(
+      partitioned,
+      policyType,
+      "game.table.skills",
+      identities.map((entry) => ({
+        identityKey: entry.identityKey,
+        from: entry.value,
+        to: typeof entry.value === "number" ? entry.value + 1_000 : `${entry.value}.copy`,
+      })),
+    );
+    assert.equal(remapped.success, true, remapped.success ? "" : remapped.diagnostics.map((entry) => entry.message).join("\n"));
+    if (!remapped.success) continue;
+    assert.deepEqual(
+      remapped.document.sheets.flatMap((sheet) => sheet.rows.map((row) => row.cells.id)).sort((a, b) => Number(a) - Number(b)),
+      [1101, 1102, 1201, 1202],
+    );
+    const effective = resolveEffectiveTableRows(remapped.document, policyType, "skills");
+    assert.deepEqual(
+      effective.rows.map((entry) => entry.row.cells.id),
+      duplicatePolicy === "keepFirst" ? [1101, 1102, 1201] : [1101, 1201, 1202],
+    );
+  }
+});
+
 test("Table Catalog uses stable aliases and explicit C# cell encodings", async () => {
   const { tableType } = await loadFixture();
   assert.equal(tableType.id, "game.table.skills");
@@ -103,6 +246,18 @@ test("row display-name patterns use stable Column IDs", async () => {
     result.diagnostics.filter((diagnostic) => diagnostic.code === "tableCatalog.unknownRowDisplayNameColumn").length,
     2,
   );
+});
+
+test("Sheet aliases are stable identifiers and cannot collide with canonical IDs", async () => {
+  const catalogPath = path.join(fixtureRoot, "Catalog", "Gameplay.vbtablecatalog");
+  const payload = JSON.parse(await readFile(catalogPath, "utf8")) as {
+    tableTypes: Array<{ sheets: Array<{ id: string; aliases: string[] }> }>;
+  };
+  const sheet = payload.tableTypes[0]!.sheets[0]!;
+  sheet.aliases = [sheet.id];
+  const result = parseTableCatalog(JSON.stringify(payload));
+  assert.equal(result.success, false);
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "tableCatalog.duplicateSheetIdentity"));
 });
 
 test("CSV maps columns from the configured name-key row instead of position", async () => {

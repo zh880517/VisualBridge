@@ -11,6 +11,7 @@
 - 读取、搜索和校验四类内置 Document。
 - 通过一个统一入口批量执行 GraphOperation、EntityOperation、StructuredOperation 或 TableOperation。
 - 搜索、解析稳定引用，以及预览和提交项目级引用重构。
+- 通过统一 Lifecycle 入口预览或提交 Document 创建、复制、移动和安全删除。
 - 使用 `baseHash`、锁、临时载体、替换前复查、原子替换和冲突拒绝保护写入。
 
 当前没有独立 CLI，不启动 Project Provider，不连接 Unity，也不包含 Exporter、Importer、Runtime、Debug、DAP 或 WebSocket 功能。
@@ -83,7 +84,7 @@ stdout 只承载 MCP 协议，诊断写入 stderr。发现过程递归查找 `Vi
 
 ## V2 稳定工具面
 
-V2 只暴露六个工具；V1 的 Graph、Structured、Table 专用工具已删除，不保留兼容别名。
+V2 只暴露七个工具；V1 的 Graph、Structured、Table 专用工具已删除，不保留兼容别名。
 
 | 工具 | action | 用途 |
 | --- | --- | --- |
@@ -93,10 +94,170 @@ V2 只暴露六个工具；V1 的 Graph、Structured、Table 专用工具已删�
 | `visualbridge_apply_operations` | 无 action | 原子执行一个有序且非空的领域 Operation 批次。 |
 | `visualbridge_references` | `search` / `resolve` | 搜索或解析稳定引用。 |
 | `visualbridge_refactor_reference` | `preview` / `apply` | 预览或提交项目级稳定引用重构。 |
+| `visualbridge_document_lifecycle` | `preview` / `apply` | 预览或提交创建、复制、路径移动和安全删除。 |
 
-写入从 `visualbridge_document` 分离，使 MCP annotation 能准确声明只读性；`visualbridge_apply_operations` 和 `visualbridge_refactor_reference` 使用保守的 destructive hint。
+写入从 `visualbridge_document` 分离，使 MCP annotation 能准确声明只读性；`visualbridge_apply_operations`、`visualbridge_refactor_reference` 和 `visualbridge_document_lifecycle` 使用保守的 destructive hint。
 
 所有输入对象都是 strict schema，未知顶层字段会被拒绝。除 `project.discover` 外，调用者必须使用发现结果中的显式 `projectFile`。Catalog、Document 与 Operation 同时要求 `documentTypeId` 和 `editor`，避免协议行为随 Project 中类型数量变化。
+
+### Document Lifecycle 工具
+
+MCP V2 提供单一 `visualbridge_document_lifecycle` 工具。它只接受 `preview` / `apply`，通过 strict `operation.kind` 区分 `create`、`copy`、`move` 和 `delete`，不提供按 editor 拆分的兼容别名。四领域语义、跨宿主规范计划、并发冲突和原子事务已经进入自动化验证；完整契约见 [`DocumentLifecycle.md`](DocumentLifecycle.md)。
+
+目标 preview 请求示例：
+
+```json
+{
+  "projectFile": "Game/VisualBridge.project.vbjson",
+  "action": "preview",
+  "operation": {
+    "kind": "copy",
+    "source": {
+      "projectId": "sample.game",
+      "documentTypeId": "hero-config",
+      "editor": "entity",
+      "path": "Config/Entities/Player.herojson"
+    },
+    "target": {
+      "projectId": "sample.game",
+      "documentTypeId": "hero-config",
+      "editor": "entity",
+      "path": "Config/Entities/PlayerClone.herojson"
+    },
+    "stableIdRemap": [
+      { "identityKey": "document", "from": "player", "to": "player.clone" },
+      { "identityKey": "component:health", "from": "health", "to": "health.clone" }
+    ]
+  }
+}
+```
+
+Copy 调用方必须从语义 source 构造完整 `stableIdRemap`：每个 Adapter 报告的 owned identity 恰好出现一次，`from` 必须匹配当前值，`to` 必须保持类型、改变值并在其 `collisionScope` 内无冲突。Preview 只校验并规范化映射，不自动生成 ID。Graph 的映射覆盖 Document、Graph、Node、Interface/Dynamic Port 和 Edge；Entity 覆盖 Document/Component；Structured 覆盖 Document；Table 覆盖 `table.row` typed key，并在去重列与 key 列不同时覆盖 `table.dedup` identity。Table 的 operation-facing Row/physical Sheet ID 由目标 Codec 重新派生。Create 的新身份由 strict `operation.parameters` 显式提供。
+
+Create/Copy 的唯一性检查先用每个现存 Document 的正式 Lifecycle Adapter 输出建立 Project-wide collision index，再按严格值类型、`kind` 和 `collisionScope` 查找目标。它覆盖没有 Reference definition 的 Graph Edge、Table dedup 等身份，不以字符串模式或 Reference Provider 代替 identity contract。remap 校验失败时 preview 仍同时返回已经确认的 `target.exists` / `target.typeMismatch` blocker，不丢失 target 分析结果。
+
+Create 的 `parameters` 按 editor 固定且拒绝未知字段：
+
+| editor | strict `parameters` | 语义 |
+| --- | --- | --- |
+| `graph` | `{ documentId, rootGraphId, graphTypeId?, initialNodeIds? }` | `initialNodeIds` 缺省为 `[]`；若 Graph Type 物化初始节点，必须按 factory 实际创建顺序提供恰好足够的稳定 ID。 |
+| `entity` | `{ documentId, entityTypeId, title? }` | `title` 缺省为 `New Entity`，字段默认值来自 Entity Catalog。 |
+| `structured` | `{ documentId }` | Config Type 由 Project Document Type ID 唯一绑定。 |
+| `table` | `{ format: "csv" | "xlsx", physicalName? }` | `format` 是权威载体选择，绝不从扩展名推断；`physicalName` 只用于 CSV Sheet/partition 匹配，缺省取目标文件名的 carrier stem，XLSX 不接受它。 |
+
+例如以下 Table Create preview 即使目标使用项目自定义扩展名，也会创建 XLSX，而不是按后缀猜测：
+
+```json
+{
+  "projectFile": "Game/VisualBridge.project.vbjson",
+  "action": "preview",
+  "operation": {
+    "kind": "create",
+    "target": {
+      "projectId": "sample.game",
+      "documentTypeId": "game.table.skills",
+      "editor": "table",
+      "path": "Tables/Skills.skilldata"
+    },
+    "parameters": { "format": "xlsx" }
+  }
+}
+```
+
+四种 operation 的字段固定为：Create 使用 `target` + strict `parameters`；Copy 使用 `source` + `target` + 完整 `stableIdRemap`；Move 使用 `source` + `target`；Delete 使用 `source` + strict stable `target`。Delete target 可以是 `document`、带 `componentId` 的 `entity.component`、带完整 Graph/owner 作用域的 `graph.element`，或带语义 read 返回的 `sheetId`/`rowId` 的 `table.row`。Document Delete 产生物理 `delete` mutations；Component/Graph Element/Table Row Delete 在安全检查后产生载体 `replace` mutation。
+
+Preview 请求不能携带 apply 字段。它返回 `previewHash`、不透明 `planPayload`、顶层便于回传的 `baseHashes` / `dependencies`，以及结构化 `plan`；`plan` 包含规范 `operation`、`ownedIdentities`、规范 `stableIdRemap`、Reference impacts、blockers、依赖、基线和物理 mutations。Create 的 `baseHashes` 固定为 `{}`；Copy、Move、Document Delete 和 contained Delete 都包含 source 的完整 physical manifest Hash，CSV family 因而不是单文件基线。Create 返回的是领域 Adapter 的 raw owned identity 声明，不伪造尚未进入 Project index 的 Host `ReferenceLocation`。Create/Copy/Move 目标不存在性编码为 mutation 的 `targetMustBeAbsent: true`。Preview 即使存在业务 blocker 仍返回信封 `status: "preview"`，调用方必须检查 `data.plan.blockers`，不能直接 apply。
+
+Core 的共享 dependency builder 为 MCP 与 VS Code 生成同一结构：每个 Project 恰好一个 `project`、一个聚合全部 Catalog source 的 `catalog`、一个基于规范 physical path/hash 的 `documentSet` 和一个规范化 `referenceIndex` dependency；四项的 `key` 都是 `projectId`。显示标题、说明和诊断不参与 Reference index Hash，Reference definition、value、resolution status、候选语义位置及物理来源变化会参与。路径统一为 `/`，输入顺序不影响 Hash。Lifecycle canonicalization 的全部字符串排序使用显式 UTF-16 code-unit 全序，不依赖系统 locale。
+
+Apply 请求必须重复完全相同的 operation：
+
+```json
+{
+  "projectFile": "Game/VisualBridge.project.vbjson",
+  "action": "apply",
+  "operation": {
+    "kind": "copy",
+    "source": {
+      "projectId": "sample.game",
+      "documentTypeId": "hero-config",
+      "editor": "entity",
+      "path": "Config/Entities/Player.herojson"
+    },
+    "target": {
+      "projectId": "sample.game",
+      "documentTypeId": "hero-config",
+      "editor": "entity",
+      "path": "Config/Entities/PlayerClone.herojson"
+    },
+    "stableIdRemap": [
+      { "identityKey": "document", "from": "player", "to": "player.clone" },
+      { "identityKey": "component:health", "from": "health", "to": "health.clone" }
+    ]
+  },
+  "previewHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "planPayload": "canonical planPayload returned by preview",
+  "baseHashes": {
+    "Config/Entities/Player.herojson": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "dependencies": [
+    {
+      "kind": "project",
+      "key": "sample.game",
+      "hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "paths": ["VisualBridge.project.vbjson"]
+    },
+    {
+      "kind": "catalog",
+      "key": "sample.game",
+      "hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "paths": ["Catalogs/Game.vbentitycatalog"]
+    },
+    {
+      "kind": "documentSet",
+      "key": "sample.game",
+      "hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "paths": ["Config/Entities/Player.herojson"]
+    },
+    {
+      "kind": "referenceIndex",
+      "key": "sample.game",
+      "hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "paths": ["Config/Entities/Player.herojson"]
+    }
+  ]
+}
+```
+
+Apply 必须原样提交 preview 使用的完整 operation、`previewHash`、`planPayload`、完整 `plan.baseHashes` 和完整 `plan.dependencies`；服务端在 Project 锁内重建当前计划并比较。调用方不能删减“不相关”的来源或依赖，也不能在 apply 时重新生成身份。
+
+Copy preview 只把副本内部引用记为 `internalRetarget`，把仍指向 closure 外或明确 `allowMissing` 的引用记为 `outboundPreserved`。它不产生 `targetLocationChanged`，因为 remap 后的副本是新身份；只有保持身份不变的 Move 使用该 impact 描述 Location path 变化。
+
+上例中的 64 位 Hash 和 `planPayload` 只是满足 Schema 的示意值；真实 apply 必须逐字使用同一次 preview 返回值，不能使用示例常量。Apply 缺少任一字段会被 Schema 拒绝；preview 反过来也会拒绝这些 apply-only 字段。
+
+Delete target 是严格判别联合：
+
+```text
+{ kind: "document" }
+{ kind: "entity.component", componentId }
+{ kind: "graph.element", graphId, elementKind: "graph", elementId }
+{ kind: "graph.element", graphId, elementKind: "node" | "interfacePort", elementId }
+{ kind: "graph.element", graphId, elementKind: "dynamicPort", elementId, nodeId }
+{ kind: "table.row", sheetId, rowId }
+```
+
+`sheetId` / `rowId` 必须来自当前 Table 语义 read/search 结果。Root Graph 不能作为元素删除，只能随 Document 删除；非 Root Graph 映射到 owning subgraph Node 的删除闭包。
+
+Document Delete 的 `plan.ownedIdentities` 包含整个 Document；`entity.component`、`graph.element`、`table.row` contained Delete 只返回删除闭包 identities，便于调用方精确审计实际授权范围。
+
+所有 Create/Copy/Move 都限制在同一 `projectId`、同一 `documentTypeId` 和同一 `editor`；目标必须重新通过 Project Registry 的唯一声明匹配，扩展名本身不选择 editor 或 format。Table 行为为：
+
+- CSV create 用显式 `format: "csv"` 和 `physicalName`（或目标 carrier stem）选择一个可唯一匹配的 Sheet 定义。
+- CSV family copy/move 总是处理完整 family。V1 只允许跨目录并保留所选入口和每个成员的 basename；任一目标存在都会阻止或使 apply 冲突。
+- XLSX create 用显式 `format: "xlsx"` 创建一个 Workbook；copy/move 处理单一完整 Workbook，不根据路径后缀识别格式。
+- Table copy 对非空 key/dedup identity 要求显式完整、保持值类型的 remap；delete document 删除整个 CSV family 或单个 XLSX Workbook，delete row 只替换拥有该 Row 的载体。
+
+授权边界是“同一次精确 preview 的 apply”，不是通用文件权限：调用者提交 `apply` 只授权 `operation` 与回传 manifest 描述的 Project 内 mutations。服务端不会借此跨 Project、改变 Document Type、覆盖已存在目标、级联删除 blocker 引用或执行任意文件操作。`visualbridge_apply_operations` 也不能绕过该边界删除 Component、Graph Node/Interface/Dynamic Port 或 Table Row；这些请求返回 `lifecycle.required`。MCP 以磁盘快照为权威，无法读取 VS Code 未保存缓冲区，因此 VS Code 与 MCP 同时工作时仍必须先保存编辑器；Hash/依赖复核只负责拒绝已经落盘的外部变化。
 
 ## 公共结果信封
 
@@ -110,7 +271,7 @@ V2 只暴露六个工具；V1 的 Graph、Structured、Table 专用工具已删�
 }
 ```
 
-只读请求返回 `status: "ok"`。写入返回 `applied`、`unchanged`、`invalid` 或 `conflict`，领域数据仍位于 `data`，不会在 `data.status` 中重复信封状态。Project、路径、Catalog、权限、Schema、I/O 或事务不确定错误使用 MCP Tool Error：
+只读请求返回 `status: "ok"`。Lifecycle 预览返回 `preview`；Lifecycle apply 若当前可信计划含 blocker 返回 `blocked`。其他写入返回 `applied`、`unchanged`、`invalid` 或 `conflict`。领域数据始终位于 `data`，不会在 `data.status` 中重复信封状态。Project、路径、Catalog、权限、Schema、I/O、无法建立可信语义快照或事务不确定错误使用 MCP Tool Error：
 
 ```json
 {
@@ -124,7 +285,7 @@ V2 只暴露六个工具；V1 的 Graph、Structured、Table 专用工具已删�
 }
 ```
 
-输出 JSON Schema 以 `status` 判别两个互斥分支：成功/业务结果必须有 `data` 且不能有 `error`，`error` 必须有错误对象且不能有 `data`。`invalid` 和 `conflict` 是可预期的业务结果，不设置 `isError`。调用者不能把冲突当成可用旧基线自动重试。
+输出 JSON Schema 以 `status` 判别两个互斥分支：成功/业务结果必须有 `data` 且不能有 `error`，`error` 必须有错误对象且不能有 `data`。`preview`、`blocked`、`invalid` 和 `conflict` 是可预期的业务结果，不设置 `isError`。`blocked` 表示同一计划在当前语义下不可授权，例如 Delete closure 有外部入站引用；`conflict` 表示 preview 后的 operation、Hash、依赖、计划、目标不存在性或事务状态发生变化。调用者不能把任一结果当作可覆盖旧基线的自动重试许可。
 
 ## Project 使用手册
 
@@ -280,7 +441,7 @@ sequenceDiagram
   MCP->>Adapter: parse + apply batch + validate references
   Adapter-->>MCP: next semantic document / invalid
   MCP->>Disk: stage, flush, recheck, replace, verify
-  MCP-->>AI: applied / unchanged / invalid / conflict
+  MCP-->>AI: applied / unchanged / invalid / blocked / conflict
 ```
 
 示例：
@@ -311,6 +472,8 @@ Operation Schema 保证每项至少有稳定 `type`，具体字段由对应 Buil
 | `table` | [`TableSemanticModel.md`](TableSemanticModel.md#7-semantic-document-and-operations) |
 
 调用方必须按对应文档构造完整 Operation；不能把别的 editor 的同名字段或原始 JSON Patch 传给统一入口。
+
+在当前 Document Lifecycle contract 下，移除 Reference Provider 可寻址目标的普通 Operation 受 Lifecycle guard 保护：`entity.removeComponent`、`graph.removeNode`、`graph.removeInterfacePort`、`graph.removeDynamicPort` 和 `table.removeRow` 不能由 `visualbridge_apply_operations` 直接提交；没有 Lifecycle apply 授权上下文时返回 `lifecycle.required` 且不修改来源。`graph.removeEdge` 等不删除 Reference target 的结构操作仍走普通 Operation。
 
 Graph、Entity、Structured、Table 和 Refactor 共用同一 Project Transaction；单文本写入也是该事务的一项：
 
@@ -362,11 +525,15 @@ Project 锁文件记录 token、进程与启动时间。持锁进程已经退出
 
 当前保证针对本地文件系统上的并发写入与进程中断恢复；锁的原子发布要求同卷 hard-link 能力。文件和 journal 会 `sync`，但目录项没有跨平台断电持久化承诺，因此不能把突然断电等同于数据库事务保证。
 
-四种写入状态：
+当前 Project Transaction 支持显式 before/after mutation：`replace` 是 hash→hash，`create` 是 absent→hash，`delete` 是 hash→absent，`move` 是 source hash + destination absent→source absent + destination same hash。Create/Copy/Move mutation 的 `targetMustBeAbsent` 与 `plan.baseHashes` 同为 preview/apply 的并发前置条件。MCP 与 VS Code Lifecycle 的 Create、Copy、Delete、Move 已通过该事务提交、中断恢复和 Extension Host 测试。
 
+Lifecycle 与普通 Operation 的业务状态：
+
+- `preview`：只返回确定性计划，没有写入；存在 blocker 时仍是该状态。
 - `applied`：提交成功，`baseHash` 是请求前基线，`hash` 是新基线。
 - `unchanged`：合法结果与当前权威字节一致，没有执行替换。
 - `invalid`：Parser、Operation、领域校验或 Reference 校验拒绝；没有提交。
+- `blocked`：Lifecycle apply 的当前计划包含业务 blocker，没有提交。
 - `conflict`：基线不一致、锁已占用或替换前外部变化；没有覆盖。
 
 已验证提交但恢复材料暂时无法清理时仍返回 `applied`，并附带 `maintenance.code: "transaction.finalizationPending"`；后续写请求会再次清理。只有目标或恢复结果无法证明时才返回 Tool Error。
@@ -422,7 +589,7 @@ Project 锁文件记录 token、进程与启动时间。持锁进程已经退出
 2. `visualbridge_project.read`，确认 Document Type 和 `adapterAvailable`。
 3. 用 `visualbridge_document.read` 获取当前 `baseHash` 与诊断。
 4. 只在 `valid: true` 且理解 Operation Schema 时调用 `visualbridge_apply_operations`。
-5. `applied` 后保存返回的新 `hash`；`unchanged` 不需要写盘；`invalid` 修正 Operation；`conflict` 必须重新读取并基于新文档重新计算修改。
+5. 普通编辑按 `applied` / `unchanged` / `invalid` / `conflict` 处理；Lifecycle 先保存 `preview` 的完整回传字段，`blocked` 先处理引用或目标冲突，`conflict` 必须重新 preview，不能复用旧授权。
 6. Tool Error 先检查 `error.code`。`transaction.rollbackFailed`、`transaction.recoveryFailed`、`transaction.committedStateChanged`、`transaction.finalizationFailed` 或 `transaction.journalInvalid` 表示恢复材料可能被保留，必须先人工核对 `.visualbridge-transaction.json`、`.rollback` 与权威来源，不能删除锁或强行重试。
 
 ## 验证
@@ -431,4 +598,4 @@ Project 锁文件记录 token、进程与启动时间。持锁进程已经退出
 npm test --workspace @visualbridge/mcp
 ```
 
-stdio 测试使用官方 MCP Client 和临时 Project 副本，精确验证六个工具、strict input/output schema、annotation、四类 Catalog/read/search/validate/apply、Entity 自定义 `.herojson`、无效批次字节不变、两个独立 MCP 进程的 stale `baseHash` 冲突、查询绑定 Cursor、损坏 Table 的统一无错误读取、CSV family、XLSX、Reference、项目级 Refactor、死亡持锁进程恢复，以及恢复遇到未知外部字节时不覆盖。没有 Unity 测试。
+stdio 测试使用官方 MCP Client 和临时 Project 副本，精确验证七个工具、strict input/output schema、annotation、四类 Catalog/read/search/validate/apply、Entity 自定义 `.herojson`、Lifecycle Create/Copy/Move/Delete、共享四项 dependency 结构、Copy 完整 source `baseHashes`、preview 冲突、普通删除 Operation guard、无效批次字节不变、两个独立 MCP 进程的 stale `baseHash` 冲突、查询绑定 Cursor、损坏 Table 的统一无错误读取、CSV family、XLSX、Reference、项目级 Refactor、死亡持锁进程恢复，以及恢复遇到未知外部字节时不覆盖。没有 Unity 测试。

@@ -13,6 +13,12 @@ import {
   type TableDocument,
 } from "./tableDocument";
 import { collectTableReferences } from "./tableReferences";
+import {
+  collectAddressableTableIdentityKeys,
+  collectTableOwnedIdentities,
+  deleteTableOwnedTarget,
+  remapTableOwnedIdentities,
+} from "./tableLifecycle";
 
 export interface TableDocumentAdapterContext {
   readonly tableType: TableTypeDefinition;
@@ -34,6 +40,20 @@ export const tableDocumentAdapter: SemanticDocumentAdapter<TableDocument, TableD
   },
   replaceReferenceValues(document, context, occurrencePaths, replacement) {
     return replaceTableReferenceValues(document, context.tableType, occurrencePaths, replacement);
+  },
+  lifecycle: {
+    collectOwnedIdentities(document, documentTypeId, context) {
+      return collectTableOwnedIdentities(document, context.tableType, documentTypeId);
+    },
+    collectAddressableIdentityKeys(document, _documentTypeId, context) {
+      return collectAddressableTableIdentityKeys(document, context.tableType);
+    },
+    remapOwnedIdentities(document, documentTypeId, remap, context) {
+      return remapTableOwnedIdentities(document, context.tableType, documentTypeId, remap);
+    },
+    deleteOwnedTarget(document, target, context) {
+      return deleteTableOwnedTarget(document, context.tableType, target);
+    },
   },
 };
 

@@ -2,15 +2,15 @@ import { randomUUID } from "node:crypto";
 import * as vscode from "vscode";
 import {
   STRUCTURED_EDITOR_ID,
-  createEmptyStructuredDocument,
   resolveStructuredConfigType,
-  serializeStructuredDocument,
 } from "@visualbridge/structured";
 import { loadStructuredCatalogRegistry } from "../catalog/structuredCatalogLoader";
 import type { ProjectRegistry } from "../project/projectRegistry";
+import type { WorkspaceDocumentLifecycle } from "../document/workspaceDocumentLifecycle";
 import { OPTIONAL_EDITOR_VIEW_TYPE } from "../editor/documentEditorProvider";
 import {
   selectDocumentType,
+  createThroughLifecycle,
   selectProject,
   suggestDefaultTarget,
   validateCreateDocumentSelection,
@@ -19,6 +19,7 @@ import {
 
 export async function createStructuredDocument(
   projects: ProjectRegistry,
+  lifecycle: WorkspaceDocumentLifecycle,
   requestedSelection?: CreateDocumentSelection,
 ): Promise<void> {
   const selection = validateCreateDocumentSelection(requestedSelection, STRUCTURED_EDITOR_ID);
@@ -64,11 +65,12 @@ export async function createStructuredDocument(
     );
     return;
   }
-  const text = serializeStructuredDocument(createEmptyStructuredDocument(
-    `config_${randomUUID()}`,
-    configType.id,
-    catalogResult.registry,
-  ));
-  await vscode.workspace.fs.writeFile(target, new TextEncoder().encode(text));
-  await vscode.commands.executeCommand("vscode.openWith", target, OPTIONAL_EDITOR_VIEW_TYPE);
+  await createThroughLifecycle(
+    lifecycle,
+    project,
+    documentType,
+    target,
+    { documentId: `config_${randomUUID()}` },
+    OPTIONAL_EDITOR_VIEW_TYPE,
+  );
 }

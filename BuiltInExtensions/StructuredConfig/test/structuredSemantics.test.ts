@@ -6,10 +6,12 @@ import {
   applyStructuredOperations,
   buildStructuredCatalogRegistry,
   collectStructuredReferences,
+  collectStructuredOwnedIdentities,
   createEmptyStructuredDocument,
   parseStructuredCatalog,
   parseStructuredDocument,
   renameStructuredDocumentId,
+  remapStructuredOwnedIdentities,
   resolveStructuredConfigType,
   replaceStructuredReferenceValues,
   serializeStructuredCatalog,
@@ -59,6 +61,19 @@ test("Structured document IDs rename through validated document semantics", () =
   assert.equal(renamed.success, true);
   assert.equal(renamed.success && renamed.document.documentId, "sample.game.settings.renamed");
   assert.equal(renameStructuredDocumentId(document, "invalid id", registry, documentTypeId).success, false);
+});
+
+test("Structured copy remaps exactly one stable Document ID", () => {
+  const { document, registry } = load();
+  const identity = collectStructuredOwnedIdentities(document, documentTypeId)[0]!;
+  const result = remapStructuredOwnedIdentities(document, documentTypeId, [{
+    identityKey: "document",
+    from: identity.value,
+    to: `${identity.value}.copy`,
+  }], registry, documentTypeId);
+  assert.equal(result.success, true);
+  assert.equal(result.success && result.document.documentId, `${document.documentId}.copy`);
+  assert.equal(remapStructuredOwnedIdentities(document, documentTypeId, [], registry, documentTypeId).success, false);
 });
 
 test("Structured Catalog Registry resolves canonical IDs and aliases without load-order ambiguity", () => {

@@ -136,6 +136,19 @@ Multi-selection, viewport, MiniMap position, menus, and clipboard contents are e
 
 The clipboard V1 payload contains selected atomic nodes and only edges whose two endpoints are in that copied set. Paste assigns fresh stable IDs and remaps its internal endpoints. Singleton nodes required by a Graph Type and embedded subgraphs are excluded until a future payload can preserve ownership and required-instance semantics without ambiguity. Clipboard input is treated as untrusted and rejected unless its format, version, identifiers, JSON values, nodes, and edges are structurally valid.
 
+## Document lifecycle target contract
+
+The clipboard payload is not a whole-document copy contract. Under Document Lifecycle V1, Graph lifecycle actions use the shared [`DocumentLifecycle.md`](DocumentLifecycle.md) service:
+
+- Path Move preserves the complete source bytes, `documentId`, every graph/element ID and every reference value.
+- Whole-document Copy requires the caller to submit a complete `stableIdRemap` with the preview request for `documentId`, every Graph, Node, Interface Port, Dynamic Port and Edge ID. The adapter applies it to `rootGraphId`, owning `subgraphId` and every matching edge endpoint. Preview validates and canonicalizes the mapping; apply never generates replacement IDs.
+- Safe Delete computes the complete structural closure. A Node closure includes its dynamic ports, incident edges and any owned subgraph hierarchy; an interface or dynamic port includes its incident edges. A root Graph can only be removed with its Document, and a non-root Graph is removed through its owning subgraph Node.
+- Reference coverage must be complete and no occurrence outside the closure may resolve or possibly resolve to the closure. Graph Type count constraints, subgraph ownership and full Graph validation still apply after the structural delete.
+
+`graph.removeNode`, `graph.removeInterfacePort` and `graph.removeDynamicPort` remain low-level domain operations used by an authorized Lifecycle plan, but public editor/MCP submission outside that context returns `lifecycle.required`. `graph.removeEdge` does not remove a Reference target and remains an ordinary Graph Operation.
+
+Lifecycle Delete identifies a Graph target with `kind: "graph.element"`, `graphId`, `elementKind` and `elementId`; Dynamic Port additionally requires its owning `nodeId`. These are full semantic scopes from the current read result, not display labels. Deleting a complete Graph Document instead uses `target.kind: "document"`.
+
 ## MCP V2 mapping
 
 Graph uses the unified MCP tools rather than Graph-specific top-level tools. `visualbridge_catalog` reads/searches Data Type, Graph Type and Node Type definitions; Node Type search accepts `selector.graphTypeId` and `selector.includeSubgraphNodeTypes`. `visualbridge_document` reads/searches/validates one declared Graph; instance search accepts `selector.kind` with `graph`, `node`, `port`, `edge`, `field` or `all`. `visualbridge_apply_operations` accepts an ordered non-empty GraphOperation array and the exact `baseHash` returned by read/validate. A stale hash or active Project Transaction returns `conflict`; parser, operation or newly introduced reference errors return `invalid` without modifying bytes. Persisted writes use the shared recoverable Project Transaction described in `VisualBridgeMcp.md`.

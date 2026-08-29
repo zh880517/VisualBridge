@@ -7,6 +7,7 @@ import {
   applyGraphOperations,
   buildGraphCatalogRegistry,
   collectGraphReferences,
+  collectGraphOwnedIdentities,
   createGraphElementReferenceProvider,
   getGraphNodePorts,
   getReplacementCandidates,
@@ -16,6 +17,7 @@ import {
   parseGraphCatalog,
   parseGraphDocument,
   replaceGraphReferenceValues,
+  remapGraphOwnedIdentities,
   renameGraphDocumentId,
   resolveGraphType,
   resolveNodeType,
@@ -64,6 +66,67 @@ test("Graph semantic adapter composes the established parser, validator, operati
     await graphTextDocumentCodec.render(fixture.document, "", context),
     serializeGraphDocument(fixture.document),
   );
+});
+
+test("Graph copy remaps every owned identity and structural endpoint deterministically", () => {
+  const { document, registry } = loadFixture();
+  const identities = collectGraphOwnedIdentities(document, "sample.graph.logic");
+  const remapped = remapGraphOwnedIdentities(
+    document,
+    "sample.graph.logic",
+    identities.map((entry) => ({
+      identityKey: entry.identityKey,
+      from: entry.value,
+      to: `${entry.value}.copy`,
+    })),
+    registry,
+  );
+  assert.equal(remapped.success, true, remapped.success ? "" : formatDiagnostics(remapped.diagnostics));
+  if (!remapped.success) return;
+  assert.equal(remapped.document.documentId, `${document.documentId}.copy`);
+  assert.equal(remapped.document.rootGraphId, `${document.rootGraphId}.copy`);
+  assert.deepEqual(
+    collectGraphOwnedIdentities(remapped.document, "sample.graph.logic").map((entry) => entry.value).sort(),
+    identities.map((entry) => `${entry.value}.copy`).sort(),
+  );
+  assert.equal(
+    remapGraphOwnedIdentities(document, "sample.graph.logic", [], registry).success,
+    false,
+  );
+});
+
+test("Graph copy retargets parent edges that use remapped child interface ports", () => {
+  const { document, registry } = loadFixture();
+  const connected = applyGraphOperations(document, [{
+    type: "graph.addEdge",
+    graphId: "root",
+    edge: {
+      id: "copy_subgraph_input",
+      kind: "data",
+      source: { kind: "node", nodeId: "int_source", portId: "value" },
+      target: { kind: "node", nodeId: "subgraph_call", portId: "parameter" },
+    },
+  }], registry);
+  assert.equal(connected.success, true, connected.success ? "" : formatDiagnostics(connected.diagnostics));
+  if (!connected.success) return;
+  const identities = collectGraphOwnedIdentities(connected.document, "sample.graph.logic");
+  assert.equal(new Set(identities.filter((entry) => entry.kind === "edge").map((entry) => entry.collisionScope)).size, 1);
+  const remapped = remapGraphOwnedIdentities(
+    connected.document,
+    "sample.graph.logic",
+    identities.map((entry) => ({
+      identityKey: entry.identityKey,
+      from: entry.value,
+      to: `${entry.value}.copy`,
+    })),
+    registry,
+  );
+  assert.equal(remapped.success, true, remapped.success ? "" : formatDiagnostics(remapped.diagnostics));
+  if (!remapped.success) return;
+  const root = remapped.document.graphs.find((graph) => graph.id === "root.copy")!;
+  const edge = root.edges.find((candidate) => candidate.id === "copy_subgraph_input.copy")!;
+  assert.equal(edge.target.kind === "node" && edge.target.nodeId, "subgraph_call.copy");
+  assert.equal(edge.target.portId, "parameter.copy");
 });
 
 function readFixture(...segments: string[]): string {

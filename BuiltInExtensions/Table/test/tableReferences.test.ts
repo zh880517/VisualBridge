@@ -15,6 +15,7 @@ const tableType: TableTypeDefinition = {
   aliases: ["legacy.table.skills"],
   sheets: [{
     id: "skills",
+    aliases: ["legacy.skills"],
     title: "Skills",
     name: "Skills",
     nameAliases: [],
@@ -70,6 +71,10 @@ test("table row provider searches and resolves stable typed keys with locations"
   assert.equal(results[0]?.location?.rowId, "row-1");
   assert.equal((await service.resolve(definition, 1001)).status, "resolved");
   assert.equal((await service.resolve(definition, "1001")).status, "missing");
+  assert.equal((await service.resolve({
+    ...definition,
+    target: { ...definition.target, sheetId: "legacy.skills" },
+  }, 1001)).status, "resolved");
 });
 
 test("table fields expose nested reference occurrences", () => {

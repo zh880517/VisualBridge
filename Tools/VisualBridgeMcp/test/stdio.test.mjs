@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { cp, mkdtemp, readFile, readdir, rm, unlink, utimes, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,7 +14,7 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const repositoryRoot = path.resolve(packageRoot, "../..");
 const serverPath = path.join(packageRoot, "dist", "server.js");
 
-test("MCP V2 exposes six stable tools and routes Graph semantics with real cross-process conflicts", async () => {
+test("MCP V2 exposes seven stable tools and routes Graph semantics with real cross-process conflicts", async () => {
   await withFixture("GraphSemanticProject", async ({ temporaryRoot, projectRoot, client, stderr }) => {
     const listed = await client.listTools();
     assert.deepEqual(
@@ -23,6 +23,7 @@ test("MCP V2 exposes six stable tools and routes Graph semantics with real cross
         "visualbridge_apply_operations",
         "visualbridge_catalog",
         "visualbridge_document",
+        "visualbridge_document_lifecycle",
         "visualbridge_project",
         "visualbridge_refactor_reference",
         "visualbridge_references",
@@ -110,6 +111,43 @@ test("MCP V2 exposes six stable tools and routes Graph semantics with real cross
     });
     assert.equal(validation.valid, true);
     assert.equal(validation.baseHash, graph.baseHash);
+
+    const graphCopySelector = {
+      projectId: "GraphSemanticProject",
+      documentTypeId: "logicGraph",
+      editor: "graph",
+    };
+    const graphCopySeed = await call(client, "visualbridge_document_lifecycle", {
+      action: "preview",
+      projectFile,
+      operation: {
+        kind: "copy",
+        source: { ...graphCopySelector, path: graphPath },
+        target: { ...graphCopySelector, path: "Graph/EdgeCollisionCopy.vbgraph" },
+        stableIdRemap: [],
+      },
+    });
+    const graphEdges = graphCopySeed.plan.ownedIdentities.filter((identity) => identity.kind === "edge");
+    assert.ok(graphEdges.length >= 2);
+    const collidingEdge = graphEdges[0];
+    const existingEdge = graphEdges[1];
+    const graphCollisionPreview = await call(client, "visualbridge_document_lifecycle", {
+      action: "preview",
+      projectFile,
+      operation: {
+        kind: "copy",
+        source: { ...graphCopySelector, path: graphPath },
+        target: { ...graphCopySelector, path: "Graph/EdgeCollisionCopy.vbgraph" },
+        stableIdRemap: graphCopySeed.plan.ownedIdentities.map((identity, index) => ({
+          identityKey: identity.identityKey,
+          from: identity.value,
+          to: identity.identityKey === collidingEdge.identityKey ? existingEdge.value : `copy${index}`,
+        })),
+      },
+    });
+    assert.ok(graphCollisionPreview.plan.blockers.some((blocker) => (
+      blocker.code === "identity.targetCollision" && blocker.identityKey === collidingEdge.identityKey
+    )), JSON.stringify(graphCollisionPreview.plan.blockers));
 
     const wrongEditor = await client.callTool({
       name: "visualbridge_document",
@@ -354,6 +392,448 @@ test("MCP V2 Entity adapter reads custom extensions, searches Catalog/Documents 
   });
 });
 
+test("MCP document lifecycle copies, moves, and safely deletes Entity content with strict preview conflicts", async () => {
+  await withFixture("EntitySemanticProject", async ({ projectRoot, client }) => {
+    const discovery = await call(client, "visualbridge_project", { action: "discover" });
+    const projectFile = discovery.projects[0].projectFile;
+    const projectId = "visualbridge.entity-semantics";
+    const selector = { projectId, documentTypeId: "hero-config", editor: "entity" };
+    const sourcePath = "Config/Entities/Player.herojson";
+    const copyPath = "Config/Entities/PlayerCopy.herojson";
+    const movedPath = "Config/Entities/PlayerMoved.herojson";
+    const sourceFile = path.join(projectRoot, ...sourcePath.split("/"));
+    const copyFile = path.join(projectRoot, ...copyPath.split("/"));
+    const movedFile = path.join(projectRoot, ...movedPath.split("/"));
+    const sourceBefore = await readFile(sourceFile);
+    const copyOperation = {
+      kind: "copy",
+      source: { ...selector, path: sourcePath },
+      target: { ...selector, path: copyPath },
+      stableIdRemap: [{ identityKey: "document", from: "sample.player", to: "sample.player.copy" }, {
+        identityKey: "component:health",
+        from: "health",
+        to: "health_copy",
+      }, {
+        identityKey: "component:move",
+        from: "move",
+        to: "move_copy",
+      }],
+    };
+    const copyPreview = await call(client, "visualbridge_document_lifecycle", {
+      action: "preview",
+      projectFile,
+      operation: copyOperation,
+    });
+    assert.equal(copyPreview.status, "preview");
+    assert.equal(copyPreview.plan.blockers.length, 0, JSON.stringify(copyPreview.plan.blockers));
+    assert.deepEqual(copyPreview.plan.stableIdRemap.map((entry) => entry.identityKey), [
+      "component:health",
+      "component:move",
+      "document",
+    ]);
+    assert.ok(copyPreview.plan.referenceImpacts.some((impact) => (
+      impact.kind === "internalRetarget" && impact.occurrence.path === "properties.primaryComponentId"
+    )));
+    assert.ok(copyPreview.plan.referenceImpacts.some((impact) => (
+      impact.kind === "outboundPreserved" && impact.occurrence.path === "properties.primarySkillId"
+    )));
+    assert.ok(copyPreview.plan.referenceImpacts.every((impact) => impact.kind !== "targetLocationChanged"));
+    assert.deepEqual(copyPreview.plan.baseHashes, { [sourcePath]: hash(sourceBefore) });
+    assert.deepEqual(copyPreview.plan.dependencies.map((dependency) => dependency.kind), [
+      "catalog",
+      "documentSet",
+      "project",
+      "referenceIndex",
+    ]);
+    const copied = await call(client, "visualbridge_document_lifecycle", lifecycleApply(
+      projectFile,
+      copyOperation,
+      copyPreview,
+    ));
+    assert.equal(copied.status, "applied");
+    assert.deepEqual(await readFile(sourceFile), sourceBefore, "Copy must not mutate its source document.");
+    const copyDocument = await call(client, "visualbridge_document", {
+      action: "read",
+      projectFile,
+      documentTypeId: selector.documentTypeId,
+      editor: selector.editor,
+      path: copyPath,
+    });
+    assert.equal(copyDocument.document.documentId, "sample.player.copy");
+    assert.deepEqual(copyDocument.document.components.map((component) => component.id), ["health_copy", "move_copy"]);
+    assert.equal(copyDocument.document.properties.primaryComponentId, "health_copy");
+    assert.equal(copyDocument.document.properties.primarySkillId, 101);
+
+    const blockedCopyPreview = await call(client, "visualbridge_document_lifecycle", {
+      action: "preview",
+      projectFile,
+      operation: copyOperation,
+    });
+    assert.ok(blockedCopyPreview.plan.blockers.some((blocker) => blocker.code === "target.exists"));
+    assert.equal(blockedCopyPreview.plan.mutations.length, 1, "Blocked Copy still exposes its canonical mutation plan.");
+    assert.deepEqual(blockedCopyPreview.plan.baseHashes, { [sourcePath]: hash(sourceBefore) });
+    const invalidBlockedCopyPreview = await call(client, "visualbridge_document_lifecycle", {
+      action: "preview",
+      projectFile,
+      operation: { ...copyOperation, stableIdRemap: [] },
+    });
+    assert.ok(invalidBlockedCopyPreview.plan.blockers.some((blocker) => blocker.code === "target.exists"));
+    assert.ok(invalidBlockedCopyPreview.plan.blockers.some((blocker) => blocker.code === "identity.remapMissing"));
+
+    const moveOperation = {
+      kind: "move",
+      source: { ...selector, path: copyPath },
+      target: { ...selector, path: movedPath },
+    };
+    const staleMovePreview = await call(client, "visualbridge_document_lifecycle", {
+      action: "preview",
+      projectFile,
+      operation: moveOperation,
+    });
+    const externallyChanged = JSON.parse(await readFile(copyFile, "utf8"));
+    externallyChanged.title = "Changed after lifecycle preview";
+    await writeFile(copyFile, `${JSON.stringify(externallyChanged, undefined, 2)}\n`, "utf8");
+    const staleMove = await call(client, "visualbridge_document_lifecycle", lifecycleApply(
+      projectFile,
+      moveOperation,
+      staleMovePreview,
+    ));
+    assert.equal(staleMove.status, "conflict");
+    assert.equal(staleMove.reason, "baseHashMismatch");
+    assert.equal(await readFile(copyFile, "utf8"), `${JSON.stringify(externallyChanged, undefined, 2)}\n`);
+    await assert.rejects(readFile(movedFile), { code: "ENOENT" });
+
+    const movePreview = await call(client, "visualbridge_document_lifecycle", {
+      action: "preview",
+      projectFile,
+      operation: moveOperation,
+    });
+    const moved = await call(client, "visualbridge_document_lifecycle", lifecycleApply(projectFile, moveOperation, movePreview));
+    assert.equal(moved.status, "applied");
+    await assert.rejects(readFile(copyFile), { code: "ENOENT" });
+    assert.equal(JSON.parse(await readFile(movedFile, "utf8")).title, "Changed after lifecycle preview");
+
+    const sourceDocument = await call(client, "visualbridge_document", {
+      action: "read",
+      projectFile,
+      documentTypeId: selector.documentTypeId,
+      editor: selector.editor,
+      path: sourcePath,
+    });
+    const guarded = await call(client, "visualbridge_apply_operations", {
+      projectFile,
+      documentTypeId: selector.documentTypeId,
+      editor: selector.editor,
+      path: sourcePath,
+      baseHash: sourceDocument.baseHash,
+      operations: [{ type: "entity.removeComponent", componentId: "move" }],
+    });
+    assert.equal(guarded.status, "invalid");
+    assert.ok(guarded.diagnostics.some((diagnostic) => diagnostic.code === "lifecycle.required"));
+
+    const deleteOperation = {
+      kind: "delete",
+      source: { ...selector, path: sourcePath },
+      target: { kind: "entity.component", componentId: "move" },
+    };
+    const staleDeletePreview = await call(client, "visualbridge_document_lifecycle", {
+      action: "preview",
+      projectFile,
+      operation: deleteOperation,
+    });
+    const catalogFile = path.join(projectRoot, "Catalog", "Common.vbentitycatalog");
+    await writeFile(catalogFile, `${await readFile(catalogFile, "utf8")}\n`, "utf8");
+    const staleDelete = await call(client, "visualbridge_document_lifecycle", lifecycleApply(
+      projectFile,
+      deleteOperation,
+      staleDeletePreview,
+    ));
+    assert.equal(staleDelete.status, "conflict");
+    assert.equal(staleDelete.reason, "dependencyChanged");
+    assert.ok(JSON.parse(await readFile(sourceFile, "utf8")).components.some((component) => component.id === "move"));
+
+    const deletePreview = await call(client, "visualbridge_document_lifecycle", {
+      action: "preview",
+      projectFile,
+      operation: deleteOperation,
+    });
+    assert.equal(deletePreview.plan.blockers.length, 0, JSON.stringify(deletePreview.plan.blockers));
+    assert.deepEqual(deletePreview.plan.ownedIdentities.map((identity) => identity.identityKey), ["component:move"]);
+    const deleted = await call(client, "visualbridge_document_lifecycle", lifecycleApply(
+      projectFile,
+      deleteOperation,
+      deletePreview,
+    ));
+    assert.equal(deleted.status, "applied");
+    const afterDelete = JSON.parse(await readFile(sourceFile, "utf8"));
+    assert.deepEqual(afterDelete.components.map((component) => component.id), ["health"]);
+  });
+});
+
+test("MCP lifecycle preserves allowMissing outbound values while copying", async () => {
+  await withFixture("EntitySemanticProject", async ({ projectRoot, client }) => {
+    const catalogFile = path.join(projectRoot, "Catalog", "Common.vbentitycatalog");
+    const catalog = JSON.parse(await readFile(catalogFile, "utf8"));
+    const primarySkill = catalog.entityTypes[0].properties.find((property) => property.id === "primarySkillId");
+    primarySkill.reference.allowMissing = true;
+    await writeFile(catalogFile, `${JSON.stringify(catalog, undefined, 2)}\n`, "utf8");
+
+    const sourcePath = "Config/Entities/Player.herojson";
+    const sourceFile = path.join(projectRoot, ...sourcePath.split("/"));
+    const source = JSON.parse(await readFile(sourceFile, "utf8"));
+    source.properties.primarySkillId = 999999;
+    await writeFile(sourceFile, `${JSON.stringify(source, undefined, 2)}\n`, "utf8");
+
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const selector = {
+      projectId: "visualbridge.entity-semantics",
+      documentTypeId: "hero-config",
+      editor: "entity",
+    };
+    const targetPath = "Config/Entities/PlayerAllowMissing.herojson";
+    const operation = {
+      kind: "copy",
+      source: { ...selector, path: sourcePath },
+      target: { ...selector, path: targetPath },
+      stableIdRemap: [{ identityKey: "document", from: "sample.player", to: "sample.player.allow-missing" }, {
+        identityKey: "component:health",
+        from: "health",
+        to: "health_allow_missing",
+      }, {
+        identityKey: "component:move",
+        from: "move",
+        to: "move_allow_missing",
+      }],
+    };
+    const preview = await call(client, "visualbridge_document_lifecycle", {
+      action: "preview",
+      projectFile,
+      operation,
+    });
+    assert.equal(preview.plan.blockers.length, 0, JSON.stringify(preview.plan.blockers));
+    const impact = preview.plan.referenceImpacts.find((entry) => (
+      entry.kind === "outboundPreserved" && entry.occurrence.path === "properties.primarySkillId"
+    ));
+    assert.ok(impact, JSON.stringify(preview.plan.referenceImpacts));
+    assert.equal(Object.hasOwn(impact, "target"), false);
+
+    const applied = await call(client, "visualbridge_document_lifecycle", lifecycleApply(projectFile, operation, preview));
+    assert.equal(applied.status, "applied");
+    const copied = JSON.parse(await readFile(path.join(projectRoot, ...targetPath.split("/")), "utf8"));
+    assert.equal(copied.properties.primarySkillId, 999999);
+  });
+});
+
+test("MCP safe delete fails closed for invalid semantic sources and unavailable reference providers", async () => {
+  await withFixture("EntitySemanticProject", async ({ projectRoot, client }) => {
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const selector = {
+      projectId: "visualbridge.entity-semantics",
+      documentTypeId: "hero-config",
+      editor: "entity",
+      path: "Config/Entities/Player.herojson",
+    };
+    const operation = {
+      kind: "delete",
+      source: selector,
+      target: { kind: "entity.component", componentId: "move" },
+    };
+    const source = JSON.parse(await readFile(path.join(projectRoot, ...selector.path.split("/")), "utf8"));
+    source.documentId = "sample.invalid.external";
+    source.entityTypeId = "missing.entity.type";
+    const invalidFile = path.join(projectRoot, "Config", "Entities", "Invalid.herojson");
+    await writeFile(invalidFile, `${JSON.stringify(source, undefined, 2)}\n`, "utf8");
+
+    const semanticError = await client.callTool({
+      name: "visualbridge_document_lifecycle",
+      arguments: { action: "preview", projectFile, operation },
+    });
+    assert.equal(semanticError.isError, true);
+    assert.equal(semanticError.structuredContent.error.code, "lifecycle.invalidSource");
+    assert.ok(semanticError.structuredContent.error.details.some((diagnostic) => diagnostic.severity === "error"));
+
+    await unlink(invalidFile);
+    const catalogFile = path.join(projectRoot, "Catalog", "Common.vbentitycatalog");
+    const catalog = JSON.parse(await readFile(catalogFile, "utf8"));
+    const primarySkill = catalog.entityTypes[0].properties.find((property) => property.id === "primarySkillId");
+    primarySkill.reference.kind = "missing.provider";
+    await writeFile(catalogFile, `${JSON.stringify(catalog, undefined, 2)}\n`, "utf8");
+    const providerError = await client.callTool({
+      name: "visualbridge_document_lifecycle",
+      arguments: { action: "preview", projectFile, operation },
+    });
+    assert.equal(providerError.isError, true);
+    assert.equal(providerError.structuredContent.error.code, "lifecycle.invalidSource");
+    assert.ok(providerError.structuredContent.error.details.some((diagnostic) => (
+      diagnostic.code === "reference.providerUnavailable"
+    )));
+
+    primarySkill.reference.kind = "table.row";
+    primarySkill.reference.target = {
+      tableTypeId: "sample.table.skills",
+      sheetId: "skills",
+      unsupportedSelector: "invalid",
+    };
+    await writeFile(catalogFile, `${JSON.stringify(catalog, undefined, 2)}\n`, "utf8");
+    const invalidTarget = await client.callTool({
+      name: "visualbridge_document_lifecycle",
+      arguments: { action: "preview", projectFile, operation },
+    });
+    assert.equal(invalidTarget.isError, true);
+    assert.equal(invalidTarget.structuredContent.error.code, "lifecycle.invalidSource");
+    assert.ok(invalidTarget.structuredContent.error.details.some((diagnostic) => (
+      diagnostic.code === "reference.invalidTarget"
+    )));
+  });
+});
+
+test("MCP Table lifecycle resolves key aliases for safe delete", async () => {
+  await withFixture("EntitySemanticProject", async ({ projectRoot, client }) => {
+    const catalogFile = path.join(projectRoot, "Catalog", "Skills.vbtablecatalog");
+    const catalog = JSON.parse(await readFile(catalogFile, "utf8"));
+    const sheetDefinition = catalog.tableTypes[0].sheets[0];
+    sheetDefinition.columns.find((column) => column.id === "id").aliases = ["skillId"];
+    sheetDefinition.keyColumnId = "skillId";
+    sheetDefinition.partition.deduplicateByColumnId = "skillId";
+    await writeFile(catalogFile, `${JSON.stringify(catalog, undefined, 2)}\n`, "utf8");
+
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const selector = {
+      projectId: "visualbridge.entity-semantics",
+      documentTypeId: "sample.table.skills",
+      editor: "table",
+      path: "Tables/Skills_Main.skillstable",
+    };
+    const table = await call(client, "visualbridge_document", {
+      action: "read",
+      projectFile,
+      documentTypeId: selector.documentTypeId,
+      editor: selector.editor,
+      path: selector.path,
+    });
+    const physicalSheet = table.sheets[0];
+    const tablePage = await call(client, "visualbridge_document", {
+      action: "read",
+      projectFile,
+      documentTypeId: selector.documentTypeId,
+      editor: selector.editor,
+      path: selector.path,
+      selector: { sheetId: physicalSheet.id },
+    });
+    const referencedRow = tablePage.page.rows.find((row) => row.cells.id === 101);
+    const deletePreview = await call(client, "visualbridge_document_lifecycle", {
+      action: "preview",
+      projectFile,
+      operation: {
+        kind: "delete",
+        source: selector,
+        target: { kind: "table.row", sheetId: physicalSheet.id, rowId: referencedRow.id },
+      },
+    });
+    assert.ok(deletePreview.plan.blockers.some((blocker) => (
+      blocker.code === "reference.inbound"
+      && blocker.identityKey === 'table.row:["skills","number",101]'
+    )), JSON.stringify(deletePreview.plan.blockers));
+  });
+});
+
+test("MCP Table lifecycle copies physical-only rows while protecting effective identities", async () => {
+  await withFixture("EntitySemanticProject", async ({ projectRoot, client }) => {
+    const catalogFile = path.join(projectRoot, "Catalog", "Skills.vbtablecatalog");
+    const catalog = JSON.parse(await readFile(catalogFile, "utf8"));
+    const sheetDefinition = catalog.tableTypes[0].sheets[0];
+    sheetDefinition.partition.deduplicateByColumnId = "name";
+    sheetDefinition.partition.duplicatePolicy = "keepFirst";
+    await writeFile(catalogFile, `${JSON.stringify(catalog, undefined, 2)}\n`, "utf8");
+
+    const projectFilePath = path.join(projectRoot, "VisualBridge.project.vbjson");
+    const projectDefinition = JSON.parse(await readFile(projectFilePath, "utf8"));
+    projectDefinition.documentTypes.find((documentType) => documentType.id === "sample.table.skills")
+      .include.push("Tables/Copies/Skills_*.skillstable");
+    await writeFile(projectFilePath, `${JSON.stringify(projectDefinition, undefined, 2)}\n`, "utf8");
+    await writeFile(
+      path.join(projectRoot, "Tables", "Skills_Override.skillstable"),
+      "Skill name\tSkill ID\nName\tId\nFireball\t901\n",
+      "utf8",
+    );
+    await mkdir(path.join(projectRoot, "Tables", "Copies"), { recursive: true });
+
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const selector = {
+      projectId: "visualbridge.entity-semantics",
+      documentTypeId: "sample.table.skills",
+      editor: "table",
+    };
+    const operation = {
+      kind: "copy",
+      source: { ...selector, path: "Tables/Skills_Main.skillstable" },
+      target: { ...selector, path: "Tables/Copies/Skills_Main.skillstable" },
+      stableIdRemap: [
+        ["table.row", 101, 1101],
+        ["table.row", 102, 1102],
+        ["table.row", 901, 1901],
+        ["table.dedup", "Fireball", "Fireball Copy"],
+        ["table.dedup", "Blink", "Blink Copy"],
+      ].map(([kind, from, to]) => ({
+        identityKey: `${kind}:${JSON.stringify(["skills", typeof from, from])}`,
+        from,
+        to,
+      })),
+    };
+    const collisionOperation = {
+      ...operation,
+      stableIdRemap: operation.stableIdRemap.map((entry) => (
+        entry.identityKey === 'table.row:["skills","number",901]'
+          ? { ...entry, to: 101 }
+          : entry
+      )),
+    };
+    const collisionPreview = await call(client, "visualbridge_document_lifecycle", {
+      action: "preview",
+      projectFile,
+      operation: collisionOperation,
+    });
+    assert.ok(collisionPreview.plan.blockers.some((blocker) => (
+      blocker.code === "identity.targetCollision"
+      && blocker.identityKey === 'table.row:["skills","number",901]'
+    )), JSON.stringify(collisionPreview.plan.blockers));
+    const dedupCollisionPreview = await call(client, "visualbridge_document_lifecycle", {
+      action: "preview",
+      projectFile,
+      operation: {
+        ...operation,
+        stableIdRemap: operation.stableIdRemap.map((entry) => (
+          entry.identityKey === 'table.dedup:["skills","string","Fireball"]'
+            ? { ...entry, to: "Blink" }
+            : entry
+        )),
+      },
+    });
+    assert.ok(dedupCollisionPreview.plan.blockers.some((blocker) => (
+      blocker.code === "identity.targetCollision"
+      && blocker.identityKey === 'table.dedup:["skills","string","Fireball"]'
+    )), JSON.stringify(dedupCollisionPreview.plan.blockers));
+
+    const preview = await call(client, "visualbridge_document_lifecycle", {
+      action: "preview",
+      projectFile,
+      operation,
+    });
+    assert.equal(preview.plan.blockers.length, 0, JSON.stringify(preview.plan.blockers));
+    const physicalOnly = preview.plan.ownedIdentities.find((identity) => identity.identityKey === 'table.row:["skills","number",901]');
+    assert.ok(physicalOnly);
+    assert.equal(physicalOnly.reference.definition.kind, "table.row");
+    assert.equal(Object.hasOwn(physicalOnly.reference, "location"), false);
+    const effective = preview.plan.ownedIdentities.find((identity) => identity.identityKey === 'table.row:["skills","number",101]');
+    assert.equal(effective.reference.location.rowId.includes("101"), true);
+
+    const applied = await call(client, "visualbridge_document_lifecycle", lifecycleApply(projectFile, operation, preview));
+    assert.equal(applied.status, "applied");
+    assert.match(await readFile(path.join(projectRoot, "Tables", "Copies", "Skills_Main.skillstable"), "utf8"), /Fireball Copy\t1101/);
+    assert.match(await readFile(path.join(projectRoot, "Tables", "Copies", "Skills_Override.skillstable"), "utf8"), /Fireball Copy\t1901/);
+  });
+});
+
 test("MCP V2 Structured adapter uses one read/search/validate/apply contract", async () => {
   await withFixture("StructuredSemanticProject", async ({ projectRoot, client }) => {
     const discovery = await call(client, "visualbridge_project", { action: "discover" });
@@ -425,6 +905,32 @@ test("MCP V2 Structured adapter uses one read/search/validate/apply contract", a
     });
     assert.equal(updated.document.properties.maxPlayers, 8);
     assert.equal(updated.document.properties.accent, "#112233FF");
+
+    const createOperation = {
+      kind: "create",
+      target: {
+        projectId: "visualbridge.structured-semantics",
+        documentTypeId: selector.documentTypeId,
+        editor: selector.editor,
+        path: "Config/CreatedByMcp.gamesettings",
+      },
+      parameters: { documentId: "sample.created.by-mcp" },
+    };
+    const createPreview = await call(client, "visualbridge_document_lifecycle", {
+      action: "preview",
+      projectFile,
+      operation: createOperation,
+    });
+    assert.deepEqual(createPreview.plan.baseHashes, {});
+    assert.ok(createPreview.plan.ownedIdentities.every((identity) => (
+      identity.reference === undefined || Object.hasOwn(identity.reference, "location") === false
+    )));
+    assert.deepEqual(createPreview.plan.dependencies.map((dependency) => dependency.kind), [
+      "catalog",
+      "documentSet",
+      "project",
+      "referenceIndex",
+    ]);
   });
 });
 
@@ -507,6 +1013,33 @@ test("MCP V2 Table adapter preserves CSV families and XLSX through the shared co
     });
     assert.equal(validation.valid, true);
 
+    const guardedRowDelete = await call(client, "visualbridge_apply_operations", {
+      ...selector,
+      path: csvPath,
+      baseHash: csv.baseHash,
+      operations: [{
+        type: "table.removeRow",
+        sheetId: "skills:Skills_A",
+        rowId: "Skills_A:key-101",
+      }],
+    });
+    assert.equal(guardedRowDelete.status, "invalid");
+    assert.ok(guardedRowDelete.diagnostics.some((diagnostic) => diagnostic.code === "lifecycle.required"));
+    const guardedKeyRename = await call(client, "visualbridge_apply_operations", {
+      ...selector,
+      path: csvPath,
+      baseHash: csv.baseHash,
+      operations: [{
+        type: "table.setCell",
+        sheetId: "skills:Skills_A",
+        rowId: "Skills_A:key-101",
+        columnId: "id",
+        value: 999,
+      }],
+    });
+    assert.equal(guardedKeyRename.status, "invalid");
+    assert.ok(guardedKeyRename.diagnostics.some((diagnostic) => diagnostic.code === "lifecycle.required"));
+
     const csvBFile = path.join(projectRoot, "Tables", "Skills_B.csv");
     const beforeInvalid = await readFile(csvBFile);
     const invalid = await call(client, "visualbridge_apply_operations", {
@@ -521,7 +1054,13 @@ test("MCP V2 Table adapter preserves CSV families and XLSX through the shared co
           columnId: "name",
           value: "Must Roll Back",
         },
-        { type: "table.removeRow", sheetId: "skills:Skills_B", rowId: "missing" },
+        {
+          type: "table.setCell",
+          sheetId: "skills:Skills_B",
+          rowId: "missing",
+          columnId: "name",
+          value: "Invalid",
+        },
       ],
     });
     assert.equal(invalid.status, "invalid");
@@ -582,7 +1121,13 @@ test("MCP V2 Table adapter preserves CSV families and XLSX through the shared co
       ...selector,
       path: csvPath,
       baseHash: updatedCsv.baseHash,
-      operations: [{ type: "table.removeRow", sheetId: "skills:Skills_A", rowId: "missing" }],
+      operations: [{
+        type: "table.setCell",
+        sheetId: "skills:Skills_A",
+        rowId: "missing",
+        columnId: "name",
+        value: "Invalid",
+      }],
     });
     assert.equal(recoveredBeforeTableLoad.status, "invalid");
     assert.deepEqual(await readFile(csvBFile), recoverableBytes);
@@ -652,7 +1197,13 @@ test("MCP V2 Table adapter preserves CSV families and XLSX through the shared co
       ...selector,
       path: csvPath,
       baseHash: invalidRead.baseHash,
-      operations: [{ type: "table.removeRow", sheetId: "skills:Skills_A", rowId: "missing" }],
+      operations: [{
+        type: "table.setCell",
+        sheetId: "skills:Skills_A",
+        rowId: "missing",
+        columnId: "name",
+        value: "Invalid",
+      }],
     });
     assert.equal(invalidApply.status, "invalid");
   });
@@ -985,6 +1536,18 @@ async function call(client, name, args) {
     assert.equal(Object.hasOwn(envelope.data, "status"), false, "Envelope status must not be duplicated in data.");
   }
   return { ...envelope.data, status: envelope.status === "ok" ? envelope.data.status : envelope.status };
+}
+
+function lifecycleApply(projectFile, operation, preview) {
+  return {
+    action: "apply",
+    projectFile,
+    operation,
+    previewHash: preview.previewHash,
+    planPayload: preview.planPayload,
+    baseHashes: preview.baseHashes,
+    dependencies: preview.dependencies,
+  };
 }
 
 function textContent(result) {

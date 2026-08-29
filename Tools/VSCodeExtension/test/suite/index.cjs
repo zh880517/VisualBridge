@@ -10,14 +10,19 @@ const EXPECTED_COMMANDS = [
   "visualbridge.createStructuredDocument",
   "visualbridge.createTableDocument",
   "visualbridge.documentBrowser.create",
+  "visualbridge.documentBrowser.copy",
+  "visualbridge.documentBrowser.move",
   "visualbridge.documentBrowser.open",
   "visualbridge.documentBrowser.refresh",
+  "visualbridge.documentBrowser.renamePath",
   "visualbridge.documentBrowser.renameReferenceTarget",
   "visualbridge.documentBrowser.revealReference",
   "visualbridge.documentBrowser.search",
+  "visualbridge.documentBrowser.safeDelete",
   "visualbridge.documentBrowser.validateAll",
   "visualbridge.openDocument",
   "visualbridge.refreshProjects",
+  "visualbridge.safeDeleteElement",
   "visualbridge.revealReference",
 ];
 
@@ -50,6 +55,642 @@ exports.run = async function run() {
     EXPECTED_COMMANDS.forEach((command) => {
       assert.ok(commands.has(command), `Command '${command}' was not registered.`);
     });
+  });
+
+  await test("moves and safely deletes a Structured document through lifecycle transactions", async () => {
+    const projectId = "visualbridge.structured-semantics";
+    const sourcePath = "Config/Game.gamesettings";
+    const movedPath = "Config/Moved.gamesettings";
+    const sourceUri = vscode.Uri.file(path.join(workspacePath, "StructuredSemanticProject", ...sourcePath.split("/")));
+    const movedUri = vscode.Uri.file(path.join(workspacePath, "StructuredSemanticProject", ...movedPath.split("/")));
+    const before = await vscode.workspace.fs.readFile(sourceUri);
+    try {
+      const moved = await vscode.commands.executeCommand("visualbridge.test.lifecycleMove", {
+        projectId,
+        sourcePath,
+        targetPath: movedPath,
+      });
+      assert.equal(moved.mutationCount, 1);
+      await assertMissing(sourceUri);
+      assert.deepEqual(await vscode.workspace.fs.readFile(movedUri), before);
+      const deleted = await vscode.commands.executeCommand("visualbridge.test.lifecycleDelete", {
+        projectId,
+        sourcePath: movedPath,
+      });
+      assert.equal(deleted.mutationCount, 1);
+      await assertMissing(movedUri);
+    } finally {
+      await vscode.workspace.fs.writeFile(sourceUri, before);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("blocks lifecycle preview while a Project Catalog is dirty", async () => {
+    const projectRoot = path.join(workspacePath, "StructuredSemanticProject");
+    const sourceUri = vscode.Uri.file(path.join(projectRoot, "Config", "Game.gamesettings"));
+    const targetUri = vscode.Uri.file(path.join(projectRoot, "Config", "DirtyCatalogBlocked.gamesettings"));
+    const catalogUri = vscode.Uri.file(path.join(projectRoot, "Catalog", "Game.vbstructuredcatalog"));
+    const catalog = await vscode.workspace.openTextDocument(catalogUri);
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(catalogUri, new vscode.Position(0, 0), " ");
+    assert.equal(await vscode.workspace.applyEdit(edit), true);
+    assert.equal(catalog.isDirty, true);
+    try {
+      await assert.rejects(vscode.commands.executeCommand("visualbridge.test.lifecycleMove", {
+        projectId: "visualbridge.structured-semantics",
+        sourcePath: "Config/Game.gamesettings",
+        targetPath: "Config/DirtyCatalogBlocked.gamesettings",
+      }), /Save or revert every dirty VisualBridge editor/u);
+      await vscode.workspace.fs.stat(sourceUri);
+      await assertMissing(targetUri);
+    } finally {
+      await revertTextDocument(catalogUri);
+    }
+  });
+
+  await test("rechecks Project cleanliness immediately before lifecycle mutation", async () => {
+    const projectRoot = path.join(workspacePath, "StructuredSemanticProject");
+    const sourceUri = vscode.Uri.file(path.join(projectRoot, "Config", "Game.gamesettings"));
+    const targetUri = vscode.Uri.file(path.join(projectRoot, "Config", "DirtyBeforeMutate.gamesettings"));
+    const markerUri = vscode.Uri.file(path.join(projectRoot, "VisualBridge.project.vbjson"));
+    try {
+      await assert.rejects(vscode.commands.executeCommand("visualbridge.test.lifecycleMove", {
+        projectId: "visualbridge.structured-semantics",
+        sourcePath: "Config/Game.gamesettings",
+        targetPath: "Config/DirtyBeforeMutate.gamesettings",
+        dirtyBeforeMutatePath: "VisualBridge.project.vbjson",
+      }), /Save or revert every dirty VisualBridge editor/u);
+      await vscode.workspace.fs.stat(sourceUri);
+      await assertMissing(targetUri);
+    } finally {
+      await revertTextDocument(markerUri);
+    }
+  });
+
+  await test("reports a stale index as committed success without retrying the lifecycle write", async () => {
+    const projectRoot = path.join(workspacePath, "StructuredSemanticProject");
+    const sourcePath = "Config/Game.gamesettings";
+    const targetPath = "Config/StaleIndex.gamesettings";
+    const sourceUri = vscode.Uri.file(path.join(projectRoot, ...sourcePath.split("/")));
+    const targetUri = vscode.Uri.file(path.join(projectRoot, ...targetPath.split("/")));
+    const before = await vscode.workspace.fs.readFile(sourceUri);
+    try {
+      const result = await vscode.commands.executeCommand("visualbridge.test.lifecycleMove", {
+        projectId: "visualbridge.structured-semantics",
+        sourcePath,
+        targetPath,
+        failCommittedRefresh: true,
+      });
+      assert.equal(result.mutationCount, 1);
+      assert.equal(result.indexStale, true);
+      await assertMissing(sourceUri);
+      assert.equal(Buffer.compare(Buffer.from(await vscode.workspace.fs.readFile(targetUri)), Buffer.from(before)), 0);
+    } finally {
+      await vscode.workspace.fs.delete(targetUri, { useTrash: false }).catch(() => undefined);
+      await vscode.workspace.fs.writeFile(sourceUri, before);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("creates, copies, and deletes a Structured document through lifecycle transactions", async () => {
+    const projectId = "visualbridge.structured-semantics";
+    const createdPath = "Config/Created.gamesettings";
+    const copiedPath = "Config/Copied.gamesettings";
+    const createdUri = vscode.Uri.file(path.join(workspacePath, "StructuredSemanticProject", ...createdPath.split("/")));
+    const copiedUri = vscode.Uri.file(path.join(workspacePath, "StructuredSemanticProject", ...copiedPath.split("/")));
+    try {
+      const created = await vscode.commands.executeCommand("visualbridge.test.lifecycleCreate", {
+        projectId,
+        documentTypeId: "sample.game.settings",
+        targetPath: createdPath,
+        parameters: { documentId: "test.created.settings" },
+      });
+      assert.equal(created.mutationCount, 1);
+      assert.deepEqual(created.baseHashes, {});
+      assert.deepEqual(created.dependencies.map((dependency) => dependency.kind), [
+        "catalog",
+        "documentSet",
+        "project",
+        "referenceIndex",
+      ]);
+      assert.ok(created.ownedIdentities.every((identity) => (
+        identity.reference === undefined || Object.hasOwn(identity.reference, "location") === false
+      )));
+      assert.equal(JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(createdUri))).documentId, "test.created.settings");
+      const copied = await vscode.commands.executeCommand("visualbridge.test.lifecycleCopy", {
+        projectId,
+        sourcePath: createdPath,
+        targetPath: copiedPath,
+        stableIdRemap: [{ identityKey: "document", from: "test.created.settings", to: "test.copied.settings" }],
+      });
+      assert.equal(copied.mutationCount, 1);
+      assert.deepEqual(Object.keys(copied.baseHashes), [createdPath]);
+      assert.ok(copied.referenceImpacts.every((impact) => impact.kind !== "targetLocationChanged"));
+      assert.equal(JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(copiedUri))).documentId, "test.copied.settings");
+      await vscode.commands.executeCommand("visualbridge.test.lifecycleDelete", { projectId, sourcePath: copiedPath });
+      await vscode.commands.executeCommand("visualbridge.test.lifecycleDelete", { projectId, sourcePath: createdPath });
+      await assertMissing(copiedUri);
+      await assertMissing(createdUri);
+    } finally {
+      await vscode.workspace.fs.delete(copiedUri, { useTrash: false }).catch(() => undefined);
+      await vscode.workspace.fs.delete(createdUri, { useTrash: false }).catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("classifies Entity copy references by indexed resolution", async () => {
+    const projectId = "visualbridge.entity-semantics";
+    const sourcePath = "Config/Entities/Player.herojson";
+    const copiedPath = "Config/Entities/PlayerCopy.herojson";
+    const copiedUri = vscode.Uri.file(path.join(workspacePath, "EntitySemanticProject", ...copiedPath.split("/")));
+    try {
+      const copied = await vscode.commands.executeCommand("visualbridge.test.lifecycleCopy", {
+        projectId,
+        sourcePath,
+        targetPath: copiedPath,
+        stableIdRemap: [
+          { identityKey: "document", from: "sample.player", to: "sample.player.copy" },
+          { identityKey: "component:health", from: "health", to: "health-copy" },
+          { identityKey: "component:move", from: "move", to: "move-copy" },
+        ],
+      });
+      assert.equal(copied.mutationCount, 1);
+      const document = JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(copiedUri)));
+      assert.equal(document.properties.primaryComponentId, "health-copy");
+      assert.equal(document.properties.primarySkillId, 101);
+      assert.ok(copied.referenceImpacts.some((impact) => impact.kind === "internalRetarget"
+        && impact.occurrence.path === "properties.primaryComponentId"
+        && impact.replacement === "health-copy"));
+      assert.ok(copied.referenceImpacts.some((impact) => impact.kind === "outboundPreserved"
+        && impact.occurrence.path === "properties.primarySkillId"
+        && impact.target?.rowId === "Skills_Main:key-101"));
+      assert.ok(copied.referenceImpacts.every((impact) => impact.kind !== "targetLocationChanged"));
+    } finally {
+      await vscode.workspace.fs.delete(copiedUri, { useTrash: false }).catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("preserves an allowMissing outbound reference during Entity copy", async () => {
+    const projectRoot = path.join(workspacePath, "EntitySemanticProject");
+    const sourcePath = "Config/Entities/Player.herojson";
+    const copiedPath = "Config/Entities/PlayerMissingCopy.herojson";
+    const sourceUri = vscode.Uri.file(path.join(projectRoot, ...sourcePath.split("/")));
+    const catalogUri = vscode.Uri.file(path.join(projectRoot, "Catalog", "Common.vbentitycatalog"));
+    const copiedUri = vscode.Uri.file(path.join(projectRoot, ...copiedPath.split("/")));
+    const sourceBefore = await vscode.workspace.fs.readFile(sourceUri);
+    const catalogBefore = await vscode.workspace.fs.readFile(catalogUri);
+    try {
+      const source = JSON.parse(new TextDecoder().decode(sourceBefore));
+      source.properties.primarySkillId = 999999;
+      const catalog = JSON.parse(new TextDecoder().decode(catalogBefore));
+      const entityType = catalog.entityTypes.find((candidate) => candidate.id === "sample.entity.player");
+      const property = entityType.properties.find((candidate) => candidate.id === "primarySkillId");
+      property.reference.allowMissing = true;
+      await vscode.workspace.fs.writeFile(sourceUri, new TextEncoder().encode(`${JSON.stringify(source, null, 2)}\n`));
+      await vscode.workspace.fs.writeFile(catalogUri, new TextEncoder().encode(`${JSON.stringify(catalog, null, 2)}\n`));
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+
+      const copied = await vscode.commands.executeCommand("visualbridge.test.lifecycleCopy", {
+        projectId: "visualbridge.entity-semantics",
+        sourcePath,
+        targetPath: copiedPath,
+        stableIdRemap: [
+          { identityKey: "document", from: "sample.player", to: "sample.player.missing-copy" },
+          { identityKey: "component:health", from: "health", to: "health-missing-copy" },
+          { identityKey: "component:move", from: "move", to: "move-missing-copy" },
+        ],
+      });
+      const document = JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(copiedUri)));
+      assert.equal(document.properties.primarySkillId, 999999);
+      assert.ok(copied.referenceImpacts.some((impact) => impact.kind === "outboundPreserved"
+        && impact.occurrence.path === "properties.primarySkillId"
+        && impact.target === undefined));
+    } finally {
+      await vscode.workspace.fs.delete(copiedUri, { useTrash: false }).catch(() => undefined);
+      await vscode.workspace.fs.writeFile(sourceUri, sourceBefore);
+      await vscode.workspace.fs.writeFile(catalogUri, catalogBefore);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("copies CSV families with keepFirst and keepLast physical-only rows", async () => {
+    const projectRoot = path.join(workspacePath, "TableSemanticProject");
+    const markerUri = vscode.Uri.file(path.join(projectRoot, "VisualBridge.project.vbjson"));
+    const catalogUri = vscode.Uri.file(path.join(projectRoot, "Catalog", "Gameplay.vbtablecatalog"));
+    const secondSourceUri = vscode.Uri.file(path.join(projectRoot, "Tables", "Skills_B.csv"));
+    const markerBefore = await vscode.workspace.fs.readFile(markerUri);
+    const catalogBefore = await vscode.workspace.fs.readFile(catalogUri);
+    const secondSourceBefore = await vscode.workspace.fs.readFile(secondSourceUri);
+    try {
+      const marker = JSON.parse(new TextDecoder().decode(markerBefore));
+      marker.documentTypes[0].include = ["Tables/**/*.csv"];
+      await vscode.workspace.fs.writeFile(markerUri, new TextEncoder().encode(`${JSON.stringify(marker, null, 2)}\n`));
+      const secondSource = new TextDecoder().decode(secondSourceBefore).replace("Fireball Override\t101\t", "Fireball Override\t201\t");
+      await vscode.workspace.fs.writeFile(secondSourceUri, new TextEncoder().encode(secondSource));
+      for (const duplicatePolicy of ["keepFirst", "keepLast"]) {
+        const catalog = JSON.parse(new TextDecoder().decode(catalogBefore));
+        catalog.tableTypes[0].sheets[0].partition.deduplicateByColumnId = "name";
+        catalog.tableTypes[0].sheets[0].partition.duplicatePolicy = duplicatePolicy;
+        await vscode.workspace.fs.writeFile(catalogUri, new TextEncoder().encode(`${JSON.stringify(catalog, null, 2)}\n`));
+        await vscode.commands.executeCommand("visualbridge.refreshProjects");
+        await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+
+        const directoryName = duplicatePolicy === "keepFirst" ? "CopyKeepFirst" : "CopyKeepLast";
+        const targetPath = `Tables/${directoryName}/Skills_A.csv`;
+        const targetDirectoryUri = vscode.Uri.file(path.join(projectRoot, "Tables", directoryName));
+        await vscode.workspace.fs.createDirectory(targetDirectoryUri);
+        const stableIdRemap = [
+          { identityKey: 'table.row:["skills","number",101]', from: 101, to: 1101 },
+          { identityKey: 'table.row:["skills","number",102]', from: 102, to: 1102 },
+          { identityKey: 'table.row:["skills","number",201]', from: 201, to: 1201 },
+          { identityKey: 'table.row:["skills","number",202]', from: 202, to: 1202 },
+          { identityKey: 'table.dedup:["skills","string","Blink"]', from: "Blink", to: `Blink ${duplicatePolicy}` },
+          { identityKey: 'table.dedup:["skills","string","Fireball"]', from: "Fireball", to: `Fireball ${duplicatePolicy}` },
+          { identityKey: 'table.dedup:["skills","string","Fireball Override"]', from: "Fireball Override", to: `Fireball Override ${duplicatePolicy}` },
+        ];
+        const dedupCollision = await vscode.commands.executeCommand("visualbridge.test.lifecycleCopy", {
+          projectId: "visualbridge.table-semantics",
+          sourcePath: "Tables/Skills_A.csv",
+          targetPath,
+          stableIdRemap: stableIdRemap.map((entry) => (
+            entry.identityKey === 'table.dedup:["skills","string","Fireball"]'
+              ? { ...entry, to: "Blink" }
+              : entry
+          )),
+          previewOnly: true,
+        });
+        assert.ok(dedupCollision.blockers.some((blocker) => (
+          blocker.code === "identity.targetCollision"
+          && blocker.identityKey === 'table.dedup:["skills","string","Fireball"]'
+        )), JSON.stringify(dedupCollision.blockers));
+        const copied = await vscode.commands.executeCommand("visualbridge.test.lifecycleCopy", {
+          projectId: "visualbridge.table-semantics",
+          sourcePath: "Tables/Skills_A.csv",
+          targetPath,
+          stableIdRemap,
+        });
+        assert.equal(copied.mutationCount, 2);
+        const physicalOnlyPath = duplicatePolicy === "keepFirst" ? "Skills_B.csv" : "Skills_A.csv";
+        const physicalOnlyText = new TextDecoder().decode(await vscode.workspace.fs.readFile(
+          vscode.Uri.joinPath(targetDirectoryUri, physicalOnlyPath),
+        ));
+        assert.ok(physicalOnlyText.includes(duplicatePolicy === "keepFirst" ? "\t1202\t" : "\t1102\t"));
+        await vscode.workspace.fs.delete(targetDirectoryUri, { recursive: true, useTrash: false });
+        await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+      }
+    } finally {
+      await vscode.workspace.fs.writeFile(markerUri, markerBefore);
+      await vscode.workspace.fs.writeFile(catalogUri, catalogBefore);
+      await vscode.workspace.fs.writeFile(secondSourceUri, secondSourceBefore);
+      await vscode.commands.executeCommand("visualbridge.refreshProjects");
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("safely deletes an Entity component through the shared lifecycle adapter", async () => {
+    const uri = vscode.Uri.file(path.join(
+      workspacePath,
+      "EntitySemanticProject",
+      "Config",
+      "Entities",
+      "Player.herojson",
+    ));
+    const before = await vscode.workspace.fs.readFile(uri);
+    try {
+      const result = await vscode.commands.executeCommand("visualbridge.test.lifecycleDeleteElement", {
+        projectId: "visualbridge.entity-semantics",
+        documentTypeId: "hero-config",
+        path: "Config/Entities/Player.herojson",
+        target: { kind: "entity.component", componentId: "move" },
+      });
+      assert.equal(result.mutationCount, 1);
+      assert.deepEqual(result.ownedIdentityKeys, ["component:move"]);
+      const document = JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(uri)));
+      assert.equal(document.components.some((component) => component.id === "move"), false);
+    } finally {
+      await vscode.workspace.fs.writeFile(uri, before);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("safely deletes a Graph node and its connected edge through lifecycle", async () => {
+    const uri = vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "Graph", "SemanticSample.vbgraph"));
+    const before = await vscode.workspace.fs.readFile(uri);
+    try {
+      const result = await vscode.commands.executeCommand("visualbridge.test.lifecycleDeleteElement", {
+        projectId: "GraphSemanticProject",
+        documentTypeId: "logicGraph",
+        path: "Graph/SemanticSample.vbgraph",
+        target: { kind: "graph.element", graphId: "root", elementKind: "node", elementId: "step_b" },
+      });
+      assert.equal(result.mutationCount, 1);
+      assert.deepEqual(result.ownedIdentityKeys, ["edge:root:flow_step_a_step_b", "node:root:step_b"]);
+      const document = JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(uri)));
+      const root = document.graphs.find((graph) => graph.id === "root");
+      assert.equal(root.nodes.some((node) => node.id === "step_b"), false);
+      assert.equal(root.edges.some((edge) => edge.id === "flow_step_a_step_b"), false);
+    } finally {
+      await vscode.workspace.fs.writeFile(uri, before);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("blocks Graph Copy when a non-Reference Edge remap collides Project-wide", async () => {
+    const request = {
+      projectId: "GraphSemanticProject",
+      sourcePath: "Graph/SemanticSample.vbgraph",
+      targetPath: "Graph/EdgeCollisionCopy.vbgraph",
+      stableIdRemap: [],
+      previewOnly: true,
+    };
+    const seed = await vscode.commands.executeCommand("visualbridge.test.lifecycleCopy", request);
+    const edges = seed.ownedIdentities.filter((identity) => identity.kind === "edge");
+    assert.ok(edges.length >= 2);
+    const colliding = edges[0];
+    const existing = edges[1];
+    const preview = await vscode.commands.executeCommand("visualbridge.test.lifecycleCopy", {
+      ...request,
+      stableIdRemap: seed.ownedIdentities.map((identity, index) => ({
+        identityKey: identity.identityKey,
+        from: identity.value,
+        to: identity.identityKey === colliding.identityKey ? existing.value : `copy${index}`,
+      })),
+    });
+    assert.ok(preview.blockers.some((blocker) => (
+      blocker.code === "identity.targetCollision" && blocker.identityKey === colliding.identityKey
+    )), JSON.stringify(preview.blockers));
+  });
+
+  await test("blocks aliased Table inbound and remaining internal references during Safe Delete", async () => {
+    const projectRoot = path.join(workspacePath, "EntitySemanticProject");
+    const entityUri = vscode.Uri.file(path.join(projectRoot, "Config", "Entities", "Player.herojson"));
+    const entityCatalogUri = vscode.Uri.file(path.join(projectRoot, "Catalog", "Common.vbentitycatalog"));
+    const tableCatalogUri = vscode.Uri.file(path.join(projectRoot, "Catalog", "Skills.vbtablecatalog"));
+    const tableUri = vscode.Uri.file(path.join(projectRoot, "Tables", "Skills_Main.skillstable"));
+    const entityBefore = await vscode.workspace.fs.readFile(entityUri);
+    const entityCatalogBefore = await vscode.workspace.fs.readFile(entityCatalogUri);
+    const tableCatalogBefore = await vscode.workspace.fs.readFile(tableCatalogUri);
+    const tableBefore = await vscode.workspace.fs.readFile(tableUri);
+    try {
+      const entityCatalog = JSON.parse(new TextDecoder().decode(entityCatalogBefore));
+      const primarySkill = entityCatalog.entityTypes[0].properties.find((property) => property.id === "primarySkillId");
+      primarySkill.reference.target.tableTypeId = "legacy.table.skills";
+      primarySkill.reference.target.sheetId = "legacy.skills";
+
+      const tableCatalog = JSON.parse(new TextDecoder().decode(tableCatalogBefore));
+      const tableType = tableCatalog.tableTypes[0];
+      const sheet = tableType.sheets[0];
+      tableType.aliases = ["legacy.table.skills"];
+      sheet.aliases = ["legacy.skills"];
+      sheet.nameAliases = ["Skills_Main"];
+      sheet.partition.namePattern = "SkillPartitions_{part}";
+      await vscode.workspace.fs.writeFile(
+        entityCatalogUri,
+        new TextEncoder().encode(`${JSON.stringify(entityCatalog, null, 2)}\n`),
+      );
+      await vscode.workspace.fs.writeFile(
+        tableCatalogUri,
+        new TextEncoder().encode(`${JSON.stringify(tableCatalog, null, 2)}\n`),
+      );
+      await vscode.commands.executeCommand("visualbridge.refreshProjects");
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+
+      await assert.rejects(
+        vscode.commands.executeCommand("visualbridge.test.lifecycleDeleteElement", {
+          projectId: "visualbridge.entity-semantics",
+          documentTypeId: "sample.table.skills",
+          path: "Tables/Skills_Main.skillstable",
+          target: { kind: "table.row", sheetId: "skills:Skills_Main", rowId: "Skills_Main:key-101" },
+        }),
+        /reference\.inbound/u,
+      );
+      assert.deepEqual(await vscode.workspace.fs.readFile(tableUri), tableBefore);
+
+      const entity = JSON.parse(new TextDecoder().decode(entityBefore));
+      entity.properties.primarySkillId = 102;
+      sheet.columns.push({
+        id: "parentId",
+        title: "Parent Skill",
+        aliases: [],
+        nameKey: "ParentId",
+        nameKeyAliases: [],
+        valueType: "number",
+        dataTypeId: "int",
+        defaultValue: 101,
+        editor: {
+          kind: "reference",
+          readOnly: false,
+          integer: true,
+        },
+        reference: {
+          kind: "table.row",
+          target: {
+            documentTypeId: "sample.table.skills",
+            tableTypeId: "legacy.table.skills",
+            sheetId: "legacy.skills",
+          },
+        },
+        cellEncoding: { kind: "scalar" },
+      });
+      const tableWithInternalReference = new TextEncoder().encode(
+        "Skill name\tSkill ID\tParent Skill\nName\tId\tParentId\nFireball\t101\t102\nBlink\t102\t101\n",
+      );
+      await vscode.workspace.fs.writeFile(entityUri, new TextEncoder().encode(`${JSON.stringify(entity, null, 2)}\n`));
+      await vscode.workspace.fs.writeFile(
+        tableCatalogUri,
+        new TextEncoder().encode(`${JSON.stringify(tableCatalog, null, 2)}\n`),
+      );
+      await vscode.workspace.fs.writeFile(tableUri, tableWithInternalReference);
+      await vscode.commands.executeCommand("visualbridge.refreshProjects");
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+
+      await assert.rejects(
+        vscode.commands.executeCommand("visualbridge.test.lifecycleDeleteElement", {
+          projectId: "visualbridge.entity-semantics",
+          documentTypeId: "sample.table.skills",
+          path: "Tables/Skills_Main.skillstable",
+          target: { kind: "table.row", sheetId: "skills:Skills_Main", rowId: "Skills_Main:key-101" },
+        }),
+        /reference\.unresolvedInternal/u,
+      );
+      assert.equal(
+        Buffer.compare(Buffer.from(await vscode.workspace.fs.readFile(tableUri)), Buffer.from(tableWithInternalReference)),
+        0,
+      );
+    } finally {
+      await vscode.workspace.fs.writeFile(entityUri, entityBefore);
+      await vscode.workspace.fs.writeFile(entityCatalogUri, entityCatalogBefore);
+      await vscode.workspace.fs.writeFile(tableCatalogUri, tableCatalogBefore);
+      await vscode.workspace.fs.writeFile(tableUri, tableBefore);
+      await vscode.commands.executeCommand("visualbridge.refreshProjects");
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("safely deletes a Table row through lifecycle", async () => {
+    const uri = vscode.Uri.file(path.join(workspacePath, "EntitySemanticProject", "Tables", "Skills_Main.skillstable"));
+    const before = await vscode.workspace.fs.readFile(uri);
+    try {
+      const result = await vscode.commands.executeCommand("visualbridge.test.lifecycleDeleteElement", {
+        projectId: "visualbridge.entity-semantics",
+        documentTypeId: "sample.table.skills",
+        path: "Tables/Skills_Main.skillstable",
+        target: { kind: "table.row", sheetId: "skills:Skills_Main", rowId: "Skills_Main:key-102" },
+      });
+      assert.equal(result.mutationCount, 1);
+      const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+      assert.equal(text.includes("Blink\t102"), false);
+      assert.equal(text.includes("Fireball\t101"), true);
+    } finally {
+      await vscode.workspace.fs.writeFile(uri, before);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("renames an existing Table key through atomic Reference Refactor while preserving new-row editing", async () => {
+    const projectRoot = path.join(workspacePath, "EntitySemanticProject");
+    const tableUri = vscode.Uri.file(path.join(projectRoot, "Tables", "Skills_Main.skillstable"));
+    const extraUri = vscode.Uri.file(path.join(projectRoot, "Tables", "Skills_Extra.skillstable"));
+    const entityUri = vscode.Uri.file(path.join(projectRoot, "Config", "Entities", "Player.herojson"));
+    const tableBefore = await vscode.workspace.fs.readFile(tableUri);
+    const entityBefore = await vscode.workspace.fs.readFile(entityUri);
+    const extraBytes = new TextEncoder().encode(
+      "Skill name\tSkill ID\nName\tId\nShield\t201\n",
+    );
+    try {
+      await vscode.workspace.fs.writeFile(extraUri, extraBytes);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+      await vscode.commands.executeCommand("vscode.openWith", tableUri, "visualbridge.tableEditor");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getTableEditorState", tableUri),
+        (value) => value?.activeReadyPanelCount === 1,
+        20_000,
+        "Table editor did not become ready for the key-refactor test.",
+      );
+
+      await vscode.commands.executeCommand("visualbridge.test.applyTableOperations", tableUri, [{
+        type: "table.setCell",
+        sheetId: "skills:Skills_Main",
+        rowId: "Skills_Main:key-101",
+        columnId: "id",
+        value: 1001,
+      }]);
+      const tableAfter = new TextDecoder().decode(await vscode.workspace.fs.readFile(tableUri));
+      const entityAfter = JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(entityUri)));
+      assert.ok(tableAfter.includes("Fireball\t1001"));
+      assert.equal(tableAfter.includes("Fireball\t101"), false);
+      assert.equal(entityAfter.properties.primarySkillId, 1001);
+      assert.equal(
+        Buffer.compare(Buffer.from(await vscode.workspace.fs.readFile(extraUri)), Buffer.from(extraBytes)),
+        0,
+      );
+
+      await vscode.commands.executeCommand("visualbridge.test.applyTableOperations", tableUri, [{
+        type: "table.duplicateRow",
+        sheetId: "skills:Skills_Main",
+        rowId: "Skills_Main:key-1001",
+        newRowId: "new-row",
+      }, {
+        type: "table.setCell",
+        sheetId: "skills:Skills_Main",
+        rowId: "new-row",
+        columnId: "id",
+        value: 1002,
+      }]);
+      assert.equal(
+        new TextDecoder().decode(await vscode.workspace.fs.readFile(tableUri)).includes("\t1002"),
+        false,
+      );
+      await vscode.commands.executeCommand("workbench.action.files.revert");
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+      await vscode.workspace.fs.writeFile(tableUri, tableBefore);
+      await vscode.workspace.fs.writeFile(entityUri, entityBefore);
+      await vscode.workspace.fs.delete(extraUri, { useTrash: false }).catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("rejects direct Entity and Graph stable identity rename batches at the Host boundary", async () => {
+    const entityUri = vscode.Uri.file(path.join(
+      workspacePath,
+      "EntitySemanticProject",
+      "Config",
+      "Entities",
+      "Player.herojson",
+    ));
+    const graphUri = vscode.Uri.file(path.join(
+      workspacePath,
+      "GraphSemanticProject",
+      "Graph",
+      "SemanticSample.vbgraph",
+    ));
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", entityUri, "visualbridge.documentEditor.option");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", entityUri),
+        (value) => value === true,
+        20_000,
+        "Entity editor did not become ready for the identity guard test.",
+      );
+      await assert.rejects(
+        vscode.commands.executeCommand("visualbridge.test.assertIdentityOperationsAllowed", entityUri, "entity", [{
+          type: "entity.renameComponent",
+          componentId: "move",
+          newComponentId: "movement",
+        }]),
+        /refactor\.required/u,
+      );
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+
+      await vscode.commands.executeCommand("vscode.openWith", graphUri, "visualbridge.documentEditor");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", graphUri),
+        (value) => value === true,
+        20_000,
+        "Graph editor did not become ready for the identity guard test.",
+      );
+      await assert.rejects(
+        vscode.commands.executeCommand("visualbridge.test.assertIdentityOperationsAllowed", graphUri, "graph", [{
+          type: "graph.renameElement",
+          graphId: "root",
+          elementKind: "node",
+          elementId: "step_b",
+          newElementId: "step_c",
+        }, {
+          type: "graph.removeEdge",
+          graphId: "root",
+          edgeId: "flow_step_a_step_b",
+        }]),
+        /refactor\.required/u,
+      );
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+    }
+  });
+
+  await test("returns a structured blocker for illegal CSV family copy and move basenames", async () => {
+    const projectRoot = path.join(workspacePath, "TableSemanticProject");
+    const firstUri = vscode.Uri.file(path.join(projectRoot, "Tables", "Skills_A.csv"));
+    const secondUri = vscode.Uri.file(path.join(projectRoot, "Tables", "Skills_B.csv"));
+    const targetUri = vscode.Uri.file(path.join(projectRoot, "Tables", "Renamed.csv"));
+    const firstBefore = await vscode.workspace.fs.readFile(firstUri);
+    const secondBefore = await vscode.workspace.fs.readFile(secondUri);
+    for (const command of ["visualbridge.test.lifecycleMove", "visualbridge.test.lifecycleCopy"]) {
+      await assert.rejects(
+        vscode.commands.executeCommand(command, {
+          projectId: "visualbridge.table-semantics",
+          sourcePath: "Tables/Skills_A.csv",
+          targetPath: "Tables/Renamed.csv",
+          ...(command.endsWith("Copy") ? { stableIdRemap: [] } : {}),
+        }),
+        (error) => /target\.typeMismatch/u.test(String(error)) && !/TypeError/u.test(String(error)),
+      );
+      assert.equal(Buffer.compare(Buffer.from(await vscode.workspace.fs.readFile(firstUri)), Buffer.from(firstBefore)), 0);
+      assert.equal(Buffer.compare(Buffer.from(await vscode.workspace.fs.readFile(secondUri)), Buffer.from(secondBefore)), 0);
+      await assertMissing(targetUri);
+    }
   });
 
   await test("routes a project-defined Entity extension to the optional document editor", async () => {
@@ -132,6 +773,60 @@ exports.run = async function run() {
       "visualbridge.documentEditor.option",
       "visualbridge.openDocument",
     );
+  });
+
+  await test("saves a two-source CSV family atomically and refuses partial conflict writes", async () => {
+    const firstUri = vscode.Uri.file(path.join(workspacePath, "TableSemanticProject", "Tables", "Skills_A.csv"));
+    const secondUri = vscode.Uri.file(path.join(workspacePath, "TableSemanticProject", "Tables", "Skills_B.csv"));
+    const firstBefore = await vscode.workspace.fs.readFile(firstUri);
+    const secondBefore = await vscode.workspace.fs.readFile(secondUri);
+    try {
+      await withTimeout(vscode.commands.executeCommand("visualbridge.openDocument", firstUri), 20_000, "CSV family did not open.");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", firstUri),
+        (ready) => ready === true,
+        20_000,
+        "CSV family editor did not become ready.",
+      );
+      await vscode.commands.executeCommand("visualbridge.test.applyTableOperations", firstUri, [
+        {
+          type: "table.setCell",
+          sheetId: "skills:Skills_A",
+          rowId: "Skills_A:key-101",
+          columnId: "name",
+          value: "Fireball Saved",
+        },
+        {
+          type: "table.setCell",
+          sheetId: "skills:Skills_B",
+          rowId: "Skills_B:key-101",
+          columnId: "name",
+          value: "Fireball Override Saved",
+        },
+      ]);
+      const externalSecond = new TextEncoder().encode(
+        new TextDecoder().decode(secondBefore).replace("Fireball Override", "External Override"),
+      );
+      await vscode.workspace.fs.writeFile(secondUri, externalSecond);
+      await assert.rejects(
+        vscode.commands.executeCommand("visualbridge.test.saveTable", firstUri),
+        /changed on disk; no source was written/u,
+      );
+      assert.equal(Buffer.compare(Buffer.from(await vscode.workspace.fs.readFile(firstUri)), Buffer.from(firstBefore)), 0);
+      assert.equal(Buffer.compare(Buffer.from(await vscode.workspace.fs.readFile(secondUri)), Buffer.from(externalSecond)), 0);
+
+      await vscode.workspace.fs.writeFile(secondUri, secondBefore);
+      const sourceCount = await vscode.commands.executeCommand("visualbridge.test.saveTable", firstUri);
+      assert.equal(sourceCount, 2);
+      assert.ok(new TextDecoder().decode(await vscode.workspace.fs.readFile(firstUri)).includes("Fireball Saved\t101"));
+      assert.ok(new TextDecoder().decode(await vscode.workspace.fs.readFile(secondUri)).includes("Fireball Override Saved\t101"));
+    } finally {
+      await vscode.workspace.fs.writeFile(firstUri, firstBefore);
+      await vscode.workspace.fs.writeFile(secondUri, secondBefore);
+      await vscode.commands.executeCommand("workbench.action.files.revert").catch(() => undefined);
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
   });
 
   await test("routes a project-defined Table extension to the Table editor", async () => {
@@ -454,6 +1149,18 @@ async function test(name, action) {
     console.error(`[vscode-host] FAIL ${name}`);
     throw error;
   }
+}
+
+async function assertMissing(uri) {
+  await assert.rejects(vscode.workspace.fs.stat(uri));
+}
+
+async function revertTextDocument(uri) {
+  const document = await vscode.workspace.openTextDocument(uri);
+  await vscode.window.showTextDocument(document, { preview: false });
+  await vscode.commands.executeCommand("workbench.action.files.revert");
+  assert.equal(document.isDirty, false);
+  await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
 }
 
 function requiredEnvironmentPath(name) {

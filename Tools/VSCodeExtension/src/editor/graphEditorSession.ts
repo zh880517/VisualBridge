@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
 import * as vscode from "vscode";
+import {
+  containsLifecycleGuardedRemoval,
+  containsReferenceRefactorGuardedRename,
+  lifecycleDeleteTarget,
+  LIFECYCLE_REQUIRED_MESSAGE,
+  REFERENCE_REFACTOR_REQUIRED_MESSAGE,
+} from "../document/lifecycleOperationGuard";
 import type { DocumentDiagnostic } from "@visualbridge/core";
 import {
   GRAPH_EDITOR_ID,
@@ -181,6 +188,12 @@ export class GraphEditorSession {
       && this.panel.visible;
   }
 
+  public assertIdentityOperationsAllowedForTest(operations: unknown): void {
+    if (containsReferenceRefactorGuardedRename("graph", operations)) {
+      throw new Error(REFERENCE_REFACTOR_REQUIRED_MESSAGE);
+    }
+  }
+
   public get testState(): {
     readonly ready: boolean;
     readonly readyGeneration: number;
@@ -245,6 +258,27 @@ export class GraphEditorSession {
     if (typeof message.documentVersion !== "number" || message.documentVersion !== this.document.version) {
       await this.sendState();
       await this.rejectOperation("文档已发生变化，编辑器已刷新，请重试刚才的操作。");
+      return;
+    }
+    if (containsLifecycleGuardedRemoval("graph", message.operations)) {
+      const target = lifecycleDeleteTarget("graph", message.operations);
+      if (target === undefined || this.document.isDirty) {
+        await this.rejectOperation(this.document.isDirty
+          ? "lifecycle.workspaceDirty: Save or revert this document before Safe Delete."
+          : LIFECYCLE_REQUIRED_MESSAGE);
+        return;
+      }
+      const result = await vscode.commands.executeCommand("visualbridge.safeDeleteElement", {
+        projectId: this.match.project.definition.projectId,
+        documentTypeId: this.match.documentType.id,
+        path: this.match.relativePath,
+        target,
+      });
+      if (result !== undefined) await this.sendState({ documentChanged: true });
+      return;
+    }
+    if (containsReferenceRefactorGuardedRename("graph", message.operations)) {
+      await this.rejectOperation(REFERENCE_REFACTOR_REQUIRED_MESSAGE);
       return;
     }
     if (!await this.confirmExternalChanges()) {

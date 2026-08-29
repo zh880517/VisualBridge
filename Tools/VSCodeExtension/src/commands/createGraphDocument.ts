@@ -3,15 +3,16 @@ import * as vscode from "vscode";
 import {
   GRAPH_EDITOR_ID,
   createEmptyGraphDocument,
-  serializeGraphDocument,
   type GraphCatalogRegistry,
   type RegisteredGraphTypeDefinition,
 } from "@visualbridge/graph";
 import { loadGraphCatalogRegistry } from "../catalog/graphCatalogLoader";
 import type { ProjectRegistry } from "../project/projectRegistry";
+import type { WorkspaceDocumentLifecycle } from "../document/workspaceDocumentLifecycle";
 import { OPTIONAL_EDITOR_VIEW_TYPE } from "../editor/documentEditorProvider";
 import {
   selectDocumentType,
+  createThroughLifecycle,
   selectProject,
   suggestDefaultTarget,
   validateCreateDocumentSelection,
@@ -20,6 +21,7 @@ import {
 
 export async function createGraphDocument(
   projects: ProjectRegistry,
+  lifecycle: WorkspaceDocumentLifecycle,
   requestedSelection?: CreateDocumentSelection,
 ): Promise<void> {
   const selection = validateCreateDocumentSelection(requestedSelection, GRAPH_EDITOR_ID);
@@ -76,15 +78,33 @@ export async function createGraphDocument(
     return;
   }
 
-  const text = serializeGraphDocument(createEmptyGraphDocument(
-    `graph_${randomUUID()}`,
-    `root_${randomUUID()}`,
+  const documentId = `graph_${randomUUID()}`;
+  const rootGraphId = `root_${randomUUID()}`;
+  const initialNodeIds: string[] = [];
+  createEmptyGraphDocument(
+    documentId,
+    rootGraphId,
     selectedGraphType?.id,
     catalogRegistry,
-    () => `node_${randomUUID()}`,
-  ));
-  await vscode.workspace.fs.writeFile(target, new TextEncoder().encode(text));
-  await vscode.commands.executeCommand("vscode.openWith", target, OPTIONAL_EDITOR_VIEW_TYPE);
+    () => {
+      const id = `node_${randomUUID()}`;
+      initialNodeIds.push(id);
+      return id;
+    },
+  );
+  await createThroughLifecycle(
+    lifecycle,
+    project,
+    graphDocumentType,
+    target,
+    {
+      documentId,
+      rootGraphId,
+      ...(selectedGraphType?.id === undefined ? {} : { graphTypeId: selectedGraphType.id }),
+      initialNodeIds,
+    },
+    OPTIONAL_EDITOR_VIEW_TYPE,
+  );
 }
 
 async function selectRootGraphType(

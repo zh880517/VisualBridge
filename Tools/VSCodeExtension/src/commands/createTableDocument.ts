@@ -2,16 +2,16 @@ import * as nodePath from "node:path";
 import * as vscode from "vscode";
 import {
   TABLE_EDITOR_ID,
-  createEmptyCsvTableSource,
-  createEmptyXlsxTableSource,
   resolveTableType,
   type TableTypeDefinition,
 } from "@visualbridge/table";
 import { loadTableCatalogRegistry } from "../catalog/tableCatalogLoader";
 import { TABLE_EDITOR_VIEW_TYPE } from "../editor/tableEditorProvider";
 import type { ProjectRegistry } from "../project/projectRegistry";
+import type { WorkspaceDocumentLifecycle } from "../document/workspaceDocumentLifecycle";
 import {
   selectDocumentType,
+  createThroughLifecycle,
   selectProject,
   suggestDefaultTarget,
   validateCreateDocumentSelection,
@@ -20,6 +20,7 @@ import {
 
 export async function createTableDocument(
   projects: ProjectRegistry,
+  lifecycle: WorkspaceDocumentLifecycle,
   requestedSelection?: CreateDocumentSelection,
 ): Promise<void> {
   const selection = validateCreateDocumentSelection(requestedSelection, TABLE_EDITOR_ID);
@@ -53,13 +54,23 @@ export async function createTableDocument(
     );
     return;
   }
+  const format = tableType.csv === undefined
+    ? "xlsx" as const
+    : await vscode.window.showQuickPick([
+        { label: "CSV", description: "UTF-8 CSV-compatible source", value: "csv" as const },
+        { label: "XLSX", description: "Excel workbook", value: "xlsx" as const },
+      ], {
+        title: "Select Table Source Format",
+        placeHolder: "The format is explicit and independent of the Project-defined file extension.",
+      }).then((selected) => selected?.value);
+  if (format === undefined) return;
   const target = await vscode.window.showSaveDialog({
     title: "Create VisualBridge Table",
     defaultUri: suggestDefaultTarget(
       project,
       documentType,
       initialPhysicalName(tableType),
-      tableType.csv === undefined ? "xlsx" : "csv",
+      format,
     ),
   });
   if (target === undefined) {
@@ -78,22 +89,19 @@ export async function createTableDocument(
     return;
   }
 
-  const result = nodePath.extname(target.fsPath).toLocaleLowerCase() === ".xlsx"
-    ? await createEmptyXlsxTableSource(tableType, layout)
-    : createEmptyCsvTableSource(
-        tableType,
-        layout,
-        nodePath.basename(target.fsPath, nodePath.extname(target.fsPath)),
-      );
-  if (!result.success) {
-    const diagnostic = result.diagnostics[0];
-    void vscode.window.showWarningMessage(
-      `无法创建 Table：${diagnostic === undefined ? "未知错误" : `${diagnostic.path}: ${diagnostic.message}`}`,
-    );
-    return;
-  }
-  await vscode.workspace.fs.writeFile(target, result.bytes);
-  await vscode.commands.executeCommand("vscode.openWith", target, TABLE_EDITOR_VIEW_TYPE);
+  await createThroughLifecycle(
+    lifecycle,
+    project,
+    documentType,
+    target,
+    format === "csv"
+      ? {
+          format,
+          physicalName: nodePath.basename(target.fsPath, nodePath.extname(target.fsPath)),
+        }
+      : { format },
+    TABLE_EDITOR_VIEW_TYPE,
+  );
 }
 
 function initialPhysicalName(tableType: TableTypeDefinition): string {

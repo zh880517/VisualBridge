@@ -294,6 +294,19 @@ Serializer 固定顶层字段顺序，按字段键确定性排序，并保留 Co
 
 一批 Operation 先在副本上完整执行和校验。任一操作失败或引入新的语义 error 时，整批拒绝且原文档不变。添加 Component 会从 Catalog 字段创建默认属性；复制 Component 使用新的实例 ID 并深复制 JSON 值；项目级 Component 重命名通过 `entity.renameComponent` 修改目标实例，再由统一重构计划更新所有解析到该完整位置的引用。
 
+## Document Lifecycle V1
+
+Entity 的完整生命周期使用共享 [`DocumentLifecycle.md`](DocumentLifecycle.md)，不由 Webview、Browser 或 MCP 复制文件操作规则：
+
+- Path Move 保持文件字节、`documentId`、Component ID 和全部 Reference value 不变。
+- Whole-document Copy 要求调用方在 preview 请求中以 `stableIdRemap` 显式映射 `documentId` 和每个 Component instance ID；唯一解析到副本闭包内部的引用随映射更新，外部引用保持不变。Preview 只校验并规范化映射，apply 不重新生成 ID。
+- Safe Delete Document 的 closure 包含 Document 与全部 Component；Safe Delete Component 的 closure 只包含目标 Component。闭包外任何可能解析到这些身份的 occurrence 都会阻止删除。
+- 未知 Component Type、字段结构、Catalog 或 Reference Provider 使 coverage 不完整时 fail closed；删除后仍必须满足 Entity Type/Group/Component 约束和完整字段校验。
+
+`entity.removeComponent` 是 Lifecycle 内部可复用的低层 Operation。PU-03 guard 落地后，公共编辑器和 `visualbridge_apply_operations` 直接提交该操作会返回 `lifecycle.required`；Component 卡片的删除按钮改为调用 Lifecycle preview/apply。Component Duplicate 仍是同一文档内的普通 Operation，与 whole-document Copy 不同。
+
+Component Safe Delete 的 target 固定为 `{ "kind": "entity.component", "componentId": "..." }`，并与完整 source selector 一起提交；Document Delete 使用 `{ "kind": "document" }`。`componentId` 必须来自当前语义文档，不能传 Component Type ID、标题或菜单路径。
+
 ## MCP V2 映射
 
 Entity 不定义专用顶层 Tool。`visualbridge_catalog` 读取或搜索 Component Group、Entity Type 和 Component Type；Component Type 搜索可通过 `selector.entityTypeId` 应用当前 Entity Type 的 Group 限制。`visualbridge_document` 读取、搜索或校验由 Project Registry 声明的任意扩展名 Entity 文件；搜索结果包含 Entity、Component 和递归字段路径。`visualbridge_apply_operations` 接收有序非空 Entity Operation 数组以及读取返回的精确 `baseHash`。
@@ -317,7 +330,7 @@ Entity 不定义专用顶层 Tool。`visualbridge_catalog` 读取或搜索 Compo
 当前 Entity Webview 提供：
 
 - Entity 标题、类型和根字段编辑。
-- Component 卡片折叠、启用开关、复制，以及共享列表风格的拖拽排序、在后添加和删除操作组。
+- Component 卡片折叠、启用开关、复制，以及共享列表风格的拖拽排序、在后添加和删除操作组；当前删除使用领域 Operation，PU-03 guard 合入后必须进入 Lifecycle preview/apply。
 - 按 Catalog / Group / 菜单路径组织的可搜索 Add Component 对话框。
 - 数值、颜色、选择项、普通对象和 List 的共享字段控件。
 - 未知 Component Type 的只读 JSON 展示与原样保留。

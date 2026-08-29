@@ -10,6 +10,8 @@ Project Refactoring 在整个 Authoring Project 范围内修改一个语义身�
 
 稳定引用值与显示名称、文件路径分离。重构计划以 Reference Provider 返回的完整 `ReferenceLocation` 作为目标身份，包括 Project、Document Type、物理路径，以及 Document/Component、Graph/Node/Port 或 Sheet/Row 作用域；旧值只用于并发校验，不单独决定目标。
 
+Project Refactoring 只处理稳定语义身份重命名。物理文件或 Table source manifest 的路径重命名/移动保持身份和值不变，属于 [`DocumentLifecycle.md`](DocumentLifecycle.md)；Copy 生成新身份，Safe Delete 检查删除闭包，也由同一个 Lifecycle Service 编排。两者共享 Reference Provider、确定性 preview hash、Project/Catalog 依赖 Hash 和 Project Transaction，但不把 Path Move 伪装成稳定 ID 重构，也不建立重复的规划器。
+
 因此 V1 遵守以下规则：
 
 - 只允许重命名 `resolved` 且只有一个候选的引用；缺失、歧义或 Provider 不可用的引用不参与自动修改。
@@ -59,6 +61,15 @@ Document Browser 的 `References` 和 `Referenced By` 项提供通用 Replace �
 
 调用者不得把单文件 Graph/Table 写入工具的旧哈希代替项目重构的来源清单。项目重构的并发基线按物理源逐一记录，CSV 分表中的每个成员都必须匹配。
 
-## 7. 后续扩展
+## 7. 与 Document Lifecycle 的边界
+
+当前本文件描述的四类 stable ID rename 已经落地。Document Lifecycle V1 在其上增加 Create、Copy、Path Move 和 Safe Delete：
+
+- Copy 只能更新唯一解析到副本闭包内部的 occurrence，并要求调用方在 preview 请求中提交完整显式 `stableIdRemap`；
+- Path Move 不调用 Refactor Adapter，文件内容和 Reference value 都不变；
+- Safe Delete 的入站检查基于完整目标 Location 和删除闭包，不以旧值文本搜索替代解析；
+- Lifecycle apply 与 Refactor apply 都必须在 Project 锁内重建相同计划并复核所有来源和依赖。
+
+## 8. 后续扩展
 
 新增 Reference Provider 时，应同时定义其可编辑目标适配器，再复用 Core 计划与 Host 事务；不能在 Project Refactoring 中添加按字符串猜测目标的特殊分支。Catalog Type、Unity Asset 和 Runtime Instance 只有在正式 Provider、Location 作用域和目标适配器同时存在后才能加入。

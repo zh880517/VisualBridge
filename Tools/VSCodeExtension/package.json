@@ -60,6 +60,12 @@
         "icon": "$(new-file)"
       },
       {
+        "command": "visualbridge.safeDeleteElement",
+        "title": "VisualBridge: Safe Delete Element",
+        "enablement": "visualbridge.hasProjects",
+        "icon": "$(trash)"
+      },
+      {
         "command": "visualbridge.documentBrowser.refresh",
         "title": "Refresh Documents",
         "icon": "$(refresh)"
@@ -83,6 +89,26 @@
         "command": "visualbridge.documentBrowser.create",
         "title": "Create Document",
         "icon": "$(add)"
+      },
+      {
+        "command": "visualbridge.documentBrowser.copy",
+        "title": "Copy Document (Remap Stable IDs)",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "visualbridge.documentBrowser.renamePath",
+        "title": "Rename Path (Keep Stable IDs)",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "visualbridge.documentBrowser.move",
+        "title": "Move Document (Keep Stable IDs)",
+        "icon": "$(move)"
+      },
+      {
+        "command": "visualbridge.documentBrowser.safeDelete",
+        "title": "Safe Delete Document",
+        "icon": "$(trash)"
       },
       {
         "command": "visualbridge.documentBrowser.revealReference",
@@ -159,6 +185,26 @@
           "command": "visualbridge.documentBrowser.open",
           "when": "view == visualbridge.documents && (viewItem == visualbridge.document || viewItem == visualbridge.source || viewItem == visualbridge.diagnostic || viewItem == visualbridge.incomingReference)",
           "group": "inline@1"
+        },
+        {
+          "command": "visualbridge.documentBrowser.copy",
+          "when": "view == visualbridge.documents && viewItem == visualbridge.document",
+          "group": "visualbridge.lifecycle@1"
+        },
+        {
+          "command": "visualbridge.documentBrowser.renamePath",
+          "when": "view == visualbridge.documents && viewItem == visualbridge.document",
+          "group": "visualbridge.lifecycle@2"
+        },
+        {
+          "command": "visualbridge.documentBrowser.move",
+          "when": "view == visualbridge.documents && viewItem == visualbridge.document",
+          "group": "visualbridge.lifecycle@3"
+        },
+        {
+          "command": "visualbridge.documentBrowser.safeDelete",
+          "when": "view == visualbridge.documents && viewItem == visualbridge.document",
+          "group": "visualbridge.lifecycle@4"
         },
         {
           "command": "visualbridge.documentBrowser.revealReference",
@@ -254,6 +300,7 @@
   "scripts": {
     "clean": "node ./scripts/clean.mjs",
     "prepare:package": "node ./scripts/prepare-package.mjs",
+    "build:host-dependencies": "npm run build --workspace @visualbridge/core && npm run build --workspace @visualbridge/node-host && npm run build --workspace @visualbridge/entity && npm run build --workspace @visualbridge/graph && npm run build --workspace @visualbridge/structured && npm run build --workspace @visualbridge/table",
     "build:graph-editor": "npm run build --workspace @visualbridge/graph-editor",
     "build:entity-editor": "npm run build --workspace @visualbridge/entity-editor",
     "build:structured-editor": "npm run build --workspace @visualbridge/structured-editor",
@@ -265,7 +312,7 @@
     "watch": "npm run clean && npm run build:graph-editor && npm run build:entity-editor && npm run build:structured-editor && npm run build:table-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap --watch",
     "package:vsix": "npm run build && npm run prepare:package && vsce package --no-dependencies --out artifacts/visualbridge.vsix",
     "test:unit": "node ./test/runUnitTests.mjs",
-    "test:host": "npm run build && node ./test/runTest.mjs",
+    "test:host": "npm run build:host-dependencies && npm run build && node ./test/runTest.mjs",
     "test:cli": "node ./scripts/test-vsix-cli.mjs ./artifacts/visualbridge.vsix"
   },
   "devDependencies": {
@@ -276,6 +323,7 @@
     "@visualbridge/entity-editor": "*",
     "@visualbridge/graph": "*",
     "@visualbridge/graph-editor": "*",
+    "@visualbridge/node-host": "*",
     "@visualbridge/structured": "*",
     "@visualbridge/structured-editor": "*",
     "@visualbridge/table": "*",

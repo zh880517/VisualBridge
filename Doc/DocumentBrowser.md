@@ -15,6 +15,8 @@ V1 统一覆盖 Graph、Entity、Structured 和 Table，提供：
 
 Document Browser 不实现 Unity Catalog Exporter、Importer、Runtime 或 Debug。
 
+Browser V1 已提供浏览、搜索、创建、校验、引用、稳定 ID 重构、复制、路径移动和安全删除。Lifecycle 操作通过单一 Document Lifecycle Service 的严格 preview/apply 流程执行，Tree Item 不直接操作文件系统。完整契约见 [`DocumentLifecycle.md`](DocumentLifecycle.md)。
+
 ## 2. 共享文档索引
 
 `Core/Document/documentIndex.ts` 定义宿主无关的 `IndexedDocument`、`IndexedDocumentReference`、稳定排序、搜索和汇总规则。索引项包含 Project ID、Document Type ID、编辑器大类、逻辑主路径、全部物理源路径、标题、可选 Document ID、语义诊断和引用解析结果。
@@ -81,9 +83,31 @@ Table 分表在树中只显示一个逻辑文档。展开 `Sources` 可以看到
 - Structured：以 Project Document Type ID 绑定 Config Type 并物化全部字段默认值；
 - Table：以 Table Type 和 Project `tableLayout` 创建空表头。
 
-Table 创建对 `.xlsx` 目标生成真实 XLSX Workbook；其他项目自定义后缀默认生成 Catalog 声明的 UTF-8 CSV-compatible 载体。描述行写入 Column 标题，配置的 `nameKeyRow` 写入 C# 导出的 `nameKey`，数据从 `dataStartRow` 开始。分表初始 `{part}` 使用 `Main`。创建后仍通过 Project Registry 验证目标路径，不允许绕过 `include` / `exclude`。
+Table 创建先显式选择 `csv` 或 `xlsx`，格式不从文件扩展名推断；Project 可以为任一格式声明自定义后缀。`csv` 使用显式 `physicalName`，`xlsx` 不接受该字段。描述行写入 Column 标题，配置的 `nameKeyRow` 写入 C# 导出的 `nameKey`，数据从 `dataStartRow` 开始。分表初始 `{part}` 使用 `Main`。创建后仍通过 Project Registry 验证目标路径，不允许绕过 `include` / `exclude`。
 
-## 6. 校验、引用与错误入口
+## 6. Lifecycle 操作
+
+Document 与 Document Type 节点使用统一功能图标提供 Create、Copy、Rename/Move Path 和 Safe Delete。Stable ID Rename 仍显示为 Replace，并进入 Project Refactoring；它不是文件重命名。路径移动必须保持文件字节、Document ID、内部元素 ID 和 Reference value 不变。
+
+所有 Lifecycle 操作先展示只读预览，再由用户明确提交。预览至少显示：
+
+- 规范化后的源、目标和完整物理 source manifest；
+- Copy 请求中完整显式的 `stableIdRemap`，以及 Create 请求中的 strict `parameters`；
+- Delete closure、外部入站引用和 Reference coverage blocker；
+- operation source 的完整 physical `plan.baseHashes`（Create 为 `{}`，Copy/Move/Delete 含全部来源）、Core 共享 builder 生成的四项 `plan.dependencies`，以及 `plan.mutations.targetMustBeAbsent` 表达的目标不存在性；
+- 实际将执行的 `create`、`replace`、`delete` 或 `move` 物理 mutation。
+
+Copy 的 `stableIdRemap` 和 Create 的新身份参数由调用方在 preview 请求中完整提供；preview 只校验并规范化，不自动生成 ID。Apply 必须原样提交同一 operation、`previewHash`、`planPayload`、`plan.baseHashes` 和完整 `plan.dependencies`；来源、目标不存在性、Catalog、Reference 候选或计划发生变化时返回 conflict，并要求重新预览。Safe Delete 不自动级联：删除闭包外只要有可能解析到目标的 occurrence 就阻止提交，`allowMissing: true` 也不构成删除授权。
+
+Copy 创建 remap 后的新身份，不显示 `targetLocationChanged`；只有保持身份值不变的 Move 把 source/target `ReferenceLocation` 变化列为该 impact。Create preview 的 owned identity 保持领域 Adapter 原始声明，目标真正进入 Project index 前不伪造可导航 Location。
+
+Create/Copy 预览通过四领域 Adapter 为整个 Project 建立 owned identity collision index；Graph Edge、Table dedup 等没有 Reference definition 的 identity 也按严格值类型、`kind` 和 `collisionScope` 检查。Contained Safe Delete 的 owned identity 列表只展示实际删除闭包。所有 canonical 列表采用 UTF-16 code-unit 全序，不受操作系统语言环境影响。
+
+Table 在 Browser 中始终按逻辑 Document 操作。CSV family 的 Copy、Move 和 Delete 覆盖全部分表成员；XLSX 覆盖整个 Workbook，而不是当前 Worksheet。目标仍必须解析为同一 Project 和同一 Project Document Type。
+
+Lifecycle preview/apply 要求 Project 中没有未保存的 VisualBridge 文本文档或 Table Custom Editor 状态；已经保存但仍打开的 Table Editor 不阻止执行。Explorer、Git 或外部脚本绕过 Lifecycle 的文件操作只能由文件监听与重新索引检测，不能被视为已经安全校验。各领域编辑器中的 Component、Graph Element 和 Table Row 删除按钮也必须进入同一 Lifecycle 流程。
+
+## 7. 校验、引用与错误入口
 
 Document Item 图标和 `Problems` 分组直接展示当前索引快照中的 error / warning。`Validate All Documents` 会刷新快照，并将每个逻辑文档的诊断发布到 `VisualBridge Workspace` Diagnostic Collection；检测到 error 时可以直接打开 VS Code Problems。
 
@@ -98,6 +122,6 @@ Document Item 图标和 `Problems` 分组直接展示当前索引快照中的 er
 
 反向关系是索引派生数据，不写入 Authoring Document。当前四个内置 Provider 共用相同 Browser 结构；Graph Element 跳转会进入对应 Graph 并聚焦具体 Node 或 Port，Entity Component 跳转会展开并高亮对应 Component 卡片，而不是只打开文件。
 
-## 7. 验证边界
+## 8. 验证边界
 
 Core 自动化测试固定验证索引排序、跨语义字段搜索和汇总计数。Table 自动化测试固定验证 CSV / XLSX 空载体创建后能够被同一 Codec 重新解析。完整仓库继续运行 `npm run check`、`npm test`、`npm run build`、VSIX 打包和 `git diff --check`；本功能不增加 Unity 测试或 Unity 实现。

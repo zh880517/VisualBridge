@@ -19,6 +19,11 @@ import {
   validateEntityDocument,
   type EntityDocument,
 } from "./entityDocument";
+import {
+  collectEntityOwnedIdentities,
+  deleteEntityOwnedTarget,
+  remapEntityOwnedIdentities,
+} from "./entityLifecycle";
 
 export interface EntityDocumentAdapterContext {
   readonly registry: EntityCatalogRegistry;
@@ -43,6 +48,17 @@ export const entityDocumentAdapter: SemanticDocumentAdapter<EntityDocument, Enti
   },
   renameDocumentId(document, documentId, context) {
     return renameEntityDocumentId(document, documentId, context.registry);
+  },
+  lifecycle: {
+    collectOwnedIdentities(document, documentTypeId) {
+      return collectEntityOwnedIdentities(document, documentTypeId);
+    },
+    remapOwnedIdentities(document, documentTypeId, remap, context) {
+      return remapEntityOwnedIdentities(document, documentTypeId, remap, context.registry);
+    },
+    deleteOwnedTarget(document, target, context) {
+      return deleteEntityOwnedTarget(document, target, context.registry);
+    },
   },
 };
 

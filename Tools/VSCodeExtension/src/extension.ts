@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { ReferenceLocation } from "@visualbridge/core";
+import type { DocumentLifecycleDeleteTarget, ReferenceLocation } from "@visualbridge/core";
 import { TABLE_EDITOR_ID } from "@visualbridge/table";
 import { createDocument } from "./commands/createDocument";
 import { createEntityDocument } from "./commands/createEntityDocument";
@@ -8,6 +8,7 @@ import { createStructuredDocument } from "./commands/createStructuredDocument";
 import { createTableDocument } from "./commands/createTableDocument";
 import { DocumentBrowser } from "./document/documentBrowser";
 import { WorkspaceDocumentIndex } from "./document/workspaceDocumentIndex";
+import { WorkspaceDocumentLifecycle, WorkspaceLifecycleError } from "./document/workspaceDocumentLifecycle";
 import {
   DEFAULT_EDITOR_VIEW_TYPE,
   DocumentEditorProvider,
@@ -20,6 +21,13 @@ import {
   WorkspaceReferenceService,
 } from "./reference/workspaceReferenceService";
 import { WorkspaceReferenceRefactor } from "./refactor/workspaceReferenceRefactor";
+
+interface LifecycleElementDeleteRequest {
+  readonly projectId: string;
+  readonly documentTypeId: string;
+  readonly path: string;
+  readonly target: Exclude<DocumentLifecycleDeleteTarget, { readonly kind: "document" }>;
+}
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const output = vscode.window.createOutputChannel("VisualBridge", { log: true });
@@ -50,10 +58,69 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     tableEditorProvider,
     output,
   );
-  const browser = new DocumentBrowser(projects, documents, references, refactors);
+  tableEditorProvider.setReferenceTargetRenamer((request) => refactors.renameTarget(request));
+  const lifecycle = new WorkspaceDocumentLifecycle(
+    projects,
+    documents,
+    references,
+    tableEditorProvider,
+    output,
+  );
+  const browser = new DocumentBrowser(projects, documents, references, refactors, lifecycle);
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   status.name = "VisualBridge Projects";
   status.command = "visualbridge.refreshProjects";
+
+  const safeDeleteElement = async (
+    request: LifecycleElementDeleteRequest,
+    confirm: boolean,
+  ): Promise<{ readonly mutationCount: number; readonly ownedIdentityKeys: readonly string[] } | undefined> => {
+    let document = documents.documents.find((candidate) => (
+      candidate.projectId === request.projectId
+      && candidate.documentTypeId === request.documentTypeId
+      && candidate.path === request.path
+    ));
+    if (document === undefined) {
+      const refreshed = await documents.refresh();
+      if (refreshed.status !== "applied") throw new Error("Document Index is unavailable for Safe Delete.");
+      document = documents.documents.find((candidate) => (
+        candidate.projectId === request.projectId
+        && candidate.documentTypeId === request.documentTypeId
+        && candidate.path === request.path
+      ));
+    }
+    if (document === undefined) throw new Error("Safe Delete source is not indexed.");
+    const preview = await lifecycle.previewDelete(document, request.target);
+    if (preview.preview.plan.blockers.length > 0) {
+      throw new WorkspaceLifecycleError(
+        "lifecycle.blocked",
+        preview.preview.plan.blockers.map((blocker) => `${blocker.code}: ${blocker.message}`).join("\n"),
+      );
+    }
+    if (confirm) {
+      const accepted = await vscode.window.showWarningMessage(
+        `Safe Delete '${request.target.kind}' through lifecycle preview/apply?`,
+        {
+          modal: true,
+          detail: JSON.stringify({
+            operation: preview.preview.plan.operation,
+            ownedIdentities: preview.preview.plan.ownedIdentities,
+            referenceImpacts: preview.preview.plan.referenceImpacts,
+            baseHashes: preview.preview.plan.baseHashes,
+            dependencies: preview.preview.plan.dependencies,
+            mutations: preview.preview.plan.mutations,
+          }, undefined, 2),
+        },
+        "Safe Delete",
+      );
+      if (accepted !== "Safe Delete") return undefined;
+    }
+    await lifecycle.apply(preview);
+    return {
+      mutationCount: preview.preview.plan.mutations.length,
+      ownedIdentityKeys: preview.preview.plan.ownedIdentities.map((identity) => identity.identityKey),
+    };
+  };
 
   if (context.extensionMode !== vscode.ExtensionMode.Production) {
     context.subscriptions.push(
@@ -72,6 +139,166 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.commands.registerCommand(
         "visualbridge.test.pauseNextTableReveal",
         (uri: vscode.Uri) => tableEditorProvider.pauseNextRevealForTest(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.applyTableOperations",
+        (uri: vscode.Uri, operations: unknown) => tableEditorProvider.applyOperationsForTest(uri, operations),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.assertIdentityOperationsAllowed",
+        (uri: vscode.Uri, editor: "entity" | "graph", operations: unknown) => (
+          editorProvider.assertIdentityOperationsAllowedForTest(uri, editor, operations)
+        ),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.saveTable",
+        (uri: vscode.Uri) => tableEditorProvider.saveForTest(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.lifecycleMove",
+        async (request: {
+          readonly projectId: string;
+          readonly sourcePath: string;
+          readonly targetPath: string;
+          readonly dirtyBeforeMutatePath?: string;
+          readonly failCommittedRefresh?: boolean;
+        }) => {
+          let project = projects.projects.find((candidate) => candidate.definition.projectId === request.projectId);
+          if (project === undefined) {
+            await projects.refresh();
+            project = projects.projects.find((candidate) => candidate.definition.projectId === request.projectId);
+          }
+          let document = documents.documents.find((candidate) => (
+            candidate.projectId === request.projectId && candidate.path === request.sourcePath
+          ));
+          if (document === undefined) {
+            await documents.refresh();
+            document = documents.documents.find((candidate) => (
+              candidate.projectId === request.projectId && candidate.path === request.sourcePath
+            ));
+          }
+          if (document === undefined || project === undefined) throw new Error("Lifecycle test source was not indexed.");
+          const preview = await lifecycle.previewMove(
+            document,
+            vscode.Uri.joinPath(project.rootUri, ...request.targetPath.split("/")),
+          );
+          if (request.dirtyBeforeMutatePath !== undefined) {
+            const dirtyUri = vscode.Uri.joinPath(project.rootUri, ...request.dirtyBeforeMutatePath.split("/"));
+            lifecycle.setBeforeMutateHookForTest(async () => {
+              const dirtyDocument = await vscode.workspace.openTextDocument(dirtyUri);
+              const edit = new vscode.WorkspaceEdit();
+              edit.insert(dirtyUri, new vscode.Position(0, 0), " ");
+              if (!await vscode.workspace.applyEdit(edit) || !dirtyDocument.isDirty) {
+                throw new Error("Lifecycle test could not make the requested source dirty.");
+              }
+            });
+          }
+          if (request.failCommittedRefresh === true) {
+            lifecycle.failCommittedRefreshForTest("injected post-commit refresh failure");
+          }
+          await lifecycle.apply(preview);
+          return {
+            previewHash: preview.preview.previewHash,
+            mutationCount: preview.preview.plan.mutations.length,
+            referenceImpacts: preview.preview.plan.referenceImpacts,
+            ...lifecycle.getLastApplyStatusForTest(),
+          };
+        },
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.lifecycleCreate",
+        async (request: {
+          readonly projectId: string;
+          readonly documentTypeId: string;
+          readonly targetPath: string;
+          readonly parameters: Readonly<Record<string, import("@visualbridge/core").JsonValue>>;
+        }) => {
+          let project = projects.projects.find((candidate) => candidate.definition.projectId === request.projectId);
+          if (project === undefined) {
+            await projects.refresh();
+            project = projects.projects.find((candidate) => candidate.definition.projectId === request.projectId);
+          }
+          const documentType = project?.definition.documentTypes.find((candidate) => candidate.id === request.documentTypeId);
+          if (project === undefined || documentType === undefined) throw new Error("Lifecycle test target type was not found.");
+          const preview = await lifecycle.previewCreate(
+            project,
+            documentType,
+            vscode.Uri.joinPath(project.rootUri, ...request.targetPath.split("/")),
+            request.parameters,
+          );
+          await lifecycle.apply(preview);
+          return {
+            previewHash: preview.preview.previewHash,
+            mutationCount: preview.preview.plan.mutations.length,
+            ownedIdentities: preview.preview.plan.ownedIdentities,
+            referenceImpacts: preview.preview.plan.referenceImpacts,
+            baseHashes: preview.preview.plan.baseHashes,
+            dependencies: preview.preview.plan.dependencies,
+          };
+        },
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.lifecycleCopy",
+        async (request: {
+          readonly projectId: string;
+          readonly sourcePath: string;
+          readonly targetPath: string;
+          readonly stableIdRemap: readonly import("@visualbridge/core").StableIdentityRemap[];
+          readonly previewOnly?: boolean;
+        }) => {
+          let project = projects.projects.find((candidate) => candidate.definition.projectId === request.projectId);
+          if (project === undefined) {
+            await projects.refresh();
+            project = projects.projects.find((candidate) => candidate.definition.projectId === request.projectId);
+          }
+          let document = documents.documents.find((candidate) => candidate.projectId === request.projectId && candidate.path === request.sourcePath);
+          if (document === undefined) {
+            await documents.refresh();
+            document = documents.documents.find((candidate) => candidate.projectId === request.projectId && candidate.path === request.sourcePath);
+          }
+          if (project === undefined || document === undefined) throw new Error("Lifecycle test copy source was not indexed.");
+          const preview = await lifecycle.previewCopy(
+            document,
+            vscode.Uri.joinPath(project.rootUri, ...request.targetPath.split("/")),
+            request.stableIdRemap,
+          );
+          if (request.previewOnly !== true) await lifecycle.apply(preview);
+          return {
+            previewHash: preview.preview.previewHash,
+            mutationCount: preview.preview.plan.mutations.length,
+            ownedIdentities: preview.preview.plan.ownedIdentities,
+            referenceImpacts: preview.preview.plan.referenceImpacts,
+            baseHashes: preview.preview.plan.baseHashes,
+            dependencies: preview.preview.plan.dependencies,
+            blockers: preview.preview.plan.blockers,
+            mutations: preview.preview.plan.mutations,
+          };
+        },
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.lifecycleDelete",
+        async (request: { readonly projectId: string; readonly sourcePath: string }) => {
+          if (!projects.projects.some((candidate) => candidate.definition.projectId === request.projectId)) {
+            await projects.refresh();
+          }
+          let document = documents.documents.find((candidate) => (
+            candidate.projectId === request.projectId && candidate.path === request.sourcePath
+          ));
+          if (document === undefined) {
+            await documents.refresh();
+            document = documents.documents.find((candidate) => (
+              candidate.projectId === request.projectId && candidate.path === request.sourcePath
+            ));
+          }
+          if (document === undefined) throw new Error("Lifecycle test source was not indexed.");
+          const preview = await lifecycle.previewDelete(document);
+          await lifecycle.apply(preview);
+          return { previewHash: preview.preview.previewHash, mutationCount: preview.preview.plan.mutations.length };
+        },
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.lifecycleDeleteElement",
+        (request: LifecycleElementDeleteRequest) => safeDeleteElement(request, false),
       ),
     );
   }
@@ -130,19 +357,31 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
     }),
     vscode.commands.registerCommand("visualbridge.createGraphDocument", async () => {
-      await createGraphDocument(projects);
+      await createGraphDocument(projects, lifecycle);
     }),
     vscode.commands.registerCommand("visualbridge.createEntityDocument", async () => {
-      await createEntityDocument(projects);
+      await createEntityDocument(projects, lifecycle);
     }),
     vscode.commands.registerCommand("visualbridge.createStructuredDocument", async () => {
-      await createStructuredDocument(projects);
+      await createStructuredDocument(projects, lifecycle);
     }),
     vscode.commands.registerCommand("visualbridge.createTableDocument", async () => {
-      await createTableDocument(projects);
+      await createTableDocument(projects, lifecycle);
     }),
     vscode.commands.registerCommand("visualbridge.createDocument", async () => {
-      await createDocument(projects);
+      await createDocument(projects, lifecycle);
+    }),
+    vscode.commands.registerCommand("visualbridge.safeDeleteElement", async (request?: LifecycleElementDeleteRequest) => {
+      if (request === undefined) {
+        void vscode.window.showWarningMessage("Safe Delete Element requires a structured element target from a VisualBridge editor.");
+        return;
+      }
+      try {
+        return await safeDeleteElement(request, true);
+      } catch (errorValue) {
+        void vscode.window.showWarningMessage(errorValue instanceof Error ? errorValue.message : String(errorValue));
+        return undefined;
+      }
     }),
     vscode.commands.registerCommand(REVEAL_REFERENCE_COMMAND, async (location) => {
       if (isTableReferenceLocation(location)) {

@@ -1,13 +1,17 @@
-import { createHash, randomUUID } from "node:crypto";
-import { open, readFile, rename, unlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import * as nodePath from "node:path";
 import * as vscode from "vscode";
+import { withProjectTransaction } from "@visualbridge/node-host";
 import {
   createReferenceValueRenamePlan,
   documentIndexKey,
+  referenceLocationKey,
   referenceValuesEqual,
   type IndexedDocument,
   type IndexedDocumentReference,
+  type ReferenceDefinition,
+  type ReferenceLocation,
   type ReferenceOccurrence,
   type ReferenceValueRenamePlan,
 } from "@visualbridge/core";
@@ -68,6 +72,27 @@ interface TableSourceSnapshot {
   readonly sheetIds: readonly string[];
 }
 
+export interface WorkspaceReferenceTargetRenameRequest {
+  readonly projectId: string;
+  readonly definition: ReferenceDefinition;
+  readonly location: ReferenceLocation;
+  readonly oldValue: string | number;
+  readonly newValue: string | number;
+  readonly confirm: boolean;
+}
+
+export type WorkspaceReferenceTargetRenameResult =
+  | {
+      readonly success: true;
+      readonly fileCount: number;
+      readonly referenceCount: number;
+    }
+  | {
+      readonly success: false;
+      readonly code: string;
+      readonly message: string;
+    };
+
 const SUPPORTED_RENAME_KINDS = new Set(["document", "entity.component", "graph.element", "table.row"]);
 
 export class WorkspaceReferenceRefactor {
@@ -110,88 +135,126 @@ export class WorkspaceReferenceRefactor {
       );
       return;
     }
-    const newResolution = await this.references.resolve(
-      project,
-      selected.occurrence.definition,
-      newValue,
-    );
-    if (newResolution.status !== "missing") {
-      void vscode.window.showWarningMessage(
-        `Rename refused because '${String(newValue)}' already resolves to ${newResolution.candidates.length} target(s).`,
+    const result = await this.applyPlan(project, planned.plan, { confirm: true });
+    if (result.success) {
+      void vscode.window.showInformationMessage(
+        `Renamed ${String(planned.plan.oldValue)} to ${String(planned.plan.newValue)} in ${result.fileCount} source file(s) and ${result.referenceCount} reference occurrence(s).`,
       );
-      return;
+    } else if (result.code !== "refactor.cancelled") {
+      void vscode.window.showWarningMessage(result.message);
     }
+  }
 
-    const targetDocument = this.documents.documents.find((document) => (
-      document.projectId === target.location!.projectId
-      && document.documentTypeId === target.location!.documentTypeId
-      && document.sourcePaths.includes(target.location!.path)
+  public async renameTarget(
+    request: WorkspaceReferenceTargetRenameRequest,
+  ): Promise<WorkspaceReferenceTargetRenameResult> {
+    const project = this.findProject(request.projectId);
+    if (project === undefined || request.location.projectId !== request.projectId) {
+      return blocked("refactor.targetUnavailable", "The reference target Project is not open.");
+    }
+    const resolution = await this.references.resolve(project, request.definition, request.oldValue);
+    const locationKey = referenceLocationKey(request.location);
+    const target = resolution.candidates.find((candidate) => (
+      candidate.location !== undefined && referenceLocationKey(candidate.location) === locationKey
+    ));
+    if (resolution.status !== "resolved" || resolution.candidates.length !== 1 || target?.location === undefined) {
+      return blocked("refactor.targetChanged", "The edited stable identity no longer resolves uniquely to this target.");
+    }
+    const planned = createReferenceValueRenamePlan(this.documents.documents, {
+      occurrence: {
+        definition: request.definition,
+        value: request.oldValue,
+        path: "$target",
+      },
+      resolution: { status: "resolved", candidates: [target] },
+    }, request.newValue);
+    if (!planned.success) return blocked(`refactor.${planned.reason}`, planned.message);
+    if (planned.plan.kind !== "table.row") {
+      return blocked("refactor.unsupportedTarget", "Table key editing can only rename a table.row target.");
+    }
+    return this.applyPlan(project, planned.plan, {
+      confirm: request.confirm,
+      allowOpenTableTarget: true,
+    });
+  }
+
+  private async applyPlan(
+    project: ProjectContext,
+    plan: ReferenceValueRenamePlan,
+    options: { readonly confirm: boolean; readonly allowOpenTableTarget?: boolean },
+  ): Promise<WorkspaceReferenceTargetRenameResult> {
+    const newResolution = await this.references.resolve(project, {
+      kind: plan.kind,
+      target: plan.target.target,
+      allowMissing: false,
+    }, plan.newValue);
+    if (newResolution.status !== "missing") {
+      return blocked(
+        "refactor.targetCollision",
+        `Rename refused because '${String(plan.newValue)}' already resolves to ${newResolution.candidates.length} target(s).`,
+      );
+    }
+    const location = plan.target.location;
+    const targetDocument = location === undefined ? undefined : this.documents.documents.find((document) => (
+      document.projectId === location.projectId
+      && document.documentTypeId === location.documentTypeId
+      && document.sourcePaths.includes(location.path)
     ));
     if (targetDocument === undefined) {
-      void vscode.window.showWarningMessage("The resolved target is no longer an indexed document.");
-      return;
+      return blocked("refactor.targetUnavailable", "The resolved target is no longer an indexed document.");
     }
     const affected = uniqueDocuments([
       targetDocument,
-      ...planned.plan.changes.flatMap((change) => {
+      ...plan.changes.flatMap((change) => {
         const document = this.documents.documents.find((candidate) => documentIndexKey(candidate) === documentIndexKey(change));
         return document === undefined ? [] : [document];
       }),
     ]);
     if (affected.some((document) => document.projectId !== project.definition.projectId)) {
-      void vscode.window.showWarningMessage("Cross-project reference refactors are not supported.");
-      return;
+      return blocked("refactor.crossProject", "Cross-project reference refactors are not supported.");
     }
-    const openConflict = this.findOpenConflict(affected, project);
-    if (openConflict !== undefined) {
-      void vscode.window.showWarningMessage(openConflict);
-      return;
-    }
+    const allowedTarget = options.allowOpenTableTarget ? targetDocument : undefined;
+    const openConflict = this.findOpenConflict(affected, project, allowedTarget);
+    if (openConflict !== undefined) return blocked("refactor.workspaceDirty", openConflict);
 
-    let writes: readonly PreparedWrite[];
+    let prepared: readonly PreparedWrite[];
     try {
-      writes = (await Promise.all(affected.map((document) => this.prepareDocument(
+      prepared = (await Promise.all(affected.map((document) => this.prepareDocument(
         project,
         document,
-        new Set(planned.plan.changes
+        new Set(plan.changes
           .filter((change) => documentIndexKey(change) === documentIndexKey(document))
           .map((change) => change.occurrencePath)),
-        planned.plan.newValue,
-        planned.plan.oldValue,
-        documentIndexKey(document) === documentIndexKey(targetDocument) ? planned.plan : undefined,
-      )))).flat().filter((write) => !bytesEqual(write.before, write.after));
+        plan.newValue,
+        plan.oldValue,
+        documentIndexKey(document) === documentIndexKey(targetDocument) ? plan : undefined,
+      )))).flat();
     } catch (errorValue) {
       this.output.appendLine(`[refactor] Preview failed: ${formatError(errorValue)}`);
-      void vscode.window.showErrorMessage(`Refactor preview failed: ${formatError(errorValue)}`);
-      return;
+      return blocked("refactor.previewFailed", `Refactor preview failed: ${formatError(errorValue)}`);
     }
-    if (writes.length === 0) {
-      void vscode.window.showWarningMessage("The rename did not produce any source changes.");
-      return;
+    const writes = prepared.filter((write) => !bytesEqual(write.before, write.after));
+    if (writes.length === 0) return blocked("refactor.noChanges", "The rename did not produce any source changes.");
+    if (options.confirm && !await previewPlan(plan, writes)) {
+      return blocked("refactor.cancelled", "The reference refactor was cancelled.");
     }
-    const confirmed = await previewPlan(planned.plan, writes);
-    if (!confirmed) {
-      return;
-    }
-    const lateOpenConflict = this.findOpenConflict(affected, project);
-    if (lateOpenConflict !== undefined) {
-      void vscode.window.showWarningMessage(lateOpenConflict);
-      return;
-    }
+    const lateOpenConflict = this.findOpenConflict(affected, project, allowedTarget);
+    if (lateOpenConflict !== undefined) return blocked("refactor.workspaceDirty", lateOpenConflict);
 
     try {
-      await commitWrites(project, writes);
+      await commitWrites(project, writes, prepared);
+      if (allowedTarget?.editor === "table") {
+        await this.tables.refreshAfterReferenceRefactor(project, allowedTarget.sourcePaths);
+      }
       this.references.invalidate();
       await this.documents.refresh();
-      void vscode.window.showInformationMessage(
-        `Renamed ${String(planned.plan.oldValue)} to ${String(planned.plan.newValue)} in ${writes.length} source file(s) and ${planned.plan.changes.length} reference occurrence(s).`,
-      );
       this.output.appendLine(
-        `[refactor] Renamed ${String(planned.plan.oldValue)} -> ${String(planned.plan.newValue)}; ${writes.length} files, ${planned.plan.changes.length} references.`,
+        `[refactor] Renamed ${String(plan.oldValue)} -> ${String(plan.newValue)}; ${writes.length} files, ${plan.changes.length} references.`,
       );
+      return { success: true, fileCount: writes.length, referenceCount: plan.changes.length };
     } catch (errorValue) {
       this.output.appendLine(`[refactor] Commit failed: ${formatError(errorValue)}`);
-      void vscode.window.showErrorMessage(`Refactor was not applied: ${formatError(errorValue)}`);
+      return blocked("refactor.commitFailed", `Refactor was not applied: ${formatError(errorValue)}`);
     }
   }
 
@@ -442,7 +505,11 @@ export class WorkspaceReferenceRefactor {
     });
   }
 
-  private findOpenConflict(documents: readonly IndexedDocument[], project: ProjectContext): string | undefined {
+  private findOpenConflict(
+    documents: readonly IndexedDocument[],
+    project: ProjectContext,
+    allowedOpenTableTarget?: IndexedDocument,
+  ): string | undefined {
     for (const text of vscode.workspace.textDocuments) {
       if (!text.isDirty) {
         continue;
@@ -453,7 +520,13 @@ export class WorkspaceReferenceRefactor {
         return `Save or revert '${match.relativePath}' before running a project refactor.`;
       }
     }
-    if (this.tables.hasOpenProject(project)) {
+    if (this.tables.hasDirtyProject(project)) {
+      return "Save or revert every dirty Table editor in this VisualBridge Project before running a project refactor.";
+    }
+    const allowedUris = new Set((allowedOpenTableTarget?.sourcePaths ?? []).map(
+      (path) => sourceUri(project, path).toString(),
+    ));
+    if (this.tables.openProjectSourceUris(project).some((uri) => !allowedUris.has(uri.toString()))) {
       return "Close all Table editors in this VisualBridge Project before running a project refactor.";
     }
     if (documents.length === 0) {
@@ -531,70 +604,26 @@ async function previewPlan(plan: ReferenceValueRenamePlan, writes: readonly Prep
   return action === "Apply Refactor";
 }
 
-async function commitWrites(project: ProjectContext, writes: readonly PreparedWrite[]): Promise<void> {
+async function commitWrites(
+  project: ProjectContext,
+  writes: readonly PreparedWrite[],
+  dependencies: readonly PreparedWrite[],
+): Promise<void> {
   const ordered = [...writes].sort((left, right) => left.uri.fsPath.localeCompare(right.uri.fsPath));
-  const lockPath = nodePath.join(project.rootUri.fsPath, ".visualbridge-refactor.lock");
-  let lock;
-  const staged: { readonly write: PreparedWrite; readonly temporary: string; readonly backup: string }[] = [];
-  const committed: typeof staged = [];
-  try {
-    lock = await open(lockPath, "wx");
-    await lock.writeFile(`${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, "utf8");
-    await lock.sync();
-    for (const write of ordered) {
-      const current = await readFile(write.uri.fsPath);
-      if (hashBytes(current) !== hashBytes(write.before)) {
-        throw new Error(`'${write.uri.fsPath}' changed after the preview; no files were overwritten.`);
-      }
-      const nonce = randomUUID();
-      const temporary = `${write.uri.fsPath}.visualbridge-${nonce}.tmp`;
-      const backup = `${write.uri.fsPath}.visualbridge-${nonce}.rollback`;
-      const handle = await open(temporary, "wx");
-      try {
-        await handle.writeFile(write.after);
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      staged.push({ write, temporary, backup });
-    }
-    for (const entry of staged) {
-      const current = await readFile(entry.write.uri.fsPath);
-      if (hashBytes(current) !== hashBytes(entry.write.before)) {
-        throw new Error(`'${entry.write.uri.fsPath}' changed during the transaction.`);
-      }
-      await rename(entry.write.uri.fsPath, entry.backup);
-      committed.push(entry);
-      await rename(entry.temporary, entry.write.uri.fsPath);
-    }
-    for (const entry of committed) {
-      const persisted = await readFile(entry.write.uri.fsPath);
-      if (hashBytes(persisted) !== hashBytes(entry.write.after)) {
-        throw new Error(`Atomic replacement verification failed for '${entry.write.uri.fsPath}'.`);
-      }
-    }
-    await Promise.all(committed.map((entry) => unlink(entry.backup).catch(() => undefined)));
-  } catch (errorValue) {
-    const failures: string[] = [];
-    for (const entry of [...committed].reverse()) {
-      try {
-        await unlink(entry.write.uri.fsPath).catch(() => undefined);
-        await rename(entry.backup, entry.write.uri.fsPath);
-      } catch (rollbackError) {
-        failures.push(`${entry.write.uri.fsPath}: ${formatError(rollbackError)}`);
-      }
-    }
-    if (failures.length > 0) {
-      throw new Error(`${formatError(errorValue)} Rollback failed: ${failures.join("; ")}`);
-    }
-    throw errorValue;
-  } finally {
-    await Promise.all(staged.map((entry) => unlink(entry.temporary).catch(() => undefined)));
-    if (lock !== undefined) {
-      await lock.close().catch(() => undefined);
-      await unlink(lockPath).catch(() => undefined);
-    }
-  }
+  const dependencyByPath = new Map(dependencies.map((dependency) => [dependency.uri.fsPath, dependency]));
+  await withProjectTransaction(project.rootUri.fsPath, (transaction) => transaction.commit(
+    ordered.map((write) => ({
+      path: nodePath.relative(project.rootUri.fsPath, write.uri.fsPath).replaceAll("\\", "/"),
+      absolutePath: write.uri.fsPath,
+      before: write.before,
+      after: write.after,
+    })),
+    [...dependencyByPath.values()].map((dependency) => ({
+      path: nodePath.relative(project.rootUri.fsPath, dependency.uri.fsPath).replaceAll("\\", "/"),
+      absolutePath: dependency.uri.fsPath,
+      hash: hashBytes(dependency.before),
+    })),
+  ));
 }
 
 function uniqueDocuments(documents: readonly IndexedDocument[]): readonly IndexedDocument[] {
@@ -670,4 +699,8 @@ function assertOccurrenceValues(
 
 function formatError(errorValue: unknown): string {
   return errorValue instanceof Error ? errorValue.message : String(errorValue);
+}
+
+function blocked(code: string, message: string): WorkspaceReferenceTargetRenameResult {
+  return { success: false, code, message };
 }

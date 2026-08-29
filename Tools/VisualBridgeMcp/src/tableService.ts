@@ -12,6 +12,8 @@ import {
   applyTableOperations,
   buildTableCatalogRegistry,
   collectTableReferences,
+  createEmptyCsvTableSource,
+  createEmptyXlsxTableSource,
   createEmptyTableCatalogRegistry,
   formatTableRowDisplayName,
   matchTableSheetDefinitions,
@@ -19,6 +21,7 @@ import {
   parseTableCatalog,
   parseXlsxTable,
   replaceTableReferenceValues,
+  resolveTableColumn,
   resolveEffectiveTableRows,
   resolveTableSheet,
   resolveTableType,
@@ -39,6 +42,7 @@ import {
   VisualBridgeWorkspace,
   resolveExistingProjectPath,
   type ProjectContext,
+  type DeclaredDocumentContext,
   type TableDocumentContext,
 } from "./projectWorkspace.js";
 import type { VisualBridgeReferenceService } from "./referenceService.js";
@@ -50,7 +54,7 @@ import {
   withProjectTransaction,
 } from "./projectTransaction.js";
 
-interface TableCatalogContext {
+export interface TableCatalogContext {
   readonly project: ProjectContext;
   readonly documentTypeId: string;
   readonly catalogPaths: readonly string[];
@@ -59,7 +63,7 @@ interface TableCatalogContext {
   readonly diagnostics: readonly DocumentDiagnostic[];
 }
 
-interface TableSource {
+export interface TableSource {
   readonly path: string;
   readonly absolutePath: string;
   readonly physicalName: string;
@@ -68,7 +72,7 @@ interface TableSource {
   readonly hash: string;
 }
 
-interface LoadedTable {
+export interface LoadedTable {
   readonly context: TableDocumentContext;
   readonly catalog: TableCatalogContext;
   readonly layout: TableLayoutDefinition;
@@ -78,7 +82,7 @@ interface LoadedTable {
   readonly diagnostics: readonly DocumentDiagnostic[];
 }
 
-interface RenderedSource {
+export interface RenderedSource {
   readonly source: TableSource;
   readonly bytes: Buffer;
   readonly hash: string;
@@ -88,6 +92,13 @@ export interface PreparedTableReferenceWrite {
   readonly path: string;
   readonly absolutePath: string;
   readonly before: Buffer;
+  readonly after: Buffer;
+}
+
+export interface PreparedTableLifecycleSource {
+  readonly path: string;
+  readonly absolutePath: string;
+  readonly before?: Buffer;
   readonly after: Buffer;
 }
 
@@ -285,6 +296,8 @@ export class TableService {
         if (loaded.baseHash !== options.baseHash) {
           return conflictResult(loaded, options.baseHash, "baseHashMismatch");
         }
+        const lifecycleGuard = tableLifecycleGuard(loaded, options.operations);
+        if (lifecycleGuard.length > 0) return invalidResult(loaded, lifecycleGuard);
         const semanticContext = { tableType: loaded.catalog.tableType };
         const operationResult = tableDocumentAdapter.applyOperations(
           loaded.document,
@@ -473,6 +486,72 @@ export class TableService {
       before: entry.source.bytes,
       after: entry.bytes,
     }));
+  }
+
+  public async loadLifecycleDocument(
+    tablePath: string,
+    projectFile?: string,
+    documentTypeId?: string,
+  ): Promise<LoadedTable> {
+    return this.loadTableForUse(tablePath, projectFile, documentTypeId);
+  }
+
+  public async renderLifecycleDocument(
+    loaded: LoadedTable,
+    document: TableDocument,
+  ): Promise<readonly PreparedTableLifecycleSource[]> {
+    return (await this.renderSources(loaded, document)).map((entry) => ({
+      path: entry.source.path,
+      absolutePath: entry.source.absolutePath,
+      before: entry.source.bytes,
+      after: entry.bytes,
+    }));
+  }
+
+  public async createLifecycleDocument(
+    context: DeclaredDocumentContext,
+    options: {
+      readonly format: "csv" | "xlsx";
+      readonly physicalName?: string;
+    },
+  ): Promise<readonly PreparedTableLifecycleSource[]> {
+    const layout = context.project.definition.tableLayout;
+    if (layout === undefined) {
+      throw new VisualBridgeMcpError(
+        "table.layoutNotConfigured",
+        "VisualBridge Project must configure tableLayout.nameKeyRow and tableLayout.dataStartRow.",
+      );
+    }
+    const catalog = await this.loadCatalog(
+      context.project,
+      context.documentType.id,
+      context.documentType.catalogs,
+    );
+    if (options.format === "xlsx" && options.physicalName !== undefined) {
+      throw new VisualBridgeMcpError(
+        "lifecycle.invalidParameters",
+        "Table XLSX create does not accept physicalName.",
+      );
+    }
+    const created = options.format === "xlsx"
+      ? await createEmptyXlsxTableSource(catalog.tableType, layout)
+      : createEmptyCsvTableSource(
+          catalog.tableType,
+          layout,
+          options.physicalName ?? path.basename(context.path, path.extname(context.path)),
+        );
+    if (!created.success) {
+      throw new VisualBridgeMcpError(
+        "lifecycle.invalidCreate",
+        `Table '${context.path}' cannot be created from its declared Table Type.`,
+        created.diagnostics,
+      );
+    }
+    return [{
+      path: context.path,
+      absolutePath: context.absolutePath,
+      after: Buffer.from(created.bytes),
+    }];
   }
 
   private async referenceDiagnostics(loaded: LoadedTable): Promise<readonly DocumentDiagnostic[]> {
@@ -746,6 +825,44 @@ export class TableService {
     }
     return definition;
   }
+}
+
+function tableLifecycleGuard(loaded: LoadedTable, operations: unknown): readonly DocumentDiagnostic[] {
+  if (!Array.isArray(operations)) return [];
+  return operations.flatMap((raw, index): readonly DocumentDiagnostic[] => {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const operation = raw as Readonly<Record<string, unknown>>;
+    if (operation.type === "table.removeRow") {
+      return [{
+        severity: "error",
+        code: "lifecycle.required",
+        path: `operations[${index}].type`,
+        message: "Removing a Table row requires visualbridge_document_lifecycle Safe Delete.",
+      }];
+    }
+    if (operation.type !== "table.setCell"
+      || typeof operation.sheetId !== "string"
+      || typeof operation.columnId !== "string") return [];
+    const sheetId = operation.sheetId;
+    const columnId = operation.columnId;
+    const sheet = loaded.document.sheets.find((candidate) => candidate.id === sheetId);
+    const definition = sheet === undefined
+      ? undefined
+      : resolveTableSheet(loaded.catalog.tableType, sheet.definitionId);
+    const column = definition === undefined ? undefined : resolveTableColumn(definition, columnId);
+    const keyColumn = definition?.keyColumnId === undefined
+      ? undefined
+      : resolveTableColumn(definition, definition.keyColumnId);
+    if (column !== undefined && keyColumn !== undefined && column.id === keyColumn.id) {
+      return [{
+        severity: "error",
+        code: "lifecycle.required",
+        path: `operations[${index}].type`,
+        message: "Changing a Table row key requires visualbridge_refactor_reference so every exact semantic reference is updated atomically.",
+      }];
+    }
+    return [];
+  });
 }
 
 class TableLoadError extends Error {

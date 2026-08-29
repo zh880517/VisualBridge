@@ -57,7 +57,7 @@
 - 旧的重复工具在开发阶段直接移除，不保留不合理兼容层。
 - 真实 stdio 测试覆盖四类文档、并发冲突、原子性和确定性结果。
 
-### VB-PU-03 文档生命周期与安全删除 — `in_progress`
+### VB-PU-03 文档生命周期与安全删除 — `complete`
 
 范围：
 
@@ -76,7 +76,7 @@
 - 同一生命周期请求从 VS Code 与 MCP 得到相同预览、冲突结果和确定性输出。
 - 不通过字符串替换、文件后缀猜测或直接修改未知 JSON 实现。
 
-### VB-PU-04 Project Provider V1 — `pending`
+### VB-PU-04 Project Provider V1 — `in_progress`
 
 范围：
 

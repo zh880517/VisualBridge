@@ -19,6 +19,11 @@ import {
   validateGraphDocument,
   type GraphDocument,
 } from "./graphDocument";
+import {
+  collectGraphOwnedIdentities,
+  deleteGraphOwnedTarget,
+  remapGraphOwnedIdentities,
+} from "./graphLifecycle";
 
 export interface GraphDocumentAdapterContext {
   readonly registry: GraphCatalogRegistry;
@@ -44,6 +49,17 @@ export const graphDocumentAdapter: SemanticDocumentAdapter<GraphDocument, GraphD
   },
   renameDocumentId(document, documentId, context) {
     return renameGraphDocumentId(document, documentId, context.registry);
+  },
+  lifecycle: {
+    collectOwnedIdentities(document, documentTypeId) {
+      return collectGraphOwnedIdentities(document, documentTypeId);
+    },
+    remapOwnedIdentities(document, documentTypeId, remap, context) {
+      return remapGraphOwnedIdentities(document, documentTypeId, remap, context.registry);
+    },
+    deleteOwnedTarget(document, target, context) {
+      return deleteGraphOwnedTarget(document, target, context.registry);
+    },
   },
 };
 

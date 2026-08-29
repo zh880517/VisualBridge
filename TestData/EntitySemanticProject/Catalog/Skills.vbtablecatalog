@@ -13,6 +13,7 @@
       "sheets": [
         {
           "id": "skills",
+          "aliases": [],
           "title": "Skills",
           "name": "Skills",
           "nameAliases": [],

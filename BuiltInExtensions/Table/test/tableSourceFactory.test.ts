@@ -17,6 +17,7 @@ const tableType: TableTypeDefinition = {
   csv: { delimiter: "," },
   sheets: [{
     id: "skills",
+    aliases: [],
     title: "Skills",
     name: "Skills",
     nameAliases: [],

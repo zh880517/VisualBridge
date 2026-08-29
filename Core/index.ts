@@ -1,6 +1,7 @@
 export * from "./Document/document";
 export * from "./Document/documentAdapter";
 export * from "./Document/documentIndex";
+export * from "./Document/documentLifecycle";
 export * from "./Form/field";
 export * from "./Project/projectFile";
 export * from "./Project/projectMatcher";

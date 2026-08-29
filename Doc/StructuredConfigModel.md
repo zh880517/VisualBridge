@@ -108,7 +108,15 @@ Structured Editor 复用 `Editors/Form` 的 `FieldsEditor` 与 Reference Bridge�
 
 `VisualBridge: Create Structured Config` 会选择 Project 和 Structured Document Type，加载 Registry，以 Document Type ID 解析唯一 Config Type，根据 `include` 推导建议目录/后缀，再次验证目标路径并写入包含全部默认字段的新文档。
 
-## 7. MCP 工具
+## 7. Document Lifecycle V1
+
+Structured 的 Create、whole-document Copy、Path Move 和 Safe Delete 使用共享 [`DocumentLifecycle.md`](DocumentLifecycle.md)。Path Move 保持文件字节、`documentId` 和 Reference value 不变；Copy 要求调用方在 preview operation 的完整 `stableIdRemap` 中映射 `documentId`，并只更新唯一解析到副本闭包内部的 occurrence；Delete closure 包含完整 Structured Document。Reference coverage 不完整或闭包外存在入站 occurrence 时拒绝 Delete。
+
+当前创建命令的领域 factory 和默认值物化仍是 Create 计划的唯一内容来源，但 PU-03 实现后不再直接 `writeFile`：目标路径在 preview/apply 时必须保持不存在，并通过 Project Transaction 的 `create` mutation 提交。Structured 没有可单独寻址的内部元素删除，因此没有额外的普通 Operation delete guard。
+
+Structured Delete 的 strict target 只有 `{ "kind": "document" }`；它删除该 source selector 对应的完整物理文件，而不是删除某个嵌套字段。
+
+## 8. MCP 工具
 
 Structured 使用 MCP V2 的统一工具，不再暴露类型专用工具：
 
@@ -118,7 +126,7 @@ Structured 使用 MCP V2 的统一工具，不再暴露类型专用工具：
 
 请求必须显式带回 Project 发现结果中的 `projectFile`、`documentTypeId` 和 `editor`。最终类型绑定仍由 Project Registry 和 Structured Adapter 决定；MCP 只负责 Project/路径解析、结构化工具 Schema、并发控制和持久化，不复制 Catalog、Field、Operation 或 Reference 规则。完整 V2 信封与使用方式见 `VisualBridgeMcp.md`。
 
-## 8. 固定样例与后续 Unity 约束
+## 9. 固定样例与后续 Unity 约束
 
 `TestData/StructuredSemanticProject` 使用 `.gamesettings` 和 `.skillstable` 自定义后缀，覆盖嵌套结构、List、颜色、int/float 语义以及指向 Table Row 的引用。语义测试验证 Registry/alias、严格字段校验、默认值、引用收集、Operation 原子性和确定性序列化；stdio 测试验证真实 MCP Schema、Catalog 搜索、读取、实例搜索、校验、无效批次不落盘和有效多字段原子写入。跨进程冲突、Reference 重构和事务恢复由同一 MCP 套件的 Graph/Entity/Project Transaction 固定样例覆盖。
 

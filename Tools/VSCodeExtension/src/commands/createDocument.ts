@@ -9,6 +9,7 @@ import { createGraphDocument } from "./createGraphDocument";
 import { createStructuredDocument } from "./createStructuredDocument";
 import { createTableDocument } from "./createTableDocument";
 import type { CreateDocumentSelection } from "./createDocumentSupport";
+import type { WorkspaceDocumentLifecycle } from "../document/workspaceDocumentLifecycle";
 
 const SUPPORTED_EDITORS = new Set([
   GRAPH_EDITOR_ID,
@@ -19,6 +20,7 @@ const SUPPORTED_EDITORS = new Set([
 
 export async function createDocument(
   projects: ProjectRegistry,
+  lifecycle: WorkspaceDocumentLifecycle,
   requestedSelection?: CreateDocumentSelection,
 ): Promise<void> {
   const selection = requestedSelection ?? await selectCreationTarget(projects);
@@ -26,13 +28,13 @@ export async function createDocument(
     return;
   }
   if (selection.documentType.editor === GRAPH_EDITOR_ID) {
-    await createGraphDocument(projects, selection);
+    await createGraphDocument(projects, lifecycle, selection);
   } else if (selection.documentType.editor === ENTITY_EDITOR_ID) {
-    await createEntityDocument(projects, selection);
+    await createEntityDocument(projects, lifecycle, selection);
   } else if (selection.documentType.editor === STRUCTURED_EDITOR_ID) {
-    await createStructuredDocument(projects, selection);
+    await createStructuredDocument(projects, lifecycle, selection);
   } else if (selection.documentType.editor === TABLE_EDITOR_ID) {
-    await createTableDocument(projects, selection);
+    await createTableDocument(projects, lifecycle, selection);
   }
 }
 

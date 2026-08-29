@@ -9,6 +9,10 @@ import {
 } from "./documentAdapterRegistry.js";
 import { EntityService } from "./entityService.js";
 import { GraphService } from "./graphService.js";
+import {
+  DocumentLifecycleService,
+  type DocumentLifecycleHostRequest,
+} from "./lifecycleService.js";
 import { pageItems } from "./pagination.js";
 import { VisualBridgeMcpError, VisualBridgeWorkspace } from "./projectWorkspace.js";
 import { ReferenceRefactorService } from "./refactorService.js";
@@ -28,6 +32,7 @@ const graphService = new GraphService(workspace, referenceService);
 const entityService = new EntityService(workspace, referenceService);
 const structuredService = new StructuredService(workspace, referenceService);
 const refactorService = new ReferenceRefactorService(workspace, referenceService, tableService);
+const lifecycleService = new DocumentLifecycleService(workspace, referenceService, tableService);
 const adapters = new McpDocumentAdapterRegistry([
   {
     editor: "entity",
@@ -56,7 +61,7 @@ function createServer(): McpServer {
     { name: "visualbridge", version: "2.0.0" },
     {
       instructions:
-        "Discover the VisualBridge Project, then use its exact projectFile, documentTypeId, editor, and normalized path selectors. Catalog and Document tools are read-only. All edits use visualbridge_apply_operations with the exact baseHash returned by Document read/validate. Conflicts and invalid operations are structured results and are never retried with stale state.",
+        "Discover the VisualBridge Project, then use its exact projectFile, projectId, documentTypeId, editor, and normalized path selectors. Catalog and Document tools are read-only. In-document edits use visualbridge_apply_operations with the exact baseHash returned by Document read/validate. Create, copy, path move, and safe delete use visualbridge_document_lifecycle preview followed by apply with the exact returned plan and dependency manifests. Conflicts and invalid operations are structured results and are never retried with stale state.",
     },
   );
 
@@ -249,6 +254,19 @@ function createServer(): McpServer {
       })),
   );
 
+  server.registerTool(
+    "visualbridge_document_lifecycle",
+    {
+      title: "Preview or apply a VisualBridge Document Lifecycle operation",
+      description:
+        "Creates, copies, path-moves, or safely deletes a declared Document or supported contained target. Apply requires the exact canonical preview payload, base hashes, and Project/Catalog/index dependencies, then commits every physical mutation atomically.",
+      inputSchema: documentLifecycleInputSchema,
+      outputSchema: toolOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    },
+    async (request) => handle(() => lifecycleService.execute(request as DocumentLifecycleHostRequest)),
+  );
+
   return server;
 }
 
@@ -264,7 +282,7 @@ const operationSchema = z.object({ type: stableId }).loose();
 const toolOutputSchema = z.discriminatedUnion("status", [
   z.object({
     contractVersion: z.literal(CONTRACT_VERSION),
-    status: z.enum(["ok", "applied", "unchanged", "invalid", "conflict"]),
+    status: z.enum(["ok", "preview", "applied", "unchanged", "invalid", "blocked", "conflict"]),
     data: z.record(z.string(), z.unknown()),
   }).strict(),
   z.object({
@@ -365,11 +383,148 @@ const refactorInputSchema = z.object({
   }
 });
 
+const lifecycleSelectorBase = {
+  projectId: stableId,
+  documentTypeId: stableId,
+  path: normalizedPath,
+};
+const lifecycleSelectorSchema = z.object({
+  ...lifecycleSelectorBase,
+  editor: z.enum(["graph", "entity", "structured", "table"]),
+}).strict();
+const stableIdentityValueSchema = z.union([z.string().max(4096), z.number().finite()]);
+const stableIdentityRemapSchema = z.object({
+  identityKey: z.string().min(1).max(1024),
+  from: stableIdentityValueSchema,
+  to: stableIdentityValueSchema,
+}).strict().superRefine((value, context) => {
+  if (typeof value.from !== typeof value.to) {
+    context.addIssue({ code: "custom", path: ["to"], message: "Stable identity value type must not change." });
+  }
+});
+const lifecycleCreateOperationSchema = z.union([
+  z.object({
+    kind: z.literal("create"),
+    target: z.object({ ...lifecycleSelectorBase, editor: z.literal("graph") }).strict(),
+    parameters: z.object({
+      documentId: stableId,
+      rootGraphId: stableId,
+      graphTypeId: stableId.optional(),
+      initialNodeIds: z.array(stableId).default([]),
+    }).strict(),
+  }).strict(),
+  z.object({
+    kind: z.literal("create"),
+    target: z.object({ ...lifecycleSelectorBase, editor: z.literal("entity") }).strict(),
+    parameters: z.object({
+      documentId: stableId,
+      entityTypeId: stableId,
+      title: z.string().min(1).max(512).optional(),
+    }).strict(),
+  }).strict(),
+  z.object({
+    kind: z.literal("create"),
+    target: z.object({ ...lifecycleSelectorBase, editor: z.literal("structured") }).strict(),
+    parameters: z.object({ documentId: stableId }).strict(),
+  }).strict(),
+  z.object({
+    kind: z.literal("create"),
+    target: z.object({ ...lifecycleSelectorBase, editor: z.literal("table") }).strict(),
+    parameters: z.union([
+      z.object({
+        format: z.literal("csv"),
+        physicalName: z.string().min(1).max(255).optional(),
+      }).strict(),
+      z.object({ format: z.literal("xlsx") }).strict(),
+    ]),
+  }).strict(),
+]);
+const lifecycleCopyOperationSchema = z.object({
+  kind: z.literal("copy"),
+  source: lifecycleSelectorSchema,
+  target: lifecycleSelectorSchema,
+  stableIdRemap: z.array(stableIdentityRemapSchema).max(100_000),
+}).strict();
+const lifecycleMoveOperationSchema = z.object({
+  kind: z.literal("move"),
+  source: lifecycleSelectorSchema,
+  target: lifecycleSelectorSchema,
+}).strict();
+const lifecycleDeleteTargetSchema = z.union([
+  z.object({ kind: z.literal("document") }).strict(),
+  z.object({ kind: z.literal("entity.component"), componentId: stableId }).strict(),
+  z.object({
+    kind: z.literal("graph.element"),
+    graphId: stableId,
+    elementKind: z.literal("graph"),
+    elementId: stableId,
+  }).strict(),
+  z.object({
+    kind: z.literal("graph.element"),
+    graphId: stableId,
+    elementKind: z.enum(["node", "interfacePort"]),
+    elementId: stableId,
+  }).strict(),
+  z.object({
+    kind: z.literal("graph.element"),
+    graphId: stableId,
+    elementKind: z.literal("dynamicPort"),
+    elementId: stableId,
+    nodeId: stableId,
+  }).strict(),
+  z.object({
+    kind: z.literal("table.row"),
+    sheetId: z.string().min(1).max(1024),
+    rowId: z.string().min(1).max(1024),
+  }).strict(),
+]);
+const lifecycleDeleteOperationSchema = z.object({
+  kind: z.literal("delete"),
+  source: lifecycleSelectorSchema,
+  target: lifecycleDeleteTargetSchema,
+}).strict();
+const lifecycleOperationSchema = z.union([
+  lifecycleCreateOperationSchema,
+  lifecycleCopyOperationSchema,
+  lifecycleMoveOperationSchema,
+  lifecycleDeleteOperationSchema,
+]);
+const lifecycleDependencySchema = z.object({
+  kind: z.enum(["project", "catalog", "documentSet", "referenceIndex"]),
+  key: z.string().min(1).max(1024),
+  hash: z.string().regex(/^[a-f0-9]{64}$/),
+  paths: z.array(normalizedPath).max(100_000),
+}).strict();
+const documentLifecycleInputSchema = z.object({
+  action: z.enum(["preview", "apply"]),
+  projectFile: normalizedPath,
+  operation: lifecycleOperationSchema,
+  previewHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  planPayload: z.string().min(1).max(16 * 1024 * 1024).optional(),
+  baseHashes: z.record(normalizedPath, z.string().regex(/^[a-f0-9]{64}$/)).optional(),
+  dependencies: z.array(lifecycleDependencySchema).max(100_000).optional(),
+}).strict().superRefine((value, context) => {
+  const applyFields = ["previewHash", "planPayload", "baseHashes", "dependencies"] as const;
+  if (value.action === "apply") {
+    for (const field of applyFields) {
+      if (value[field] === undefined) {
+        context.addIssue({ code: "custom", path: [field], message: `Apply requires ${field}.` });
+      }
+    }
+    return;
+  }
+  for (const field of applyFields) {
+    if (value[field] !== undefined) {
+      context.addIssue({ code: "custom", path: [field], message: `Preview does not accept ${field}.` });
+    }
+  }
+});
+
 async function handle(action: () => Promise<Record<string, unknown>>) {
   try {
     const result = await action();
-    const status = typeof result.status === "string" && ["applied", "unchanged", "invalid", "conflict"].includes(result.status)
-      ? result.status as "applied" | "unchanged" | "invalid" | "conflict"
+    const status = typeof result.status === "string" && ["preview", "applied", "unchanged", "invalid", "blocked", "conflict"].includes(result.status)
+      ? result.status as "preview" | "applied" | "unchanged" | "invalid" | "blocked" | "conflict"
       : "ok";
     const data = status === "ok"
       ? result

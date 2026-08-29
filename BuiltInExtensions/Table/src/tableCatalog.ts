@@ -27,6 +27,7 @@ export interface TableColumnDefinition extends FieldDefinition {
 
 export interface TableSheetDefinition {
   readonly id: string;
+  readonly aliases: readonly string[];
   readonly title: string;
   readonly name: string;
   readonly nameAliases: readonly string[];
@@ -173,7 +174,7 @@ export function resolveTableSheet(
   tableType: TableTypeDefinition,
   sheetId: string,
 ): TableSheetDefinition | undefined {
-  return tableType.sheets.find((sheet) => sheet.id === sheetId);
+  return tableType.sheets.find((sheet) => sheet.id === sheetId || sheet.aliases.includes(sheetId));
 }
 
 export function matchTableSheetDefinitions(
@@ -250,7 +251,7 @@ function readSheets(
     diagnostics.push(error("tableCatalog.invalidSheets", path, "Expected a non-empty array."));
     return [];
   }
-  const ids = new Set<string>();
+  const identities = new Map<string, string>();
   return value.flatMap((entry, index) => {
     const entryPath = `${path}[${index}]`;
     if (!isRecord(entry)) {
@@ -259,11 +260,12 @@ function readSheets(
     }
     checkKeys(
       entry,
-      ["id", "title", "name", "nameAliases", "rowDisplayNamePattern", "keyColumnId", "partition", "columns"],
+      ["id", "aliases", "title", "name", "nameAliases", "rowDisplayNamePattern", "keyColumnId", "partition", "columns"],
       entryPath,
       diagnostics,
     );
     const id = readIdentifier(entry.id, `${entryPath}.id`, diagnostics);
+    const aliases = readIdentifiers(entry.aliases ?? [], `${entryPath}.aliases`, diagnostics);
     const title = readNonEmptyString(entry.title, `${entryPath}.title`, diagnostics);
     const name = readNonEmptyString(entry.name, `${entryPath}.name`, diagnostics);
     const nameAliases = readStrings(entry.nameAliases ?? [], `${entryPath}.nameAliases`, diagnostics);
@@ -280,8 +282,19 @@ function readSheets(
     const partition = entry.partition === undefined
       ? undefined
       : readPartition(entry.partition, columns, `${entryPath}.partition`, diagnostics);
-    if (id !== undefined && ids.has(id)) {
-      diagnostics.push(error("tableCatalog.duplicateSheetId", `${entryPath}.id`, `Duplicate Sheet ID '${id}'.`));
+    if (id !== undefined) {
+      for (const identity of [id, ...aliases]) {
+        const existing = identities.get(identity);
+        if (existing !== undefined) {
+          diagnostics.push(error(
+            "tableCatalog.duplicateSheetIdentity",
+            entryPath,
+            `Sheet identity '${identity}' is already used by '${existing}'.`,
+          ));
+        } else {
+          identities.set(identity, id);
+        }
+      }
     }
     if (keyColumnId !== undefined && !columns.some(
       (column) => column.id === keyColumnId || column.aliases.includes(keyColumnId),
@@ -295,9 +308,9 @@ function readSheets(
     if (id === undefined || title === undefined || name === undefined || rowDisplayNamePattern === undefined) {
       return [];
     }
-    ids.add(id);
     return [{
       id,
+      aliases,
       title,
       name,
       nameAliases,

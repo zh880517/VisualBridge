@@ -211,6 +211,19 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     };
   }
 
+  public assertIdentityOperationsAllowedForTest(
+    uri: vscode.Uri,
+    editor: "entity" | "graph",
+    operations: unknown,
+  ): void {
+    const uriKey = uri.toString();
+    const session = editor === "entity"
+      ? [...this.entitySessions.get(uriKey) ?? []][0]
+      : [...this.graphSessions.get(uriKey) ?? []][0];
+    if (session === undefined) throw new Error(`No active ${editor} editor session was found.`);
+    session.assertIdentityOperationsAllowedForTest(operations);
+  }
+
   public async revealGraphReference(location: ReferenceLocation): Promise<void> {
     const target = readGraphRevealTarget(location);
     if (target === undefined || !isProjectRelativePath(location.path)) {

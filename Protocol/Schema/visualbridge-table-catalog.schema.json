@@ -69,6 +69,7 @@
       "required": ["id", "title", "name", "rowDisplayNamePattern", "columns"],
       "properties": {
         "id": { "$ref": "#/$defs/identifier" },
+        "aliases": { "$ref": "#/$defs/identifierArray", "default": [] },
         "title": { "$ref": "#/$defs/nonEmptyString" },
         "name": { "$ref": "#/$defs/nonEmptyString" },
         "rowDisplayNamePattern": {

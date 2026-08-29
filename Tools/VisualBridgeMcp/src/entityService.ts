@@ -189,6 +189,10 @@ export class EntityService {
       if (!parseResult.success) {
         return { valid: false, diagnostics: [...catalog.diagnostics, ...parseResult.diagnostics] };
       }
+      const lifecycleGuard = entityLifecycleGuard(options.operations);
+      if (lifecycleGuard.length > 0) {
+        return { valid: false, diagnostics: lifecycleGuard };
+      }
       const operationResult = entityDocumentAdapter.applyOperations(parseResult.document, options.operations, semanticContext);
       if (!operationResult.success) {
         return { valid: false, diagnostics: operationResult.diagnostics };
@@ -298,6 +302,24 @@ export class EntityService {
       .filter((definition) => terms.every((term) => JSON.stringify(definition).toLocaleLowerCase().includes(term)))
       .sort((left, right) => left.title.localeCompare(right.title) || left.id.localeCompare(right.id));
   }
+}
+
+function entityLifecycleGuard(value: unknown): readonly DocumentDiagnostic[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry, index) => {
+    const type = typeof entry === "object" && entry !== null
+      ? (entry as { readonly type?: unknown }).type
+      : undefined;
+    if (type !== "entity.renameComponent" && type !== "entity.removeComponent") return [];
+    return [{
+      severity: "error" as const,
+      code: "lifecycle.required",
+      path: `operations[${index}].type`,
+      message: type === "entity.renameComponent"
+        ? "Stable Component IDs must be changed through visualbridge_refactor_reference."
+        : "Referenced Components must be removed through visualbridge_document_lifecycle safe delete.",
+    }];
+  });
 }
 
 function catalogCursorScope(request: DocumentCatalogRequest, editor: string, kind: string): unknown {

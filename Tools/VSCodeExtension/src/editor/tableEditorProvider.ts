@@ -1,7 +1,23 @@
 import { createHash } from "node:crypto";
 import * as nodePath from "node:path";
 import * as vscode from "vscode";
-import type { DocumentDiagnostic, ReferenceLocation, TableLayoutDefinition } from "@visualbridge/core";
+import {
+  ProjectTransactionConflict,
+  ProjectTransactionFailure,
+  withProjectTransaction,
+} from "@visualbridge/node-host";
+import { referenceValuesEqual } from "@visualbridge/core";
+import {
+  containsLifecycleGuardedRemoval,
+  lifecycleDeleteTarget,
+  LIFECYCLE_REQUIRED_MESSAGE,
+} from "../document/lifecycleOperationGuard";
+import type {
+  DocumentDiagnostic,
+  ReferenceDefinition,
+  ReferenceLocation,
+  TableLayoutDefinition,
+} from "@visualbridge/core";
 import {
   TABLE_EDITOR_ID,
   applyTableOperations,
@@ -9,6 +25,7 @@ import {
   matchTableSheetDefinitions,
   parseCsvTable,
   parseXlsxTable,
+  resolveTableColumn,
   resolveTableSheet,
   resolveTableType,
   serializeCsvTable,
@@ -30,6 +47,10 @@ import { loadTableCatalogRegistry } from "../catalog/tableCatalogLoader";
 import type { DocumentMatch, ProjectContext, ProjectRegistry } from "../project/projectRegistry";
 import { handleReferenceMessage } from "../reference/referenceMessages";
 import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
+import type {
+  WorkspaceReferenceTargetRenameRequest,
+  WorkspaceReferenceTargetRenameResult,
+} from "../refactor/workspaceReferenceRefactor";
 import { WebviewEpoch } from "./webviewEpoch";
 
 export const TABLE_EDITOR_VIEW_TYPE = "visualbridge.tableEditor";
@@ -150,6 +171,9 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
   private readonly testPausedRevealPanels = new Set<vscode.WebviewPanel>();
   private revealSequence = 0;
   private operationQueue: Promise<void> = Promise.resolve();
+  private referenceTargetRenamer: ((
+    request: WorkspaceReferenceTargetRenameRequest,
+  ) => Promise<WorkspaceReferenceTargetRenameResult>) | undefined;
 
   public readonly onDidChangeCustomDocument = this.changeEmitter.event;
 
@@ -399,6 +423,42 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
     ));
   }
 
+  public hasDirtyProject(project: ProjectContext): boolean {
+    return [...this.panels.keys()].some((document) => (
+      document.isDirty
+      && document.match.project.markerUri.toString() === project.markerUri.toString()
+    ));
+  }
+
+  public setReferenceTargetRenamer(
+    renamer: (request: WorkspaceReferenceTargetRenameRequest) => Promise<WorkspaceReferenceTargetRenameResult>,
+  ): void {
+    this.referenceTargetRenamer = renamer;
+  }
+
+  public async refreshAfterReferenceRefactor(
+    project: ProjectContext,
+    sourcePaths: readonly string[],
+  ): Promise<void> {
+    const expected = new Set(sourcePaths.map((path) => vscode.Uri.joinPath(project.rootUri, ...path.split("/")).toString()));
+    const documents = [...this.panels.keys()].filter((document) => (
+      document.match.project.markerUri.toString() === project.markerUri.toString()
+      && document.sources.some((source) => expected.has(source.uri.toString()))
+    ));
+    for (const document of documents) {
+      await this.revertCustomDocument(document);
+      await this.sendState(document);
+    }
+  }
+
+  public openProjectSourceUris(project: ProjectContext): readonly vscode.Uri[] {
+    return [...new Map([...this.panels.keys()]
+      .filter((document) => document.match.project.markerUri.toString() === project.markerUri.toString())
+      .flatMap((document) => document.sources)
+      .map((source) => [source.uri.toString(), source.uri])).values()]
+      .sort((left, right) => left.toString().localeCompare(right.toString()));
+  }
+
   public pauseNextRevealForTest(uri: vscode.Uri): boolean {
     const uriKey = uri.toString();
     for (const [document, panels] of this.panels) {
@@ -417,6 +477,23 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
 
   public async saveCustomDocument(document: TableCustomDocument): Promise<void> {
     await this.saveToSources(document, document.sources);
+  }
+
+  public async applyOperationsForTest(uri: vscode.Uri, operations: unknown): Promise<void> {
+    const document = this.openDocument(uri);
+    const identityRefactor = await this.applyExistingKeyRefactor(document, operations, false);
+    if (identityRefactor !== undefined) {
+      if (!identityRefactor.success) throw new Error(`${identityRefactor.code}: ${identityRefactor.message}`);
+      return;
+    }
+    const result = applyTableOperations(document.document, operations, document.tableType);
+    if (!result.success) throw new Error(result.diagnostics.map((diagnostic) => diagnostic.message).join("\n"));
+    document.update(result.document);
+  }
+
+  public async saveForTest(uri: vscode.Uri): Promise<number> {
+    const document = this.openDocument(uri);
+    return this.saveToSources(document, document.sources);
   }
 
   public async saveCustomDocumentAs(
@@ -475,6 +552,40 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
     this.pendingReveals.clear();
     this.documentRevealGenerations.clear();
     this.testPausedRevealPanels.clear();
+  }
+
+  private async applyExistingKeyRefactor(
+    document: TableCustomDocument,
+    operations: unknown,
+    confirm: boolean,
+  ): Promise<WorkspaceReferenceTargetRenameResult | undefined> {
+    const intent = classifyExistingTableKeyRename(document, operations);
+    if (intent.kind === "none") return undefined;
+    if (intent.kind === "blocked") {
+      return { success: false, code: "refactor.required", message: intent.message };
+    }
+    if (document.isDirty) {
+      return {
+        success: false,
+        code: "refactor.workspaceDirty",
+        message: "Save or revert this Table before renaming an existing stable row key.",
+      };
+    }
+    if (this.referenceTargetRenamer === undefined) {
+      return {
+        success: false,
+        code: "refactor.required",
+        message: "Stable Table key renames require the Workspace Reference Refactor service.",
+      };
+    }
+    return this.referenceTargetRenamer({
+      projectId: document.match.project.definition.projectId,
+      definition: intent.definition,
+      location: intent.location,
+      oldValue: intent.oldValue,
+      newValue: intent.newValue,
+      confirm,
+    });
   }
 
   private async handleMessage(
@@ -540,6 +651,42 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       });
       return;
     }
+    if (containsLifecycleGuardedRemoval("table", message.operations)) {
+      const target = lifecycleDeleteTarget("table", message.operations);
+      if (target === undefined || document.isDirty) {
+        await panel.webview.postMessage({
+          type: "operationRejected",
+          message: document.isDirty
+            ? "lifecycle.workspaceDirty: Save or revert this Table before Safe Delete."
+            : LIFECYCLE_REQUIRED_MESSAGE,
+        });
+        return;
+      }
+      const result = await vscode.commands.executeCommand("visualbridge.safeDeleteElement", {
+        projectId: document.match.project.definition.projectId,
+        documentTypeId: document.match.documentType.id,
+        path: document.match.relativePath,
+        target,
+      });
+      if (result !== undefined) {
+        await this.revertCustomDocument(document);
+        await this.sendState(document);
+      }
+      return;
+    }
+    const identityRefactor = await this.applyExistingKeyRefactor(document, message.operations, true);
+    if (identityRefactor !== undefined) {
+      if (!identityRefactor.success) {
+        await panel.webview.postMessage({
+          type: "operationRejected",
+          message: `${identityRefactor.code}: ${identityRefactor.message}`,
+        });
+      } else {
+        await this.sendState(document);
+        await panel.webview.postMessage({ type: "operationCompleted", changed: true });
+      }
+      return;
+    }
     const conflict = await findConflict(document.sources);
     if (conflict !== undefined) {
       await panel.webview.postMessage({
@@ -581,16 +728,31 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
     await panel.webview.postMessage({ type: "operationCompleted", changed: true });
   }
 
-  private async saveToSources(document: TableCustomDocument, sources: readonly TableSource[]): Promise<void> {
-    const conflict = await findConflict(sources);
-    if (conflict !== undefined) {
-      throw new Error(`Save refused because '${nodePath.basename(conflict.uri.fsPath)}' changed on disk.`);
-    }
+  private async saveToSources(document: TableCustomDocument, sources: readonly TableSource[]): Promise<number> {
     const rendered = await renderAllSources(document);
-    for (const source of sources) {
+    const writes = sources.flatMap((source) => {
       const bytes = rendered.get(source.uri.toString());
-      if (bytes !== undefined && hashBytes(bytes) !== source.baseHash) {
-        await atomicWrite(source.uri, bytes);
+      return bytes === undefined || hashBytes(bytes) === source.baseHash ? [] : [{
+        path: relativeProjectPath(document.match.project, source.uri),
+        absolutePath: source.uri.fsPath,
+        before: source.originalBytes,
+        after: bytes,
+      }];
+    });
+    if (writes.length > 0) {
+      if (document.match.project.rootUri.scheme !== "file" || sources.some((source) => source.uri.scheme !== "file")) {
+        throw new Error("Table project transactions currently require a local file workspace.");
+      }
+      try {
+        const result = await withProjectTransaction(
+          document.match.project.rootUri.fsPath,
+          (transaction) => transaction.commit(writes),
+        );
+        if (result.maintenance !== undefined) {
+          this.output.appendLine(`[table] ${result.maintenance.code}: ${result.maintenance.message}`);
+        }
+      } catch (errorValue) {
+        throw tableSaveTransactionError(errorValue);
       }
     }
     document.markSaved(rendered);
@@ -601,6 +763,14 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
         collectTableReferences(document.document, document.tableType),
       ),
     ]);
+    return writes.length;
+  }
+
+  private openDocument(uri: vscode.Uri): TableCustomDocument {
+    const key = uri.toString();
+    const document = [...this.panels.keys()].find((candidate) => candidate.uri.toString() === key);
+    if (document === undefined) throw new Error(`Table '${uri.fsPath}' is not open.`);
+    return document;
   }
 
   private async sendState(document: TableCustomDocument, targetPanel?: vscode.WebviewPanel): Promise<boolean> {
@@ -955,14 +1125,97 @@ async function findConflict(sources: readonly TableSource[]): Promise<TableSourc
   for (const source of sources) {
     try {
       const bytes = await vscode.workspace.fs.readFile(source.uri);
-      if (hashBytes(bytes) !== source.baseHash) {
-        return source;
-      }
+      if (hashBytes(bytes) !== source.baseHash) return source;
     } catch {
       return source;
     }
   }
   return undefined;
+}
+
+type ExistingTableKeyRenameIntent =
+  | { readonly kind: "none" }
+  | { readonly kind: "blocked"; readonly message: string }
+  | {
+      readonly kind: "rename";
+      readonly definition: ReferenceDefinition;
+      readonly location: ReferenceLocation;
+      readonly oldValue: string | number;
+      readonly newValue: string | number;
+    };
+
+function classifyExistingTableKeyRename(
+  document: TableCustomDocument,
+  operations: unknown,
+): ExistingTableKeyRenameIntent {
+  if (!Array.isArray(operations)) return { kind: "none" };
+  const intents = operations.flatMap((operation): ExistingTableKeyRenameIntent[] => {
+    if (!isRecord(operation)
+      || operation.type !== "table.setCell"
+      || typeof operation.sheetId !== "string"
+      || typeof operation.rowId !== "string"
+      || typeof operation.columnId !== "string"
+      || (typeof operation.value !== "string" && typeof operation.value !== "number")) {
+      return [];
+    }
+    const sheet = document.document.sheets.find((candidate) => candidate.id === operation.sheetId);
+    const row = sheet?.rows.find((candidate) => candidate.id === operation.rowId);
+    const savedSheet = document.savedDocument.sheets.find((candidate) => candidate.id === operation.sheetId);
+    const savedRow = savedSheet?.rows.find((candidate) => candidate.id === operation.rowId);
+    const sheetDefinition = sheet === undefined ? undefined : resolveTableSheet(document.tableType, sheet.definitionId);
+    const keyColumn = sheetDefinition?.keyColumnId === undefined
+      ? undefined
+      : resolveTableColumn(sheetDefinition, sheetDefinition.keyColumnId);
+    const editedColumn = sheetDefinition === undefined
+      ? undefined
+      : resolveTableColumn(sheetDefinition, operation.columnId);
+    if (sheet === undefined
+      || sheetDefinition === undefined
+      || row === undefined
+      || savedRow === undefined
+      || keyColumn === undefined
+      || editedColumn?.id !== keyColumn.id) {
+      return [];
+    }
+    const oldValue = row.cells[keyColumn.id];
+    if ((typeof oldValue !== "string" && typeof oldValue !== "number")
+      || referenceValuesEqual(oldValue, operation.value)) {
+      return [];
+    }
+    const source = document.sources.find((candidate) => candidate.sheetIds.includes(sheet.id));
+    if (source === undefined) {
+      return [{ kind: "blocked", message: "The physical source for this existing Table row is unavailable." }];
+    }
+    return [{
+      kind: "rename",
+      definition: {
+        kind: "table.row",
+        target: {
+          tableTypeId: document.tableType.id,
+          sheetId: sheetDefinition.id,
+          documentTypeId: document.match.documentType.id,
+        },
+        allowMissing: false,
+      },
+      location: {
+        projectId: document.match.project.definition.projectId,
+        documentTypeId: document.match.documentType.id,
+        path: relativeProjectPath(document.match.project, source.uri),
+        sheetId: sheet.id,
+        rowId: row.id,
+      },
+      oldValue,
+      newValue: operation.value,
+    }];
+  });
+  if (intents.length === 0) return { kind: "none" };
+  if (operations.length !== 1 || intents.length !== 1 || intents[0]?.kind !== "rename") {
+    return {
+      kind: "blocked",
+      message: "An existing Table key rename must be the only operation in its batch.",
+    };
+  }
+  return intents[0];
 }
 
 async function atomicWrite(uri: vscode.Uri, bytes: Uint8Array): Promise<void> {
@@ -978,6 +1231,33 @@ async function atomicWrite(uri: vscode.Uri, bytes: Uint8Array): Promise<void> {
     }
     throw errorValue;
   }
+}
+
+function relativeProjectPath(project: ProjectContext, uri: vscode.Uri): string {
+  if (project.rootUri.scheme !== "file" || uri.scheme !== "file") {
+    throw new Error("Table project transactions currently require a local file workspace.");
+  }
+  const path = nodePath.relative(project.rootUri.fsPath, uri.fsPath).replaceAll("\\", "/");
+  if (path.length === 0 || path === ".." || path.startsWith("../") || nodePath.posix.isAbsolute(path)) {
+    throw new Error(`Table source '${uri.fsPath}' is outside the VisualBridge Project.`);
+  }
+  return path;
+}
+
+function tableSaveTransactionError(errorValue: unknown): Error {
+  if (errorValue instanceof ProjectTransactionConflict) {
+    const details = isRecord(errorValue.details) ? errorValue.details : undefined;
+    const path = typeof details?.path === "string" ? details.path : undefined;
+    const source = path === undefined ? "a Table source" : `'${nodePath.posix.basename(path)}'`;
+    if (errorValue.reason === "writeInProgress") {
+      return new Error("Table save refused because another VisualBridge project writer is active; no source was written.");
+    }
+    return new Error(`Table save refused because ${source} changed on disk; no source was written.`);
+  }
+  if (errorValue instanceof ProjectTransactionFailure) {
+    return new Error(`Table save transaction failed (${errorValue.code}); no partial CSV family was committed. ${errorValue.message}`);
+  }
+  return errorValue instanceof Error ? errorValue : new Error(String(errorValue));
 }
 
 async function readBackup(uri: vscode.Uri): Promise<TableBackup> {

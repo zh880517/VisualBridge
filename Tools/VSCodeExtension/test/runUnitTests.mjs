@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { rm } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -8,12 +8,16 @@ const execute = promisify(execFile);
 const extensionRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outputRoot = path.join(extensionRoot, ".test-dist");
 const tsc = path.resolve(extensionRoot, "..", "..", "node_modules", "typescript", "bin", "tsc");
-const compiledTest = path.join(outputRoot, "test", "unit", "webviewEpoch.test.js");
+const compiledTestDirectory = path.join(outputRoot, "test", "unit");
 
 await rm(outputRoot, { recursive: true, force: true });
 try {
   await run(process.execPath, [tsc, "-p", path.join(extensionRoot, "tsconfig.test.json")]);
-  await run(process.execPath, ["--test", compiledTest]);
+  const compiledTests = (await readdir(compiledTestDirectory))
+    .filter((entry) => entry.endsWith(".test.js"))
+    .sort()
+    .map((entry) => path.join(compiledTestDirectory, entry));
+  await run(process.execPath, ["--test", ...compiledTests]);
 } finally {
   await rm(outputRoot, { recursive: true, force: true });
 }

@@ -1,4 +1,9 @@
 import type { DocumentDiagnostic, DocumentOperationResult, DocumentParseResult } from "./document";
+import type {
+  DocumentLifecycleDeleteTarget,
+  OwnedStableIdentity,
+  StableIdentityRemap,
+} from "./documentLifecycle";
 import type { ReferenceOccurrence } from "../Reference/reference";
 
 export interface DocumentDescriptor {
@@ -23,6 +28,32 @@ export interface SemanticDocumentAdapter<TDocument, TContext> {
     documentId: string,
     context: TContext,
   ) => DocumentOperationResult<TDocument>;
+  readonly lifecycle?: SemanticDocumentLifecycleAdapter<TDocument, TContext>;
+}
+
+export interface SemanticDocumentLifecycleAdapter<TDocument, TContext> {
+  collectOwnedIdentities(
+    document: TDocument,
+    documentTypeId: string,
+    context: TContext,
+  ): readonly OwnedStableIdentity[];
+  /** Identity keys whose reference definition resolves to a unique logical target. */
+  collectAddressableIdentityKeys?(
+    document: TDocument,
+    documentTypeId: string,
+    context: TContext,
+  ): ReadonlySet<string>;
+  remapOwnedIdentities(
+    document: TDocument,
+    documentTypeId: string,
+    remap: readonly StableIdentityRemap[],
+    context: TContext,
+  ): DocumentOperationResult<TDocument>;
+  deleteOwnedTarget(
+    document: TDocument,
+    target: Exclude<DocumentLifecycleDeleteTarget, { readonly kind: "document" }>,
+    context: TContext,
+  ): DocumentOperationResult<TDocument>;
 }
 
 export interface DocumentCodec<TDocument, TSource, TContext> {
