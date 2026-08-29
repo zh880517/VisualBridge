@@ -1,0 +1,4 @@
+技能名	技能编号	标签	奖励	颜色
+Name	Id	Tags	Rewards	Tint
+Fireball	101	magic;damage	1001|2;1002|1	#FF6633FF
+Blink	102	movement;utility	2001|1	#66AAFFFF

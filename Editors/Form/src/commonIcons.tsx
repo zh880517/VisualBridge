@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Copy,
   Plus,
+  Search,
   Trash2,
   X,
   type LucideIcon,
@@ -22,7 +23,8 @@ export type CommonIconName =
   | "copy"
   | "delete"
   | "moveDown"
-  | "moveUp";
+  | "moveUp"
+  | "search";
 
 export function CommonIcon(props: { readonly name: CommonIconName }): ReactElement {
   const icons: Record<CommonIconName, LucideIcon> = {
@@ -35,6 +37,7 @@ export function CommonIcon(props: { readonly name: CommonIconName }): ReactEleme
     delete: Trash2,
     moveDown: ArrowDown,
     moveUp: ArrowUp,
+    search: Search,
   };
   const Icon = icons[props.name];
   return (

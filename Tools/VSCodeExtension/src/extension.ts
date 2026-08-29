@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { TABLE_EDITOR_ID } from "@visualbridge/table";
 import { createEntityDocument } from "./commands/createEntityDocument";
 import { createGraphDocument } from "./commands/createGraphDocument";
 import {
@@ -6,6 +7,7 @@ import {
   DocumentEditorProvider,
   OPTIONAL_EDITOR_VIEW_TYPE,
 } from "./editor/documentEditorProvider";
+import { TABLE_EDITOR_VIEW_TYPE, TableEditorProvider } from "./editor/tableEditorProvider";
 import { ProjectRegistry } from "./project/projectRegistry";
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -14,6 +16,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const documentDiagnostics = vscode.languages.createDiagnosticCollection("visualbridge-document");
   const projects = new ProjectRegistry(projectDiagnostics, output);
   const editorProvider = new DocumentEditorProvider(
+    context.extensionUri,
+    projects,
+    documentDiagnostics,
+    output,
+  );
+  const tableEditorProvider = new TableEditorProvider(
     context.extensionUri,
     projects,
     documentDiagnostics,
@@ -66,7 +74,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
 
-      await vscode.commands.executeCommand("vscode.openWith", uri, OPTIONAL_EDITOR_VIEW_TYPE);
+      await vscode.commands.executeCommand(
+        "vscode.openWith",
+        uri,
+        match.documentType.editor === TABLE_EDITOR_ID ? TABLE_EDITOR_VIEW_TYPE : OPTIONAL_EDITOR_VIEW_TYPE,
+      );
     }),
     vscode.commands.registerCommand("visualbridge.createGraphDocument", async () => {
       await createGraphDocument(projects);
@@ -79,6 +91,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       webviewOptions: { retainContextWhenHidden: false },
     }),
     vscode.window.registerCustomEditorProvider(OPTIONAL_EDITOR_VIEW_TYPE, editorProvider, {
+      supportsMultipleEditorsPerDocument: true,
+      webviewOptions: { retainContextWhenHidden: false },
+    }),
+    tableEditorProvider,
+    vscode.window.registerCustomEditorProvider(TABLE_EDITOR_VIEW_TYPE, tableEditorProvider, {
       supportsMultipleEditorsPerDocument: true,
       webviewOptions: { retainContextWhenHidden: false },
     }),

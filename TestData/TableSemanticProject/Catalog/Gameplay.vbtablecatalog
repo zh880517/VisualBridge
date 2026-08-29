@@ -1,0 +1,185 @@
+{
+  "formatVersion": 1,
+  "catalogId": "sample.table.gameplay",
+  "title": "Gameplay Tables",
+  "tableTypes": [
+    {
+      "id": "game.table.skills",
+      "title": "Skills",
+      "aliases": [
+        "legacy.table.skills"
+      ],
+      "description": "Skill rows exported from ordinary C# runtime structures.",
+      "source": {
+        "providerId": "csharp",
+        "typeName": "Game.SkillConfig"
+      },
+      "csv": {
+        "delimiter": "\t"
+      },
+      "sheets": [
+        {
+          "id": "skills",
+          "title": "Skills",
+          "name": "Skills",
+          "nameAliases": [],
+          "keyColumnId": "id",
+          "partition": {
+            "namePattern": "Skills_{part}",
+            "deduplicateByColumnId": "id",
+            "duplicatePolicy": "keepFirst"
+          },
+          "columns": [
+            {
+              "id": "id",
+              "title": "ID",
+              "aliases": [
+                "skillId"
+              ],
+              "description": "Stable skill ID.",
+              "nameKey": "Id",
+              "nameKeyAliases": [
+                "SkillId"
+              ],
+              "valueType": "number",
+              "dataTypeId": "int",
+              "defaultValue": 1,
+              "editor": {
+                "kind": "number",
+                "readOnly": false,
+                "integer": true,
+                "min": 1,
+                "step": 1
+              },
+              "cellEncoding": {
+                "kind": "scalar"
+              }
+            },
+            {
+              "id": "name",
+              "title": "Name",
+              "aliases": [],
+              "description": "Designer-facing skill name.",
+              "nameKey": "Name",
+              "nameKeyAliases": [],
+              "valueType": "string",
+              "dataTypeId": "string",
+              "defaultValue": "",
+              "editor": {
+                "kind": "text",
+                "readOnly": false,
+                "integer": false
+              },
+              "cellEncoding": {
+                "kind": "scalar"
+              }
+            },
+            {
+              "id": "tags",
+              "title": "Tags",
+              "aliases": [],
+              "description": "Semicolon-delimited tags defined by C# metadata.",
+              "nameKey": "Tags",
+              "nameKeyAliases": [],
+              "valueType": "array",
+              "dataTypeId": "list.string",
+              "defaultValue": [],
+              "item": {
+                "valueType": "string",
+                "dataTypeId": "string",
+                "defaultValue": "",
+                "editor": {
+                  "kind": "text",
+                  "readOnly": false,
+                  "integer": false
+                }
+              },
+              "cellEncoding": {
+                "kind": "delimited",
+                "separator": ";"
+              }
+            },
+            {
+              "id": "rewards",
+              "title": "Rewards",
+              "aliases": [],
+              "description": "RewardItem[] encoded as itemId|count entries separated by semicolons.",
+              "nameKey": "Rewards",
+              "nameKeyAliases": [],
+              "valueType": "array",
+              "dataTypeId": "list.Game.RewardItem",
+              "defaultValue": [],
+              "item": {
+                "valueType": "object",
+                "dataTypeId": "Game.RewardItem",
+                "defaultValue": {
+                  "count": 1,
+                  "itemId": 0
+                },
+                "fields": [
+                  {
+                    "id": "itemId",
+                    "title": "Item ID",
+                    "aliases": [],
+                    "valueType": "number",
+                    "dataTypeId": "int",
+                    "defaultValue": 0,
+                    "editor": {
+                      "kind": "number",
+                      "readOnly": false,
+                      "integer": true,
+                      "min": 0,
+                      "step": 1
+                    }
+                  },
+                  {
+                    "id": "count",
+                    "title": "Count",
+                    "aliases": [],
+                    "valueType": "number",
+                    "dataTypeId": "int",
+                    "defaultValue": 1,
+                    "editor": {
+                      "kind": "number",
+                      "readOnly": false,
+                      "integer": true,
+                      "min": 1,
+                      "step": 1
+                    }
+                  }
+                ]
+              },
+              "cellEncoding": {
+                "kind": "delimited",
+                "separator": ";",
+                "item": {
+                  "kind": "delimited",
+                  "separator": "|"
+                }
+              }
+            },
+            {
+              "id": "tint",
+              "title": "Tint",
+              "aliases": [],
+              "description": "Preview color.",
+              "nameKey": "Tint",
+              "nameKeyAliases": [],
+              "valueType": "string",
+              "dataTypeId": "color",
+              "defaultValue": "#FFFFFFFF",
+              "editor": {
+                "kind": "color",
+                "readOnly": false,
+                "integer": false
+              },
+              "cellEncoding": {
+                "kind": "scalar"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

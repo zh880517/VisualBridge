@@ -1,0 +1,25 @@
+{
+  "formatVersion": 1,
+  "projectId": "visualbridge.table-semantics",
+  "documentRoots": [
+    "Tables"
+  ],
+  "tableLayout": {
+    "nameKeyRow": 2,
+    "dataStartRow": 3
+  },
+  "documentTypes": [
+    {
+      "id": "game.table.skills",
+      "editor": "table",
+      "include": [
+        "Tables/Skills_*.csv",
+        "Tables/Skills.xlsx"
+      ],
+      "exclude": [],
+      "catalogs": [
+        "Catalog/Gameplay.vbtablecatalog"
+      ]
+    }
+  ]
+}

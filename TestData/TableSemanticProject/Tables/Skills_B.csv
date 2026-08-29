@@ -1,0 +1,4 @@
+技能名	技能编号	标签	奖励	颜色
+Name	Id	Tags	Rewards	Tint
+Fireball Override	101	magic;override	1003|1	#FFAA33FF
+Blink	202	movement;magic	1004|2	#AA66FFFF

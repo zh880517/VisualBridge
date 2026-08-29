@@ -86,6 +86,25 @@
         ],
         "additionalProperties": true
       }
+    },
+    "tableLayout": {
+      "type": "object",
+      "description": "Project-wide 1-based row layout used by every CSV and XLSX table sheet.",
+      "required": [
+        "nameKeyRow",
+        "dataStartRow"
+      ],
+      "properties": {
+        "nameKeyRow": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "dataStartRow": {
+          "type": "integer",
+          "minimum": 2
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": true

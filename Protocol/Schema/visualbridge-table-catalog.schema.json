@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://visualbridge.dev/schema/visualbridge-table-catalog.schema.json",
+  "title": "VisualBridge Table Catalog",
+  "type": "object",
+  "required": ["formatVersion", "catalogId", "title", "tableTypes"],
+  "properties": {
+    "formatVersion": { "const": 1 },
+    "catalogId": { "$ref": "#/$defs/identifier" },
+    "title": { "$ref": "#/$defs/nonEmptyString" },
+    "tableTypes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/tableType" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "identifierArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/identifier" }
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "tableType": {
+      "type": "object",
+      "required": ["id", "title", "sheets"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "aliases": { "$ref": "#/$defs/identifierArray", "default": [] },
+        "description": { "$ref": "#/$defs/nonEmptyString" },
+        "source": { "$ref": "#/$defs/source" },
+        "csv": { "$ref": "#/$defs/csv" },
+        "sheets": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/sheet" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "required": ["providerId", "typeName"],
+      "properties": {
+        "providerId": { "$ref": "#/$defs/identifier" },
+        "typeName": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "additionalProperties": false
+    },
+    "csv": {
+      "type": "object",
+      "required": ["delimiter"],
+      "properties": {
+        "delimiter": { "type": "string", "minLength": 1, "pattern": "^[^\\r\\n]+$" }
+      },
+      "additionalProperties": false
+    },
+    "sheet": {
+      "type": "object",
+      "required": ["id", "title", "name", "columns"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "nameAliases": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" },
+          "default": []
+        },
+        "keyColumnId": { "$ref": "#/$defs/identifier" },
+        "partition": { "$ref": "#/$defs/partition" },
+        "columns": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/column" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "partition": {
+      "type": "object",
+      "required": ["namePattern", "deduplicateByColumnId", "duplicatePolicy"],
+      "properties": {
+        "namePattern": {
+          "type": "string",
+          "pattern": "^[^{}]*\\{part\\}[^{}]*$"
+        },
+        "deduplicateByColumnId": { "$ref": "#/$defs/identifier" },
+        "duplicatePolicy": { "enum": ["error", "keepFirst", "keepLast"] }
+      },
+      "additionalProperties": false
+    },
+    "column": {
+      "type": "object",
+      "required": ["id", "title", "valueType", "defaultValue", "nameKey", "cellEncoding"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "aliases": { "$ref": "#/$defs/identifierArray", "default": [] },
+        "description": { "$ref": "#/$defs/nonEmptyString" },
+        "valueType": { "$ref": "#/$defs/valueType" },
+        "dataTypeId": { "$ref": "#/$defs/identifier" },
+        "defaultValue": true,
+        "editor": { "$ref": "#/$defs/editor" },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/field" }
+        },
+        "item": { "$ref": "#/$defs/valueDefinition" },
+        "nameKey": { "$ref": "#/$defs/nonEmptyString" },
+        "nameKeyAliases": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" },
+          "default": []
+        },
+        "cellEncoding": { "$ref": "#/$defs/cellEncoding" }
+      },
+      "allOf": [{ "$ref": "#/$defs/valueShape" }],
+      "additionalProperties": false
+    },
+    "field": {
+      "type": "object",
+      "required": ["id", "title", "valueType", "defaultValue"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "aliases": { "$ref": "#/$defs/identifierArray", "default": [] },
+        "description": { "$ref": "#/$defs/nonEmptyString" },
+        "valueType": { "$ref": "#/$defs/valueType" },
+        "dataTypeId": { "$ref": "#/$defs/identifier" },
+        "defaultValue": true,
+        "editor": { "$ref": "#/$defs/editor" },
+        "fields": { "type": "array", "items": { "$ref": "#/$defs/field" } },
+        "item": { "$ref": "#/$defs/valueDefinition" }
+      },
+      "allOf": [{ "$ref": "#/$defs/valueShape" }],
+      "additionalProperties": false
+    },
+    "valueDefinition": {
+      "type": "object",
+      "required": ["valueType", "defaultValue"],
+      "properties": {
+        "valueType": { "$ref": "#/$defs/valueType" },
+        "dataTypeId": { "$ref": "#/$defs/identifier" },
+        "defaultValue": true,
+        "editor": { "$ref": "#/$defs/editor" },
+        "fields": { "type": "array", "items": { "$ref": "#/$defs/field" } },
+        "item": { "$ref": "#/$defs/valueDefinition" }
+      },
+      "allOf": [{ "$ref": "#/$defs/valueShape" }],
+      "additionalProperties": false
+    },
+    "valueType": {
+      "enum": ["string", "number", "boolean", "object", "array", "json"]
+    },
+    "valueShape": {
+      "type": "object",
+      "if": {
+        "properties": { "valueType": { "const": "object" } },
+        "required": ["valueType"]
+      },
+      "then": {
+        "required": ["fields"],
+        "properties": { "fields": true, "item": false }
+      },
+      "else": {
+        "if": {
+          "properties": { "valueType": { "const": "array" } },
+          "required": ["valueType"]
+        },
+        "then": {
+          "required": ["item"],
+          "properties": { "item": true, "fields": false }
+        },
+        "else": { "properties": { "fields": false, "item": false } }
+      }
+    },
+    "editor": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["text", "multiline", "number", "checkbox", "select", "color", "reference", "json"] },
+        "readOnly": { "type": "boolean", "default": false },
+        "integer": { "type": "boolean", "default": false },
+        "min": { "type": "number" },
+        "max": { "type": "number" },
+        "step": { "type": "number", "exclusiveMinimum": 0 },
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["title", "value"],
+            "properties": {
+              "title": { "$ref": "#/$defs/nonEmptyString" },
+              "value": true
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "cellEncoding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind"],
+          "properties": { "kind": { "const": "scalar" } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "properties": { "kind": { "const": "json" } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "separator"],
+          "properties": {
+            "kind": { "const": "delimited" },
+            "separator": { "type": "string", "minLength": 1, "pattern": "^[^\\r\\n]+$" },
+            "item": { "$ref": "#/$defs/cellEncoding" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

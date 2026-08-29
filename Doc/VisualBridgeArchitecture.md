@@ -313,6 +313,8 @@ AI 不直接读取或改写 `.xlsx` 和 `.csv` 载体。即使 `.csv` 在物理�
 
 第一阶段只承诺受约束的游戏数据工作簿。宏、图表、透视表、外部链接、复杂公式和完整样式往返保真是否支持，由具体 Excel Codec 的能力范围决定，不作为通用 Table Editor 的默认承诺。
 
+当前 Table V1 已落地 Table Catalog、CSV/XLSX Codec、Table Operation、虚拟化编辑器与固定样例。Project File 统一配置一基的 `nameKeyRow` 和 `dataStartRow`；C# 导出的 Catalog 负责列稳定 ID、类型、共享字段编辑器和单元格编码。一个逻辑 Sheet 可以通过 `{part}` 命名模板映射到多个同结构 CSV 文件或 XLSX Worksheet，并按稳定列 ID 执行 `error`、`keepFirst` 或 `keepLast` 去重策略。物理源不因去重而丢失，编译和查询使用策略解析后的有效行。完整契约见 `TableSemanticModel.md`。
+
 ### 编辑器原语
 
 基础插件提供有限但高复用的编辑器原语：
@@ -810,13 +812,14 @@ VisualBridge/
 
 阶段目标是证明“文本源文件 -> VisualBridgeCore -> 校验与确定性修改”。
 
-Project、Graph Core、Entity Core、共享 Form Field 和最小 stdio MCP 垂直切片现已落地。Graph 与 Entity 分别由 `TestData/GraphSemanticProject` 和 `TestData/EntitySemanticProject` 固定样例及 Node 自动化测试持续验证；Unity Catalog Exporter、Importer、Runtime 和 Debug 仍不在本阶段范围内。
+Project、Graph Core、Entity Core、Table Core、共享 Form Field 和最小 stdio MCP 垂直切片现已落地。Graph、Entity 与 Table 分别由 `TestData/GraphSemanticProject`、`TestData/EntitySemanticProject` 和 `TestData/TableSemanticProject` 固定样例及 Node 自动化测试持续验证；Unity Catalog Exporter、Importer、Runtime 和 Debug 仍不在本阶段范围内。
 
 ### 阶段二：VS Code 编辑闭环
 
 - 注册 Custom Text Editor。
 - 实现 Graph Canvas、节点内联字段和可折叠 Graph Inspector 的最小能力。
 - 实现 Entity / Component 卡片编辑和共享 Form Field 的最小能力。
+- 实现 CSV/XLSX Table、项目级表头行、分表标签与共享字段检查器。
 - 通过 `WorkspaceEdit` 完成文本 Document 的保存和 Undo/Redo，并实现外部变更检测、覆盖确认与放弃刷新。
 - 建立 Project Tree、Problems 和状态栏。
 
@@ -846,9 +849,9 @@ Project、Graph Core、Entity Core、共享 Form Field 和最小 stdio MCP 垂�
 - 向 AI 提供引用和调试能力。
 - 实现 Controller/Observer Lease 和 SourceHash 检查。
 
-### 阶段六：第二种 Document Type
+### 阶段六：更多 Document Type
 
-- 实现 Structured Config 或 Table Document。
+- Table Document 已完成首个版本；继续实现 Structured Config 或扩展 Table 引用能力。
 - 验证 Form、Reference、Validation 和扩展机制是否真正通用。
 - 根据两个垂直切片提炼共享 API，避免只为 Graph 过度抽象。
 

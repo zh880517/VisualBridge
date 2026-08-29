@@ -71,9 +71,6 @@
             "filenamePattern": "*.vbform"
           },
           {
-            "filenamePattern": "*.vbtable"
-          },
-          {
             "filenamePattern": "*.vbconfig"
           }
         ],
@@ -82,6 +79,16 @@
       {
         "viewType": "visualbridge.documentEditor.option",
         "displayName": "VisualBridge Editor",
+        "selector": [
+          {
+            "filenamePattern": "*"
+          }
+        ],
+        "priority": "option"
+      },
+      {
+        "viewType": "visualbridge.tableEditor",
+        "displayName": "VisualBridge Table Editor",
         "selector": [
           {
             "filenamePattern": "*"
@@ -110,6 +117,10 @@
       {
         "fileMatch": "**/*.vbentitycatalog",
         "url": "./dist/schemas/visualbridge-entity-catalog.schema.json"
+      },
+      {
+        "fileMatch": "**/*.vbtablecatalog",
+        "url": "./dist/schemas/visualbridge-table-catalog.schema.json"
       }
     ]
   },
@@ -118,11 +129,12 @@
     "prepare:package": "node ./scripts/prepare-package.mjs",
     "build:graph-editor": "npm run build --workspace @visualbridge/graph-editor",
     "build:entity-editor": "npm run build --workspace @visualbridge/entity-editor",
+    "build:table-editor": "npm run build --workspace @visualbridge/table-editor",
     "sync:editor-assets": "node ./scripts/sync-editor-assets.mjs",
     "sync:protocol": "node ./scripts/sync-protocol-assets.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
-    "build": "npm run clean && npm run build:graph-editor && npm run build:entity-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap && npm run check",
-    "watch": "npm run clean && npm run build:graph-editor && npm run build:entity-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap --watch",
+    "build": "npm run clean && npm run build:graph-editor && npm run build:entity-editor && npm run build:table-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap && npm run check",
+    "watch": "npm run clean && npm run build:graph-editor && npm run build:entity-editor && npm run build:table-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap --watch",
     "package:vsix": "npm run build && npm run prepare:package && vsce package --no-dependencies --out artifacts/visualbridge.vsix"
   },
   "devDependencies": {
@@ -131,6 +143,8 @@
     "@visualbridge/entity-editor": "*",
     "@visualbridge/graph": "*",
     "@visualbridge/graph-editor": "*",
+    "@visualbridge/table": "*",
+    "@visualbridge/table-editor": "*",
     "@types/node": "^24.13.1",
     "@types/vscode": "^1.105.0",
     "@vscode/vsce": "^3.9.2",

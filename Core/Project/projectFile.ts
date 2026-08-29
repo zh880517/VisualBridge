@@ -10,11 +10,17 @@ export interface DocumentTypeDefinition {
   readonly catalogs: readonly string[];
 }
 
+export interface TableLayoutDefinition {
+  readonly nameKeyRow: number;
+  readonly dataStartRow: number;
+}
+
 export interface VisualBridgeProjectDefinition {
   readonly formatVersion: typeof PROJECT_FORMAT_VERSION;
   readonly projectId: string;
   readonly documentRoots: readonly string[];
   readonly documentTypes: readonly DocumentTypeDefinition[];
+  readonly tableLayout?: TableLayoutDefinition;
 }
 
 export interface ProjectFileIssue {
@@ -51,6 +57,9 @@ export function parseProjectFile(text: string): ProjectFileParseResult {
   const projectId = readIdentifier(value.projectId, "projectId", issues);
   const documentRoots = readRelativePaths(value.documentRoots, "documentRoots", issues);
   const documentTypes = readDocumentTypes(value.documentTypes, issues);
+  const tableLayout = value.tableLayout === undefined
+    ? undefined
+    : readTableLayout(value.tableLayout, issues);
 
   if (issues.length > 0 || projectId === undefined) {
     return { success: false, issues };
@@ -63,8 +72,42 @@ export function parseProjectFile(text: string): ProjectFileParseResult {
       projectId,
       documentRoots,
       documentTypes,
+      ...(tableLayout === undefined ? {} : { tableLayout }),
     },
   };
+}
+
+function readTableLayout(
+  value: unknown,
+  issues: ProjectFileIssue[],
+): TableLayoutDefinition | undefined {
+  if (!isRecord(value)) {
+    issues.push({ path: "tableLayout", message: "Expected an object." });
+    return undefined;
+  }
+  const nameKeyRow = readPositiveInteger(value.nameKeyRow, "tableLayout.nameKeyRow", issues);
+  const dataStartRow = readPositiveInteger(value.dataStartRow, "tableLayout.dataStartRow", issues);
+  if (nameKeyRow !== undefined && dataStartRow !== undefined && dataStartRow <= nameKeyRow) {
+    issues.push({
+      path: "tableLayout.dataStartRow",
+      message: "Data start row must be after the name-key row.",
+    });
+  }
+  return nameKeyRow === undefined || dataStartRow === undefined || dataStartRow <= nameKeyRow
+    ? undefined
+    : { nameKeyRow, dataStartRow };
+}
+
+function readPositiveInteger(
+  value: unknown,
+  path: string,
+  issues: ProjectFileIssue[],
+): number | undefined {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    issues.push({ path, message: "Expected a positive 1-based row number." });
+    return undefined;
+  }
+  return value;
 }
 
 function readDocumentTypes(
