@@ -1,5 +1,5 @@
 export { encodeTableCell } from "./src/cellCodec";
-export { resolveTableColumn, resolveTableSheet } from "./src/tableCatalog";
+export { formatTableRowDisplayName, resolveTableColumn, resolveTableSheet } from "./src/tableCatalog";
 export type {
   TableColumnDefinition,
   TableSheetDefinition,

@@ -4,7 +4,7 @@
 
 Table V1 edits constrained game-data tables carried by UTF-8 CSV-compatible text files or `.xlsx` workbooks. The editor, validation, future MCP adapter and future Unity compiler share one semantic model and one Table Operation API. They do not implement separate CSV and Excel business rules.
 
-The current implementation includes Table Catalog V1, CSV and XLSX codecs, atomic Table Operation batches, a virtualized VS Code table editor, project-defined file associations, partitioned logical tables and fixed semantic fixtures. It does not add Unity code. Unity Catalog export, authoring import, runtime compilation and debugging remain future work.
+The current implementation includes Table Catalog V1, CSV and XLSX codecs, atomic Table Operation batches, a record-oriented VS Code table editor, project-defined file associations, partitioned logical tables and fixed semantic fixtures. It does not add Unity code. Unity Catalog export, authoring import, runtime compilation and debugging remain future work.
 
 ## 2. C# owns the data definition
 
@@ -70,6 +70,17 @@ A Document Type selects the broad editor with `"editor": "table"`; its stable Do
 
 Catalog IDs, Table Type IDs, Sheet IDs and Column IDs are persistent identities. Display titles, C# type names, physical sheet names and physical name keys are not identities. Aliases provide explicit migration without silently guessing renamed types or columns.
 
+Each Sheet definition also declares how a row is named in the editor:
+
+```json
+{
+  "id": "skills",
+  "rowDisplayNamePattern": "{id}_{name}"
+}
+```
+
+Placeholders must use exact, stable Column IDs. Physical `nameKey` values and aliases are rejected so exported column renames cannot silently change the authoring identity shown to users. The formatted value is presentation only: it drives the record list, selected-record title and search text, while row identity and duplicate detection continue to use their explicit semantic IDs and key columns.
+
 ## 5. Cell encoding
 
 Every column carries the shared Field definition plus a physical `nameKey` and a C#-exported `cellEncoding`:
@@ -126,13 +137,15 @@ V1 operations are:
 - `table.moveRow`;
 - `table.duplicateRow`.
 
-The Core clones the document, applies the whole batch, validates the result and publishes it only if the batch introduces no new errors. This gives Table Operations atomic semantic behavior and keeps React Data Grid as a view layer. VS Code undo and redo restore complete semantic snapshots.
+The Core clones the document, applies the whole batch, validates the result and publishes it only if the batch introduces no new errors. This gives Table Operations atomic semantic behavior and keeps the record editor as a view layer. VS Code undo and redo restore complete semantic snapshots.
 
 ## 8. VS Code editor and persistence
 
 The Table editor uses the Project Registry instead of hardcoded extensions. `VisualBridge: Open Document` routes any matching Table Document to the same custom editor. The carrier is detected from content: an XLSX ZIP package uses the workbook codec; other table files use the configured UTF-8 CSV codec.
 
-The grid is virtualized and supports inline primitive edits. Selecting a row opens the shared Field editor for colors, Lists and nested ordinary structures. Functional controls use the shared Lucide icon set. The grid uses the maintained MIT-licensed `react-data-grid`; XLSX handling uses the MIT-licensed `exceljs` package.
+The editor follows a record-oriented master-detail layout suitable for game configuration: a searchable record list is shown on the left and the selected record uses the project-wide shared Field editor on the right. The list and detail title both use `rowDisplayNamePattern`. Search matches that formatted title and all encoded cells. Add and duplicate generate non-conflicting key/de-duplication values across every physical partition of the same logical Sheet; duplicate also gives the first non-key string used by the display pattern a `·副本` name.
+
+Colors, Lists and nested ordinary structures therefore behave the same as Entity fields instead of becoming special table controls. Accessible buttons use Base UI, functional controls use the shared Lucide icon set, and colors use the shared `react-colorful` popover. XLSX handling uses `exceljs`.
 
 Every opened source records a SHA-256 base hash. Table Operations and save both recheck those hashes. Save stages bytes to a sibling temporary file and replaces the target only after serialization succeeds. A detected external change is never overwritten implicitly.
 

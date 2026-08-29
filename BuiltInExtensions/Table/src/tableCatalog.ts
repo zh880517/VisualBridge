@@ -3,6 +3,7 @@ import type {
   DocumentParseResult,
   FieldDefinition,
   FieldValueDefinition,
+  JsonValue,
 } from "@visualbridge/core";
 import { parseFieldDefinitions } from "@visualbridge/core";
 
@@ -29,6 +30,7 @@ export interface TableSheetDefinition {
   readonly title: string;
   readonly name: string;
   readonly nameAliases: readonly string[];
+  readonly rowDisplayNamePattern: string;
   readonly keyColumnId?: string;
   readonly partition?: TablePartitionDefinition;
   readonly columns: readonly TableColumnDefinition[];
@@ -190,6 +192,19 @@ export function resolveTableColumn(
   return sheet.columns.find((column) => column.id === columnId || column.aliases.includes(columnId));
 }
 
+export function formatTableRowDisplayName(
+  cells: Readonly<Record<string, JsonValue>>,
+  sheet: TableSheetDefinition,
+): string {
+  return sheet.rowDisplayNamePattern.replace(/\{([A-Za-z0-9][A-Za-z0-9._-]{0,127})\}/g, (_match, columnId: string) => {
+    const value = cells[columnId];
+    if (value === undefined || value === null) {
+      return "";
+    }
+    return typeof value === "string" ? value : typeof value === "object" ? JSON.stringify(value) : String(value);
+  });
+}
+
 function readTableTypes(value: unknown, diagnostics: DocumentDiagnostic[]): readonly TableTypeDefinition[] {
   if (!Array.isArray(value) || value.length === 0) {
     diagnostics.push(error("tableCatalog.invalidTableTypes", "tableTypes", "Expected a non-empty array."));
@@ -242,7 +257,12 @@ function readSheets(
       diagnostics.push(error("tableCatalog.invalidSheet", entryPath, "Expected an object."));
       return [];
     }
-    checkKeys(entry, ["id", "title", "name", "nameAliases", "keyColumnId", "partition", "columns"], entryPath, diagnostics);
+    checkKeys(
+      entry,
+      ["id", "title", "name", "nameAliases", "rowDisplayNamePattern", "keyColumnId", "partition", "columns"],
+      entryPath,
+      diagnostics,
+    );
     const id = readIdentifier(entry.id, `${entryPath}.id`, diagnostics);
     const title = readNonEmptyString(entry.title, `${entryPath}.title`, diagnostics);
     const name = readNonEmptyString(entry.name, `${entryPath}.name`, diagnostics);
@@ -251,6 +271,12 @@ function readSheets(
       ? undefined
       : readIdentifier(entry.keyColumnId, `${entryPath}.keyColumnId`, diagnostics);
     const columns = readColumns(entry.columns, `${entryPath}.columns`, diagnostics);
+    const rowDisplayNamePattern = readRowDisplayNamePattern(
+      entry.rowDisplayNamePattern,
+      columns,
+      `${entryPath}.rowDisplayNamePattern`,
+      diagnostics,
+    );
     const partition = entry.partition === undefined
       ? undefined
       : readPartition(entry.partition, columns, `${entryPath}.partition`, diagnostics);
@@ -266,7 +292,7 @@ function readSheets(
         `Unknown key column '${keyColumnId}'.`,
       ));
     }
-    if (id === undefined || title === undefined || name === undefined) {
+    if (id === undefined || title === undefined || name === undefined || rowDisplayNamePattern === undefined) {
       return [];
     }
     ids.add(id);
@@ -275,11 +301,47 @@ function readSheets(
       title,
       name,
       nameAliases,
+      rowDisplayNamePattern,
       ...(keyColumnId === undefined ? {} : { keyColumnId }),
       ...(partition === undefined ? {} : { partition }),
       columns,
     }];
   });
+}
+
+function readRowDisplayNamePattern(
+  value: unknown,
+  columns: readonly TableColumnDefinition[],
+  path: string,
+  diagnostics: DocumentDiagnostic[],
+): string | undefined {
+  const pattern = readNonEmptyString(value, path, diagnostics);
+  if (pattern === undefined) {
+    return undefined;
+  }
+  const placeholders = [...pattern.matchAll(/\{([A-Za-z0-9][A-Za-z0-9._-]{0,127})\}/g)];
+  const unmatched = pattern.replace(/\{[A-Za-z0-9][A-Za-z0-9._-]{0,127}\}/g, "");
+  if (placeholders.length === 0 || /[{}]/.test(unmatched)) {
+    diagnostics.push(error(
+      "tableCatalog.invalidRowDisplayNamePattern",
+      path,
+      "Row display-name pattern must contain valid '{columnId}' placeholders.",
+    ));
+    return undefined;
+  }
+  let valid = true;
+  for (const placeholder of placeholders) {
+    const columnId = placeholder[1]!;
+    if (!columns.some((column) => column.id === columnId)) {
+      diagnostics.push(error(
+        "tableCatalog.unknownRowDisplayNameColumn",
+        path,
+        `Unknown row display-name column '${columnId}'. Use a stable Column ID, not a name key or alias.`,
+      ));
+      valid = false;
+    }
+  }
+  return valid ? pattern : undefined;
 }
 
 function readPartition(

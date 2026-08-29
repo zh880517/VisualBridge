@@ -313,7 +313,7 @@ AI 不直接读取或改写 `.xlsx` 和 `.csv` 载体。即使 `.csv` 在物理�
 
 第一阶段只承诺受约束的游戏数据工作簿。宏、图表、透视表、外部链接、复杂公式和完整样式往返保真是否支持，由具体 Excel Codec 的能力范围决定，不作为通用 Table Editor 的默认承诺。
 
-当前 Table V1 已落地 Table Catalog、CSV/XLSX Codec、Table Operation、虚拟化编辑器与固定样例。Project File 统一配置一基的 `nameKeyRow` 和 `dataStartRow`；C# 导出的 Catalog 负责列稳定 ID、类型、共享字段编辑器和单元格编码。一个逻辑 Sheet 可以通过 `{part}` 命名模板映射到多个同结构 CSV 文件或 XLSX Worksheet，并按稳定列 ID 执行 `error`、`keepFirst` 或 `keepLast` 去重策略。物理源不因去重而丢失，编译和查询使用策略解析后的有效行。完整契约见 `TableSemanticModel.md`。
+当前 Table V1 已落地 Table Catalog、CSV/XLSX Codec、Table Operation、记录式主从编辑器与固定样例。Project File 统一配置一基的 `nameKeyRow` 和 `dataStartRow`；C# 导出的 Catalog 负责列稳定 ID、类型、共享字段编辑器、单元格编码，以及由稳定 Column ID 占位符组成的 `rowDisplayNamePattern`（例如 `{id}_{name}`）。一个逻辑 Sheet 可以通过 `{part}` 命名模板映射到多个同结构 CSV 文件或 XLSX Worksheet，并按稳定列 ID 执行 `error`、`keepFirst` 或 `keepLast` 去重策略。物理源不因去重而丢失，编译和查询使用策略解析后的有效行。完整契约见 `TableSemanticModel.md`。
 
 ### 编辑器原语
 

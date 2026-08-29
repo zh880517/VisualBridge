@@ -7,6 +7,7 @@ import ExcelJS = require("exceljs");
 import {
   applyTableOperations,
   buildTableCatalogRegistry,
+  formatTableRowDisplayName,
   parseCsvTable,
   parseTableCatalog,
   parseXlsxTable,
@@ -56,6 +57,7 @@ test("Table Catalog uses stable aliases and explicit C# cell encodings", async (
   const { tableType } = await loadFixture();
   assert.equal(tableType.id, "game.table.skills");
   assert.equal(tableType.source?.typeName, "Game.SkillConfig");
+  assert.equal(tableType.sheets[0]?.rowDisplayNamePattern, "{id}_{name}");
   assert.deepEqual(tableType.sheets[0]?.partition, {
     namePattern: "Skills_{part}",
     deduplicateByColumnId: "id",
@@ -66,6 +68,20 @@ test("Table Catalog uses stable aliases and explicit C# cell encodings", async (
     separator: ";",
     item: { kind: "delimited", separator: "|" },
   });
+});
+
+test("row display-name patterns use stable Column IDs", async () => {
+  const catalogPath = path.join(fixtureRoot, "Catalog", "Gameplay.vbtablecatalog");
+  const payload = JSON.parse(await readFile(catalogPath, "utf8")) as {
+    tableTypes: Array<{ sheets: Array<{ rowDisplayNamePattern: string }> }>;
+  };
+  payload.tableTypes[0]!.sheets[0]!.rowDisplayNamePattern = "{Id}_{MissingName}";
+  const result = parseTableCatalog(JSON.stringify(payload));
+  assert.equal(result.success, false);
+  assert.equal(
+    result.diagnostics.filter((diagnostic) => diagnostic.code === "tableCatalog.unknownRowDisplayNameColumn").length,
+    2,
+  );
 });
 
 test("CSV maps columns from the configured name-key row instead of position", async () => {
@@ -81,6 +97,7 @@ test("CSV maps columns from the configured name-key row instead of position", as
     { itemId: 1002, count: 1 },
   ]);
   assert.equal(first?.cells.id, 101);
+  assert.equal(formatTableRowDisplayName(first!.cells, tableType.sheets[0]!), "101_Fireball");
   assert.deepEqual(result.document.sheets[0]?.headerRows[0], ["技能名", "技能编号", "标签", "奖励", "颜色"]);
   assert.deepEqual(validateTableDocument(result.document, tableType), []);
 });

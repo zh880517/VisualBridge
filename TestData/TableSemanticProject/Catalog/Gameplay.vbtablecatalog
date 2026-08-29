@@ -23,6 +23,7 @@
           "title": "Skills",
           "name": "Skills",
           "nameAliases": [],
+          "rowDisplayNamePattern": "{id}_{name}",
           "keyColumnId": "id",
           "partition": {
             "namePattern": "Skills_{part}",

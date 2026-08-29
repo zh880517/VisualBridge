@@ -66,11 +66,15 @@
     },
     "sheet": {
       "type": "object",
-      "required": ["id", "title", "name", "columns"],
+      "required": ["id", "title", "name", "rowDisplayNamePattern", "columns"],
       "properties": {
         "id": { "$ref": "#/$defs/identifier" },
         "title": { "$ref": "#/$defs/nonEmptyString" },
         "name": { "$ref": "#/$defs/nonEmptyString" },
+        "rowDisplayNamePattern": {
+          "type": "string",
+          "pattern": "^(?=.*\\{[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\})[^{}]*(?:\\{[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\}[^{}]*)+$"
+        },
         "nameAliases": {
           "type": "array",
           "uniqueItems": true,
