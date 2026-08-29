@@ -225,6 +225,8 @@ Component Type 描述可添加到 Entity 的运行时组件结构：
 
 实际 Catalog 中 `position.fields` 继续声明 `x`、`y`、`z`。对象和数组可以递归组合；数组通过 `item` 描述元素，并由共享表单提供新增、删除和排序。
 
+Entity、Table 和后续 Structured Document 的字段 List 共享同一个编辑器和样式，不得按 Document Type 复制实现。每个元素右侧使用同一组功能图标：拖拽手柄负责排序，添加按钮在当前元素后插入默认值，删除按钮移除当前元素；空 List 保留唯一的添加入口。拖拽由 dnd-kit Sortable 负责鼠标、触摸和键盘交互，完成时仍只提交一次完整字段值，继续经过所属 Document 的 Operation、Undo/Redo 与校验流程。
+
 ### 通用编辑器种类
 
 当前共享字段编辑器支持：
@@ -292,7 +294,7 @@ Serializer 固定顶层字段顺序，按字段键确定性排序，并保留 Co
 当前 Entity Webview 提供：
 
 - Entity 标题、类型和根字段编辑。
-- Component 卡片折叠、启用开关、上移、下移、复制和删除。
+- Component 卡片折叠、启用开关、复制，以及共享列表风格的拖拽排序、在后添加和删除操作组。
 - 按 Catalog / Group / 菜单路径组织的可搜索 Add Component 对话框。
 - 数值、颜色、选择项、普通对象和 List 的共享字段控件。
 - 未知 Component Type 的只读 JSON 展示与原样保留。

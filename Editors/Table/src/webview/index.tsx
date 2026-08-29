@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { Button } from "@base-ui/react/button";
+import { DragDropProvider } from "@dnd-kit/react";
+import { isSortable, useSortable } from "@dnd-kit/react/sortable";
 import type { DocumentDiagnostic, JsonValue } from "@visualbridge/core";
-import { CommonIcon, FieldsEditor, IconButton } from "@visualbridge/form-editor";
+import { CommonIcon, FieldsEditor, IconButton, ListItemActions } from "@visualbridge/form-editor";
 import {
   encodeTableCell,
   formatTableRowDisplayName,
@@ -112,7 +114,6 @@ function TableEditorApp(): ReactElement {
     [definition, query, sheet],
   );
   const selectedRow = sheet?.rows.find((row) => row.id === selectedRowId);
-  const selectedIndex = selectedRow === undefined || sheet === undefined ? -1 : sheet.rows.indexOf(selectedRow);
 
   useEffect(() => {
     if (sheet === undefined) {
@@ -129,6 +130,21 @@ function TableEditorApp(): ReactElement {
     setPending(true);
     setStatus("正在应用修改…");
     vscode.postMessage({ type: "applyOperations", revision: state.revision, operations });
+  };
+
+  const insertRowAt = (index: number): void => {
+    if (state === undefined || sheet === undefined || definition === undefined) {
+      return;
+    }
+    const rowId = `row_${crypto.randomUUID()}`;
+    setSelectedRowId(rowId);
+    submit([{
+      type: "table.insertRow",
+      sheetId: sheet.id,
+      rowId,
+      index,
+      cells: createNewRowCells(state.document, definition),
+    }]);
   };
 
   if (state === undefined) {
@@ -152,19 +168,7 @@ function TableEditorApp(): ReactElement {
           label="新增记录"
           title="新增记录"
           disabled={pending || sheet === undefined || definition === undefined}
-          onClick={() => {
-            if (sheet === undefined || definition === undefined) {
-              return;
-            }
-            const rowId = `row_${crypto.randomUUID()}`;
-            setSelectedRowId(rowId);
-            submit([{
-              type: "table.insertRow",
-              sheetId: sheet.id,
-              rowId,
-              cells: createNewRowCells(state.document, definition),
-            }]);
-          }}
+          onClick={() => insertRowAt(sheet?.rows.length ?? 0)}
         />
       </header>
       <nav className="sheet-tabs" aria-label="表格分表">
@@ -202,23 +206,51 @@ function TableEditorApp(): ReactElement {
               <div className="record-count">
                 <span>{query.trim().length === 0 ? `${sheet.rows.length} 条记录` : `${filteredRows.length} / ${sheet.rows.length} 条记录`}</span>
               </div>
-              <div className="record-scroll">
-                {filteredRows.map((row) => {
-                  const sourceIndex = sheet.rows.indexOf(row);
-                  return (
-                    <Button
-                      key={row.id}
-                      className={`record-item${row.id === selectedRow?.id ? " active" : ""}${row.changedColumnIds.length > 0 ? " changed" : ""}`}
-                      aria-pressed={row.id === selectedRow?.id}
-                      onClick={() => setSelectedRowId(row.id)}
-                    >
-                      <strong className="record-name">{displayRowName(row, definition)}</strong>
-                      <span className="record-meta">{row.sourceRowNumber === undefined ? "新增记录" : `第 ${sourceIndex + 1} 条`}</span>
-                    </Button>
-                  );
-                })}
-                {filteredRows.length === 0 && <p className="record-empty">没有匹配的记录</p>}
-              </div>
+              <DragDropProvider
+                onDragEnd={(event) => {
+                  if (event.canceled) {
+                    return;
+                  }
+                  const { source } = event.operation;
+                  if (isSortable(source) && source.initialIndex !== source.index) {
+                    const row = sheet.rows[source.initialIndex];
+                    if (row === undefined) {
+                      return;
+                    }
+                    submit([{
+                      type: "table.moveRow",
+                      sheetId: sheet.id,
+                      rowId: row.id,
+                      index: source.index,
+                    }]);
+                  }
+                }}
+              >
+                <div className="record-scroll">
+                  {filteredRows.map((row) => {
+                    const sourceIndex = sheet.rows.indexOf(row);
+                    return (
+                      <SortableRecordItem
+                        key={row.id}
+                        row={row}
+                        index={sourceIndex}
+                        active={row.id === selectedRow?.id}
+                        name={displayRowName(row, definition)}
+                        disabled={pending}
+                        dragDisabled={query.trim().length > 0}
+                        onSelect={() => setSelectedRowId(row.id)}
+                        onAdd={() => insertRowAt(sourceIndex + 1)}
+                        onDelete={() => submit([{
+                          type: "table.removeRow",
+                          sheetId: sheet.id,
+                          rowId: row.id,
+                        }])}
+                      />
+                    );
+                  })}
+                  {filteredRows.length === 0 && <p className="record-empty">没有匹配的记录</p>}
+                </div>
+              </DragDropProvider>
             </aside>
             <section className="record-editor">
               {selectedRow === undefined
@@ -230,32 +262,6 @@ function TableEditorApp(): ReactElement {
                       <div className="record-actions">
                         <IconButton
                           className="secondary"
-                          icon="moveUp"
-                          label="上移记录"
-                          title="上移"
-                          disabled={pending || selectedIndex <= 0}
-                          onClick={() => submit([{
-                            type: "table.moveRow",
-                            sheetId: sheet.id,
-                            rowId: selectedRow.id,
-                            index: selectedIndex - 1,
-                          }])}
-                        />
-                        <IconButton
-                          className="secondary"
-                          icon="moveDown"
-                          label="下移记录"
-                          title="下移"
-                          disabled={pending || selectedIndex < 0 || selectedIndex >= sheet.rows.length - 1}
-                          onClick={() => submit([{
-                            type: "table.moveRow",
-                            sheetId: sheet.id,
-                            rowId: selectedRow.id,
-                            index: selectedIndex + 1,
-                          }])}
-                        />
-                        <IconButton
-                          className="secondary"
                           icon="copy"
                           label="复制记录"
                           title="复制"
@@ -265,18 +271,6 @@ function TableEditorApp(): ReactElement {
                             setSelectedRowId(rowId);
                             submit(createDuplicateOperations(state.document, sheet.id, definition, selectedRow, rowId));
                           }}
-                        />
-                        <IconButton
-                          className="secondary danger-text"
-                          icon="delete"
-                          label="删除记录"
-                          title="删除"
-                          disabled={pending}
-                          onClick={() => submit([{
-                            type: "table.removeRow",
-                            sheetId: sheet.id,
-                            rowId: selectedRow.id,
-                          }])}
                         />
                       </div>
                     </header>
@@ -303,6 +297,52 @@ function TableEditorApp(): ReactElement {
         <span>{status}</span>
         <span>{state.diagnostics.length === 0 ? "校验通过" : `${state.diagnostics.length} 个诊断`}</span>
       </footer>
+    </div>
+  );
+}
+
+function SortableRecordItem(props: {
+  readonly row: TableRow;
+  readonly index: number;
+  readonly active: boolean;
+  readonly name: string;
+  readonly disabled: boolean;
+  readonly dragDisabled: boolean;
+  readonly onSelect: () => void;
+  readonly onAdd: () => void;
+  readonly onDelete: () => void;
+}): ReactElement {
+  const { ref, handleRef, isDragging, isDropTarget } = useSortable({
+    id: props.row.id,
+    index: props.index,
+    group: "table-records",
+    type: "visualbridge-table-record",
+    accept: "visualbridge-table-record",
+    disabled: props.disabled || props.dragDisabled,
+  });
+  return (
+    <div
+      ref={ref}
+      className={`record-item-shell${props.active ? " active" : ""}${isDragging ? " dragging" : ""}${isDropTarget ? " drop-target" : ""}`}
+    >
+      <Button
+        className={`record-item${props.row.changedColumnIds.length > 0 ? " changed" : ""}`}
+        aria-pressed={props.active}
+        onClick={props.onSelect}
+      >
+        <strong className="record-name">{props.name}</strong>
+        <span className="record-meta">{props.row.sourceRowNumber === undefined ? "新增记录" : `第 ${props.index + 1} 条`}</span>
+      </Button>
+      <ListItemActions
+        dragRef={handleRef}
+        dragLabel={`拖动 ${props.name} 排序`}
+        addLabel={`在 ${props.name} 后新增记录`}
+        deleteLabel={`删除 ${props.name}`}
+        disabled={props.disabled}
+        dragDisabled={props.dragDisabled}
+        onAdd={props.onAdd}
+        onDelete={props.onDelete}
+      />
     </div>
   );
 }

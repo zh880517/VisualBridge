@@ -282,7 +282,7 @@ DocumentType
 
 Entity 的组织方式借鉴旧配置编辑器的 Entity、分组和 Component 卡片概念，但 Authoring JSON 直接替代 `ScriptableObject` 编辑数据，不迁移 `ScriptableObject`、子资源、包装配置或 Export 按钮。正式游戏项目只保留运行时真正使用的普通 C# class / struct。
 
-字段能力位于 Core 与共享 Form Editor，而不是 Entity 私有实现。数值、颜色、选择项、引用、List 和非框架普通自定义结构体都通过递归字段定义表达；`valueType` 描述 JSON 形态，`dataTypeId` 保留 `int`、`float` 和游戏结构等运行时语义。Graph、Structured、Table 与后续编辑器应复用这套字段解析、校验和 UI 原语。
+字段能力位于 Core 与共享 Form Editor，而不是 Entity 私有实现。数值、颜色、选择项、引用、List 和非框架普通自定义结构体都通过递归字段定义表达；`valueType` 描述 JSON 形态，`dataTypeId` 保留 `int`、`float` 和游戏结构等运行时语义。Graph、Structured、Table 与后续编辑器应复用这套字段解析、校验和 UI 原语。字段 List 的布局与交互同样属于共享 Form Editor：元素操作区统一放置 dnd-kit 拖拽手柄、在后添加和删除图标，排序结束后以一次字段提交进入宿主 Document Operation。Entity Component、Table Record 与 Graph 稳定端口列表也必须沿用“拖拽、在后添加、删除”的图标顺序和紧邻操作组；它们仍分别提交自己的 Operation，不把领域身份或连接规则下沉到 Form Editor。
 
 Entity Document 的默认便利后缀是 `.vbentity`，但业务文件可以使用 Project File 声明的任意扩展名。完整格式、Operation、编辑器行为和未来 Unity 生成约束见 `EntityComponentModel.md`。
 

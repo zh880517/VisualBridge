@@ -480,7 +480,7 @@ button:disabled {
 .graph-dynamic-port-row {
   position: relative;
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 5px;
   padding: 6px;
@@ -573,10 +573,28 @@ button:disabled {
 }
 
 .graph-dynamic-port-drag {
-  grid-row: 1;
-  grid-column: 1;
   align-self: stretch;
   cursor: grab;
+}
+
+.graph-dynamic-port-row-actions,
+.graph-interface-parameter-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.graph-dynamic-port-row-actions {
+  grid-row: 1;
+  grid-column: 1;
+}
+
+.graph-dynamic-port-row-actions > button,
+.graph-interface-parameter-actions > button {
+  width: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 3px;
 }
 
 .graph-dynamic-port-drag:active {
@@ -602,19 +620,6 @@ button:disabled {
 .graph-list-delete svg {
   width: 14px;
   height: 14px;
-}
-
-.graph-dynamic-port-drag circle {
-  fill: currentColor;
-}
-
-.graph-list-add path,
-.graph-list-delete path {
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.35;
 }
 
 .graph-dynamic-port-row > .graph-handle-right {
@@ -748,7 +753,7 @@ button:disabled {
 .graph-interface-parameter {
   position: relative;
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 5px;
   min-height: 30px;
@@ -822,8 +827,9 @@ button:disabled {
   height: 16px;
 }
 
-.graph-interface-parameter-drag circle {
-  fill: currentColor;
+.graph-interface-parameter-actions {
+  grid-row: 1;
+  grid-column: 1;
 }
 
 .graph-inspector-shell {

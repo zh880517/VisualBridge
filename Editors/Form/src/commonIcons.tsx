@@ -1,18 +1,17 @@
 import { Button } from "@base-ui/react/button";
 import {
-  ArrowDown,
-  ArrowUp,
   Check,
   ChevronDown,
   ChevronRight,
   Copy,
+  GripVertical,
   Plus,
   Search,
   Trash2,
   X,
   type LucideIcon,
 } from "lucide-react";
-import type { MouseEventHandler, ReactElement } from "react";
+import type { MouseEventHandler, ReactElement, Ref } from "react";
 
 export type CommonIconName =
   | "add"
@@ -22,8 +21,7 @@ export type CommonIconName =
   | "close"
   | "copy"
   | "delete"
-  | "moveDown"
-  | "moveUp"
+  | "drag"
   | "search";
 
 export function CommonIcon(props: { readonly name: CommonIconName }): ReactElement {
@@ -35,8 +33,7 @@ export function CommonIcon(props: { readonly name: CommonIconName }): ReactEleme
     close: X,
     copy: Copy,
     delete: Trash2,
-    moveDown: ArrowDown,
-    moveUp: ArrowUp,
+    drag: GripVertical,
     search: Search,
   };
   const Icon = icons[props.name];
@@ -46,6 +43,7 @@ export function CommonIcon(props: { readonly name: CommonIconName }): ReactEleme
 }
 
 export function IconButton(props: {
+  readonly buttonRef?: Ref<HTMLButtonElement>;
   readonly className?: string;
   readonly disabled?: boolean;
   readonly icon: CommonIconName;
@@ -56,6 +54,7 @@ export function IconButton(props: {
   return (
     <Button
       type="button"
+      ref={props.buttonRef}
       className={`icon${props.className === undefined ? "" : ` ${props.className}`}`}
       aria-label={props.label}
       title={props.title ?? props.label}
@@ -64,5 +63,47 @@ export function IconButton(props: {
     >
       <CommonIcon name={props.icon} />
     </Button>
+  );
+}
+
+export function ListItemActions(props: {
+  readonly addDisabled?: boolean;
+  readonly addLabel: string;
+  readonly deleteDisabled?: boolean;
+  readonly deleteLabel: string;
+  readonly disabled?: boolean;
+  readonly dragDisabled?: boolean;
+  readonly dragLabel: string;
+  readonly dragRef?: Ref<HTMLButtonElement>;
+  readonly onAdd: MouseEventHandler<HTMLButtonElement>;
+  readonly onDelete: MouseEventHandler<HTMLButtonElement>;
+}): ReactElement {
+  return (
+    <div className="vb-list-actions" role="group" aria-label="列表项操作">
+      <IconButton
+        {...(props.dragRef === undefined ? {} : { buttonRef: props.dragRef })}
+        className="secondary vb-list-drag"
+        icon="drag"
+        label={props.dragLabel}
+        title="拖动排序"
+        disabled={props.disabled === true || props.dragDisabled === true}
+      />
+      <IconButton
+        className="secondary"
+        icon="add"
+        label={props.addLabel}
+        title="在后面添加"
+        disabled={props.disabled === true || props.addDisabled === true}
+        onClick={props.onAdd}
+      />
+      <IconButton
+        className="secondary danger-text"
+        icon="delete"
+        label={props.deleteLabel}
+        title="删除"
+        disabled={props.disabled === true || props.deleteDisabled === true}
+        onClick={props.onDelete}
+      />
+    </div>
   );
 }

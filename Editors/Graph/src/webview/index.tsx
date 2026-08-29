@@ -35,6 +35,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createRoot } from "react-dom/client";
+import { CommonIcon } from "@visualbridge/form-editor/icons";
 import "@xyflow/react/dist/style.css";
 import "./styles.css";
 
@@ -826,22 +827,6 @@ function InlineNodeScalarProperty({
   );
 }
 
-function AddListIcon(): React.JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true">
-      <path d="M8 3v10M3 8h10" />
-    </svg>
-  );
-}
-
-function DeleteListIcon(): React.JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true">
-      <path d="M3 4h10M6 4V2.5h4V4M4.5 4l.7 9h5.6l.7-9M6.5 6.5v4M9.5 6.5v4" />
-    </svg>
-  );
-}
-
 function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; readonly pending: boolean }): React.JSX.Element | null {
   const dataTypes = useContext(GraphDataTypesContext);
   const [selectedPortId, setSelectedPortId] = useState<string>();
@@ -889,8 +874,37 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
       {groups.map((group) => {
         const ports = data.model.dynamicPorts.filter((port) => group.id === port.groupId || group.aliases.includes(port.groupId));
         const canAdd = group.maxItems === undefined || ports.length < group.maxItems;
-        const selectedPort = ports.find((port) => port.id === selectedPortId);
         const listConnected = group.listPortMode === "list" && data.connectedInputPortIds.has(group.id);
+        const addPort = (index: number): void => {
+          const port: GraphDynamicPort = {
+            id: newId("port"),
+            groupId: group.id,
+            title: `${group.title} ${ports.length + 1}`,
+            value: cloneJsonValue(group.item.defaultValue),
+          };
+          const portIds = [...data.model.dynamicPorts.map((candidate) => candidate.id), port.id];
+          portIds.splice(portIds.length - 1, 1);
+          const nextGroupPort = ports[index];
+          const insertionIndex = nextGroupPort === undefined
+            ? portIds.length
+            : portIds.indexOf(nextGroupPort.id);
+          portIds.splice(insertionIndex < 0 ? portIds.length : insertionIndex, 0, port.id);
+          setSelectedPortId(port.id);
+          data.commitOperations([
+            {
+              type: "graph.addDynamicPort",
+              graphId: data.graphId,
+              nodeId: data.model.id,
+              port,
+            },
+            {
+              type: "graph.reorderDynamicPorts",
+              graphId: data.graphId,
+              nodeId: data.model.id,
+              portIds,
+            },
+          ]);
+        };
         const groupDragState = dragState !== undefined && ports.some((port) => port.id === dragState.sourcePortId)
           ? dragState
           : undefined;
@@ -912,53 +926,17 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
                   />
                 )}
               </div>
-              {!listConnected && <div className="graph-dynamic-port-group-actions">
+              {!listConnected && ports.length === 0 && <div className="graph-dynamic-port-group-actions vb-list-actions">
                 <button
                   type="button"
                   className="secondary graph-list-add"
                   disabled={pending || !canAdd}
                   aria-label={`${group.listPortMode === undefined ? "添加动态端口" : "添加列表元素"} ${group.title}`}
                   title="添加元素"
-                  onClick={() => {
-                    const port: GraphDynamicPort = {
-                      id: newId("port"),
-                      groupId: group.id,
-                      title: `${group.title} ${ports.length + 1}`,
-                      value: cloneJsonValue(group.item.defaultValue),
-                    };
-                    setSelectedPortId(port.id);
-                    data.commitOperations([{
-                      type: "graph.addDynamicPort",
-                      graphId: data.graphId,
-                      nodeId: data.model.id,
-                      port,
-                    }]);
-                  }}
+                  onClick={() => addPort(0)}
                 >
-                  <AddListIcon />
+                  <CommonIcon name="add" />
                 </button>
-                {selectedPort !== undefined && (
-                  <button
-                    type="button"
-                    className="graph-list-delete"
-                    disabled={pending}
-                    aria-label={`${group.listPortMode === undefined ? "删除动态端口" : "删除列表元素"} ${selectedPort.title}`}
-                    title="删除选中元素"
-                    onClick={() => {
-                      if (window.confirm("删除选中的动态元素？相关连线也会被删除。")) {
-                        setSelectedPortId(undefined);
-                        data.commitOperations([{
-                          type: "graph.removeDynamicPort",
-                          graphId: data.graphId,
-                          nodeId: data.model.id,
-                          portId: selectedPort.id,
-                        }]);
-                      }
-                    }}
-                  >
-                    <DeleteListIcon />
-                  </button>
-                )}
               </div>}
             </header>
             {listConnected
@@ -992,6 +970,19 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
                     reorder(port.id, target.id, offset < 0 ? "before" : "after");
                   }
                 }}
+                canAdd={canAdd}
+                onAdd={() => addPort(portIndex + 1)}
+                onDelete={() => {
+                  if (window.confirm("删除这个动态元素？相关连线也会被删除。")) {
+                    setSelectedPortId(undefined);
+                    data.commitOperations([{
+                      type: "graph.removeDynamicPort",
+                      graphId: data.graphId,
+                      nodeId: data.model.id,
+                      portId: port.id,
+                    }]);
+                  }
+                }}
               />
               ))}
             {!listConnected && ports.length === 0 && (
@@ -1019,6 +1010,9 @@ function DynamicPortRow({
   onDrop,
   onDragEnd,
   onKeyboardMove,
+  canAdd,
+  onAdd,
+  onDelete,
 }: {
   readonly data: GraphNodeData;
   readonly group: DynamicPortGroupDefinition;
@@ -1034,6 +1028,9 @@ function DynamicPortRow({
   readonly onDrop: (sourcePortId: string, position: "before" | "after") => void;
   readonly onDragEnd: () => void;
   readonly onKeyboardMove: (offset: -1 | 1) => void;
+  readonly canAdd: boolean;
+  readonly onAdd: () => void;
+  readonly onDelete: () => void;
 }): React.JSX.Element {
   const dataTypes = useContext(GraphDataTypesContext);
   const model = data.model;
@@ -1082,34 +1079,52 @@ function DynamicPortRow({
         );
       }}
     >
-      <button
-        type="button"
-        className="graph-dynamic-port-drag"
-        draggable={!pending}
-        disabled={pending}
-        aria-label={`拖动排序 ${port.title}`}
-        title="拖动排序；Alt+↑/↓ 也可移动"
-        onDragStart={(event) => {
-          event.dataTransfer.effectAllowed = "move";
-          event.dataTransfer.setData("text/plain", port.id);
-          onSelect();
-          onDragStart();
-        }}
-        onDragEnd={onDragEnd}
-        onKeyDown={(event) => {
-          if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
-            event.preventDefault();
+      <div className="graph-dynamic-port-row-actions vb-list-actions" role="group" aria-label={`${port.title} 列表项操作`}>
+        <button
+          type="button"
+          className="secondary graph-dynamic-port-drag"
+          draggable={!pending}
+          disabled={pending}
+          aria-label={`拖动排序 ${port.title}`}
+          title="拖动排序；Alt+↑/↓ 也可移动"
+          onDragStart={(event) => {
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", port.id);
+            onSelect();
+            onDragStart();
+          }}
+          onDragEnd={onDragEnd}
+          onKeyDown={(event) => {
+            if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+              event.preventDefault();
+              event.stopPropagation();
+              onKeyboardMove(event.key === "ArrowUp" ? -1 : 1);
+            }
+          }}
+        ><CommonIcon name="drag" /></button>
+        <button
+          type="button"
+          className="secondary graph-list-add"
+          disabled={pending || !canAdd}
+          aria-label={`在 ${port.title} 后添加`}
+          title="在后面添加"
+          onClick={(event) => {
             event.stopPropagation();
-            onKeyboardMove(event.key === "ArrowUp" ? -1 : 1);
-          }
-        }}
-      >
-        <svg viewBox="0 0 12 16" aria-hidden="true">
-          <circle cx="3" cy="3" r="1" /><circle cx="9" cy="3" r="1" />
-          <circle cx="3" cy="8" r="1" /><circle cx="9" cy="8" r="1" />
-          <circle cx="3" cy="13" r="1" /><circle cx="9" cy="13" r="1" />
-        </svg>
-      </button>
+            onAdd();
+          }}
+        ><CommonIcon name="add" /></button>
+        <button
+          type="button"
+          className="secondary graph-list-delete"
+          disabled={pending}
+          aria-label={`删除 ${port.title}`}
+          title="删除"
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+        ><CommonIcon name="delete" /></button>
+      </div>
       {connected
         ? <div className="graph-list-element-connected"><span>元素</span><em>已连接</em></div>
         : (
@@ -1216,30 +1231,27 @@ function VisualBridgeInterfaceNode({ data }: NodeProps<GraphFlowNode>): React.JS
       setSelectedPortId(undefined);
     }
   }, [dynamicPorts, selectedPortId]);
-  const addParameter = (): void => {
+  const addParameter = (afterPortId?: string): void => {
     const index = dynamicPorts.length + 1;
-    data.commitOperations([{
-      type: "graph.addInterfacePort",
-      graphId: data.graphId,
-      port: {
-        id: newId(data.side === "inputs" ? "input" : "output"),
-        title: `${data.side === "inputs" ? "输入" : "输出"} ${index}`,
-        kind: "data",
-        direction: data.side === "inputs" ? "input" : "output",
-        dataTypeId: "any",
-        dynamic: true,
-      },
-    }]);
-  };
-  const deleteSelected = (): void => {
-    if (selectedPortId === undefined) {
-      return;
+    const port: PortDefinition = {
+      id: newId(data.side === "inputs" ? "input" : "output"),
+      title: `${data.side === "inputs" ? "输入" : "输出"} ${index}`,
+      kind: "data",
+      direction: data.side === "inputs" ? "input" : "output",
+      dataTypeId: "any",
+      dynamic: true,
+    };
+    const portIds = [...data.interfacePortIds, port.id];
+    if (afterPortId !== undefined) {
+      portIds.pop();
+      const targetIndex = portIds.indexOf(afterPortId);
+      portIds.splice(targetIndex < 0 ? portIds.length : targetIndex + 1, 0, port.id);
     }
-    data.commitOperations([{
-      type: "graph.removeInterfacePort",
-      graphId: data.graphId,
-      portId: selectedPortId,
-    }]);
+    setSelectedPortId(port.id);
+    data.commitOperations([
+      { type: "graph.addInterfacePort", graphId: data.graphId, port },
+      { type: "graph.reorderInterfacePorts", graphId: data.graphId, portIds },
+    ]);
   };
   const reorder = (sourcePortId: string, targetPortId: string, position: "before" | "after"): void => {
     const reorderedDynamicIds = reorderIds(
@@ -1277,26 +1289,16 @@ function VisualBridgeInterfaceNode({ data }: NodeProps<GraphFlowNode>): React.JS
     <article className={`graph-interface-node ${data.side}`}>
       <header>
         <span>{data.title}</span>
-        {data.editable && (
-          <span className="graph-interface-actions nodrag nowheel">
+        {data.editable && dynamicPorts.length === 0 && (
+          <span className="graph-interface-actions vb-list-actions nodrag nowheel">
             <button
               type="button"
               className="secondary graph-list-add"
               disabled={pending}
               aria-label={`添加${data.side === "inputs" ? "输入" : "输出"}参数`}
               title={`添加${data.side === "inputs" ? "输入" : "输出"}参数`}
-              onClick={addParameter}
-            ><AddListIcon /></button>
-            {selectedPortId !== undefined && (
-              <button
-                type="button"
-                className="secondary graph-list-delete"
-                disabled={pending}
-                aria-label="删除所选参数"
-                title="删除所选参数"
-                onClick={deleteSelected}
-              ><DeleteListIcon /></button>
-            )}
+              onClick={() => addParameter()}
+            ><CommonIcon name="add" /></button>
           </span>
         )}
       </header>
@@ -1321,6 +1323,16 @@ function VisualBridgeInterfaceNode({ data }: NodeProps<GraphFlowNode>): React.JS
                 setDropTarget(undefined);
               }}
               onKeyboardMove={(offset) => moveByKeyboard(port.id, offset)}
+              editable={data.editable}
+              onAdd={() => addParameter(port.id)}
+              onDelete={() => {
+                setSelectedPortId(undefined);
+                data.commitOperations([{
+                  type: "graph.removeInterfacePort",
+                  graphId: data.graphId,
+                  portId: port.id,
+                }]);
+              }}
             />
           ))}
         </div>
@@ -1342,6 +1354,9 @@ function InterfaceParameterRow({
   onDrop,
   onDragEnd,
   onKeyboardMove,
+  editable,
+  onAdd,
+  onDelete,
 }: {
   readonly data: GraphInterfaceData;
   readonly port: PortDefinition;
@@ -1355,6 +1370,9 @@ function InterfaceParameterRow({
   readonly onDrop: (targetPortId: string, position: "before" | "after") => void;
   readonly onDragEnd: () => void;
   readonly onKeyboardMove: (offset: -1 | 1) => void;
+  readonly editable: boolean;
+  readonly onAdd: () => void;
+  readonly onDelete: () => void;
 }): React.JSX.Element {
   const dataTypes = useContext(GraphDataTypesContext);
   const [title, setTitle] = useState(port.title);
@@ -1387,66 +1405,86 @@ function InterfaceParameterRow({
       tabIndex={0}
       onClick={onSelect}
     >
-      <button
-        type="button"
-        className="graph-interface-parameter-drag"
-        disabled={pending}
-        aria-label={`拖动排序 ${port.title}`}
-        title="拖动排序；Alt+↑/↓ 也可移动"
-        onPointerDown={(event) => {
-          if (event.button !== 0 || pending) {
-            return;
-          }
-          event.preventDefault();
-          event.stopPropagation();
-          event.currentTarget.setPointerCapture(event.pointerId);
-          onSelect();
-          onDragStart();
-        }}
-        onPointerMove={(event) => {
-          if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
-            return;
-          }
-          const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-interface-port-id]");
-          const targetPortId = target?.dataset.interfacePortId;
-          if (target !== undefined && target !== null && targetPortId !== undefined) {
-            const bounds = target.getBoundingClientRect();
-            onDragOver(targetPortId, event.clientY < bounds.top + bounds.height / 2 ? "before" : "after");
-          }
-        }}
-        onPointerUp={(event) => {
-          if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
-            return;
-          }
-          const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-interface-port-id]");
-          const targetPortId = target?.dataset.interfacePortId;
-          if (target !== undefined && target !== null && targetPortId !== undefined) {
-            const bounds = target.getBoundingClientRect();
-            onDrop(targetPortId, event.clientY < bounds.top + bounds.height / 2 ? "before" : "after");
-          }
-          event.currentTarget.releasePointerCapture(event.pointerId);
-          onDragEnd();
-        }}
-        onPointerCancel={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-          }
-          onDragEnd();
-        }}
-        onKeyDown={(event) => {
-          if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
-            event.preventDefault();
-            event.stopPropagation();
-            onKeyboardMove(event.key === "ArrowUp" ? -1 : 1);
-          }
-        }}
-      >
-        <svg viewBox="0 0 12 16" aria-hidden="true">
-          <circle cx="3" cy="3" r="1" /><circle cx="9" cy="3" r="1" />
-          <circle cx="3" cy="8" r="1" /><circle cx="9" cy="8" r="1" />
-          <circle cx="3" cy="13" r="1" /><circle cx="9" cy="13" r="1" />
-        </svg>
-      </button>
+      {editable && (
+        <div className="graph-interface-parameter-actions vb-list-actions" role="group" aria-label={`${port.title} 列表项操作`}>
+          <button
+            type="button"
+            className="secondary graph-interface-parameter-drag"
+            disabled={pending}
+            aria-label={`拖动排序 ${port.title}`}
+            title="拖动排序；Alt+↑/↓ 也可移动"
+            onPointerDown={(event) => {
+              if (event.button !== 0 || pending) {
+                return;
+              }
+              event.preventDefault();
+              event.stopPropagation();
+              event.currentTarget.setPointerCapture(event.pointerId);
+              onSelect();
+              onDragStart();
+            }}
+            onPointerMove={(event) => {
+              if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
+                return;
+              }
+              const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-interface-port-id]");
+              const targetPortId = target?.dataset.interfacePortId;
+              if (target !== undefined && target !== null && targetPortId !== undefined) {
+                const bounds = target.getBoundingClientRect();
+                onDragOver(targetPortId, event.clientY < bounds.top + bounds.height / 2 ? "before" : "after");
+              }
+            }}
+            onPointerUp={(event) => {
+              if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
+                return;
+              }
+              const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-interface-port-id]");
+              const targetPortId = target?.dataset.interfacePortId;
+              if (target !== undefined && target !== null && targetPortId !== undefined) {
+                const bounds = target.getBoundingClientRect();
+                onDrop(targetPortId, event.clientY < bounds.top + bounds.height / 2 ? "before" : "after");
+              }
+              event.currentTarget.releasePointerCapture(event.pointerId);
+              onDragEnd();
+            }}
+            onPointerCancel={(event) => {
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                event.currentTarget.releasePointerCapture(event.pointerId);
+              }
+              onDragEnd();
+            }}
+            onKeyDown={(event) => {
+              if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+                event.preventDefault();
+                event.stopPropagation();
+                onKeyboardMove(event.key === "ArrowUp" ? -1 : 1);
+              }
+            }}
+          ><CommonIcon name="drag" /></button>
+          <button
+            type="button"
+            className="secondary graph-list-add"
+            disabled={pending}
+            aria-label={`在 ${port.title} 后添加参数`}
+            title="在后面添加"
+            onClick={(event) => {
+              event.stopPropagation();
+              onAdd();
+            }}
+          ><CommonIcon name="add" /></button>
+          <button
+            type="button"
+            className="secondary graph-list-delete"
+            disabled={pending}
+            aria-label={`删除 ${port.title}`}
+            title="删除"
+            onClick={(event) => {
+              event.stopPropagation();
+              onDelete();
+            }}
+          ><CommonIcon name="delete" /></button>
+        </div>
+      )}
       <input
         value={title}
         disabled={pending}

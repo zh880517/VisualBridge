@@ -1,15 +1,18 @@
-import { useEffect, useMemo, useState, type ReactElement } from "react";
+import { useEffect, useId, useMemo, useState, type ReactElement } from "react";
 import { Button } from "@base-ui/react/button";
 import { Checkbox } from "@base-ui/react/checkbox";
 import { Popover } from "@base-ui/react/popover";
+import { DragDropProvider } from "@dnd-kit/react";
+import { isSortable, useSortable } from "@dnd-kit/react/sortable";
 import { HexAlphaColorPicker, HexColorPicker } from "react-colorful";
-import { CommonIcon, IconButton } from "./commonIcons";
+import { CommonIcon, IconButton, ListItemActions } from "./commonIcons";
 import type {
   FieldDefinition,
   FieldValueDefinition,
   JsonValue,
 } from "@visualbridge/core";
 import { cloneJsonValue } from "@visualbridge/core";
+import "./listEditor.css";
 
 export interface FieldsEditorProps {
   readonly definitions: readonly FieldDefinition[];
@@ -88,55 +91,7 @@ export function FieldValueEditor(props: FieldValueEditorProps): ReactElement {
     if (item === undefined) {
       return <span className="vb-field-error">缺少 List 元素定义</span>;
     }
-    return (
-      <div className="vb-list-editor">
-        {values.map((entry, index) => (
-          <div className="vb-list-item" key={`${index}:${JSON.stringify(entry)}`}>
-            <span className="vb-list-index">{index}</span>
-            <FieldValueEditor
-              definition={item}
-              value={entry}
-              disabled={disabled}
-              ariaLabel={`${props.ariaLabel ?? "List"} ${index}`}
-              onCommit={(nextEntry) => props.onCommit(replaceArrayItem(values, index, nextEntry))}
-            />
-            <div className="vb-list-actions">
-              <IconButton
-                className="secondary"
-                icon="moveUp"
-                label={`上移第 ${index + 1} 项`}
-                title="上移"
-                disabled={disabled || index === 0}
-                onClick={() => props.onCommit(moveArrayItem(values, index, index - 1))}
-              />
-              <IconButton
-                className="secondary"
-                icon="moveDown"
-                label={`下移第 ${index + 1} 项`}
-                title="下移"
-                disabled={disabled || index === values.length - 1}
-                onClick={() => props.onCommit(moveArrayItem(values, index, index + 1))}
-              />
-              <IconButton
-                className="secondary"
-                icon="delete"
-                label={`删除第 ${index + 1} 项`}
-                title="删除"
-                disabled={disabled}
-                onClick={() => props.onCommit(values.filter((_, candidateIndex) => candidateIndex !== index))}
-              />
-            </div>
-          </div>
-        ))}
-        <IconButton
-          className="secondary vb-list-add"
-          icon="add"
-          label="添加元素"
-          disabled={disabled}
-          onClick={() => props.onCommit([...values.map(cloneJsonValue), cloneJsonValue(item.defaultValue)])}
-        />
-      </div>
-    );
+    return <ListEditor {...props} values={values} item={item} disabled={disabled} />;
   }
 
   if (props.definition.editor?.kind === "select") {
@@ -217,6 +172,110 @@ export function FieldValueEditor(props: FieldValueEditorProps): ReactElement {
       ariaLabel={props.ariaLabel}
       onCommit={props.onCommit}
     />
+  );
+}
+
+function ListEditor(props: FieldValueEditorProps & {
+  readonly values: readonly JsonValue[];
+  readonly item: FieldValueDefinition;
+  readonly disabled: boolean;
+}): ReactElement {
+  const instanceId = useId();
+  const itemIds = props.values.map((_, index) => `${instanceId}:${index}`);
+  const addAt = (index: number): void => props.onCommit(insertArrayItem(
+    props.values,
+    index,
+    props.item.defaultValue,
+  ));
+  return (
+    <DragDropProvider
+      onDragEnd={(event) => {
+        if (event.canceled) {
+          return;
+        }
+        const { source } = event.operation;
+        if (isSortable(source) && source.initialIndex !== source.index) {
+          props.onCommit(moveArrayItem(props.values, source.initialIndex, source.index));
+        }
+      }}
+    >
+      <div className="vb-list-editor">
+        {props.values.map((entry, index) => (
+          <SortableListItem
+            key={itemIds[index]}
+            id={itemIds[index]!}
+            group={instanceId}
+            index={index}
+            entry={entry}
+            item={props.item}
+            values={props.values}
+            disabled={props.disabled}
+            ariaLabel={props.ariaLabel}
+            onCommit={props.onCommit}
+            onAdd={() => addAt(index + 1)}
+          />
+        ))}
+        {props.values.length === 0 && (
+          <div className="vb-list-empty-actions">
+            <span>列表为空</span>
+            <IconButton
+              className="secondary"
+              icon="add"
+              label="添加第 1 项"
+              title="添加"
+              disabled={props.disabled}
+              onClick={() => addAt(0)}
+            />
+          </div>
+        )}
+      </div>
+    </DragDropProvider>
+  );
+}
+
+function SortableListItem(props: {
+  readonly id: string;
+  readonly group: string;
+  readonly index: number;
+  readonly entry: JsonValue;
+  readonly item: FieldValueDefinition;
+  readonly values: readonly JsonValue[];
+  readonly disabled: boolean;
+  readonly ariaLabel?: string | undefined;
+  readonly onCommit: (value: JsonValue) => void;
+  readonly onAdd: () => void;
+}): ReactElement {
+  const { ref, handleRef, isDragging, isDropTarget } = useSortable({
+    id: props.id,
+    index: props.index,
+    group: props.group,
+    type: "visualbridge-list-item",
+    accept: "visualbridge-list-item",
+    disabled: props.disabled,
+  });
+  return (
+    <div
+      ref={ref}
+      className={`vb-list-item${isDragging ? " dragging" : ""}${isDropTarget ? " drop-target" : ""}`}
+    >
+      <span className="vb-list-index">{props.index + 1}</span>
+      <FieldValueEditor
+        definition={props.item}
+        value={props.entry}
+        disabled={props.disabled}
+        ariaLabel={`${props.ariaLabel ?? "List"} ${props.index + 1}`}
+        onCommit={(nextEntry) => props.onCommit(replaceArrayItem(props.values, props.index, nextEntry))}
+      />
+      <ListItemActions
+        dragRef={handleRef}
+        dragLabel={`拖动第 ${props.index + 1} 项排序`}
+        addLabel={`在第 ${props.index + 1} 项后添加`}
+        deleteLabel={`删除第 ${props.index + 1} 项`}
+        disabled={props.disabled}
+        onAdd={props.onAdd}
+        onDelete={() => props.onCommit(props.values.filter((_, index) => index !== props.index))}
+      />
+    </div>
   );
 }
 
@@ -479,6 +538,16 @@ function cloneRecord(value: Readonly<Record<string, JsonValue>>): Record<string,
 
 function replaceArrayItem(values: readonly JsonValue[], index: number, value: JsonValue): JsonValue[] {
   return values.map((entry, candidateIndex) => cloneJsonValue(candidateIndex === index ? value : entry));
+}
+
+function insertArrayItem(
+  values: readonly JsonValue[],
+  index: number,
+  value: JsonValue,
+): JsonValue[] {
+  const result = values.map(cloneJsonValue);
+  result.splice(index, 0, cloneJsonValue(value));
+  return result;
 }
 
 function moveArrayItem(values: readonly JsonValue[], from: number, to: number): JsonValue[] {

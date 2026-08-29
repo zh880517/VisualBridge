@@ -4,6 +4,8 @@ import { Button } from "@base-ui/react/button";
 import { Checkbox } from "@base-ui/react/checkbox";
 import { Collapsible } from "@base-ui/react/collapsible";
 import { Dialog } from "@base-ui/react/dialog";
+import { DragDropProvider } from "@dnd-kit/react";
+import { isSortable, useSortable } from "@dnd-kit/react/sortable";
 import type { DocumentDiagnostic } from "@visualbridge/core";
 import type {
   EntityCatalogRegistry,
@@ -14,7 +16,7 @@ import type {
   RegisteredEntityComponentTypeDefinition,
   RegisteredEntityTypeDefinition,
 } from "@visualbridge/entity";
-import { CommonIcon, FieldsEditor, IconButton } from "@visualbridge/form-editor";
+import { CommonIcon, FieldsEditor, IconButton, ListItemActions } from "@visualbridge/form-editor";
 import "../styles.css";
 
 interface VsCodeApi {
@@ -66,6 +68,7 @@ function EntityEditorApp(): ReactElement {
   const [pending, setPending] = useState(false);
   const [status, setStatus] = useState("正在加载 Entity Document…");
   const [addOpen, setAddOpen] = useState(false);
+  const [addIndex, setAddIndex] = useState<number>();
 
   useEffect(() => {
     const listener = (event: MessageEvent<HostMessage>): void => {
@@ -164,24 +167,50 @@ function EntityEditorApp(): ReactElement {
               icon="add"
               label="添加组件"
               disabled={pending || !state.catalogReady || entityType === undefined}
-              onClick={() => setAddOpen(true)}
+              onClick={() => {
+                setAddIndex(state.document.components.length);
+                setAddOpen(true);
+              }}
             />
           </div>
 
-          <div className="component-list">
-            {state.document.components.length === 0 && <p className="empty-components">尚未添加组件。</p>}
-            {state.document.components.map((component, index) => (
-              <ComponentCard
-                key={component.id}
-                component={component}
-                index={index}
-                count={state.document.components.length}
-                componentType={resolveComponentType(state.catalogRegistry, component.componentTypeId)}
-                pending={pending}
-                submit={submit}
-              />
-            ))}
-          </div>
+          <DragDropProvider
+            onDragEnd={(event) => {
+              if (event.canceled) {
+                return;
+              }
+              const { source } = event.operation;
+              if (isSortable(source) && source.initialIndex !== source.index) {
+                const component = state.document.components[source.initialIndex];
+                if (component === undefined) {
+                  return;
+                }
+                submit([{
+                  type: "entity.moveComponent",
+                  componentId: component.id,
+                  index: source.index,
+                }]);
+              }
+            }}
+          >
+            <div className="component-list">
+              {state.document.components.length === 0 && <p className="empty-components">尚未添加组件。</p>}
+              {state.document.components.map((component, index) => (
+                <ComponentCard
+                  key={component.id}
+                  component={component}
+                  index={index}
+                  componentType={resolveComponentType(state.catalogRegistry, component.componentTypeId)}
+                  pending={pending}
+                  submit={submit}
+                  onAdd={() => {
+                    setAddIndex(index + 1);
+                    setAddOpen(true);
+                  }}
+                />
+              ))}
+            </div>
+          </DragDropProvider>
         </div>
       </div>
       <footer className="entity-status">
@@ -192,14 +221,19 @@ function EntityEditorApp(): ReactElement {
         <AddComponentDialog
           registry={state.catalogRegistry}
           componentTypeIds={state.addableComponentTypeIds}
-          onClose={() => setAddOpen(false)}
+          onClose={() => {
+            setAddOpen(false);
+            setAddIndex(undefined);
+          }}
           onAdd={(componentTypeId) => {
             setAddOpen(false);
             submit([{
               type: "entity.addComponent",
               componentId: `component_${crypto.randomUUID()}`,
               componentTypeId,
+              index: addIndex ?? state.document.components.length,
             }]);
+            setAddIndex(undefined);
           }}
         />
       )}
@@ -211,17 +245,28 @@ function ComponentCard(props: {
   readonly component: EntityComponentInstance;
   readonly componentType: RegisteredEntityComponentTypeDefinition | undefined;
   readonly index: number;
-  readonly count: number;
   readonly pending: boolean;
   readonly submit: (operations: readonly EntityOperation[]) => void;
+  readonly onAdd: () => void;
 }): ReactElement {
   const [expanded, setExpanded] = useState(true);
   const displayName = props.componentType?.title ?? props.component.componentTypeId;
+  const { ref, handleRef, isDragging, isDropTarget } = useSortable({
+    id: props.component.id,
+    index: props.index,
+    group: "entity-components",
+    type: "visualbridge-entity-component",
+    accept: "visualbridge-entity-component",
+    disabled: props.pending,
+  });
   return (
     <Collapsible.Root
       open={expanded}
       onOpenChange={setExpanded}
-      render={<article className={`entity-card component-card${props.component.enabled ? "" : " disabled"}`} />}
+      render={<article
+        ref={ref}
+        className={`entity-card component-card${props.component.enabled ? "" : " disabled"}${isDragging ? " dragging" : ""}${isDropTarget ? " drop-target" : ""}`}
+      />}
     >
       <header className="component-card-header">
         <Collapsible.Trigger
@@ -250,30 +295,6 @@ function ComponentCard(props: {
         <div className="component-actions">
           <IconButton
             className="secondary"
-            icon="moveUp"
-            title="上移"
-            label={`上移 ${displayName}`}
-            disabled={props.pending || props.index === 0}
-            onClick={() => props.submit([{
-              type: "entity.moveComponent",
-              componentId: props.component.id,
-              index: props.index - 1,
-            }])}
-          />
-          <IconButton
-            className="secondary"
-            icon="moveDown"
-            title="下移"
-            label={`下移 ${displayName}`}
-            disabled={props.pending || props.index === props.count - 1}
-            onClick={() => props.submit([{
-              type: "entity.moveComponent",
-              componentId: props.component.id,
-              index: props.index + 1,
-            }])}
-          />
-          <IconButton
-            className="secondary"
             icon="copy"
             title="复制"
             label={`复制 ${displayName}`}
@@ -284,13 +305,14 @@ function ComponentCard(props: {
               newComponentId: `component_${crypto.randomUUID()}`,
             }])}
           />
-          <IconButton
-            className="secondary danger-text"
-            icon="delete"
-            title="删除"
-            label={`删除 ${displayName}`}
+          <ListItemActions
+            dragRef={handleRef}
+            dragLabel={`拖动 ${displayName} 排序`}
+            addLabel={`在 ${displayName} 后添加组件`}
+            deleteLabel={`删除 ${displayName}`}
             disabled={props.pending}
-            onClick={() => props.submit([{ type: "entity.removeComponent", componentId: props.component.id }])}
+            onAdd={props.onAdd}
+            onDelete={() => props.submit([{ type: "entity.removeComponent", componentId: props.component.id }])}
           />
         </div>
       </header>

@@ -137,6 +137,27 @@ test("Table operations are atomic and serialization preserves header layout", as
   assert.equal(lines[0], "技能名\t技能编号\t标签\t奖励\t颜色");
   assert.equal(lines[1], "Name\tId\tTags\tRewards\tTint");
   assert.equal(lines[2], "Fireball\t101\tmagic;burst\t1001|2;1002|1\t#FF6633FF");
+
+  const structural = applyTableOperations(parsed.document, [
+    {
+      type: "table.insertRow",
+      sheetId: sheet.id,
+      rowId: "inserted",
+      index: 1,
+      cells: { id: 202, name: "Inserted" },
+    },
+    {
+      type: "table.moveRow",
+      sheetId: sheet.id,
+      rowId: first.id,
+      index: 1,
+    },
+  ], tableType);
+  assert.equal(structural.success, true, structural.success ? "" : JSON.stringify(structural.diagnostics));
+  assert.deepEqual(
+    structural.document.sheets[0]?.rows.map((row) => row.id),
+    ["inserted", ...sheet.rows.map((row) => row.id)],
+  );
 });
 
 test("partition validation applies the exported duplicate policy across worksheets", async () => {

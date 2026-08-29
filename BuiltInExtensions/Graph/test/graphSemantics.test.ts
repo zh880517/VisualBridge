@@ -220,6 +220,55 @@ test("List dynamic groups expose stable whole-list and element ports across reor
       : undefined,
     "element_a",
   );
+
+  const inserted = applyGraphOperations(document, [
+    {
+      type: "graph.addDynamicPort",
+      graphId: "root",
+      nodeId: "list_node",
+      port: { id: "whole_inserted", groupId: "list.whole", title: "Inserted", value: 0 },
+    },
+    {
+      type: "graph.reorderDynamicPorts",
+      graphId: "root",
+      nodeId: "list_node",
+      portIds: ["whole_a", "whole_inserted", "whole_b", "element_a", "element_b"],
+    },
+  ], registry);
+  assert.equal(inserted.success, true, inserted.success ? "" : formatDiagnostics(inserted.diagnostics));
+  assert.deepEqual(
+    inserted.document.graphs.find((graph) => graph.id === "root")!
+      .nodes.find((node) => node.id === "list_node")!.dynamicPorts.map((port) => port.id),
+    ["whole_a", "whole_inserted", "whole_b", "element_a", "element_b"],
+  );
+});
+
+test("interface parameters can be atomically inserted and reordered", () => {
+  const { document, registry } = loadFixture();
+  const result = applyGraphOperations(document, [
+    {
+      type: "graph.addInterfacePort",
+      graphId: "child",
+      port: {
+        id: "inserted",
+        title: "Inserted",
+        kind: "data",
+        direction: "input",
+        dataTypeId: "any",
+        dynamic: true,
+      },
+    },
+    {
+      type: "graph.reorderInterfacePorts",
+      graphId: "child",
+      portIds: ["inserted", "parameter"],
+    },
+  ], registry);
+  assert.equal(result.success, true, result.success ? "" : formatDiagnostics(result.diagnostics));
+  assert.deepEqual(
+    result.document.graphs.find((graph) => graph.id === "child")!.interfacePorts.map((port) => port.id),
+    ["inserted", "parameter"],
+  );
 });
 
 test("dynamic subgraph interface types lock on either side and unlock only after all connections are removed", () => {
