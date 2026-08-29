@@ -290,11 +290,6 @@ code {
   min-width: 0;
 }
 
-.vb-field-type {
-  color: var(--vscode-descriptionForeground);
-  font: 10px var(--vscode-editor-font-family);
-}
-
 .vb-field-value > input:not([type="checkbox"]),
 .vb-field-value > select,
 .vb-field-value > textarea,

@@ -41,7 +41,6 @@ export function FieldsEditor(props: FieldsEditorProps): ReactElement {
                 ariaLabel={definition.title}
                 onCommit={(nextValue) => props.onCommit(definition.id, nextValue)}
               />
-              {definition.dataTypeId !== undefined && <span className="vb-field-type">{definition.dataTypeId}</span>}
             </div>
           </div>
         );
