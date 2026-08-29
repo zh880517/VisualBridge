@@ -69,21 +69,8 @@
               "type": "string",
               "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
             }
-          },
-          "catalog": {
-            "type": "string",
-            "description": "Deprecated single Catalog path retained for compatibility.",
-            "deprecated": true,
-            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
           }
         },
-        "allOf": [
-          {
-            "not": {
-              "required": ["catalog", "catalogs"]
-            }
-          }
-        ],
         "additionalProperties": true
       }
     },

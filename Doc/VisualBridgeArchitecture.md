@@ -286,6 +286,14 @@ Entity 的组织方式借鉴旧配置编辑器的 Entity、分组和 Component �
 
 Entity Document 的默认便利后缀是 `.vbentity`，但业务文件可以使用 Project File 声明的任意扩展名。完整格式、Operation、编辑器行为和未来 Unity 生成约束见 `EntityComponentModel.md`。
 
+### Structured Config V1
+
+当前落地的 Structured Config 保存一个普通 C# class / struct 对应的单根配置对象。Project File 的 `editor: "structured"` 只选择编辑器大类；Document Type 的稳定 `id` 直接解析到 Structured Catalog Registry 中一个 Config Type 的规范 ID 或 alias，`include` / `exclude` 负责自定义文件扩展名。类型绑定只有 Project Document Type 一个权威来源，Structured 文件不重复保存 `configTypeId`。
+
+Structured Catalog V1 声明 Config Type、来源追踪和共享 Field Definition。文件只包含 `formatVersion`、稳定 `documentId` 和完整 `properties`，不保存标题、路径或 C# 类型名。创建时递归物化全部默认字段；编辑器复用共享 Form/Reference 原语，修改以 `structured.setField` 批次进入 Core；MCP 复用同一语义，并与 Graph 共用单文件 `baseHash` 锁和原子替换适配器。
+
+当前不提供旧格式兼容或迁移层，也不实现 Unity Catalog Exporter、Importer、Runtime、Debug 或 `ScriptableObject` 工作流。完整契约见 `StructuredConfigModel.md`。
+
 ### Table 与 Excel
 
 Table Document 是平台的通用表格语义模型。Excel 是它支持的一种文件载体和交换格式，不单独形成一套与 Document System 平行的编辑体系。
@@ -323,6 +331,7 @@ AI 不直接读取或改写 `.xlsx` 和 `.csv` 载体。即使 `.csv` 在物理�
 - 可折叠 Graph Inspector，以及节点内联字段编辑。
 - 共享 Form Field Editor：数值、颜色、选择项、对象、集合和 JSON。
 - Entity / Component Editor。
+- Structured Config Editor。
 - Table Editor。
 - Reference Picker。
 - Object、Collection 和 Dictionary Editor。
@@ -415,7 +424,7 @@ Reference Provider 提供：
 
 编辑器、MCP 和 AI 都使用相同 Reference Service，不直接理解各业务数据库。
 
-当前 Reference V1 已在 Core、Graph、Entity、Table、VS Code 与 stdio MCP 中落地。共享 Field Definition 使用 `reference.kind`、结构化 `target` 和 `allowMissing` 声明引用，文档只保存字符串或数值稳定键。首个 `table.row` Provider 按 Project Registry、Table Catalog、有效分表行与 `rowDisplayNamePattern` 搜索和解析记录；VS Code 提供原生选择、诊断和跳转，MCP 提供相同的结构化 search/resolve，并在 GraphOperation/TableOperation 写入时拒绝新引入的引用错误。完整契约见 `ReferenceSystem.md`。
+当前 Reference V1 已在 Core、Graph、Entity、Structured、Table、VS Code 与 stdio MCP 中落地。共享 Field Definition 使用 `reference.kind`、结构化 `target` 和 `allowMissing` 声明引用，文档只保存字符串或数值稳定键。首个 `table.row` Provider 按 Project Registry、Table Catalog、有效分表行与 `rowDisplayNamePattern` 搜索和解析记录；VS Code 提供原生选择、诊断和跳转，MCP 提供相同的结构化 search/resolve，并在 GraphOperation、StructuredOperation 和 TableOperation 写入时拒绝新引入的引用错误。完整契约见 `ReferenceSystem.md`。
 
 ## VS Code 基础插件
 

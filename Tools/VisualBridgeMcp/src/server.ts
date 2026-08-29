@@ -6,6 +6,7 @@ import { GraphService } from "./graphService.js";
 import { VisualBridgeMcpError, VisualBridgeWorkspace } from "./projectWorkspace.js";
 import { TableService } from "./tableService.js";
 import { VisualBridgeReferenceService, referenceDefinition } from "./referenceService.js";
+import { StructuredService } from "./structuredService.js";
 
 const workspaceRoot = process.env.VISUALBRIDGE_WORKSPACE === undefined
   ? process.cwd()
@@ -15,13 +16,14 @@ const tableService = new TableService(workspace);
 const referenceService = new VisualBridgeReferenceService(workspace, tableService);
 tableService.setReferenceService(referenceService);
 const graphService = new GraphService(workspace, referenceService);
+const structuredService = new StructuredService(workspace, referenceService);
 
 function createServer(): McpServer {
   const server = new McpServer(
     { name: "visualbridge", version: "0.1.0" },
     {
       instructions:
-        "Discover a VisualBridge Project first. Use the Reference tool for stable cross-document targets. Read or validate a Graph/Table to obtain baseHash before applying Operations. Never retry a conflict with a stale baseHash, and never edit CSV/XLSX carrier bytes outside the Table tools.",
+        "Discover a VisualBridge Project first. Use the Reference tool for stable cross-document targets. Read or validate a Graph/Table/Structured Config to obtain baseHash before applying Operations. Never retry a conflict with a stale baseHash, and never edit declared carrier files outside their semantic tools.",
     },
   );
 
@@ -288,6 +290,71 @@ function createServer(): McpServer {
       })),
   );
 
+  server.registerTool(
+    "visualbridge_structured_catalog",
+    {
+      title: "Query a VisualBridge Structured Catalog Registry",
+      description:
+        "Loads the selected Structured Document Type's Catalogs and returns its required Config Type binding, summary, or complete Config Type definitions.",
+      inputSchema: z.object({
+        projectFile: z.string().optional(),
+        documentTypeId: z.string().optional(),
+        view: z.enum(["summary", "configTypes"]).default("summary"),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ projectFile, documentTypeId, view }) => handle(() =>
+      structuredService.queryCatalog(projectFile, documentTypeId, view)),
+  );
+
+  server.registerTool(
+    "visualbridge_structured",
+    {
+      title: "Read a VisualBridge Structured Config",
+      description:
+        "Reads one declared Structured Config with its baseHash, semantic document, bound Config Type, shared Field diagnostics, and reference diagnostics.",
+      inputSchema: structuredPathSchema,
+      annotations: { readOnlyHint: true },
+    },
+    async ({ projectFile, documentTypeId, path: structuredPath }) => handle(() =>
+      structuredService.readDocument(structuredPath, projectFile, documentTypeId)),
+  );
+
+  server.registerTool(
+    "visualbridge_validate_structured",
+    {
+      title: "Validate a VisualBridge Structured Config",
+      description:
+        "Runs the strict V1 parser, Project Document Type binding, shared Field validator, and Reference Service without modifying the source.",
+      inputSchema: structuredPathSchema,
+      annotations: { readOnlyHint: true },
+    },
+    async ({ projectFile, documentTypeId, path: structuredPath }) => handle(() =>
+      structuredService.validateDocument(structuredPath, projectFile, documentTypeId)),
+  );
+
+  server.registerTool(
+    "visualbridge_apply_structured_operations",
+    {
+      title: "Atomically apply Structured Config Operations",
+      description:
+        "Applies one non-empty structured.setField batch through shared Field semantics. Requires an exact baseHash, rejects new semantic/reference errors, and atomically replaces the source only after validation.",
+      inputSchema: structuredPathSchema.extend({
+        baseHash: z.string().regex(/^[a-f0-9]{64}$/).describe("Exact SHA-256 hash returned by a prior read or validation."),
+        operations: z.array(z.unknown()).min(1).describe("Ordered StructuredOperation batch applied as one transaction."),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    async ({ projectFile, documentTypeId, path: structuredPath, baseHash, operations }) => handle(() =>
+      structuredService.applyOperations({
+        ...(projectFile === undefined ? {} : { projectFile }),
+        ...(documentTypeId === undefined ? {} : { documentTypeId }),
+        structuredPath,
+        baseHash,
+        operations,
+      })),
+  );
+
   return server;
 }
 
@@ -301,6 +368,12 @@ const tablePathSchema = z.object({
   projectFile: z.string().optional(),
   documentTypeId: z.string().optional(),
   path: z.string().describe("Project-relative declared CSV/XLSX Table path using '/' separators."),
+});
+
+const structuredPathSchema = z.object({
+  projectFile: z.string().optional(),
+  documentTypeId: z.string().optional(),
+  path: z.string().describe("Project-relative declared Structured Config path using '/' separators."),
 });
 
 async function handle(action: () => Promise<Record<string, unknown>>) {

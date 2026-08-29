@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://visualbridge.dev/schema/visualbridge-structured.schema.json",
+  "title": "VisualBridge Structured Document V1",
+  "type": "object",
+  "required": [
+    "formatVersion",
+    "documentId",
+    "properties"
+  ],
+  "properties": {
+    "formatVersion": {
+      "const": 1
+    },
+    "documentId": {
+      "$ref": "#/$defs/identifier"
+    },
+    "properties": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    }
+  }
+}

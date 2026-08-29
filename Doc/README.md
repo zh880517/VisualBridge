@@ -6,8 +6,9 @@
 - `GraphSemanticModel.md`：Graph V3 的稳定身份、Graph Type、连接、类型化子图、Catalog 与安全替换契约。
 - `VSCodeGraphEditor.md`：当前已落地的 Graph V3 格式和 VS Code 编辑能力。
 - `EntityComponentModel.md`：Entity / Component V1、共享字段模型、项目自定义后缀和 VS Code 编辑契约。
+- `StructuredConfigModel.md`：Structured Config V1、Project 唯一类型绑定、共享字段、VS Code 与 MCP 原子编辑契约。
 - `TableSemanticModel.md`：Table Catalog V1、项目级表头行、C# 导出字段/单元格编码、CSV/XLSX Codec、分表与去重策略及 VS Code 编辑契约。
-- `ReferenceSystem.md`：跨 Graph、Entity、Table 的共享引用契约、`table.row` Provider、VS Code 选择/跳转和 MCP 查询校验语义。
+- `ReferenceSystem.md`：跨 Graph、Entity、Structured、Table 的共享引用契约、`table.row` Provider、VS Code 选择/跳转和 MCP 查询校验语义。
 - `VisualBridgeMcp.md`：项目级 stdio MCP 的工具边界、查询契约、`baseHash` 并发控制和原子写入语义。
 - `FlowGraphMigration.md`：ActionEditor FlowGraph 节点声明、功能对照和 Unity Catalog 导出迁移路线。
 

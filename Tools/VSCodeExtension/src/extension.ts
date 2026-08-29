@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { TABLE_EDITOR_ID } from "@visualbridge/table";
 import { createEntityDocument } from "./commands/createEntityDocument";
 import { createGraphDocument } from "./commands/createGraphDocument";
+import { createStructuredDocument } from "./commands/createStructuredDocument";
 import {
   DEFAULT_EDITOR_VIEW_TYPE,
   DocumentEditorProvider,
@@ -93,6 +94,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand("visualbridge.createEntityDocument", async () => {
       await createEntityDocument(projects);
+    }),
+    vscode.commands.registerCommand("visualbridge.createStructuredDocument", async () => {
+      await createStructuredDocument(projects);
     }),
     vscode.commands.registerCommand(REVEAL_REFERENCE_COMMAND, async (location) => {
       await tableEditorProvider.revealReference(location);

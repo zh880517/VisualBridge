@@ -1,0 +1,20 @@
+{
+  "formatVersion": 1,
+  "documentId": "sample.game.settings.default",
+  "properties": {
+    "accent": "#4D88FFFF",
+    "checkpoints": [
+      0,
+      10
+    ],
+    "maxPlayers": 5,
+    "primarySkillId": 101,
+    "spawn": {
+      "position": {
+        "x": 2,
+        "y": 0,
+        "z": 4
+      }
+    }
+  }
+}

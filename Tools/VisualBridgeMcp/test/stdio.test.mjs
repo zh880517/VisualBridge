@@ -12,6 +12,7 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const repositoryRoot = path.resolve(packageRoot, "../..");
 const fixtureRoot = path.join(repositoryRoot, "TestData", "GraphSemanticProject");
 const tableFixtureRoot = path.join(repositoryRoot, "TestData", "TableSemanticProject");
+const structuredFixtureRoot = path.join(repositoryRoot, "TestData", "StructuredSemanticProject");
 const serverPath = path.join(packageRoot, "dist", "server.js");
 
 test("stdio MCP discovers, queries, validates, and atomically edits a Graph with baseHash conflicts", async () => {
@@ -42,6 +43,7 @@ test("stdio MCP discovers, queries, validates, and atomically edits a Graph with
       listed.tools.map((tool) => tool.name).sort(),
       [
         "visualbridge_apply_graph_operations",
+        "visualbridge_apply_structured_operations",
         "visualbridge_apply_table_operations",
         "visualbridge_catalog",
         "visualbridge_graph",
@@ -49,9 +51,12 @@ test("stdio MCP discovers, queries, validates, and atomically edits a Graph with
         "visualbridge_references",
         "visualbridge_search_nodes",
         "visualbridge_search_table_rows",
+        "visualbridge_structured",
+        "visualbridge_structured_catalog",
         "visualbridge_table",
         "visualbridge_table_catalog",
         "visualbridge_validate_graph",
+        "visualbridge_validate_structured",
         "visualbridge_validate_table",
       ],
     );
@@ -183,6 +188,151 @@ test("stdio MCP discovers, queries, validates, and atomically edits a Graph with
 
     const graphDirectoryEntries = await readdir(path.dirname(graphFile));
     assert.ok(!graphDirectoryEntries.some((name) => name.includes(".visualbridge")));
+  } catch (error) {
+    assert.fail(`${error instanceof Error ? error.stack ?? error.message : String(error)}\nMCP stderr:\n${stderr}`);
+  } finally {
+    await client.close().catch(() => undefined);
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("stdio MCP reads and atomically edits a Structured Config with shared references", async () => {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), "visualbridge-structured-mcp-"));
+  const projectRoot = path.join(temporaryRoot, "StructuredSemanticProject");
+  await cp(structuredFixtureRoot, projectRoot, { recursive: true });
+
+  const environment = Object.fromEntries(
+    Object.entries(process.env).filter((entry) => entry[1] !== undefined),
+  );
+  environment.VISUALBRIDGE_WORKSPACE = temporaryRoot;
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [serverPath],
+    env: environment,
+    stderr: "pipe",
+  });
+  let stderr = "";
+  transport.stderr?.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+  const client = new Client({ name: "visualbridge-structured-stdio-test", version: "0.1.0" });
+
+  try {
+    await client.connect(transport);
+    const projects = await call(client, "visualbridge_project", {});
+    assert.equal(projects.projects.length, 1);
+    assert.equal(projects.projects[0].projectId, "visualbridge.structured-semantics");
+    const projectFile = projects.projects[0].projectFile;
+
+    const catalog = await call(client, "visualbridge_structured_catalog", { projectFile });
+    assert.deepEqual(catalog.counts, { configTypes: 1 });
+    assert.equal(catalog.requiredConfigTypeId, "sample.game.settings");
+    const catalogTypes = await call(client, "visualbridge_structured_catalog", {
+      projectFile,
+      view: "configTypes",
+    });
+    assert.equal(catalogTypes.configTypes[0].source.typeName, "Game.GameSettings");
+
+    const referenceSearch = await call(client, "visualbridge_references", {
+      projectFile,
+      action: "search",
+      kind: "table.row",
+      target: { tableTypeId: "sample.table.skills", sheetId: "skills" },
+      query: "Fireball",
+    });
+    assert.equal(referenceSearch.results[0].value, 101);
+
+    const structuredPath = "Config/Game.gamesettings";
+    const document = await call(client, "visualbridge_structured", { projectFile, path: structuredPath });
+    assert.match(document.baseHash, /^[a-f0-9]{64}$/);
+    assert.equal(document.document.documentId, "sample.game.settings.default");
+    assert.equal(document.configType.title, "Game Settings");
+    assert.ok(!document.diagnostics.some((diagnostic) => diagnostic.severity === "error"));
+
+    const validation = await call(client, "visualbridge_validate_structured", {
+      projectFile,
+      path: structuredPath,
+    });
+    assert.equal(validation.valid, true);
+    assert.equal(validation.baseHash, document.baseHash);
+
+    const structuredFile = path.join(projectRoot, "Config", "Game.gamesettings");
+    const beforeConflict = await readFile(structuredFile, "utf8");
+    const conflict = await call(client, "visualbridge_apply_structured_operations", {
+      projectFile,
+      path: structuredPath,
+      baseHash: "0".repeat(64),
+      operations: [{ type: "structured.setField", fieldId: "maxPlayers", value: 7 }],
+    });
+    assert.equal(conflict.status, "conflict");
+    assert.equal(conflict.reason, "baseHashMismatch");
+    assert.equal(await readFile(structuredFile, "utf8"), beforeConflict);
+
+    const lockFile = path.join(path.dirname(structuredFile), ".Game.gamesettings.visualbridge.lock");
+    await writeFile(lockFile, "external writer\n", "utf8");
+    const locked = await call(client, "visualbridge_apply_structured_operations", {
+      projectFile,
+      path: structuredPath,
+      baseHash: document.baseHash,
+      operations: [{ type: "structured.setField", fieldId: "maxPlayers", value: 7 }],
+    });
+    assert.equal(locked.status, "conflict");
+    assert.equal(locked.reason, "writeInProgress");
+    await unlink(lockFile);
+
+    const applied = await call(client, "visualbridge_apply_structured_operations", {
+      projectFile,
+      path: structuredPath,
+      baseHash: document.baseHash,
+      operations: [
+        { type: "structured.setField", fieldId: "maxPlayers", value: 7 },
+        { type: "structured.setField", fieldId: "checkpoints", value: [0, 12, 24] },
+      ],
+    });
+    assert.equal(applied.status, "applied");
+    assert.notEqual(applied.hash, document.baseHash);
+
+    const stale = await call(client, "visualbridge_apply_structured_operations", {
+      projectFile,
+      path: structuredPath,
+      baseHash: document.baseHash,
+      operations: [{ type: "structured.setField", fieldId: "maxPlayers", value: 8 }],
+    });
+    assert.equal(stale.status, "conflict");
+
+    const updated = await call(client, "visualbridge_structured", { projectFile, path: structuredPath });
+    assert.equal(updated.document.properties.maxPlayers, 7);
+    assert.deepEqual(updated.document.properties.checkpoints, [0, 12, 24]);
+    assert.equal(updated.baseHash, applied.hash);
+
+    const invalidBatch = await call(client, "visualbridge_apply_structured_operations", {
+      projectFile,
+      path: structuredPath,
+      baseHash: updated.baseHash,
+      operations: [
+        { type: "structured.setField", fieldId: "maxPlayers", value: 8 },
+        { type: "structured.setField", fieldId: "accent", value: 123 },
+      ],
+    });
+    assert.equal(invalidBatch.status, "invalid");
+    const afterInvalid = await call(client, "visualbridge_structured", { projectFile, path: structuredPath });
+    assert.equal(afterInvalid.baseHash, updated.baseHash);
+    assert.equal(afterInvalid.document.properties.maxPlayers, 7);
+
+    const invalidReference = await call(client, "visualbridge_apply_structured_operations", {
+      projectFile,
+      path: structuredPath,
+      baseHash: updated.baseHash,
+      operations: [{ type: "structured.setField", fieldId: "primarySkillId", value: 999999 }],
+    });
+    assert.equal(invalidReference.status, "invalid");
+    assert.equal(
+      (await call(client, "visualbridge_structured", { projectFile, path: structuredPath })).baseHash,
+      updated.baseHash,
+    );
+
+    const directoryEntries = await readdir(path.dirname(structuredFile));
+    assert.ok(!directoryEntries.some((name) => name.includes(".visualbridge")));
   } catch (error) {
     assert.fail(`${error instanceof Error ? error.stack ?? error.message : String(error)}\nMCP stderr:\n${stderr}`);
   } finally {

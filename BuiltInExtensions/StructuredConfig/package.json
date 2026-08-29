@@ -1,0 +1,17 @@
+{
+  "name": "@visualbridge/structured",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "index.ts",
+  "types": "index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build --workspace @visualbridge/core && npm run build && node --test dist/test/structuredSemantics.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.1",
+    "@visualbridge/core": "*"
+  }
+}

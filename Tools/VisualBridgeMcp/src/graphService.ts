@@ -1,6 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
-import { open, readFile, rename, stat, unlink } from "node:fs/promises";
-import path from "node:path";
+import { readFile } from "node:fs/promises";
 import type { DocumentDiagnostic } from "@visualbridge/core";
 import {
   applyGraphOperations,
@@ -23,6 +21,7 @@ import {
   type ProjectContext,
 } from "./projectWorkspace.js";
 import type { VisualBridgeReferenceService } from "./referenceService.js";
+import { applyAtomicTextFileEdit, hashBytes } from "./atomicTextFile.js";
 
 interface CatalogContext {
   readonly project: ProjectContext;
@@ -200,35 +199,17 @@ export class GraphService {
       options.projectFile,
       options.documentTypeId,
     );
-    const lockPath = path.join(
-      path.dirname(context.absoluteGraphPath),
-      `.${path.basename(context.absoluteGraphPath)}.visualbridge.lock`,
-    );
-    let lockHandle;
-    try {
-      lockHandle = await open(lockPath, "wx");
-      await lockHandle.writeFile(`${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, "utf8");
-      await lockHandle.sync();
-    } catch (errorValue) {
-      if (isNodeError(errorValue, "EEXIST")) {
-        const bytes = await readFile(context.absoluteGraphPath);
-        return conflictResult(context, options.baseHash, hashBytes(bytes), "writeInProgress");
-      }
-      if (lockHandle !== undefined) {
-        await lockHandle.close().catch(() => undefined);
-        await unlink(lockPath).catch(() => undefined);
-      }
-      throw errorValue;
-    }
-
-    let temporaryPath: string | undefined;
-    try {
-      const bytes = await readFile(context.absoluteGraphPath);
-      const actualHash = hashBytes(bytes);
-      if (actualHash !== options.baseHash) {
-        return conflictResult(context, options.baseHash, actualHash, "baseHashMismatch");
-      }
-
+    return applyAtomicTextFileEdit({
+      absolutePath: context.absoluteGraphPath,
+      expectedBaseHash: options.baseHash,
+      metadata: {
+        projectFile: context.project.projectFile,
+        documentTypeId: context.documentType.id,
+        path: context.graphPath,
+      },
+      verificationErrorCode: "graph.atomicWriteVerificationFailed",
+      subject: `Graph '${context.graphPath}'`,
+    }, async (bytes) => {
       const catalog = await this.loadCatalog(
         context.project,
         context.documentType.id,
@@ -236,14 +217,14 @@ export class GraphService {
       );
       const parseResult = parseGraphDocument(decodeUtf8(bytes, context.graphPath));
       if (!parseResult.success) {
-        return invalidResult(context, actualHash, [...catalog.diagnostics, ...parseResult.diagnostics]);
+        return { valid: false, diagnostics: [...catalog.diagnostics, ...parseResult.diagnostics] };
       }
       const operationResult = applyGraphOperations(parseResult.document, options.operations, catalog.registry);
       if (!operationResult.success) {
-        return invalidResult(context, actualHash, operationResult.diagnostics);
+        return { valid: false, diagnostics: operationResult.diagnostics };
       }
       if (operationResult.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
-        return invalidResult(context, actualHash, operationResult.diagnostics);
+        return { valid: false, diagnostics: operationResult.diagnostics };
       }
       const referenceResult = await this.references.validateChange(
         context.project.projectFile,
@@ -251,67 +232,15 @@ export class GraphService {
         collectGraphReferences(operationResult.document, catalog.registry),
       );
       if (referenceResult.introducedErrors.length > 0) {
-        return invalidResult(context, actualHash, referenceResult.introducedErrors);
+        return { valid: false, diagnostics: referenceResult.introducedErrors };
       }
       const operationDiagnostics = [...operationResult.diagnostics, ...referenceResult.diagnostics];
-      const nextText = serializeGraphDocument(operationResult.document);
-      const nextBytes = Buffer.from(nextText, "utf8");
-      const nextHash = hashBytes(nextBytes);
-      if (nextHash === actualHash && nextBytes.equals(bytes)) {
-        return {
-          status: "unchanged",
-          projectFile: context.project.projectFile,
-          path: context.graphPath,
-          baseHash: actualHash,
-          hash: actualHash,
-          diagnostics: operationDiagnostics,
-        };
-      }
-
-      temporaryPath = path.join(
-        path.dirname(context.absoluteGraphPath),
-        `.${path.basename(context.absoluteGraphPath)}.visualbridge-${randomUUID()}.tmp`,
-      );
-      const targetStat = await stat(context.absoluteGraphPath);
-      const temporaryHandle = await open(temporaryPath, "wx", targetStat.mode);
-      try {
-        await temporaryHandle.writeFile(nextBytes);
-        await temporaryHandle.sync();
-      } finally {
-        await temporaryHandle.close();
-      }
-
-      const beforeReplaceHash = hashBytes(await readFile(context.absoluteGraphPath));
-      if (beforeReplaceHash !== actualHash) {
-        return conflictResult(context, options.baseHash, beforeReplaceHash, "changedBeforeReplace");
-      }
-      await rename(temporaryPath, context.absoluteGraphPath);
-      temporaryPath = undefined;
-      const persistedHash = hashBytes(await readFile(context.absoluteGraphPath));
-      if (persistedHash !== nextHash) {
-        throw new VisualBridgeMcpError(
-          "graph.atomicWriteVerificationFailed",
-          `Graph '${context.graphPath}' did not match the serialized transaction after atomic replacement.`,
-        );
-      }
       return {
-        status: "applied",
-        projectFile: context.project.projectFile,
-        documentTypeId: context.documentType.id,
-        path: context.graphPath,
-        baseHash: actualHash,
-        hash: nextHash,
+        valid: true,
+        nextBytes: Buffer.from(serializeGraphDocument(operationResult.document), "utf8"),
         diagnostics: operationDiagnostics,
       };
-    } finally {
-      if (temporaryPath !== undefined) {
-        await unlink(temporaryPath).catch(() => undefined);
-      }
-      if (lockHandle !== undefined) {
-        await lockHandle.close().catch(() => undefined);
-        await unlink(lockPath).catch(() => undefined);
-      }
-    }
+    });
   }
 
   private async loadGraph(
@@ -394,38 +323,6 @@ export class GraphService {
   }
 }
 
-function conflictResult(
-  context: GraphDocumentContext,
-  expectedBaseHash: string,
-  actualHash: string,
-  reason: string,
-): Record<string, unknown> {
-  return {
-    status: "conflict",
-    reason,
-    projectFile: context.project.projectFile,
-    documentTypeId: context.documentType.id,
-    path: context.graphPath,
-    expectedBaseHash,
-    actualHash,
-  };
-}
-
-function invalidResult(
-  context: GraphDocumentContext,
-  baseHash: string,
-  diagnostics: readonly DocumentDiagnostic[],
-): Record<string, unknown> {
-  return {
-    status: "invalid",
-    projectFile: context.project.projectFile,
-    documentTypeId: context.documentType.id,
-    path: context.graphPath,
-    baseHash,
-    diagnostics,
-  };
-}
-
 function decodeUtf8(bytes: Uint8Array, displayPath: string): string {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -435,12 +332,4 @@ function decodeUtf8(bytes: Uint8Array, displayPath: string): string {
       `File '${displayPath}' is not valid UTF-8: ${errorValue instanceof Error ? errorValue.message : String(errorValue)}`,
     );
   }
-}
-
-function hashBytes(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
-function isNodeError(errorValue: unknown, code: string): boolean {
-  return errorValue instanceof Error && "code" in errorValue && errorValue.code === code;
 }

@@ -32,7 +32,7 @@ For Webview UI, prefer maintained open-source React components over custom brows
 
 ## Testing Guidelines
 
-Run `npm test` for the fixed Graph, Entity, and MCP semantic suites. Add host-independent tests beside the relevant built-in extension and keep reusable fixtures under `TestData/`. No coverage threshold is established. Unless explicitly requested, do not add Unity tests. Validate Unity changes with the relevant `dotnet build` command and report when generated project files or unavailable Unity assemblies limit verification.
+Run `npm test` for the fixed Core, Graph, Entity, Structured, Table, and MCP semantic suites. Add host-independent tests beside the relevant built-in extension and keep reusable fixtures under `TestData/`. No coverage threshold is established. Unless explicitly requested, do not add Unity tests. Validate Unity changes with the relevant `dotnet build` command and report when generated project files or unavailable Unity assemblies limit verification.
 
 ## Commit & Pull Request Guidelines
 

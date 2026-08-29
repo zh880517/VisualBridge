@@ -226,7 +226,7 @@ Component Type 描述可添加到 Entity 的运行时组件结构：
 
 实际 Catalog 中 `position.fields` 继续声明 `x`、`y`、`z`。对象和数组可以递归组合；数组通过 `item` 描述元素，并由共享表单提供新增、删除和排序。
 
-Entity、Table 和后续 Structured Document 的字段 List 共享同一个编辑器和样式，不得按 Document Type 复制实现。每个元素右侧使用同一组功能图标：拖拽手柄负责排序，添加按钮在当前元素后插入默认值，删除按钮移除当前元素；空 List 保留唯一的添加入口。拖拽由 dnd-kit Sortable 负责鼠标、触摸和键盘交互，完成时仍只提交一次完整字段值，继续经过所属 Document 的 Operation、Undo/Redo 与校验流程。
+Entity、Structured 和 Table Document 的字段 List 共享同一个编辑器和样式，不得按 Document Type 复制实现。每个元素右侧使用同一组功能图标：拖拽手柄负责排序，添加按钮在当前元素后插入默认值，删除按钮移除当前元素；空 List 保留唯一的添加入口。拖拽由 dnd-kit Sortable 负责鼠标、触摸和键盘交互，完成时仍只提交一次完整字段值，继续经过所属 Document 的 Operation、Undo/Redo 与校验流程。
 
 ### 通用编辑器种类
 

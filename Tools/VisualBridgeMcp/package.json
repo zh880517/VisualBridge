@@ -16,6 +16,7 @@
     "@modelcontextprotocol/server": "^2.0.0",
     "@visualbridge/core": "*",
     "@visualbridge/graph": "*",
+    "@visualbridge/structured": "*",
     "@visualbridge/table": "*",
     "minimatch": "^10.2.6",
     "zod": "^4.4.3"

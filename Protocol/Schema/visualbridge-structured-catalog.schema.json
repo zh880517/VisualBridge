@@ -1,0 +1,355 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://visualbridge.dev/schema/visualbridge-structured-catalog.schema.json",
+  "title": "VisualBridge Structured Catalog V1",
+  "type": "object",
+  "required": [
+    "formatVersion",
+    "catalogId",
+    "title",
+    "configTypes"
+  ],
+  "properties": {
+    "formatVersion": {
+      "const": 1
+    },
+    "catalogId": {
+      "$ref": "#/$defs/identifier"
+    },
+    "title": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "configTypes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/configType"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "providerId",
+        "typeName"
+      ],
+      "properties": {
+        "providerId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "typeName": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "configType": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "aliases",
+        "properties"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "title": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "aliases": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "properties": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "field": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "aliases",
+        "valueType",
+        "defaultValue"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "title": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "aliases": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "valueType": {
+          "enum": [
+            "string",
+            "number",
+            "boolean",
+            "object",
+            "array",
+            "json"
+          ]
+        },
+        "dataTypeId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "defaultValue": true,
+        "editor": {
+          "$ref": "#/$defs/editor"
+        },
+        "reference": {
+          "$ref": "#/$defs/reference"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field"
+          }
+        },
+        "item": {
+          "$ref": "#/$defs/valueDefinition"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "valueType": {
+                "const": "object"
+              }
+            },
+            "required": [
+              "valueType"
+            ]
+          },
+          "then": {
+            "required": [
+              "fields"
+            ],
+            "properties": {
+              "item": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "valueType": {
+                "const": "array"
+              }
+            },
+            "required": [
+              "valueType"
+            ]
+          },
+          "then": {
+            "required": [
+              "item"
+            ],
+            "properties": {
+              "fields": false
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "valueDefinition": {
+      "type": "object",
+      "required": [
+        "valueType",
+        "defaultValue"
+      ],
+      "properties": {
+        "valueType": {
+          "enum": [
+            "string",
+            "number",
+            "boolean",
+            "object",
+            "array",
+            "json"
+          ]
+        },
+        "dataTypeId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "defaultValue": true,
+        "editor": {
+          "$ref": "#/$defs/editor"
+        },
+        "reference": {
+          "$ref": "#/$defs/reference"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field"
+          }
+        },
+        "item": {
+          "$ref": "#/$defs/valueDefinition"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "valueType": {
+                "const": "object"
+              }
+            },
+            "required": [
+              "valueType"
+            ]
+          },
+          "then": {
+            "required": [
+              "fields"
+            ],
+            "properties": {
+              "item": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "valueType": {
+                "const": "array"
+              }
+            },
+            "required": [
+              "valueType"
+            ]
+          },
+          "then": {
+            "required": [
+              "item"
+            ],
+            "properties": {
+              "fields": false
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "reference": {
+      "type": "object",
+      "required": [
+        "kind",
+        "target"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/identifier"
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "allowMissing": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "editorOption": {
+      "type": "object",
+      "required": [
+        "title",
+        "value"
+      ],
+      "properties": {
+        "title": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "value": true
+      },
+      "additionalProperties": false
+    },
+    "editor": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "text",
+            "multiline",
+            "number",
+            "checkbox",
+            "select",
+            "color",
+            "reference",
+            "json"
+          ]
+        },
+        "readOnly": {
+          "type": "boolean",
+          "default": false
+        },
+        "integer": {
+          "type": "boolean",
+          "default": false
+        },
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        },
+        "step": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/editorOption"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

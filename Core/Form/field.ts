@@ -180,6 +180,55 @@ export function normalizeJsonValue(value: JsonValue): JsonValue {
   return value;
 }
 
+export function serializeFieldDefinition(definition: FieldDefinition): Readonly<Record<string, JsonValue>> {
+  return {
+    id: definition.id,
+    title: definition.title,
+    aliases: [...definition.aliases].sort(),
+    ...(definition.description === undefined ? {} : { description: definition.description }),
+    ...serializeFieldValueDefinition(definition),
+  };
+}
+
+export function serializeFieldValueDefinition(
+  definition: FieldValueDefinition,
+): Readonly<Record<string, JsonValue>> {
+  return {
+    valueType: definition.valueType,
+    ...(definition.dataTypeId === undefined ? {} : { dataTypeId: definition.dataTypeId }),
+    defaultValue: normalizeJsonValue(definition.defaultValue),
+    ...(definition.editor === undefined ? {} : {
+      editor: {
+        kind: definition.editor.kind,
+        readOnly: definition.editor.readOnly,
+        integer: definition.editor.integer,
+        ...(definition.editor.min === undefined ? {} : { min: definition.editor.min }),
+        ...(definition.editor.max === undefined ? {} : { max: definition.editor.max }),
+        ...(definition.editor.step === undefined ? {} : { step: definition.editor.step }),
+        ...(definition.editor.options.length === 0 ? {} : {
+          options: definition.editor.options.map((option) => ({
+            title: option.title,
+            value: normalizeJsonValue(option.value),
+          })),
+        }),
+      },
+    }),
+    ...(definition.reference === undefined ? {} : {
+      reference: {
+        kind: definition.reference.kind,
+        target: normalizeJsonValue(definition.reference.target),
+        ...(definition.reference.allowMissing ? { allowMissing: true } : {}),
+      },
+    }),
+    ...(definition.valueType === "object"
+      ? { fields: definition.fields.map(serializeFieldDefinition) }
+      : {}),
+    ...(definition.valueType === "array" && definition.item !== undefined
+      ? { item: serializeFieldValueDefinition(definition.item) }
+      : {}),
+  };
+}
+
 export function isJsonValue(value: unknown): value is JsonValue {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
     return true;

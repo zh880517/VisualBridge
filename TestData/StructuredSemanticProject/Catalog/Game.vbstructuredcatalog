@@ -1,0 +1,149 @@
+{
+  "formatVersion": 1,
+  "catalogId": "sample.structured.catalog",
+  "title": "Game Settings",
+  "configTypes": [
+    {
+      "id": "sample.game.settings",
+      "title": "Game Settings",
+      "aliases": [
+        "legacy.game.settings"
+      ],
+      "description": "Runtime game settings stored without ScriptableObject.",
+      "source": {
+        "providerId": "csharp",
+        "typeName": "Game.GameSettings"
+      },
+      "properties": [
+        {
+          "id": "maxPlayers",
+          "title": "Max Players",
+          "aliases": [
+            "playerLimit"
+          ],
+          "valueType": "number",
+          "dataTypeId": "int",
+          "defaultValue": 5,
+          "editor": {
+            "kind": "number",
+            "integer": true,
+            "min": 1,
+            "max": 10
+          }
+        },
+        {
+          "id": "accent",
+          "title": "Accent",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "color",
+          "defaultValue": "#4D88FFFF",
+          "editor": {
+            "kind": "color"
+          }
+        },
+        {
+          "id": "spawn",
+          "title": "Spawn",
+          "aliases": [],
+          "valueType": "object",
+          "dataTypeId": "Game.SpawnSettings",
+          "defaultValue": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            }
+          },
+          "fields": [
+            {
+              "id": "position",
+              "title": "Position",
+              "aliases": [],
+              "valueType": "object",
+              "dataTypeId": "UnityEngine.Vector3",
+              "defaultValue": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "fields": [
+                {
+                  "id": "x",
+                  "title": "X",
+                  "aliases": [],
+                  "valueType": "number",
+                  "dataTypeId": "float",
+                  "defaultValue": 0,
+                  "editor": {
+                    "kind": "number"
+                  }
+                },
+                {
+                  "id": "y",
+                  "title": "Y",
+                  "aliases": [],
+                  "valueType": "number",
+                  "dataTypeId": "float",
+                  "defaultValue": 0,
+                  "editor": {
+                    "kind": "number"
+                  }
+                },
+                {
+                  "id": "z",
+                  "title": "Z",
+                  "aliases": [],
+                  "valueType": "number",
+                  "dataTypeId": "float",
+                  "defaultValue": 0,
+                  "editor": {
+                    "kind": "number"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "checkpoints",
+          "title": "Checkpoints",
+          "aliases": [],
+          "valueType": "array",
+          "dataTypeId": "list.float",
+          "defaultValue": [
+            0,
+            10
+          ],
+          "item": {
+            "valueType": "number",
+            "dataTypeId": "float",
+            "defaultValue": 0,
+            "editor": {
+              "kind": "number"
+            }
+          }
+        },
+        {
+          "id": "primarySkillId",
+          "title": "Primary Skill",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "int",
+          "defaultValue": 101,
+          "editor": {
+            "kind": "reference",
+            "integer": true
+          },
+          "reference": {
+            "kind": "table.row",
+            "target": {
+              "tableTypeId": "sample.table.skills",
+              "sheetId": "skills"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

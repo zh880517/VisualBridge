@@ -135,19 +135,15 @@ function readDocumentTypes(
     const exclude = entry.exclude === undefined
       ? []
       : readGlobPatterns(entry.exclude, `${basePath}.exclude`, issues, true);
-    const hasCatalog = entry.catalog !== undefined;
-    const hasCatalogs = entry.catalogs !== undefined;
-    if (hasCatalog && hasCatalogs) {
+    if (entry.catalog !== undefined) {
       issues.push({
-        path: `${basePath}.catalogs`,
-        message: "'catalog' and 'catalogs' cannot be declared together.",
+        path: `${basePath}.catalog`,
+        message: "Single 'catalog' is not supported; declare the 'catalogs' array.",
       });
     }
-    const catalogs = hasCatalogs
+    const catalogs = entry.catalogs !== undefined
       ? readRelativePaths(entry.catalogs, `${basePath}.catalogs`, issues)
-      : hasCatalog
-        ? toArray(readRelativePath(entry.catalog, `${basePath}.catalog`, issues))
-        : [];
+      : [];
 
     if (id !== undefined && seenIds.has(id)) {
       issues.push({ path: `${basePath}.id`, message: `Duplicate document type id '${id}'.` });
@@ -160,10 +156,6 @@ function readDocumentTypes(
   });
 
   return documentTypes;
-}
-
-function toArray(value: string | undefined): readonly string[] {
-  return value === undefined ? [] : [value];
 }
 
 function readIdentifier(

@@ -44,6 +44,13 @@ export interface TableDocumentContext {
   readonly absoluteTablePath: string;
 }
 
+export interface StructuredDocumentContext {
+  readonly project: ProjectContext;
+  readonly documentType: DocumentTypeDefinition;
+  readonly structuredPath: string;
+  readonly absoluteStructuredPath: string;
+}
+
 export interface DeclaredDocumentContext {
   readonly project: ProjectContext;
   readonly documentType: DocumentTypeDefinition;
@@ -252,6 +259,58 @@ export class VisualBridgeWorkspace {
         candidates.length === 0
           ? "The selected project does not declare the requested Table Document Type."
           : "The selected project declares multiple Table Document Types; provide documentTypeId.",
+      );
+    }
+    return { project, documentType: candidates[0]! };
+  }
+
+  public async resolveStructuredDocument(
+    structuredPath: string,
+    projectFile?: string,
+    documentTypeId?: string,
+  ): Promise<StructuredDocumentContext> {
+    const project = await this.resolveProject(projectFile);
+    const normalizedStructuredPath = normalizeRelativePath(structuredPath, "path");
+    const candidates = findMatchingDocumentTypes(
+      project.definition,
+      normalizedStructuredPath,
+      matches,
+      {
+        editor: "structured",
+        ...(documentTypeId === undefined ? {} : { documentTypeId }),
+      },
+    );
+    if (candidates.length !== 1) {
+      throw new VisualBridgeMcpError(
+        candidates.length === 0 ? "structured.notDeclared" : "structured.ambiguousDocumentType",
+        candidates.length === 0
+          ? `Structured Config '${normalizedStructuredPath}' is not declared by the selected VisualBridge Project.`
+          : `Structured Config '${normalizedStructuredPath}' matches multiple Document Types; provide documentTypeId.`,
+      );
+    }
+    return {
+      project,
+      documentType: candidates[0]!,
+      structuredPath: normalizedStructuredPath,
+      absoluteStructuredPath: await resolveExistingProjectPath(project, normalizedStructuredPath),
+    };
+  }
+
+  public async resolveStructuredDocumentType(
+    projectFile?: string,
+    documentTypeId?: string,
+  ): Promise<{ readonly project: ProjectContext; readonly documentType: DocumentTypeDefinition }> {
+    const project = await this.resolveProject(projectFile);
+    const candidates = project.definition.documentTypes.filter((documentType) =>
+      documentType.editor === "structured"
+      && (documentTypeId === undefined || documentType.id === documentTypeId),
+    );
+    if (candidates.length !== 1) {
+      throw new VisualBridgeMcpError(
+        candidates.length === 0 ? "structured.documentTypeNotFound" : "structured.ambiguousDocumentType",
+        candidates.length === 0
+          ? "The selected project does not declare the requested Structured Document Type."
+          : "The selected project declares multiple Structured Document Types; provide documentTypeId.",
       );
     }
     return { project, documentType: candidates[0]! };

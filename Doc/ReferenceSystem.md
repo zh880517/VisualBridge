@@ -2,7 +2,7 @@
 
 ## 1. 范围
 
-Reference System 为 Graph、Entity、Table 与后续 Structured Document 提供同一套跨文档引用契约。字段所属模块只声明“引用什么”，不直接扫描文件、解析业务表或实现选择器。Core 负责稳定契约、Provider 注册、搜索、解析和诊断；VS Code 与 MCP 只负责宿主交互和持久化边界。
+Reference System 为 Graph、Entity、Structured 和 Table Document 提供同一套跨文档引用契约。字段所属模块只声明“引用什么”，不直接扫描文件、解析业务表或实现选择器。Core 负责稳定契约、Provider 注册、搜索、解析和诊断；VS Code 与 MCP 只负责宿主交互和持久化边界。
 
 V1 已实现 `table.row`：任意共享字段可以按 Table Type、逻辑 Sheet 和可选 Document Type 引用一条有效表格记录。Unity Asset、运行时实例、反向查找和预览 Provider 仍是后续能力；当前不增加 Unity Exporter、Importer、Runtime 或 Debug 代码。
 
@@ -39,7 +39,7 @@ Reference 是共享 Field Definition 的可选语义，不是独立 JSON 对象�
 - 引用字段的 `valueType` 只能是 `string` 或 `number`，解析使用严格类型相等；数值 `101` 不等于字符串 `"101"`。
 - `editor.kind` 只决定使用通用引用控件，字段值的 JSON 形态和运行时 `dataTypeId` 仍由 Field Definition 决定。
 
-Graph 属性、Graph 动态端口值、Entity 根字段、Component 字段和 Table 单元格均递归收集 Reference Occurrence。对象、List 和 Catalog 默认值沿用同一遍历规则，不为每种 Document 重复实现引用解析。
+Graph 属性、Graph 动态端口值、Entity 根字段、Component 字段、Structured 字段和 Table 单元格均递归收集 Reference Occurrence。对象、List 和 Catalog 默认值沿用同一遍历规则，不为每种 Document 重复实现引用解析。
 
 ## 3. `table.row` Provider
 
@@ -80,7 +80,7 @@ Document Operation 仍先在副本上完整执行。宿主分别校验修改前�
 
 ## 5. VS Code 编辑闭环
 
-共享 Form Editor 用只读稳定值加通用搜索、跳转图标呈现引用，不允许绕过 Provider 手输不受约束的值。Graph 自有属性布局复用同一 Webview Reference Bridge，Entity 和 Table 直接复用共享字段控件。
+共享 Form Editor 用只读稳定值加通用搜索、跳转图标呈现引用，不允许绕过 Provider 手输不受约束的值。Graph 自有属性布局复用同一 Webview Reference Bridge，Entity、Structured 和 Table 直接复用共享字段控件。
 
 选择按钮向 Extension Host 发送结构化 definition 和当前值，由原生 Quick Pick 展示候选；Webview 只接收最终稳定值。跳转按钮先解析引用，歧义时要求选择具体目标，再由 Table Editor 打开对应载体并定位物理 Sheet/Row。
 
@@ -93,8 +93,8 @@ Document Operation 仍先在副本上完整执行。宿主分别校验修改前�
 - `search`：传入 `kind`、`target`、可选 `query`、`limit` 和 `allowMissing`，返回结构化候选及定位。
 - `resolve`：传入相同 definition 与字符串或数值 `value`，返回解析状态和候选。
 
-Graph/Table 的读取与校验结果会附加共享 Reference 诊断。GraphOperation/TableOperation 写入在原有 `baseHash`、锁和原子替换之外，还会拒绝本次批次新引入的 Reference error。MCP 不重新实现 Table Registry、分表去重、行显示名或字段递归规则。
+Graph/Structured/Table 的读取与校验结果会附加共享 Reference 诊断。GraphOperation/StructuredOperation/TableOperation 写入在原有 `baseHash`、锁和原子替换之外，还会拒绝本次批次新引入的 Reference error。MCP 不重新实现 Table Registry、分表去重、行显示名或字段递归规则。
 
 ## 7. 自动化基线
 
-`npm test` 覆盖 Field Definition 解析、嵌套 occurrence、Provider 稳定排序、严格类型解析、缺失与歧义诊断、Table 有效行候选和定位。`TestData/EntitySemanticProject` 固定样例包含一个 Entity 数值字段到自定义扩展名分表的 `table.row` 引用；真实 stdio MCP 测试会搜索该引用并验证缺失解析结果。测试不包含 Unity。
+`npm test` 覆盖 Field Definition 解析、嵌套 occurrence、Provider 稳定排序、严格类型解析、缺失与歧义诊断、Table 有效行候选和定位。`TestData/EntitySemanticProject` 与 `TestData/StructuredSemanticProject` 都包含指向自定义扩展名分表的 `table.row` 引用；真实 stdio MCP 测试会搜索引用，并验证缺失目标不会被原子写入。测试不包含 Unity。

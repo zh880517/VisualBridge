@@ -11,6 +11,8 @@ const schemaNames = [
   "visualbridge-entity.schema.json",
   "visualbridge-entity-catalog.schema.json",
   "visualbridge-table-catalog.schema.json",
+  "visualbridge-structured.schema.json",
+  "visualbridge-structured-catalog.schema.json",
 ];
 const destinationDirectory = path.join(scriptDirectory, "..", "dist", "schemas");
 

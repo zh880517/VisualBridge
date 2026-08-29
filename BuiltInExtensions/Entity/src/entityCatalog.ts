@@ -1,8 +1,5 @@
 import type { DocumentDiagnostic, DocumentParseResult, FieldDefinition } from "@visualbridge/core";
-import {
-  normalizeJsonValue,
-  parseFieldDefinitions,
-} from "@visualbridge/core";
+import { parseFieldDefinitions, serializeFieldDefinition } from "@visualbridge/core";
 
 export const ENTITY_EDITOR_ID = "entity";
 export const ENTITY_CATALOG_FORMAT_VERSION = 1;
@@ -431,48 +428,6 @@ function readSource(
   const providerId = readIdentifier(value.providerId, `${path}.providerId`, diagnostics);
   const typeName = readNonEmptyString(value.typeName, `${path}.typeName`, diagnostics);
   return providerId === undefined || typeName === undefined ? undefined : { providerId, typeName };
-}
-
-function serializeFieldDefinition(definition: FieldDefinition): Record<string, unknown> {
-  return {
-    id: definition.id,
-    title: definition.title,
-    aliases: [...definition.aliases].sort(),
-    ...(definition.description === undefined ? {} : { description: definition.description }),
-    ...serializeValueDefinition(definition),
-  };
-}
-
-function serializeValueDefinition(definition: import("@visualbridge/core").FieldValueDefinition): Record<string, unknown> {
-  return {
-    valueType: definition.valueType,
-    ...(definition.dataTypeId === undefined ? {} : { dataTypeId: definition.dataTypeId }),
-    defaultValue: normalizeJsonValue(definition.defaultValue),
-    ...(definition.editor === undefined ? {} : {
-      editor: {
-        kind: definition.editor.kind,
-        readOnly: definition.editor.readOnly,
-        integer: definition.editor.integer,
-        ...(definition.editor.min === undefined ? {} : { min: definition.editor.min }),
-        ...(definition.editor.max === undefined ? {} : { max: definition.editor.max }),
-        ...(definition.editor.step === undefined ? {} : { step: definition.editor.step }),
-        ...(definition.editor.options.length === 0 ? {} : {
-          options: definition.editor.options.map((option) => ({ title: option.title, value: normalizeJsonValue(option.value) })),
-        }),
-      },
-    }),
-    ...(definition.reference === undefined ? {} : {
-      reference: {
-        kind: definition.reference.kind,
-        target: normalizeJsonValue(definition.reference.target),
-        ...(definition.reference.allowMissing ? { allowMissing: true } : {}),
-      },
-    }),
-    ...(definition.valueType === "object" ? { fields: definition.fields.map(serializeFieldDefinition) } : {}),
-    ...(definition.valueType === "array" && definition.item !== undefined
-      ? { item: serializeValueDefinition(definition.item) }
-      : {}),
-  };
 }
 
 function componentDisplayPath(

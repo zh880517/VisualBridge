@@ -1,0 +1,69 @@
+{
+  "formatVersion": 1,
+  "catalogId": "sample.table.catalog",
+  "title": "Sample Tables",
+  "tableTypes": [
+    {
+      "id": "sample.table.skills",
+      "title": "Skills",
+      "aliases": [],
+      "source": {
+        "providerId": "csharp",
+        "typeName": "Game.SkillConfig"
+      },
+      "csv": {
+        "delimiter": "\t"
+      },
+      "sheets": [
+        {
+          "id": "skills",
+          "title": "Skills",
+          "name": "Skills",
+          "nameAliases": [],
+          "rowDisplayNamePattern": "{id}_{name}",
+          "keyColumnId": "id",
+          "partition": {
+            "namePattern": "Skills_{part}",
+            "deduplicateByColumnId": "id",
+            "duplicatePolicy": "error"
+          },
+          "columns": [
+            {
+              "id": "id",
+              "title": "ID",
+              "aliases": [],
+              "valueType": "number",
+              "dataTypeId": "int",
+              "defaultValue": 0,
+              "editor": {
+                "kind": "number",
+                "integer": true
+              },
+              "nameKey": "Id",
+              "nameKeyAliases": [],
+              "cellEncoding": {
+                "kind": "scalar"
+              }
+            },
+            {
+              "id": "name",
+              "title": "Name",
+              "aliases": [],
+              "valueType": "string",
+              "dataTypeId": "string",
+              "defaultValue": "",
+              "editor": {
+                "kind": "text"
+              },
+              "nameKey": "Name",
+              "nameKeyAliases": [],
+              "cellEncoding": {
+                "kind": "scalar"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
