@@ -2,8 +2,13 @@
   "formatVersion": 1,
   "projectId": "visualbridge.entity-semantics",
   "documentRoots": [
-    "Config"
+    "Config",
+    "Tables"
   ],
+  "tableLayout": {
+    "nameKeyRow": 2,
+    "dataStartRow": 3
+  },
   "documentTypes": [
     {
       "id": "hero-config",
@@ -15,6 +20,17 @@
       "catalogs": [
         "Catalog/Common.vbentitycatalog",
         "Catalog/Gameplay.vbentitycatalog"
+      ]
+    },
+    {
+      "id": "sample.table.skills",
+      "editor": "table",
+      "include": [
+        "Tables/Skills_*.skillstable"
+      ],
+      "exclude": [],
+      "catalogs": [
+        "Catalog/Skills.vbtablecatalog"
       ]
     }
   ]

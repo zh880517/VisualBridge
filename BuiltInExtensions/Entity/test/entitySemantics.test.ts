@@ -6,6 +6,7 @@ import { findMatchingDocumentTypes, parseProjectFile } from "@visualbridge/core"
 import {
   applyEntityOperations,
   buildEntityCatalogRegistry,
+  collectEntityReferences,
   parseEntityCatalog,
   parseEntityDocument,
   resolveEntityComponentType,
@@ -89,6 +90,20 @@ test("Entity Type group restrictions drive shared Component search", () => {
 test("shared fields validate numeric, color, list, and custom object structures", () => {
   const { document, registry } = loadFixture();
   assert.deepEqual(validateEntityDocument(document, registry).filter((diagnostic) => diagnostic.severity === "error"), []);
+  const references = collectEntityReferences(document, registry);
+  assert.deepEqual(references.filter((reference) => reference.path === "properties.primarySkillId"), [{
+    definition: {
+      kind: "table.row",
+      target: {
+        documentTypeId: "sample.table.skills",
+        sheetId: "skills",
+        tableTypeId: "sample.table.skills",
+      },
+      allowMissing: false,
+    },
+    value: 101,
+    path: "properties.primarySkillId",
+  }]);
 
   const invalidLevel = applyEntityOperations(document, [{
     type: "entity.setProperty",

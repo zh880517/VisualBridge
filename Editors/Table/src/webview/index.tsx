@@ -4,7 +4,7 @@ import { Button } from "@base-ui/react/button";
 import { DragDropProvider } from "@dnd-kit/react";
 import { isSortable, useSortable } from "@dnd-kit/react/sortable";
 import type { DocumentDiagnostic, JsonValue } from "@visualbridge/core";
-import { CommonIcon, FieldsEditor, IconButton, ListItemActions } from "@visualbridge/form-editor";
+import { CommonIcon, FieldsEditor, IconButton, ListItemActions, WebviewReferenceBridge } from "@visualbridge/form-editor";
 import {
   encodeTableCell,
   formatTableRowDisplayName,
@@ -48,9 +48,14 @@ type HostMessage = TableStateMessage | TableInvalidMessage | {
 } | {
   readonly type: "operationCompleted";
   readonly changed: boolean;
+} | {
+  readonly type: "revealReference";
+  readonly sheetId: string;
+  readonly rowId: string;
 };
 
 const vscode = acquireVsCodeApi();
+const referenceBridge = new WebviewReferenceBridge(vscode);
 const rootElement = document.getElementById("root");
 if (rootElement === null) {
   throw new Error("Table editor root element is missing.");
@@ -69,7 +74,14 @@ function TableEditorApp(): ReactElement {
   useEffect(() => {
     const listener = (event: MessageEvent<HostMessage>): void => {
       const message = event.data;
-      if (message.type === "tableState") {
+      if (referenceBridge.handleMessage(message)) {
+        return;
+      }
+      if (message.type === "revealReference") {
+        setQuery("");
+        setSheetId(message.sheetId);
+        setSelectedRowId(message.rowId);
+      } else if (message.type === "tableState") {
         setState(message);
         setInvalid(undefined);
         setPending(false);
@@ -94,7 +106,10 @@ function TableEditorApp(): ReactElement {
     };
     window.addEventListener("message", listener);
     vscode.postMessage({ type: "ready" });
-    return () => window.removeEventListener("message", listener);
+    return () => {
+      window.removeEventListener("message", listener);
+      referenceBridge.dispose();
+    };
   }, []);
 
   const sheet = useMemo(
@@ -279,6 +294,7 @@ function TableEditorApp(): ReactElement {
                         definitions={definition.columns}
                         properties={selectedRow.cells}
                         disabled={pending}
+                        referenceActions={referenceBridge}
                         onCommit={(columnId, value) => submit([{
                           type: "table.setCell",
                           sheetId: sheet.id,

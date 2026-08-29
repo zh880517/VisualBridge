@@ -144,6 +144,7 @@ Component Type 描述可添加到 Entity 的运行时组件结构：
 - `dataTypeId`：运行时语义类型，例如 `int`、`float`、`color`、`Game.SpawnSettings`。
 - `defaultValue`：创建实例时使用的完整 JSON 默认值。
 - `editor`：通用控件提示。
+- `reference`：可选的统一引用 kind、结构化 target 与缺失策略。
 - `fields`：`object` 的递归子字段。
 - `item`：`array` 的递归元素定义。
 
@@ -231,7 +232,8 @@ Entity、Table 和后续 Structured Document 的字段 List 共享同一个编�
 
 当前共享字段编辑器支持：
 
-- `text`、`multiline`、`reference` 和 `color`：字符串。
+- `text`、`multiline` 和 `color`：字符串。
+- `reference`：字符串或数值稳定键，由字段的 `reference` 契约选择、解析、校验和跳转目标。
 - `number`：数值，可附带整数和范围提示。
 - `checkbox`：布尔值。
 - `select`：使用结构化 `options` 值。
@@ -239,6 +241,8 @@ Entity、Table 和后续 Structured Document 的字段 List 共享同一个编�
 - 没有显式 `editor` 时按 `valueType` 选择默认控件。
 
 Catalog Parser 会拒绝控件与 JSON 形态不兼容、数组缺少 `item`、对象缺少 `fields`、默认值类型错误和同级字段身份冲突。
+
+Entity 根字段与每个 Component 字段都会递归收集引用。当前 `table.row` Provider 可将普通 C# `int`/`string` ID 字段指向项目表格记录；VS Code 使用原生候选列表并可跳转到具体分表行，Entity Operation 若新引入缺失、歧义或无效 target 会被原子拒绝。引用的完整跨文档契约见 `ReferenceSystem.md`。
 
 ## Entity Document V1
 

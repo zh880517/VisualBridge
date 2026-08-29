@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   applyGraphOperations,
   buildGraphCatalogRegistry,
+  collectGraphReferences,
   getGraphNodePorts,
   getReplacementCandidates,
   isDataTypeAssignable,
@@ -363,6 +364,54 @@ test("Graph and Catalog serialization is deterministic while interface and dynam
   const reparsedCatalog = parseGraphCatalog(catalogText);
   assert.equal(reparsedCatalog.success, true, formatDiagnostics(reparsedCatalog.diagnostics));
   assert.equal(serializeGraphCatalog(reparsedCatalog.document), catalogText);
+});
+
+test("Graph properties preserve declarative table-row reference contracts", () => {
+  const { catalogs, document } = loadFixture();
+  const common = catalogs[0]!;
+  const referencedCommon: GraphCatalog = {
+    ...common,
+    nodeTypes: common.nodeTypes.map((nodeType) => nodeType.id !== "sample.step" ? nodeType : {
+      ...nodeType,
+      properties: [...nodeType.properties, {
+        id: "skillId",
+        aliases: [],
+        title: "Skill",
+        valueType: "number",
+        dataTypeId: "int",
+        required: true,
+        defaultValue: 101,
+        editor: { kind: "reference", readOnly: false, options: [] },
+        reference: {
+          kind: "table.row",
+          target: { tableTypeId: "sample.table.skills", sheetId: "skills" },
+          allowMissing: false,
+        },
+      }],
+    }),
+  };
+  const registryResult = buildGraphCatalogRegistry([referencedCommon, ...catalogs.slice(1)]);
+  assert.equal(registryResult.success, true, formatDiagnostics(registryResult.diagnostics));
+  const referencedDocument: GraphDocument = {
+    ...document,
+    graphs: document.graphs.map((graph) => graph.id !== "root" ? graph : {
+      ...graph,
+      nodes: graph.nodes.map((node) => node.id !== "step_a" ? node : {
+        ...node,
+        properties: { ...node.properties, skillId: 101 },
+      }),
+    }),
+  };
+  assert.deepEqual(collectGraphReferences(referencedDocument, registryResult.document)
+    .filter((entry) => entry.path.endsWith(".skillId"))
+    .map((entry) => ({ value: entry.value, path: entry.path })), [
+      { value: 101, path: "graphs[1].nodes[1].properties.skillId" },
+      { value: 101, path: "graphs[1].nodes[2].properties.skillId" },
+    ]);
+  const serialized = serializeGraphCatalog(referencedCommon);
+  const reparsed = parseGraphCatalog(serialized);
+  assert.equal(reparsed.success, true, formatDiagnostics(reparsed.diagnostics));
+  assert.equal(serializeGraphCatalog(reparsed.document), serialized);
 });
 
 test("node search uses shared Registry metadata, aliases, Graph Type filters, and stable ordering", () => {

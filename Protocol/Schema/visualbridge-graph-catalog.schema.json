@@ -90,7 +90,8 @@
         "dataTypeId": { "$ref": "#/$defs/identifier" },
         "required": { "type": "boolean", "default": false },
         "defaultValue": {},
-        "editor": { "$ref": "#/$defs/propertyEditor" }
+        "editor": { "$ref": "#/$defs/propertyEditor" },
+        "reference": { "$ref": "#/$defs/reference" }
       },
       "allOf": [
         {
@@ -99,7 +100,7 @@
         },
         {
           "if": { "properties": { "valueType": { "const": "number" } }, "required": ["valueType"] },
-          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["number", "select"] } } } } }
+          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["number", "reference", "select"] } } } } }
         },
         {
           "if": { "properties": { "valueType": { "const": "boolean" } }, "required": ["valueType"] },
@@ -110,6 +111,16 @@
           "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["json", "select"] } } } } }
         }
       ],
+      "additionalProperties": false
+    },
+    "reference": {
+      "type": "object",
+      "required": ["kind", "target"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/identifier" },
+        "target": { "type": "object", "additionalProperties": true },
+        "allowMissing": { "type": "boolean", "default": false }
+      },
       "additionalProperties": false
     },
     "propertyEditorOption": {
@@ -180,7 +191,8 @@
         "valueType": { "enum": ["string", "number", "boolean", "json"] },
         "dataTypeId": { "$ref": "#/$defs/identifier" },
         "defaultValue": {},
-        "editor": { "$ref": "#/$defs/propertyEditor" }
+        "editor": { "$ref": "#/$defs/propertyEditor" },
+        "reference": { "$ref": "#/$defs/reference" }
       },
       "allOf": [
         {
@@ -189,7 +201,7 @@
         },
         {
           "if": { "properties": { "valueType": { "const": "number" } }, "required": ["valueType"] },
-          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["number", "select"] } } } } }
+          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["number", "reference", "select"] } } } } }
         },
         {
           "if": { "properties": { "valueType": { "const": "boolean" } }, "required": ["valueType"] },

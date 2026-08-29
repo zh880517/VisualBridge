@@ -35,6 +35,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createRoot } from "react-dom/client";
+import { WebviewReferenceBridge } from "@visualbridge/form-editor";
 import { CommonIcon } from "@visualbridge/form-editor/icons";
 import "@xyflow/react/dist/style.css";
 import "./styles.css";
@@ -122,6 +123,12 @@ interface PropertyEditorDefinition {
   readonly options: readonly PropertyEditorOption[];
 }
 
+interface ReferenceDefinition {
+  readonly kind: string;
+  readonly target: Readonly<Record<string, JsonValue>>;
+  readonly allowMissing: boolean;
+}
+
 interface PropertyDefinition {
   readonly id: string;
   readonly aliases?: readonly string[];
@@ -132,6 +139,7 @@ interface PropertyDefinition {
   readonly required: boolean;
   readonly defaultValue?: JsonValue;
   readonly editor?: PropertyEditorDefinition;
+  readonly reference?: ReferenceDefinition;
 }
 
 interface DynamicPortGroupDefinition {
@@ -151,6 +159,7 @@ interface DynamicPortGroupDefinition {
     readonly dataTypeId?: string;
     readonly defaultValue: JsonValue;
     readonly editor?: PropertyEditorDefinition;
+    readonly reference?: ReferenceDefinition;
   };
   readonly maxItems?: number;
 }
@@ -450,6 +459,8 @@ type HostMessage =
       readonly nodeTypeIds: readonly string[];
     }
   | { readonly type: "clipboardData"; readonly text: string }
+  | { readonly type: "referenceSelected"; readonly requestId: string; readonly value: string | number }
+  | { readonly type: "referenceCancelled"; readonly requestId: string }
   | { readonly type: "operationCompleted"; readonly documentVersion: number; readonly changed: boolean }
   | { readonly type: "operationRejected"; readonly message: string };
 
@@ -460,6 +471,7 @@ interface VsCodeApi {
 declare function acquireVsCodeApi(): VsCodeApi;
 
 const vscode = acquireVsCodeApi();
+const referenceBridge = new WebviewReferenceBridge(vscode);
 const INTERFACE_INPUT_NODE_ID = "$visualbridge.interface.inputs";
 const INTERFACE_OUTPUT_NODE_ID = "$visualbridge.interface.outputs";
 const GraphPendingContext = createContext(false);
@@ -757,6 +769,42 @@ function InlineNodeScalarProperty({
   readonly commit: (value: JsonValue | undefined) => void;
   readonly reportStatus: (status: { message: string; error: boolean }) => void;
 }): React.JSX.Element {
+  if (editor?.kind === "reference" && definition.reference !== undefined
+    && (typeof value === "string" || typeof value === "number")) {
+    return (
+      <label className="graph-node-property graph-reference-editor" title={definition.description}>
+        <span>{definition.title}</span>
+        <span className="graph-reference-value">
+          <input type="text" value={String(value)} readOnly title={`${definition.reference.kind}: ${String(value)}`} />
+          <button
+            type="button"
+            className="icon secondary"
+            aria-label={`选择${definition.title}`}
+            title="选择引用"
+            disabled={pending || editor.readOnly}
+            onClick={() => {
+              void referenceBridge.pick(definition.reference!, value).then((nextValue) => {
+                if (nextValue !== undefined && (typeof nextValue !== typeof value || nextValue !== value)) {
+                  commit(nextValue);
+                }
+              });
+            }}
+          >
+            <CommonIcon name="search" />
+          </button>
+          <button
+            type="button"
+            className="icon secondary"
+            aria-label={`打开${definition.title}`}
+            title="打开引用"
+            onClick={() => referenceBridge.reveal(definition.reference!, value)}
+          >
+            <CommonIcon name="open" />
+          </button>
+        </span>
+      </label>
+    );
+  }
   const usesJsonEditor = definition.valueType === "json" || editor?.kind === "json";
   const usesMultilineEditor = editor?.kind === "multiline";
   const initialText = usesJsonEditor
@@ -1171,6 +1219,7 @@ function DynamicPortValueEditor({
     required: true,
     defaultValue: group.item.defaultValue,
     ...(group.item.editor === undefined ? {} : { editor: group.item.editor }),
+    ...(group.item.reference === undefined ? {} : { reference: group.item.reference }),
   };
   if (definition.editor?.kind === "select") {
     const selectedIndex = definition.editor.options.findIndex((option) => jsonValuesEqual(option.value, port.value));
@@ -1790,6 +1839,9 @@ function GraphEditorApp(): React.JSX.Element {
   useEffect(() => {
     const receiveMessage = (event: MessageEvent<HostMessage>): void => {
       const message = event.data;
+      if (referenceBridge.handleMessage(message)) {
+        return;
+      }
       if (message.type === "graphState") {
         if (message.documentChanged === true && message.historyAction === undefined) {
           const ownOperation = pendingSelectionHistoryRef.current !== undefined
@@ -1924,7 +1976,10 @@ function GraphEditorApp(): React.JSX.Element {
     };
     window.addEventListener("message", receiveMessage);
     vscode.postMessage({ type: "ready" });
-    return () => window.removeEventListener("message", receiveMessage);
+    return () => {
+      window.removeEventListener("message", receiveMessage);
+      referenceBridge.dispose();
+    };
   }, [pasteClipboardPayload, updateSelection]);
 
   useEffect(() => {

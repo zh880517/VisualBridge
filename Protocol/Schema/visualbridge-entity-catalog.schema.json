@@ -203,6 +203,9 @@
         "editor": {
           "$ref": "#/$defs/editor"
         },
+        "reference": {
+          "$ref": "#/$defs/reference"
+        },
         "fields": {
           "type": "array",
           "items": {
@@ -236,6 +239,9 @@
         "defaultValue": true,
         "editor": {
           "$ref": "#/$defs/editor"
+        },
+        "reference": {
+          "$ref": "#/$defs/reference"
         },
         "fields": {
           "type": "array",
@@ -317,6 +323,16 @@
           }
         }
       }
+    },
+    "reference": {
+      "type": "object",
+      "required": ["kind", "target"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/identifier" },
+        "target": { "type": "object", "additionalProperties": true },
+        "allowMissing": { "type": "boolean", "default": false }
+      },
+      "additionalProperties": false
     },
     "editor": {
       "type": "object",

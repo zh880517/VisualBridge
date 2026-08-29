@@ -5,20 +5,23 @@ import * as z from "zod/v4";
 import { GraphService } from "./graphService.js";
 import { VisualBridgeMcpError, VisualBridgeWorkspace } from "./projectWorkspace.js";
 import { TableService } from "./tableService.js";
+import { VisualBridgeReferenceService, referenceDefinition } from "./referenceService.js";
 
 const workspaceRoot = process.env.VISUALBRIDGE_WORKSPACE === undefined
   ? process.cwd()
   : path.resolve(process.env.VISUALBRIDGE_WORKSPACE);
 const workspace = await VisualBridgeWorkspace.create(workspaceRoot);
-const graphService = new GraphService(workspace);
 const tableService = new TableService(workspace);
+const referenceService = new VisualBridgeReferenceService(workspace, tableService);
+tableService.setReferenceService(referenceService);
+const graphService = new GraphService(workspace, referenceService);
 
 function createServer(): McpServer {
   const server = new McpServer(
     { name: "visualbridge", version: "0.1.0" },
     {
       instructions:
-        "Discover a VisualBridge Project first. Read or validate a Graph/Table to obtain baseHash before applying Operations. Never retry a conflict with a stale baseHash, and never edit CSV/XLSX carrier bytes outside the Table tools.",
+        "Discover a VisualBridge Project first. Use the Reference tool for stable cross-document targets. Read or validate a Graph/Table to obtain baseHash before applying Operations. Never retry a conflict with a stale baseHash, and never edit CSV/XLSX carrier bytes outside the Table tools.",
     },
   );
 
@@ -53,6 +56,39 @@ function createServer(): McpServer {
         definition: project.definition,
       };
     }),
+  );
+
+  server.registerTool(
+    "visualbridge_references",
+    {
+      title: "Search or resolve VisualBridge references",
+      description:
+        "Uses the shared project Reference Service to search candidates or resolve one typed stable value. Built-in table.row targets use Table Type, Sheet, and key-column semantics rather than filenames or display names.",
+      inputSchema: z.object({
+        projectFile: z.string().optional(),
+        action: z.enum(["search", "resolve"]),
+        kind: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
+        target: z.record(z.string(), z.json()).default({}),
+        allowMissing: z.boolean().default(false),
+        query: z.string().max(512).optional(),
+        value: z.union([z.string(), z.number().finite()]).optional(),
+        limit: z.number().int().min(1).max(200).default(50),
+      }).superRefine((value, context) => {
+        if (value.action === "resolve" && value.value === undefined) {
+          context.addIssue({ code: "custom", path: ["value"], message: "Resolve requires value." });
+        }
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ projectFile, action, kind, target, allowMissing, query, value, limit }) => handle(() =>
+      referenceService.query({
+        ...(projectFile === undefined ? {} : { projectFile }),
+        action,
+        definition: referenceDefinition(kind, target, allowMissing),
+        ...(query === undefined ? {} : { query }),
+        ...(value === undefined ? {} : { value }),
+        limit,
+      })),
   );
 
   server.registerTool(

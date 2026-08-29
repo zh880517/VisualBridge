@@ -5,6 +5,7 @@ import type { DocumentDiagnostic, TableLayoutDefinition } from "@visualbridge/co
 import {
   applyTableOperations,
   buildTableCatalogRegistry,
+  collectTableReferences,
   createEmptyTableCatalogRegistry,
   formatTableRowDisplayName,
   matchTableSheetDefinitions,
@@ -22,6 +23,7 @@ import {
   type TableCatalogRegistry,
   type TableDocument,
   type TableRow,
+  type TableReferenceDocument,
   type TableSheet,
 } from "@visualbridge/table";
 import {
@@ -31,6 +33,7 @@ import {
   type ProjectContext,
   type TableDocumentContext,
 } from "./projectWorkspace.js";
+import type { VisualBridgeReferenceService } from "./referenceService.js";
 
 interface TableCatalogContext {
   readonly project: ProjectContext;
@@ -67,7 +70,13 @@ interface RenderedSource {
 }
 
 export class TableService {
+  private references: VisualBridgeReferenceService | undefined;
+
   public constructor(private readonly workspace: VisualBridgeWorkspace) {}
+
+  public setReferenceService(references: VisualBridgeReferenceService): void {
+    this.references = references;
+  }
 
   public async queryCatalog(
     projectFile: string | undefined,
@@ -97,6 +106,7 @@ export class TableService {
     readonly limit: number;
   }): Promise<Record<string, unknown>> {
     const loaded = await this.loadTableForUse(options.tablePath, options.projectFile, options.documentTypeId);
+    const referenceDiagnostics = await this.referenceDiagnostics(loaded);
     const sheet = options.sheetId === undefined
       ? undefined
       : this.requirePhysicalSheet(loaded, options.sheetId);
@@ -126,7 +136,7 @@ export class TableService {
           rows,
         },
       }),
-      diagnostics: loaded.diagnostics,
+      diagnostics: [...loaded.diagnostics, ...referenceDiagnostics],
     };
   }
 
@@ -140,6 +150,7 @@ export class TableService {
     readonly limit: number;
   }): Promise<Record<string, unknown>> {
     const loaded = await this.loadTableForUse(options.tablePath, options.projectFile, options.documentTypeId);
+    const referenceDiagnostics = await this.referenceDiagnostics(loaded);
     const definitions = options.sheetDefinitionId === undefined
       ? loaded.catalog.tableType.sheets
       : [this.requireSheetDefinition(loaded, options.sheetDefinitionId)];
@@ -179,7 +190,7 @@ export class TableService {
       matchedCount,
       truncated: matchedCount > results.length,
       results,
-      diagnostics: loaded.diagnostics,
+      diagnostics: [...loaded.diagnostics, ...referenceDiagnostics],
     };
   }
 
@@ -190,10 +201,12 @@ export class TableService {
   ): Promise<Record<string, unknown>> {
     try {
       const loaded = await this.loadTable(tablePath, projectFile, documentTypeId);
+      const referenceDiagnostics = await this.referenceDiagnostics(loaded);
+      const diagnostics = [...loaded.diagnostics, ...referenceDiagnostics];
       return {
         ...tableIdentity(loaded),
-        valid: !loaded.diagnostics.some((diagnostic) => diagnostic.severity === "error"),
-        diagnostics: loaded.diagnostics,
+        valid: !diagnostics.some((diagnostic) => diagnostic.severity === "error"),
+        diagnostics,
       };
     } catch (errorValue) {
       if (!(errorValue instanceof TableLoadError)) {
@@ -251,6 +264,17 @@ export class TableService {
         || operationResult.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
         return invalidResult(loaded, operationResult.diagnostics);
       }
+      const referenceResult = this.references === undefined
+        ? { diagnostics: [], introducedErrors: [] }
+        : await this.references.validateChange(
+            loaded.context.project.projectFile,
+            collectTableReferences(loaded.document, loaded.catalog.tableType),
+            collectTableReferences(operationResult.document, loaded.catalog.tableType),
+          );
+      if (referenceResult.introducedErrors.length > 0) {
+        return invalidResult(loaded, referenceResult.introducedErrors);
+      }
+      const operationDiagnostics = [...operationResult.diagnostics, ...referenceResult.diagnostics];
 
       const rendered = await this.renderSources(loaded, operationResult.document);
       const changed = rendered.filter((entry) => !entry.bytes.equals(entry.source.bytes));
@@ -259,7 +283,7 @@ export class TableService {
           status: "unchanged",
           ...tableIdentity(loaded),
           hash: loaded.baseHash,
-          diagnostics: operationResult.diagnostics,
+          diagnostics: operationDiagnostics,
         };
       }
 
@@ -325,7 +349,7 @@ export class TableService {
         ...tableIdentity(persisted),
         previousHash: loaded.baseHash,
         hash: persisted.baseHash,
-        diagnostics: operationResult.diagnostics,
+        diagnostics: operationDiagnostics,
       };
     } finally {
       await Promise.all([...temporaryPaths].map((temporaryPath) => unlink(temporaryPath).catch(() => undefined)));
@@ -334,6 +358,47 @@ export class TableService {
         await unlink(lockPath).catch(() => undefined);
       }
     }
+  }
+
+  public async loadReferenceDocuments(projectFile?: string): Promise<readonly TableReferenceDocument[]> {
+    const project = await this.workspace.resolveProject(projectFile);
+    const declared = await this.workspace.listDeclaredDocuments(project, "table");
+    const result: TableReferenceDocument[] = [];
+    const seen = new Set<string>();
+    for (const entry of declared) {
+      try {
+        const loaded = await this.loadTableForUse(entry.path, project.projectFile, entry.documentType.id);
+        const key = `${entry.documentType.id}\u0000${loaded.sources.map((source) => source.path).join("\u0000")}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        const sheetPaths = Object.fromEntries(loaded.sources.flatMap((source) =>
+          source.sheetIds.map((sheetId) => [sheetId, source.path] as const)));
+        result.push({
+          projectId: project.definition.projectId,
+          documentTypeId: entry.documentType.id,
+          path: loaded.sources[0]?.path ?? entry.path,
+          document: loaded.document,
+          tableType: loaded.catalog.tableType,
+          sheetPaths,
+        });
+      } catch (errorValue) {
+        if (!(errorValue instanceof TableLoadError)) {
+          throw errorValue;
+        }
+      }
+    }
+    return result.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
+  }
+
+  private async referenceDiagnostics(loaded: LoadedTable): Promise<readonly DocumentDiagnostic[]> {
+    return this.references === undefined
+      ? []
+      : this.references.validate(
+          loaded.context.project.projectFile,
+          collectTableReferences(loaded.document, loaded.catalog.tableType),
+        );
   }
 
   private async loadTable(

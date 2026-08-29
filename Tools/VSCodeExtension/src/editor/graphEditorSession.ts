@@ -4,6 +4,7 @@ import type { DocumentDiagnostic } from "@visualbridge/core";
 import {
   GRAPH_EDITOR_ID,
   applyGraphOperations,
+  collectGraphReferences,
   getReplacementCandidates,
   parseGraphDocument,
   serializeGraphDocument,
@@ -12,6 +13,8 @@ import {
 import { createGraphEditorHtml } from "@visualbridge/graph-editor";
 import { loadGraphCatalogRegistry } from "../catalog/graphCatalogLoader";
 import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
+import { handleReferenceMessage } from "../reference/referenceMessages";
+import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
 
 const OVERWRITE = "覆盖";
 const DISCARD_AND_RELOAD = "放弃并刷新";
@@ -23,6 +26,9 @@ interface WebviewMessage {
   readonly graphId?: unknown;
   readonly nodeId?: unknown;
   readonly text?: unknown;
+  readonly requestId?: unknown;
+  readonly definition?: unknown;
+  readonly value?: unknown;
 }
 
 interface GraphStateOptions {
@@ -43,6 +49,7 @@ export class GraphEditorSession {
     private readonly panel: vscode.WebviewPanel,
     private match: DocumentMatch,
     private readonly projects: ProjectRegistry,
+    private readonly references: WorkspaceReferenceService,
     private readonly diagnostics: vscode.DiagnosticCollection,
     private readonly output: vscode.OutputChannel,
   ) {}
@@ -124,6 +131,9 @@ export class GraphEditorSession {
     if (this.disposed) {
       return;
     }
+    if (await handleReferenceMessage(message, this.panel.webview, this.match.project, this.references)) {
+      return;
+    }
     if (message.type === "ready") {
       await this.sendState();
       return;
@@ -176,6 +186,18 @@ export class GraphEditorSession {
       this.updateDiagnostics([...catalogResult.diagnostics, ...operationResult.diagnostics]);
       await this.rejectOperation(formatDiagnostics(operationResult.diagnostics));
       return;
+    }
+    if (catalogResult.ready) {
+      const referenceResult = await this.references.validateChange(
+        this.match.project,
+        collectGraphReferences(parseResult.document, catalogResult.registry),
+        collectGraphReferences(operationResult.document, catalogResult.registry),
+      );
+      if (referenceResult.introducedErrors.length > 0) {
+        this.updateDiagnostics([...catalogResult.diagnostics, ...operationResult.diagnostics, ...referenceResult.diagnostics]);
+        await this.rejectOperation(formatDiagnostics(referenceResult.introducedErrors));
+        return;
+      }
     }
 
     const nextText = serializeGraphDocument(operationResult.document);
@@ -283,6 +305,12 @@ export class GraphEditorSession {
       ...result.diagnostics,
       ...catalogResult.diagnostics,
       ...(catalogResult.ready ? validateGraphDocument(result.document, catalogResult.registry) : []),
+      ...(catalogResult.ready
+        ? await this.references.validate(
+            this.match.project,
+            collectGraphReferences(result.document, catalogResult.registry),
+          )
+        : []),
     ];
     this.updateDiagnostics(diagnostics);
     await this.panel.webview.postMessage({

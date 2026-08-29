@@ -4,6 +4,7 @@ import path from "node:path";
 import type { DocumentDiagnostic } from "@visualbridge/core";
 import {
   applyGraphOperations,
+  collectGraphReferences,
   buildGraphCatalogRegistry,
   parseGraphCatalog,
   parseGraphDocument,
@@ -21,6 +22,7 @@ import {
   type GraphDocumentContext,
   type ProjectContext,
 } from "./projectWorkspace.js";
+import type { VisualBridgeReferenceService } from "./referenceService.js";
 
 interface CatalogContext {
   readonly project: ProjectContext;
@@ -40,7 +42,10 @@ interface LoadedGraph {
 }
 
 export class GraphService {
-  public constructor(private readonly workspace: VisualBridgeWorkspace) {}
+  public constructor(
+    private readonly workspace: VisualBridgeWorkspace,
+    private readonly references: VisualBridgeReferenceService,
+  ) {}
 
   public async queryCatalog(
     projectFile: string | undefined,
@@ -85,6 +90,10 @@ export class GraphService {
       ...loaded.catalog.diagnostics,
       ...loaded.parseDiagnostics,
       ...validateGraphDocument(loaded.document, loaded.catalog.registry),
+      ...await this.references.validate(
+        loaded.context.project.projectFile,
+        collectGraphReferences(loaded.document, loaded.catalog.registry),
+      ),
     ];
     return {
       projectFile: loaded.context.project.projectFile,
@@ -125,6 +134,10 @@ export class GraphService {
       ...catalog.diagnostics,
       ...parseResult.diagnostics,
       ...validateGraphDocument(parseResult.document, catalog.registry),
+      ...await this.references.validate(
+        context.project.projectFile,
+        collectGraphReferences(parseResult.document, catalog.registry),
+      ),
     ];
     return {
       projectFile: context.project.projectFile,
@@ -232,6 +245,15 @@ export class GraphService {
       if (operationResult.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
         return invalidResult(context, actualHash, operationResult.diagnostics);
       }
+      const referenceResult = await this.references.validateChange(
+        context.project.projectFile,
+        collectGraphReferences(parseResult.document, catalog.registry),
+        collectGraphReferences(operationResult.document, catalog.registry),
+      );
+      if (referenceResult.introducedErrors.length > 0) {
+        return invalidResult(context, actualHash, referenceResult.introducedErrors);
+      }
+      const operationDiagnostics = [...operationResult.diagnostics, ...referenceResult.diagnostics];
       const nextText = serializeGraphDocument(operationResult.document);
       const nextBytes = Buffer.from(nextText, "utf8");
       const nextHash = hashBytes(nextBytes);
@@ -242,7 +264,7 @@ export class GraphService {
           path: context.graphPath,
           baseHash: actualHash,
           hash: actualHash,
-          diagnostics: operationResult.diagnostics,
+          diagnostics: operationDiagnostics,
         };
       }
 
@@ -279,7 +301,7 @@ export class GraphService {
         path: context.graphPath,
         baseHash: actualHash,
         hash: nextHash,
-        diagnostics: operationResult.diagnostics,
+        diagnostics: operationDiagnostics,
       };
     } finally {
       if (temporaryPath !== undefined) {

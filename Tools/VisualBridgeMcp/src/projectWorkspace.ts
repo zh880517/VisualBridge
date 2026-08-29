@@ -44,6 +44,13 @@ export interface TableDocumentContext {
   readonly absoluteTablePath: string;
 }
 
+export interface DeclaredDocumentContext {
+  readonly project: ProjectContext;
+  readonly documentType: DocumentTypeDefinition;
+  readonly path: string;
+  readonly absolutePath: string;
+}
+
 export class VisualBridgeMcpError extends Error {
   public constructor(
     public readonly code: string,
@@ -249,6 +256,33 @@ export class VisualBridgeWorkspace {
     }
     return { project, documentType: candidates[0]! };
   }
+
+  public async listDeclaredDocuments(
+    project: ProjectContext,
+    editor?: string,
+  ): Promise<readonly DeclaredDocumentContext[]> {
+    const paths: string[] = [];
+    for (const root of project.definition.documentRoots) {
+      const absoluteRoot = path.resolve(project.projectRoot, ...root.split("/"));
+      ensureInside(project.projectRoot, absoluteRoot, root);
+      await collectDocumentFiles(project.projectRoot, absoluteRoot, paths);
+    }
+    const uniquePaths = [...new Set(paths)].sort((left, right) => left.localeCompare(right));
+    const result: DeclaredDocumentContext[] = [];
+    for (const absolutePath of uniquePaths) {
+      const relativePath = path.relative(project.projectRoot, absolutePath).replaceAll("\\", "/");
+      const candidates = findMatchingDocumentTypes(
+        project.definition,
+        relativePath,
+        matches,
+        editor === undefined ? {} : { editor },
+      );
+      if (candidates.length === 1) {
+        result.push({ project, documentType: candidates[0]!, path: relativePath, absolutePath });
+      }
+    }
+    return result;
+  }
 }
 
 export async function resolveExistingProjectPath(project: ProjectContext, relativePath: string): Promise<string> {
@@ -277,6 +311,32 @@ async function collectProjectFiles(directory: string, result: string[]): Promise
       result.push(entryPath);
     } else if (entry.isDirectory() && !skippedDirectoryNames.has(entry.name)) {
       await collectProjectFiles(entryPath, result);
+    }
+  }
+}
+
+async function collectDocumentFiles(projectRoot: string, directory: string, result: string[]): Promise<void> {
+  let resolvedDirectory: string;
+  try {
+    resolvedDirectory = await realpath(directory);
+  } catch {
+    return;
+  }
+  const relativeDirectory = path.relative(projectRoot, resolvedDirectory);
+  if (relativeDirectory === ".." || relativeDirectory.startsWith(`..${path.sep}`) || path.isAbsolute(relativeDirectory)) {
+    return;
+  }
+  const entries = await readdir(resolvedDirectory, { withFileTypes: true });
+  entries.sort((left, right) => left.name.localeCompare(right.name));
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) {
+      continue;
+    }
+    const entryPath = path.join(resolvedDirectory, entry.name);
+    if (entry.isFile()) {
+      result.push(entryPath);
+    } else if (entry.isDirectory() && !skippedDirectoryNames.has(entry.name)) {
+      await collectDocumentFiles(projectRoot, entryPath, result);
     }
   }
 }

@@ -3,12 +3,17 @@
   "compilerOptions": {
     "rootDir": ".",
     "outDir": "dist",
-    "composite": true
+    "composite": true,
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "index.ts",
     "Document/**/*.ts",
     "Form/**/*.ts",
-    "Project/**/*.ts"
+    "Project/**/*.ts",
+    "Reference/**/*.ts",
+    "test/**/*.ts"
   ]
 }

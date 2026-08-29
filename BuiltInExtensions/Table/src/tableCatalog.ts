@@ -412,14 +412,14 @@ function readColumns(
       entry,
       [
         "id", "title", "aliases", "description", "valueType", "dataTypeId", "defaultValue",
-        "editor", "fields", "item", "nameKey", "nameKeyAliases", "cellEncoding",
+        "editor", "reference", "fields", "item", "nameKey", "nameKeyAliases", "cellEncoding",
       ],
       entryPath,
       diagnostics,
     );
     const fieldPayload = Object.fromEntries(Object.entries(entry).filter(([key]) => [
       "id", "title", "aliases", "description", "valueType", "dataTypeId", "defaultValue",
-      "editor", "fields", "item",
+      "editor", "reference", "fields", "item",
     ].includes(key)));
     const [field] = parseFieldDefinitions([fieldPayload], entryPath, diagnostics);
     const nameKey = readNonEmptyString(entry.nameKey, `${entryPath}.nameKey`, diagnostics);

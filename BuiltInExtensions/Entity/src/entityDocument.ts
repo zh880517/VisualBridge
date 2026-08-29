@@ -4,9 +4,11 @@ import type {
   DocumentParseResult,
   FieldDefinition,
   JsonValue,
+  ReferenceOccurrence,
 } from "@visualbridge/core";
 import {
   cloneJsonValue,
+  collectFieldReferences,
   createDefaultProperties,
   isJsonValue,
   normalizeJsonValue,
@@ -166,6 +168,25 @@ export function validateEntityDocument(
     diagnostics.push(...validateFieldProperties(component.properties, componentType.properties, `${componentPath}.properties`));
   });
   return diagnostics;
+}
+
+export function collectEntityReferences(
+  document: EntityDocument,
+  registry: EntityCatalogRegistry,
+): readonly ReferenceOccurrence[] {
+  const entityType = resolveEntityType(registry, document.entityTypeId);
+  if (entityType === undefined) {
+    return [];
+  }
+  return [
+    ...collectFieldReferences(document.properties, entityType.properties, "properties"),
+    ...document.components.flatMap((component, index) => {
+      const componentType = resolveEntityComponentType(registry, component.componentTypeId);
+      return componentType === undefined
+        ? []
+        : collectFieldReferences(component.properties, componentType.properties, `components[${index}].properties`);
+    }),
+  ];
 }
 
 export function applyEntityOperations(

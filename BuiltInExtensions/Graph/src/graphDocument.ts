@@ -2,6 +2,7 @@ import type {
   DocumentDiagnostic,
   DocumentOperationResult,
   DocumentParseResult,
+  ReferenceOccurrence,
 } from "@visualbridge/core";
 import {
   isDataTypeAssignable,
@@ -466,6 +467,43 @@ export function validateGraphDocument(
     validateCardinality(graph, graphIndex, nodeById, graphById, catalog, diagnostics);
   });
   return diagnostics;
+}
+
+export function collectGraphReferences(
+  document: GraphDocument,
+  catalog: GraphCatalogRegistry,
+): readonly ReferenceOccurrence[] {
+  return document.graphs.flatMap((graph, graphIndex) => {
+    const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphType(catalog, graph.graphTypeId);
+    const occurrences: ReferenceOccurrence[] = graphType === undefined
+      ? []
+      : collectPropertyReferences(graph.properties, graphType.properties, `graphs[${graphIndex}].properties`);
+    graph.nodes.forEach((node, nodeIndex) => {
+      if (node.nodeTypeId === undefined) {
+        return;
+      }
+      const nodeType = resolveNodeType(catalog, node.nodeTypeId);
+      if (nodeType === undefined) {
+        return;
+      }
+      occurrences.push(...collectPropertyReferences(
+        node.properties,
+        nodeType.properties,
+        `graphs[${graphIndex}].nodes[${nodeIndex}].properties`,
+      ));
+      node.dynamicPorts.forEach((port, portIndex) => {
+        const group = resolveDynamicPortGroup(nodeType, port.groupId);
+        if (group?.item.reference !== undefined && (typeof port.value === "string" || typeof port.value === "number")) {
+          occurrences.push({
+            definition: group.item.reference,
+            value: port.value,
+            path: `graphs[${graphIndex}].nodes[${nodeIndex}].dynamicPorts[${portIndex}].value`,
+          });
+        }
+      });
+    });
+    return occurrences;
+  });
 }
 
 export function getGraphNodePorts(
@@ -2267,6 +2305,24 @@ function hasPropertyValue(
   definition: GraphPropertyDefinition,
 ): boolean {
   return [definition.id, ...definition.aliases].some((propertyId) => properties[propertyId] !== undefined);
+}
+
+function collectPropertyReferences(
+  properties: Readonly<Record<string, JsonValue>>,
+  definitions: readonly GraphPropertyDefinition[],
+  path: string,
+): ReferenceOccurrence[] {
+  return definitions.flatMap((definition) => {
+    if (definition.reference === undefined) {
+      return [];
+    }
+    const value = properties[definition.id]
+      ?? definition.aliases.map((alias) => properties[alias]).find((entry) => entry !== undefined)
+      ?? definition.defaultValue;
+    return typeof value === "string" || typeof value === "number"
+      ? [{ definition: definition.reference, value, path: `${path}.${definition.id}` }]
+      : [];
+  });
 }
 
 function diagnosticCounts(diagnostics: readonly DocumentDiagnostic[]): Map<string, number> {

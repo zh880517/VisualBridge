@@ -6,6 +6,7 @@
   "properties": {
     "displayName": "Knight",
     "level": 8,
+    "primarySkillId": 101,
     "spawn": {
       "position": {
         "x": 2,

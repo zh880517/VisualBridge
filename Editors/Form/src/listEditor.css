@@ -60,6 +60,24 @@
   border-radius: 3px;
 }
 
+.vb-reference-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px;
+  align-items: center;
+}
+
+.vb-reference-editor > input {
+  min-width: 0;
+  color: var(--vscode-input-foreground, inherit);
+  background: var(--vscode-input-background, transparent);
+}
+
+.vb-reference-actions {
+  display: flex;
+  gap: 3px;
+}
+
 @media (max-width: 720px) {
   .vb-list-item {
     grid-template-columns: 22px minmax(0, 1fr);

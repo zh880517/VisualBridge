@@ -2,7 +2,7 @@
 
 ## Scope
 
-`Tools/VisualBridgeMcp` is the project-level stdio MCP adapter for the landed Graph and Table authoring cores. It gives an AI host a small structured API for discovering a VisualBridge Project, inspecting Graph/Table Catalog semantics, reading and validating documents, searching nodes or semantic table rows, and applying GraphOperation/TableOperation batches.
+`Tools/VisualBridgeMcp` is the project-level stdio MCP adapter for the landed Graph, Table and Reference authoring cores. It gives an AI host a small structured API for discovering a VisualBridge Project, inspecting Graph/Table Catalog semantics, reading and validating documents, searching nodes, semantic table rows or shared references, and applying GraphOperation/TableOperation batches.
 
 The server is intentionally thin:
 
@@ -32,7 +32,7 @@ Project discovery recursively searches for `VisualBridge.project.vbjson` and ski
 
 ## Stable tools
 
-The surface contains eleven tools.
+The surface contains twelve tools.
 
 | Tool | Required input | Purpose |
 | --- | --- | --- |
@@ -47,10 +47,13 @@ The surface contains eleven tools.
 | `visualbridge_search_table_rows` | `path`, `query` | Search formatted row names and typed semantic cells, using effective partition rows by default. |
 | `visualbridge_validate_table` | `path` | Run shared Catalog, codec, Field, partition and Table validation without writing. |
 | `visualbridge_apply_table_operations` | `path`, `baseHash`, non-empty `operations` | Apply one TableOperation batch and persist it only when the complete logical Table is valid and every physical source is current. |
+| `visualbridge_references` | `action`, `kind`, `target`; action-specific query/value | Search or resolve a shared Reference Provider and return typed stable values plus target locations. |
 
 `projectFile` is the workspace-relative path returned by `visualbridge_project`. It can be omitted when the workspace contains exactly one valid project. Graph and Catalog tools accept an optional `documentTypeId`; it can be omitted when selection is unambiguous. All paths use `/`, are resolved below the selected Project root, and are rejected if normalization or a resolved symlink leaves that root.
 
 Catalog views return full Registry contracts rather than reinterpreted MCP-specific rules. Node search matches Catalog titles and IDs, node titles and IDs, aliases, category/menu path, tags, traits, and source provenance. Table search matches the Catalog-defined `rowDisplayNamePattern` plus typed semantic cells. Space-separated query terms are combined with AND. Search results are deterministic and limited to at most 200 entries.
+
+`visualbridge_references` currently exposes the shared `table.row` Provider. Its target requires stable `tableTypeId` and `sheetId`, with optional `documentTypeId`; search returns Catalog-formatted row titles, strictly typed key values and project-relative Table locations. Resolve distinguishes `resolved`, `missing`, `ambiguous` and `providerUnavailable`. Graph/Table reads and validation append the same Core Reference diagnostics, and write transactions reject new reference errors without reimplementing Provider rules in MCP. The contract is documented in `ReferenceSystem.md`.
 
 `visualbridge_table` does not return raw CSV cells or workbook objects. Without `sheetId` it returns document/source/sheet metadata; with a physical `sheetId` it adds a bounded semantic row page. Each row contains its Operation-facing row ID and typed `cells`. AI callers must use these identities with Table Operations rather than editing carrier bytes.
 
@@ -116,4 +119,4 @@ npm test
 
 The MCP test launches `dist/server.js` through the official client stdio transport and lists every structured tool schema. The Graph flow queries Project/Catalog/Graph data, searches a node alias, validates the Graph, proves conflict rejection leaves bytes unchanged, commits a valid operation, rejects a stale follow-up, and proves an invalid multi-operation batch is atomic.
 
-The Table flow queries Catalog and paged semantic rows, compares effective and physical partition search, validates CSV/XLSX, rejects a stale hash, rejects changed partition membership, rejects a held logical-table lock, proves an invalid batch leaves source bytes unchanged, commits a CSV partition edit without rewriting its sibling, and round-trips an XLSX cell edit. All writes use temporary project copies. No Unity tests are added.
+The Table flow queries Catalog and paged semantic rows, compares effective and physical partition search, searches and resolves a real `table.row` reference through stdio, validates CSV/XLSX, rejects a stale hash, rejects changed partition membership, rejects a held logical-table lock, proves an invalid batch leaves source bytes unchanged, commits a CSV partition edit without rewriting its sibling, and round-trips an XLSX cell edit. All writes use temporary project copies. No Unity tests are added.

@@ -4,6 +4,7 @@ import type { DocumentDiagnostic } from "@visualbridge/core";
 import {
   ENTITY_EDITOR_ID,
   applyEntityOperations,
+  collectEntityReferences,
   parseEntityDocument,
   searchEntityComponentTypes,
   serializeEntityDocument,
@@ -12,6 +13,8 @@ import {
 import { createEntityEditorHtml } from "@visualbridge/entity-editor";
 import { loadEntityCatalogRegistry } from "../catalog/entityCatalogLoader";
 import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
+import { handleReferenceMessage } from "../reference/referenceMessages";
+import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
 
 const OVERWRITE = "覆盖";
 const DISCARD_AND_RELOAD = "放弃并刷新";
@@ -20,6 +23,9 @@ interface WebviewMessage {
   readonly type?: unknown;
   readonly documentVersion?: unknown;
   readonly operations?: unknown;
+  readonly requestId?: unknown;
+  readonly definition?: unknown;
+  readonly value?: unknown;
 }
 
 interface EntityStateOptions {
@@ -40,6 +46,7 @@ export class EntityEditorSession {
     private readonly panel: vscode.WebviewPanel,
     private match: DocumentMatch,
     private readonly projects: ProjectRegistry,
+    private readonly references: WorkspaceReferenceService,
     private readonly diagnostics: vscode.DiagnosticCollection,
     private readonly output: vscode.OutputChannel,
   ) {}
@@ -115,6 +122,9 @@ export class EntityEditorSession {
     if (this.disposed) {
       return;
     }
+    if (await handleReferenceMessage(message, this.panel.webview, this.match.project, this.references)) {
+      return;
+    }
     if (message.type === "ready") {
       await this.sendState();
       return;
@@ -149,6 +159,18 @@ export class EntityEditorSession {
       this.updateDiagnostics([...catalogResult.diagnostics, ...operationResult.diagnostics]);
       await this.rejectOperation(formatDiagnostics(operationResult.diagnostics));
       return;
+    }
+    if (catalogResult.ready) {
+      const referenceResult = await this.references.validateChange(
+        this.match.project,
+        collectEntityReferences(parseResult.document, catalogResult.registry),
+        collectEntityReferences(operationResult.document, catalogResult.registry),
+      );
+      if (referenceResult.introducedErrors.length > 0) {
+        this.updateDiagnostics([...catalogResult.diagnostics, ...operationResult.diagnostics, ...referenceResult.diagnostics]);
+        await this.rejectOperation(formatDiagnostics(referenceResult.introducedErrors));
+        return;
+      }
     }
 
     const nextText = serializeEntityDocument(operationResult.document);
@@ -247,6 +269,12 @@ export class EntityEditorSession {
       ...result.diagnostics,
       ...catalogResult.diagnostics,
       ...(catalogResult.ready ? validateEntityDocument(result.document, catalogResult.registry) : []),
+      ...(catalogResult.ready
+        ? await this.references.validate(
+            this.match.project,
+            collectEntityReferences(result.document, catalogResult.registry),
+          )
+        : []),
     ];
     this.updateDiagnostics(diagnostics);
     await this.panel.webview.postMessage({

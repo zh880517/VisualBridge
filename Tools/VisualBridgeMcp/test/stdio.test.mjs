@@ -46,6 +46,7 @@ test("stdio MCP discovers, queries, validates, and atomically edits a Graph with
         "visualbridge_catalog",
         "visualbridge_graph",
         "visualbridge_project",
+        "visualbridge_references",
         "visualbridge_search_nodes",
         "visualbridge_search_table_rows",
         "visualbridge_table",
@@ -222,6 +223,28 @@ test("stdio MCP queries and atomically edits partitioned CSV and XLSX Tables", a
     assert.deepEqual(catalog.counts, { tableTypes: 1 });
     const catalogTypes = await call(client, "visualbridge_table_catalog", { projectFile, view: "tableTypes" });
     assert.equal(catalogTypes.tableTypes[0].id, "game.table.skills");
+
+    const referenceSearch = await call(client, "visualbridge_references", {
+      projectFile,
+      action: "search",
+      kind: "table.row",
+      target: { tableTypeId: "game.table.skills", sheetId: "skills" },
+      query: "fireball 101",
+    });
+    assert.ok(referenceSearch.results.length >= 1);
+    assert.equal(referenceSearch.results[0].value, 101);
+    assert.match(referenceSearch.results[0].title, /^101_Fireball/);
+    assert.equal(referenceSearch.results[0].location.documentTypeId, "game.table.skills");
+
+    const referenceResolution = await call(client, "visualbridge_references", {
+      projectFile,
+      action: "resolve",
+      kind: "table.row",
+      target: { tableTypeId: "game.table.skills", sheetId: "skills" },
+      value: 999999,
+    });
+    assert.equal(referenceResolution.status, "missing");
+    assert.deepEqual(referenceResolution.candidates, []);
 
     const csvPath = "Tables/Skills_A.csv";
     const csv = await call(client, "visualbridge_table", { projectFile, path: csvPath });

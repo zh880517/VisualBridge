@@ -1,4 +1,5 @@
-import type { DocumentDiagnostic, DocumentParseResult } from "@visualbridge/core";
+import type { DocumentDiagnostic, DocumentParseResult, ReferenceDefinition } from "@visualbridge/core";
+import { parseReferenceDefinition } from "@visualbridge/core";
 import type { JsonValue } from "./graphDocument";
 
 export const GRAPH_CATALOG_FORMAT_VERSION = 4;
@@ -52,6 +53,7 @@ export interface GraphPropertyDefinition {
   readonly required: boolean;
   readonly defaultValue?: JsonValue;
   readonly editor?: GraphPropertyEditorDefinition;
+  readonly reference?: ReferenceDefinition;
 }
 
 export interface GraphDynamicPortGroupDefinition {
@@ -71,6 +73,7 @@ export interface GraphDynamicPortGroupDefinition {
     readonly dataTypeId?: string;
     readonly defaultValue: JsonValue;
     readonly editor?: GraphPropertyEditorDefinition;
+    readonly reference?: ReferenceDefinition;
   };
   readonly maxItems?: number;
 }
@@ -469,6 +472,7 @@ export function serializeGraphCatalog(catalog: GraphCatalog): string {
               ...(group.item.dataTypeId === undefined ? {} : { dataTypeId: group.item.dataTypeId }),
               defaultValue: sortJsonValue(group.item.defaultValue),
               ...(group.item.editor === undefined ? {} : { editor: serializePropertyEditor(group.item.editor) }),
+              ...(group.item.reference === undefined ? {} : { reference: serializeReferenceDefinition(group.item.reference) }),
             },
             ...(group.maxItems === undefined ? {} : { maxItems: group.maxItems }),
           })),
@@ -498,6 +502,15 @@ function serializePropertyDefinition(property: GraphPropertyDefinition): GraphPr
     required: property.required,
     ...(property.defaultValue === undefined ? {} : { defaultValue: sortJsonValue(property.defaultValue) }),
     ...(property.editor === undefined ? {} : { editor: serializePropertyEditor(property.editor) }),
+    ...(property.reference === undefined ? {} : { reference: serializeReferenceDefinition(property.reference) }),
+  };
+}
+
+function serializeReferenceDefinition(reference: ReferenceDefinition): ReferenceDefinition {
+  return {
+    kind: reference.kind,
+    target: sortJsonValue(reference.target as unknown as JsonValue) as Readonly<Record<string, import("@visualbridge/core").JsonValue>>,
+    allowMissing: reference.allowMissing,
   };
 }
 
@@ -1413,7 +1426,7 @@ function readDynamicPortItem(
     diagnostics.push(error("graphCatalog.invalidDynamicPortItem", path, "Expected an object."));
     return undefined;
   }
-  checkKeys(value, ["valueType", "dataTypeId", "defaultValue", "editor"], path, diagnostics);
+  checkKeys(value, ["valueType", "dataTypeId", "defaultValue", "editor", "reference"], path, diagnostics);
   const valueType = readEnum(value.valueType, ["string", "number", "boolean", "json"] as const, `${path}.valueType`, diagnostics);
   const dataTypeId = value.dataTypeId === undefined
     ? undefined
@@ -1432,9 +1445,19 @@ function readDynamicPortItem(
   const editor = value.editor === undefined
     ? undefined
     : readPropertyEditor(value.editor, `${path}.editor`, valueType, diagnostics);
+  const reference = value.reference === undefined
+    ? undefined
+    : parseReferenceDefinition(value.reference, `${path}.reference`, diagnostics);
+  validateReferenceContract(reference, editor, valueType, path, diagnostics);
   return valueType === undefined || defaultValue === undefined
     ? undefined
-    : { valueType, ...(dataTypeId === undefined ? {} : { dataTypeId }), defaultValue, ...(editor === undefined ? {} : { editor }) };
+    : {
+        valueType,
+        ...(dataTypeId === undefined ? {} : { dataTypeId }),
+        defaultValue,
+        ...(editor === undefined ? {} : { editor }),
+        ...(reference === undefined ? {} : { reference }),
+      };
 }
 
 function readPorts(
@@ -1494,7 +1517,7 @@ function readPropertyDefinitions(
       diagnostics.push(error("graphCatalog.invalidProperty", path, "Expected an object."));
       return [];
     }
-    checkKeys(entry, ["id", "aliases", "title", "description", "valueType", "dataTypeId", "required", "defaultValue", "editor"], path, diagnostics);
+    checkKeys(entry, ["id", "aliases", "title", "description", "valueType", "dataTypeId", "required", "defaultValue", "editor", "reference"], path, diagnostics);
     const id = readIdentifier(entry.id, `${path}.id`, diagnostics);
     const aliases = entry.aliases === undefined ? [] : readIdentifierArray(entry.aliases, `${path}.aliases`, diagnostics);
     const title = readString(entry.title, `${path}.title`, diagnostics);
@@ -1525,6 +1548,10 @@ function readPropertyDefinitions(
     const editor = entry.editor === undefined
       ? undefined
       : readPropertyEditor(entry.editor, `${path}.editor`, valueType, diagnostics);
+    const reference = entry.reference === undefined
+      ? undefined
+      : parseReferenceDefinition(entry.reference, `${path}.reference`, diagnostics);
+    validateReferenceContract(reference, editor, valueType, path, diagnostics);
     return id === undefined || title === undefined || valueType === undefined || required === undefined
       ? []
       : [{
@@ -1537,6 +1564,7 @@ function readPropertyDefinitions(
           required,
           ...(defaultValue === undefined ? {} : { defaultValue }),
           ...(editor === undefined ? {} : { editor }),
+          ...(reference === undefined ? {} : { reference }),
         }];
   });
 }
@@ -1841,8 +1869,9 @@ function isEditorCompatible(kind: GraphPropertyEditorKind, valueType: GraphPrope
   switch (kind) {
     case "text":
     case "multiline":
-    case "reference":
       return valueType === "string";
+    case "reference":
+      return valueType === "string" || valueType === "number";
     case "number":
       return valueType === "number";
     case "checkbox":
@@ -1851,6 +1880,39 @@ function isEditorCompatible(kind: GraphPropertyEditorKind, valueType: GraphPrope
       return valueType === "json";
     case "select":
       return true;
+  }
+}
+
+function validateReferenceContract(
+  reference: ReferenceDefinition | undefined,
+  editor: GraphPropertyEditorDefinition | undefined,
+  valueType: GraphPropertyValueType | undefined,
+  path: string,
+  diagnostics: DocumentDiagnostic[],
+): void {
+  if (reference === undefined) {
+    if (editor?.kind === "reference") {
+      diagnostics.push(error(
+        "graphCatalog.missingReferenceDefinition",
+        `${path}.reference`,
+        "Reference editors require a reference definition.",
+      ));
+    }
+    return;
+  }
+  if (editor?.kind !== "reference") {
+    diagnostics.push(error(
+      "graphCatalog.missingReferenceEditor",
+      `${path}.editor.kind`,
+      "Reference definitions require a reference editor.",
+    ));
+  }
+  if (valueType !== "string" && valueType !== "number") {
+    diagnostics.push(error(
+      "graphCatalog.invalidReferenceValueType",
+      `${path}.valueType`,
+      "References require a string or number JSON value.",
+    ));
   }
 }
 

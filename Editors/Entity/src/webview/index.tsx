@@ -16,7 +16,14 @@ import type {
   RegisteredEntityComponentTypeDefinition,
   RegisteredEntityTypeDefinition,
 } from "@visualbridge/entity";
-import { CommonIcon, FieldsEditor, IconButton, ListItemActions } from "@visualbridge/form-editor";
+import {
+  CommonIcon,
+  FieldsEditor,
+  IconButton,
+  ListItemActions,
+  WebviewReferenceBridge,
+  type ReferenceEditorActions,
+} from "@visualbridge/form-editor";
 import "../styles.css";
 
 interface VsCodeApi {
@@ -55,6 +62,7 @@ type HostMessage = EntityStateMessage | EntityInvalidMessage | {
 };
 
 const vscode = acquireVsCodeApi();
+const referenceBridge = new WebviewReferenceBridge(vscode);
 const rootElement = document.getElementById("root");
 if (rootElement === null) {
   throw new Error("Entity editor root element is missing.");
@@ -73,6 +81,9 @@ function EntityEditorApp(): ReactElement {
   useEffect(() => {
     const listener = (event: MessageEvent<HostMessage>): void => {
       const message = event.data;
+      if (referenceBridge.handleMessage(message)) {
+        return;
+      }
       if (message.type === "entityState") {
         setState(message);
         setInvalid(undefined);
@@ -95,7 +106,10 @@ function EntityEditorApp(): ReactElement {
     };
     window.addEventListener("message", listener);
     vscode.postMessage({ type: "ready" });
-    return () => window.removeEventListener("message", listener);
+    return () => {
+      window.removeEventListener("message", listener);
+      referenceBridge.dispose();
+    };
   }, []);
 
   const submit = (operations: readonly EntityOperation[]): void => {
@@ -148,6 +162,7 @@ function EntityEditorApp(): ReactElement {
                   definitions={entityType.properties}
                   properties={state.document.properties}
                   disabled={pending}
+                  referenceActions={referenceBridge}
                   onCommit={(propertyId, value) => submit([{
                     type: "entity.setProperty",
                     propertyId,
@@ -202,6 +217,7 @@ function EntityEditorApp(): ReactElement {
                   index={index}
                   componentType={resolveComponentType(state.catalogRegistry, component.componentTypeId)}
                   pending={pending}
+                  referenceActions={referenceBridge}
                   submit={submit}
                   onAdd={() => {
                     setAddIndex(index + 1);
@@ -246,6 +262,7 @@ function ComponentCard(props: {
   readonly componentType: RegisteredEntityComponentTypeDefinition | undefined;
   readonly index: number;
   readonly pending: boolean;
+  readonly referenceActions: ReferenceEditorActions;
   readonly submit: (operations: readonly EntityOperation[]) => void;
   readonly onAdd: () => void;
 }): ReactElement {
@@ -338,6 +355,7 @@ function ComponentCard(props: {
                   definitions={props.componentType.properties}
                   properties={props.component.properties}
                   disabled={props.pending}
+                  referenceActions={props.referenceActions}
                   onCommit={(propertyId, value) => props.submit([{
                     type: "entity.setComponentProperty",
                     componentId: props.component.id,

@@ -9,21 +9,28 @@ import {
 } from "./editor/documentEditorProvider";
 import { TABLE_EDITOR_VIEW_TYPE, TableEditorProvider } from "./editor/tableEditorProvider";
 import { ProjectRegistry } from "./project/projectRegistry";
+import {
+  REVEAL_REFERENCE_COMMAND,
+  WorkspaceReferenceService,
+} from "./reference/workspaceReferenceService";
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const output = vscode.window.createOutputChannel("VisualBridge", { log: true });
   const projectDiagnostics = vscode.languages.createDiagnosticCollection("visualbridge-project");
   const documentDiagnostics = vscode.languages.createDiagnosticCollection("visualbridge-document");
   const projects = new ProjectRegistry(projectDiagnostics, output);
+  const references = new WorkspaceReferenceService(projects, output);
   const editorProvider = new DocumentEditorProvider(
     context.extensionUri,
     projects,
+    references,
     documentDiagnostics,
     output,
   );
   const tableEditorProvider = new TableEditorProvider(
     context.extensionUri,
     projects,
+    references,
     documentDiagnostics,
     output,
   );
@@ -50,6 +57,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     projectDiagnostics,
     documentDiagnostics,
     projects,
+    references,
     status,
     projects.onDidChange(updateStatus),
     vscode.commands.registerCommand("visualbridge.refreshProjects", async () => {
@@ -85,6 +93,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand("visualbridge.createEntityDocument", async () => {
       await createEntityDocument(projects);
+    }),
+    vscode.commands.registerCommand(REVEAL_REFERENCE_COMMAND, async (location) => {
+      await tableEditorProvider.revealReference(location);
     }),
     vscode.window.registerCustomEditorProvider(DEFAULT_EDITOR_VIEW_TYPE, editorProvider, {
       supportsMultipleEditorsPerDocument: true,

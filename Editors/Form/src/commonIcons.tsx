@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  ExternalLink,
   GripVertical,
   Plus,
   Search,
@@ -22,6 +23,7 @@ export type CommonIconName =
   | "copy"
   | "delete"
   | "drag"
+  | "open"
   | "search";
 
 export function CommonIcon(props: { readonly name: CommonIconName }): ReactElement {
@@ -34,6 +36,7 @@ export function CommonIcon(props: { readonly name: CommonIconName }): ReactEleme
     copy: Copy,
     delete: Trash2,
     drag: GripVertical,
+    open: ExternalLink,
     search: Search,
   };
   const Icon = icons[props.name];

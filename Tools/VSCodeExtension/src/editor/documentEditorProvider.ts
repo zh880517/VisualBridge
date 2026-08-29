@@ -4,6 +4,7 @@ import { ENTITY_EDITOR_ID } from "@visualbridge/entity";
 import { GRAPH_EDITOR_ID } from "@visualbridge/graph";
 import { TABLE_EDITOR_ID } from "@visualbridge/table";
 import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
+import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
 import { EntityEditorSession } from "./entityEditorSession";
 import { GraphEditorSession } from "./graphEditorSession";
 import { TABLE_EDITOR_VIEW_TYPE } from "./tableEditorProvider";
@@ -15,6 +16,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
   public constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly projects: ProjectRegistry,
+    private readonly references: WorkspaceReferenceService,
     private readonly diagnostics: vscode.DiagnosticCollection,
     private readonly output: vscode.OutputChannel,
   ) {}
@@ -44,6 +46,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         webviewPanel,
         match,
         this.projects,
+        this.references,
         this.diagnostics,
         this.output,
       );
@@ -59,6 +62,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         webviewPanel,
         match,
         this.projects,
+        this.references,
         this.diagnostics,
         this.output,
       );

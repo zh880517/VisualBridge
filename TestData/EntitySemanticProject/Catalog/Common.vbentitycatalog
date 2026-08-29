@@ -65,6 +65,27 @@
           }
         },
         {
+          "id": "primarySkillId",
+          "title": "Primary Skill",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "int",
+          "defaultValue": 101,
+          "editor": {
+            "kind": "reference",
+            "readOnly": false,
+            "integer": true
+          },
+          "reference": {
+            "kind": "table.row",
+            "target": {
+              "documentTypeId": "sample.table.skills",
+              "tableTypeId": "sample.table.skills",
+              "sheetId": "skills"
+            }
+          }
+        },
+        {
           "id": "tint",
           "title": "Tint",
           "aliases": [],

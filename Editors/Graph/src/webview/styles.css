@@ -424,6 +424,21 @@ button:disabled {
   justify-self: start;
 }
 
+.graph-reference-value {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 3px;
+  align-items: center;
+  min-width: 0;
+}
+
+.graph-reference-value .icon {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0;
+}
+
 .graph-dynamic-port-groups {
   display: grid;
   gap: 8px;

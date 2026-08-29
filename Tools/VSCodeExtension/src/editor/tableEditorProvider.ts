@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import * as nodePath from "node:path";
 import * as vscode from "vscode";
-import type { DocumentDiagnostic, TableLayoutDefinition } from "@visualbridge/core";
+import type { DocumentDiagnostic, ReferenceLocation, TableLayoutDefinition } from "@visualbridge/core";
 import {
   TABLE_EDITOR_ID,
   applyTableOperations,
+  collectTableReferences,
   matchTableSheetDefinitions,
   parseCsvTable,
   parseXlsxTable,
@@ -20,6 +21,8 @@ import {
 import { createTableEditorHtml } from "@visualbridge/table-editor";
 import { loadTableCatalogRegistry } from "../catalog/tableCatalogLoader";
 import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
+import { handleReferenceMessage } from "../reference/referenceMessages";
+import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
 
 export const TABLE_EDITOR_VIEW_TYPE = "visualbridge.tableEditor";
 
@@ -27,6 +30,9 @@ interface WebviewMessage {
   readonly type?: unknown;
   readonly revision?: unknown;
   readonly operations?: unknown;
+  readonly requestId?: unknown;
+  readonly definition?: unknown;
+  readonly value?: unknown;
 }
 
 interface TableSource {
@@ -63,6 +69,8 @@ export class TableCustomDocument implements vscode.CustomDocument {
     public readonly layout: TableLayoutDefinition,
     public readonly sources: TableSource[],
     public document: TableDocument,
+    private readonly didUpdate?: (document: TableCustomDocument) => void,
+    private readonly didDispose?: (document: TableCustomDocument) => void,
   ) {
     this.savedDocument = cloneTableDocument(document);
   }
@@ -75,6 +83,7 @@ export class TableCustomDocument implements vscode.CustomDocument {
     this.document = cloneTableDocument(next);
     this.revision += 1;
     this.stateEmitter.fire();
+    this.didUpdate?.(this);
   }
 
   public markSaved(sourceBytes: ReadonlyMap<string, Uint8Array>): void {
@@ -88,6 +97,7 @@ export class TableCustomDocument implements vscode.CustomDocument {
     }
     this.revision += 1;
     this.stateEmitter.fire();
+    this.didUpdate?.(this);
   }
 
   public dispose(): void {
@@ -95,6 +105,7 @@ export class TableCustomDocument implements vscode.CustomDocument {
       return;
     }
     this.disposed = true;
+    this.didDispose?.(this);
     this.stateEmitter.dispose();
   }
 }
@@ -103,6 +114,7 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
   private readonly changeEmitter = new vscode.EventEmitter<vscode.CustomDocumentEditEvent<TableCustomDocument>>();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly panels = new Map<TableCustomDocument, Set<vscode.WebviewPanel>>();
+  private readonly pendingReveals = new Map<string, { readonly sheetId: string; readonly rowId: string }>();
   private operationQueue: Promise<void> = Promise.resolve();
 
   public readonly onDidChangeCustomDocument = this.changeEmitter.event;
@@ -110,6 +122,7 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
   public constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly projects: ProjectRegistry,
+    private readonly references: WorkspaceReferenceService,
     private readonly diagnostics: vscode.DiagnosticCollection,
     private readonly output: vscode.OutputChannel,
   ) {
@@ -140,7 +153,17 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       ? undefined
       : await readBackup(vscode.Uri.parse(openContext.backupId));
     const loaded = await loadTableSources(uri, match, tableType, layout, this.projects, backup);
-    const document = new TableCustomDocument(uri, match, tableType, layout, loaded.sources, loaded.document);
+    const document = new TableCustomDocument(
+      uri,
+      match,
+      tableType,
+      layout,
+      loaded.sources,
+      loaded.document,
+      (current) => this.updateReferenceDocument(current),
+      (current) => this.references.removeTableDocument(current.uri.toString()),
+    );
+    this.updateReferenceDocument(document);
     this.updateDiagnostics(document, [...catalogResult.diagnostics, ...loaded.diagnostics]);
     return document;
   }
@@ -192,6 +215,41 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       }
     });
     await this.sendState(document);
+    await this.sendPendingReveal(document, panel);
+  }
+
+  public async revealReference(value: unknown): Promise<void> {
+    const location = readReferenceLocation(value);
+    if (location === undefined) {
+      throw new Error("Invalid Table reference location.");
+    }
+    if (location.sheetId === undefined || location.rowId === undefined) {
+      throw new Error("Table reference location is missing sheetId or rowId.");
+    }
+    const project = this.projects.projects.find((candidate) => candidate.definition.projectId === location.projectId);
+    if (project === undefined) {
+      throw new Error(`VisualBridge Project '${location.projectId}' is not open.`);
+    }
+    const uri = vscode.Uri.joinPath(project.rootUri, ...location.path.split("/"));
+    const match = this.projects.resolveDocument(uri);
+    if (match?.project.markerUri.toString() !== project.markerUri.toString()
+      || match.documentType.editor !== TABLE_EDITOR_ID
+      || match.documentType.id !== location.documentTypeId) {
+      throw new Error("Table reference location is outside its declared Project Document Type.");
+    }
+    for (const [document, panels] of this.panels) {
+      if (document.sources.some((source) => source.uri.toString() === uri.toString())) {
+        await Promise.all([...panels].map((panel) => panel.webview.postMessage({
+          type: "revealReference",
+          sheetId: location.sheetId,
+          rowId: location.rowId,
+        })));
+        [...panels][0]?.reveal();
+        return;
+      }
+    }
+    this.pendingReveals.set(uri.toString(), { sheetId: location.sheetId, rowId: location.rowId });
+    await vscode.commands.executeCommand("vscode.openWith", uri, TABLE_EDITOR_VIEW_TYPE);
   }
 
   public async saveCustomDocument(document: TableCustomDocument): Promise<void> {
@@ -257,6 +315,9 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
     panel: vscode.WebviewPanel,
     message: WebviewMessage,
   ): Promise<void> {
+    if (await handleReferenceMessage(message, panel.webview, document.match.project, this.references)) {
+      return;
+    }
     if (message.type === "ready") {
       await this.sendState(document);
       return;
@@ -286,10 +347,23 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       await panel.webview.postMessage({ type: "operationRejected", message: formatDiagnostics(result.diagnostics) });
       return;
     }
+    const referenceResult = await this.references.validateChange(
+      document.match.project,
+      collectTableReferences(document.document, document.tableType),
+      collectTableReferences(result.document, document.tableType),
+    );
+    if (referenceResult.introducedErrors.length > 0) {
+      this.updateDiagnostics(document, [...result.diagnostics, ...referenceResult.diagnostics]);
+      await panel.webview.postMessage({
+        type: "operationRejected",
+        message: formatDiagnostics(referenceResult.introducedErrors),
+      });
+      return;
+    }
     const before = cloneTableDocument(document.document);
     const after = cloneTableDocument(result.document);
     document.update(after);
-    this.updateDiagnostics(document, result.diagnostics);
+    this.updateDiagnostics(document, [...result.diagnostics, ...referenceResult.diagnostics]);
     this.changeEmitter.fire({
       document,
       label: "Edit VisualBridge Table",
@@ -313,11 +387,23 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       }
     }
     document.markSaved(rendered);
-    this.updateDiagnostics(document, validateTableDocument(document.document, document.tableType));
+    this.updateDiagnostics(document, [
+      ...validateTableDocument(document.document, document.tableType),
+      ...await this.references.validate(
+        document.match.project,
+        collectTableReferences(document.document, document.tableType),
+      ),
+    ]);
   }
 
   private async sendState(document: TableCustomDocument): Promise<void> {
-    const diagnostics = validateTableDocument(document.document, document.tableType);
+    const diagnostics = [
+      ...validateTableDocument(document.document, document.tableType),
+      ...await this.references.validate(
+        document.match.project,
+        collectTableReferences(document.document, document.tableType),
+      ),
+    ];
     this.updateDiagnostics(document, diagnostics);
     const message = {
       type: "tableState",
@@ -328,6 +414,18 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       diagnostics,
     };
     await Promise.all([...this.panels.get(document) ?? []].map((panel) => panel.webview.postMessage(message)));
+  }
+
+  private async sendPendingReveal(document: TableCustomDocument, panel: vscode.WebviewPanel): Promise<void> {
+    const source = document.sources.find((candidate) => this.pendingReveals.has(candidate.uri.toString()));
+    if (source === undefined) {
+      return;
+    }
+    const reveal = this.pendingReveals.get(source.uri.toString());
+    this.pendingReveals.delete(source.uri.toString());
+    if (reveal !== undefined) {
+      await panel.webview.postMessage({ type: "revealReference", ...reveal });
+    }
   }
 
   private updateDiagnostics(document: TableCustomDocument, items: readonly DocumentDiagnostic[]): void {
@@ -341,6 +439,17 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       diagnostic.source = "VisualBridge";
       return diagnostic;
     }));
+  }
+
+  private updateReferenceDocument(document: TableCustomDocument): void {
+    this.references.updateTableDocument(
+      document.uri.toString(),
+      document.match.project,
+      document.match.documentType.id,
+      document.tableType,
+      document.document,
+      document.sources,
+    );
   }
 }
 
@@ -514,6 +623,41 @@ async function readBackup(uri: vscode.Uri): Promise<TableBackup> {
 
 function isXlsx(bytes: Uint8Array): boolean {
   return bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
+}
+
+function readReferenceLocation(value: unknown): ReferenceLocation | undefined {
+  if (!isRecord(value)
+    || !isIdentifier(value.projectId)
+    || !isIdentifier(value.documentTypeId)
+    || !isProjectRelativePath(value.path)
+    || (value.sheetId !== undefined && !isIdentifier(value.sheetId))
+    || (value.rowId !== undefined && typeof value.rowId !== "string")) {
+    return undefined;
+  }
+  return {
+    projectId: value.projectId,
+    documentTypeId: value.documentTypeId,
+    path: value.path,
+    ...(value.sheetId === undefined ? {} : { sheetId: value.sheetId }),
+    ...(value.rowId === undefined ? {} : { rowId: value.rowId }),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isIdentifier(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+}
+
+function isProjectRelativePath(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && !value.startsWith("/")
+    && !value.includes("\\")
+    && !value.includes("\0")
+    && value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
 }
 
 function hashBytes(value: Uint8Array): string {

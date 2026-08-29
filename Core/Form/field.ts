@@ -1,4 +1,5 @@
 import type { DocumentDiagnostic } from "../Document/document";
+import type { ReferenceDefinition, ReferenceOccurrence } from "../Reference/reference";
 
 export type JsonPrimitive = null | boolean | number | string;
 export type JsonValue = JsonPrimitive | readonly JsonValue[] | { readonly [key: string]: JsonValue };
@@ -26,6 +27,7 @@ export interface FieldValueDefinition {
   readonly dataTypeId?: string;
   readonly defaultValue: JsonValue;
   readonly editor?: FieldEditorDefinition;
+  readonly reference?: ReferenceDefinition;
   readonly fields: readonly FieldDefinition[];
   readonly item?: FieldValueDefinition;
 }
@@ -71,7 +73,7 @@ export function parseFieldValueDefinition(
     diagnostics.push(error("field.invalidDefinition", path, "Expected a field value definition object."));
     return undefined;
   }
-  checkKeys(value, ["valueType", "dataTypeId", "defaultValue", "editor", "fields", "item"], path, diagnostics);
+  checkKeys(value, ["valueType", "dataTypeId", "defaultValue", "editor", "reference", "fields", "item"], path, diagnostics);
   return parseValueDefinitionMembers(value, path, diagnostics);
 }
 
@@ -149,6 +151,17 @@ export function validateFieldValue(
   return diagnostics;
 }
 
+export function collectFieldReferences(
+  properties: Readonly<Record<string, JsonValue>>,
+  definitions: readonly FieldDefinition[],
+  path: string,
+): readonly ReferenceOccurrence[] {
+  return definitions.flatMap((definition) => {
+    const value = resolvePropertyValue(properties, definition);
+    return collectValueReferences(value, definition, `${path}.${definition.id}`);
+  });
+}
+
 export function cloneJsonValue<T extends JsonValue>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
@@ -191,7 +204,7 @@ function parseFieldDefinition(
   }
   checkKeys(
     value,
-    ["id", "title", "aliases", "description", "valueType", "dataTypeId", "defaultValue", "editor", "fields", "item"],
+    ["id", "title", "aliases", "description", "valueType", "dataTypeId", "defaultValue", "editor", "reference", "fields", "item"],
     path,
     diagnostics,
   );
@@ -228,6 +241,9 @@ function parseValueDefinitionMembers(
   const editor = value.editor === undefined
     ? undefined
     : parseEditor(value.editor, `${path}.editor`, diagnostics);
+  const reference = value.reference === undefined
+    ? undefined
+    : parseReferenceDefinition(value.reference, `${path}.reference`, diagnostics);
 
   let fields: readonly FieldDefinition[] = [];
   let item: FieldValueDefinition | undefined;
@@ -258,12 +274,41 @@ function parseValueDefinitionMembers(
     ...(dataTypeId === undefined ? {} : { dataTypeId }),
     defaultValue: cloneJsonValue(value.defaultValue),
     ...(editor === undefined ? {} : { editor }),
+    ...(reference === undefined ? {} : { reference }),
     fields,
     ...(item === undefined ? {} : { item }),
   };
   validateEditorCompatibility(definition, path, diagnostics);
+  validateReferenceCompatibility(definition, path, diagnostics);
   validateFieldValue(definition.defaultValue, definition, `${path}.defaultValue`, diagnostics);
   return definition;
+}
+
+export function parseReferenceDefinition(
+  value: unknown,
+  path: string,
+  diagnostics: DocumentDiagnostic[],
+): ReferenceDefinition | undefined {
+  if (!isRecord(value)) {
+    diagnostics.push(error("field.invalidReference", path, "Expected a reference definition object."));
+    return undefined;
+  }
+  checkKeys(value, ["kind", "target", "allowMissing"], path, diagnostics);
+  const kind = readIdentifier(value.kind, `${path}.kind`, diagnostics);
+  const target = value.target;
+  if (!isRecord(target) || !isJsonValue(target)) {
+    diagnostics.push(error("field.invalidReferenceTarget", `${path}.target`, "Expected a JSON object."));
+  }
+  const allowMissing = value.allowMissing === undefined
+    ? false
+    : readBoolean(value.allowMissing, `${path}.allowMissing`, diagnostics);
+  return kind === undefined || !isRecord(target) || !isJsonValue(target)
+    ? undefined
+    : {
+        kind,
+        target: normalizeJsonValue(target as Readonly<Record<string, JsonValue>>) as Readonly<Record<string, JsonValue>>,
+        allowMissing: allowMissing ?? false,
+      };
 }
 
 function parseEditor(
@@ -344,8 +389,9 @@ function validateEditorCompatibility(
   }
   const compatible = editor.kind === "select"
     || editor.kind === "json"
-    || ((editor.kind === "text" || editor.kind === "multiline" || editor.kind === "reference" || editor.kind === "color")
+    || ((editor.kind === "text" || editor.kind === "multiline" || editor.kind === "color")
       && definition.valueType === "string")
+    || (editor.kind === "reference" && (definition.valueType === "string" || definition.valueType === "number"))
     || (editor.kind === "number" && definition.valueType === "number")
     || (editor.kind === "checkbox" && definition.valueType === "boolean");
   if (!compatible) {
@@ -368,6 +414,71 @@ function validateEditorCompatibility(
       diagnostics,
     ));
   }
+}
+
+function validateReferenceCompatibility(
+  definition: FieldValueDefinition,
+  path: string,
+  diagnostics: DocumentDiagnostic[],
+): void {
+  if (definition.reference === undefined) {
+    if (definition.editor?.kind === "reference") {
+      diagnostics.push(error(
+        "field.missingReferenceDefinition",
+        `${path}.reference`,
+        "Reference editors require a reference definition.",
+      ));
+    }
+    return;
+  }
+  if (definition.editor?.kind !== "reference") {
+    diagnostics.push(error(
+      "field.missingReferenceEditor",
+      `${path}.editor.kind`,
+      "Reference definitions require a reference editor.",
+    ));
+  }
+  if (definition.valueType !== "string" && definition.valueType !== "number") {
+    diagnostics.push(error(
+      "field.invalidReferenceValueType",
+      `${path}.valueType`,
+      "References require a string or number JSON value.",
+    ));
+  }
+}
+
+function collectValueReferences(
+  value: JsonValue,
+  definition: FieldValueDefinition,
+  path: string,
+): readonly ReferenceOccurrence[] {
+  const result: ReferenceOccurrence[] = [];
+  if (definition.reference !== undefined && (typeof value === "string" || typeof value === "number")) {
+    result.push({ definition: definition.reference, value, path });
+  }
+  if (definition.valueType === "object" && isRecord(value)) {
+    result.push(...collectFieldReferences(value as Readonly<Record<string, JsonValue>>, definition.fields, path));
+  } else if (definition.valueType === "array" && Array.isArray(value) && definition.item !== undefined) {
+    value.forEach((entry, index) => result.push(...collectValueReferences(entry, definition.item!, `${path}[${index}]`)));
+  }
+  return result;
+}
+
+function resolvePropertyValue(
+  properties: Readonly<Record<string, JsonValue>>,
+  definition: FieldDefinition,
+): JsonValue {
+  const direct = properties[definition.id];
+  if (direct !== undefined) {
+    return direct;
+  }
+  for (const alias of definition.aliases) {
+    const aliasValue = properties[alias];
+    if (aliasValue !== undefined) {
+      return aliasValue;
+    }
+  }
+  return cloneJsonValue(definition.defaultValue);
 }
 
 function validateFieldIdentityNamespace(

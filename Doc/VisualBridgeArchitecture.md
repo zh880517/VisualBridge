@@ -415,6 +415,8 @@ Reference Provider 提供：
 
 编辑器、MCP 和 AI 都使用相同 Reference Service，不直接理解各业务数据库。
 
+当前 Reference V1 已在 Core、Graph、Entity、Table、VS Code 与 stdio MCP 中落地。共享 Field Definition 使用 `reference.kind`、结构化 `target` 和 `allowMissing` 声明引用，文档只保存字符串或数值稳定键。首个 `table.row` Provider 按 Project Registry、Table Catalog、有效分表行与 `rowDisplayNamePattern` 搜索和解析记录；VS Code 提供原生选择、诊断和跳转，MCP 提供相同的结构化 search/resolve，并在 GraphOperation/TableOperation 写入时拒绝新引入的引用错误。完整契约见 `ReferenceSystem.md`。
+
 ## VS Code 基础插件
 
 ### 职责
@@ -812,7 +814,7 @@ VisualBridge/
 
 阶段目标是证明“文本源文件 -> VisualBridgeCore -> 校验与确定性修改”。
 
-Project、Graph Core、Entity Core、Table Core、共享 Form Field 和最小 stdio MCP 垂直切片现已落地。Graph、Entity 与 Table 分别由 `TestData/GraphSemanticProject`、`TestData/EntitySemanticProject` 和 `TestData/TableSemanticProject` 固定样例及 Node 自动化测试持续验证；Unity Catalog Exporter、Importer、Runtime 和 Debug 仍不在本阶段范围内。
+Project、Graph Core、Entity Core、Table Core、共享 Form Field、Reference V1 和最小 stdio MCP 垂直切片现已落地。Graph、Entity 与 Table 分别由 `TestData/GraphSemanticProject`、`TestData/EntitySemanticProject` 和 `TestData/TableSemanticProject` 固定样例及 Node 自动化测试持续验证；Unity Catalog Exporter、Importer、Runtime 和 Debug 仍不在本阶段范围内。
 
 ### 阶段二：VS Code 编辑闭环
 
@@ -828,7 +830,7 @@ Project、Graph Core、Entity Core、Table Core、共享 Form Field 和最小 st
 ### 阶段三：Catalog、Reference 与项目扩展
 
 - Unity 生成基础类型、节点和资产 Catalog。
-- 实现 Reference Service 和通用 Reference Picker。
+- 扩展已落地的 Reference Service 和通用 Reference Picker，增加项目 Provider、反向查找与预览能力。
 - 实现声明式扩展和 TypeScript Provider。
 - 实现 Provider 重启、诊断和 Workspace Trust 边界。
 
@@ -851,7 +853,7 @@ Project、Graph Core、Entity Core、Table Core、共享 Form Field 和最小 st
 
 ### 阶段六：更多 Document Type
 
-- Table Document 已完成首个版本；继续实现 Structured Config 或扩展 Table 引用能力。
+- Table Document 与 `table.row` 引用已完成首个版本；继续实现 Structured Config 或增加新的 Reference Provider。
 - 验证 Form、Reference、Validation 和扩展机制是否真正通用。
 - 根据两个垂直切片提炼共享 API，避免只为 Graph 过度抽象。
 

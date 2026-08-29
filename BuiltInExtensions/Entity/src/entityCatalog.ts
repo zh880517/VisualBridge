@@ -461,6 +461,13 @@ function serializeValueDefinition(definition: import("@visualbridge/core").Field
         }),
       },
     }),
+    ...(definition.reference === undefined ? {} : {
+      reference: {
+        kind: definition.reference.kind,
+        target: normalizeJsonValue(definition.reference.target),
+        ...(definition.reference.allowMissing ? { allowMissing: true } : {}),
+      },
+    }),
     ...(definition.valueType === "object" ? { fields: definition.fields.map(serializeFieldDefinition) } : {}),
     ...(definition.valueType === "array" && definition.item !== undefined
       ? { item: serializeValueDefinition(definition.item) }

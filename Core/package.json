@@ -10,6 +10,10 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/test/reference.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.1"
   }
 }

@@ -10,6 +10,7 @@ import type {
   FieldDefinition,
   FieldValueDefinition,
   JsonValue,
+  ReferenceDefinition,
 } from "@visualbridge/core";
 import { cloneJsonValue } from "@visualbridge/core";
 import "./listEditor.css";
@@ -18,7 +19,16 @@ export interface FieldsEditorProps {
   readonly definitions: readonly FieldDefinition[];
   readonly properties: Readonly<Record<string, JsonValue>>;
   readonly disabled?: boolean | undefined;
+  readonly referenceActions?: ReferenceEditorActions | undefined;
   readonly onCommit: (fieldId: string, value: JsonValue) => void;
+}
+
+export interface ReferenceEditorActions {
+  readonly pick: (
+    definition: ReferenceDefinition,
+    currentValue: string | number,
+  ) => Promise<string | number | undefined>;
+  readonly reveal: (definition: ReferenceDefinition, currentValue: string | number) => void;
 }
 
 export interface FieldValueEditorProps {
@@ -26,6 +36,7 @@ export interface FieldValueEditorProps {
   readonly value: JsonValue | undefined;
   readonly disabled?: boolean | undefined;
   readonly ariaLabel?: string | undefined;
+  readonly referenceActions?: ReferenceEditorActions | undefined;
   readonly onCommit: (value: JsonValue) => void;
 }
 
@@ -47,6 +58,7 @@ export function FieldsEditor(props: FieldsEditorProps): ReactElement {
                 value={value}
                 disabled={props.disabled}
                 ariaLabel={definition.title}
+                referenceActions={props.referenceActions}
                 onCommit={(nextValue) => props.onCommit(definition.id, nextValue)}
               />
             </div>
@@ -69,6 +81,7 @@ export function FieldValueEditor(props: FieldValueEditorProps): ReactElement {
           definitions={props.definition.fields}
           properties={objectValue}
           disabled={disabled}
+          referenceActions={props.referenceActions}
           onCommit={(fieldId, fieldValue) => {
             const nextValue = cloneRecord(objectValue);
             const definition = props.definition.fields.find(
@@ -153,6 +166,20 @@ export function FieldValueEditor(props: FieldValueEditorProps): ReactElement {
     );
   }
 
+  if (props.definition.editor?.kind === "reference" && props.definition.reference !== undefined
+    && (typeof value === "string" || typeof value === "number")) {
+    return (
+      <ReferenceEditor
+        definition={props.definition.reference}
+        value={value}
+        disabled={disabled}
+        ariaLabel={props.ariaLabel}
+        actions={props.referenceActions}
+        onCommit={props.onCommit}
+      />
+    );
+  }
+
   if (props.definition.valueType === "json" || props.definition.editor?.kind === "json") {
     return (
       <JsonEditor
@@ -211,6 +238,7 @@ function ListEditor(props: FieldValueEditorProps & {
             values={props.values}
             disabled={props.disabled}
             ariaLabel={props.ariaLabel}
+            referenceActions={props.referenceActions}
             onCommit={props.onCommit}
             onAdd={() => addAt(index + 1)}
           />
@@ -242,6 +270,7 @@ function SortableListItem(props: {
   readonly values: readonly JsonValue[];
   readonly disabled: boolean;
   readonly ariaLabel?: string | undefined;
+  readonly referenceActions?: ReferenceEditorActions | undefined;
   readonly onCommit: (value: JsonValue) => void;
   readonly onAdd: () => void;
 }): ReactElement {
@@ -264,6 +293,7 @@ function SortableListItem(props: {
         value={props.entry}
         disabled={props.disabled}
         ariaLabel={`${props.ariaLabel ?? "List"} ${props.index + 1}`}
+        referenceActions={props.referenceActions}
         onCommit={(nextEntry) => props.onCommit(replaceArrayItem(props.values, props.index, nextEntry))}
       />
       <ListItemActions
@@ -275,6 +305,52 @@ function SortableListItem(props: {
         onAdd={props.onAdd}
         onDelete={() => props.onCommit(props.values.filter((_, index) => index !== props.index))}
       />
+    </div>
+  );
+}
+
+function ReferenceEditor(props: {
+  readonly definition: ReferenceDefinition;
+  readonly value: string | number;
+  readonly disabled: boolean;
+  readonly ariaLabel?: string | undefined;
+  readonly actions?: ReferenceEditorActions | undefined;
+  readonly onCommit: (value: JsonValue) => void;
+}): ReactElement {
+  const available = props.actions !== undefined;
+  return (
+    <div className="vb-reference-editor">
+      <input
+        type="text"
+        aria-label={props.ariaLabel}
+        value={String(props.value)}
+        readOnly
+        title={`${props.definition.kind}: ${String(props.value)}`}
+      />
+      <div className="vb-reference-actions" role="group" aria-label={`${props.ariaLabel ?? "引用"}操作`}>
+        <IconButton
+          className="secondary"
+          icon="search"
+          label={`选择${props.ariaLabel ?? "引用"}`}
+          title="选择引用"
+          disabled={props.disabled || !available}
+          onClick={() => {
+            void props.actions?.pick(props.definition, props.value).then((value) => {
+              if (value !== undefined && !referenceValueEqual(value, props.value)) {
+                props.onCommit(value);
+              }
+            });
+          }}
+        />
+        <IconButton
+          className="secondary"
+          icon="open"
+          label={`打开${props.ariaLabel ?? "引用"}`}
+          title="打开引用"
+          disabled={!available}
+          onClick={() => props.actions?.reveal(props.definition, props.value)}
+        />
+      </div>
     </div>
   );
 }
@@ -561,6 +637,10 @@ function moveArrayItem(values: readonly JsonValue[], from: number, to: number): 
 
 function jsonEqual(left: JsonValue, right: JsonValue): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function referenceValueEqual(left: string | number, right: string | number): boolean {
+  return typeof left === typeof right && left === right;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
