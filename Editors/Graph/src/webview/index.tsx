@@ -474,6 +474,7 @@ type HostMessage =
   | { readonly type: "referenceCancelled"; readonly requestId: string }
   | { readonly type: "operationCompleted"; readonly documentVersion: number; readonly changed: boolean }
   | { readonly type: "operationRejected"; readonly message: string }
+  | { readonly type: "requestReady"; readonly webviewToken: string }
   | GraphRevealRequest;
 
 interface VsCodeApi {
@@ -482,7 +483,12 @@ interface VsCodeApi {
 
 declare function acquireVsCodeApi(): VsCodeApi;
 
-const vscode = acquireVsCodeApi();
+const rawVscode = acquireVsCodeApi();
+const webviewInstanceId = crypto.randomUUID();
+let webviewToken: string | undefined;
+const vscode: VsCodeApi = {
+  postMessage: (message) => rawVscode.postMessage(withWebviewToken(message, webviewToken)),
+};
 const referenceBridge = new WebviewReferenceBridge(vscode);
 const INTERFACE_INPUT_NODE_ID = GRAPH_INTERFACE_INPUT_NODE_ID;
 const INTERFACE_OUTPUT_NODE_ID = GRAPH_INTERFACE_OUTPUT_NODE_ID;
@@ -1673,6 +1679,7 @@ function GraphEditorApp(): React.JSX.Element {
   const applyingRevealRequestIdRef = useRef<string | undefined>(undefined);
   const currentRevealRequestIdRef = useRef<string | undefined>(undefined);
   const revealTimerRef = useRef<number | undefined>(undefined);
+  const handshakeProposalSentRef = useRef(false);
   const [graphDocument, setGraphDocument] = useState<GraphDocument>();
   const [catalogRegistry, setCatalogRegistry] = useState<GraphCatalogRegistry>(emptyCatalogRegistry());
   const [catalogReady, setCatalogReady] = useState(false);
@@ -1886,6 +1893,11 @@ function GraphEditorApp(): React.JSX.Element {
   useEffect(() => {
     const receiveMessage = (event: MessageEvent<HostMessage>): void => {
       const message = event.data;
+      if (message.type === "requestReady") {
+        webviewToken = message.webviewToken;
+        vscode.postMessage({ type: "ready", instanceId: webviewInstanceId });
+        return;
+      }
       if (referenceBridge.handleMessage(message)) {
         return;
       }
@@ -2044,11 +2056,14 @@ function GraphEditorApp(): React.JSX.Element {
         pendingRef.current = false;
         setPending(false);
         setStatus({ message: message.message, error: true });
-        vscode.postMessage({ type: "ready" });
       }
     };
     window.addEventListener("message", receiveMessage);
-    vscode.postMessage({ type: "ready" });
+    if (!handshakeProposalSentRef.current) {
+      handshakeProposalSentRef.current = true;
+      webviewToken = undefined;
+      vscode.postMessage({ type: "ready", instanceId: webviewInstanceId });
+    }
     return () => {
       window.removeEventListener("message", receiveMessage);
       if (revealTimerRef.current !== undefined) {
@@ -2990,6 +3005,12 @@ function GraphEditorApp(): React.JSX.Element {
       </div>
     </GraphDataTypesContext.Provider>
   );
+}
+
+function withWebviewToken(message: unknown, token: string | undefined): unknown {
+  return token === undefined || typeof message !== "object" || message === null || Array.isArray(message)
+    ? message
+    : { ...message, webviewToken: token };
 }
 
 function GraphInspector({

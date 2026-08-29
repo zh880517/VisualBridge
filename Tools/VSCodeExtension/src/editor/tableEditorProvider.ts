@@ -18,21 +18,51 @@ import {
   type TableSheet,
   type TableTypeDefinition,
 } from "@visualbridge/table";
-import { createTableEditorHtml } from "@visualbridge/table-editor";
+import {
+  TABLE_REVEAL_RESULT_MESSAGE_TYPE,
+  TableRevealMailbox,
+  chooseReadyTableRevealRecipient,
+  createTableEditorHtml,
+  type TableRevealResult,
+  type TableRevealTarget,
+} from "@visualbridge/table-editor";
 import { loadTableCatalogRegistry } from "../catalog/tableCatalogLoader";
 import type { DocumentMatch, ProjectContext, ProjectRegistry } from "../project/projectRegistry";
 import { handleReferenceMessage } from "../reference/referenceMessages";
 import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
+import { WebviewEpoch } from "./webviewEpoch";
 
 export const TABLE_EDITOR_VIEW_TYPE = "visualbridge.tableEditor";
 
 interface WebviewMessage {
   readonly type?: unknown;
+  readonly webviewToken?: unknown;
+  readonly instanceId?: unknown;
   readonly revision?: unknown;
   readonly operations?: unknown;
   readonly requestId?: unknown;
   readonly definition?: unknown;
   readonly value?: unknown;
+  readonly found?: unknown;
+  readonly message?: unknown;
+}
+
+interface PendingTableReveal {
+  readonly sequence: number;
+  readonly target: TableRevealTarget;
+}
+
+interface TablePanelRevealState {
+  readonly mailbox: TableRevealMailbox;
+  readonly epoch: WebviewEpoch;
+  sourceUri: string | undefined;
+  sourceTarget: TableRevealTarget | undefined;
+  revealGeneration: number | undefined;
+  lastReveal: {
+    readonly sourceUri: string;
+    readonly target: TableRevealTarget;
+    readonly result: TableRevealResult;
+  } | undefined;
 }
 
 interface TableSource {
@@ -114,7 +144,11 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
   private readonly changeEmitter = new vscode.EventEmitter<vscode.CustomDocumentEditEvent<TableCustomDocument>>();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly panels = new Map<TableCustomDocument, Set<vscode.WebviewPanel>>();
-  private readonly pendingReveals = new Map<string, { readonly sheetId: string; readonly rowId: string }>();
+  private readonly panelRevealStates = new Map<vscode.WebviewPanel, TablePanelRevealState>();
+  private readonly pendingReveals = new Map<string, PendingTableReveal>();
+  private readonly documentRevealGenerations = new Map<TableCustomDocument, number>();
+  private readonly testPausedRevealPanels = new Set<vscode.WebviewPanel>();
+  private revealSequence = 0;
   private operationQueue: Promise<void> = Promise.resolve();
 
   public readonly onDidChangeCustomDocument = this.changeEmitter.event;
@@ -196,26 +230,114 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       this.panels.set(document, documentPanels);
     }
     documentPanels.add(panel);
+    const revealState: TablePanelRevealState = {
+      mailbox: new TableRevealMailbox(),
+      epoch: new WebviewEpoch(),
+      sourceUri: undefined,
+      sourceTarget: undefined,
+      revealGeneration: undefined,
+      lastReveal: undefined,
+    };
+    revealState.epoch.begin(createNonce());
+    this.panelRevealStates.set(panel, revealState);
+    let panelWasVisible = panel.visible;
     const stateSubscription = document.onDidChangeState(() => void this.sendState(document));
     const messageSubscription = panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
+      const webviewEpoch = revealState.epoch.capture();
       this.operationQueue = this.operationQueue
-        .then(() => this.handleMessage(document, panel, message))
+        .then(() => this.handleMessage(document, panel, message, webviewEpoch))
         .catch((errorValue: unknown) => {
+          if (!this.isCurrentPanelEpoch(panel, revealState, webviewEpoch)
+            || (message.type !== "ready" && !revealState.epoch.acceptsMessage(message.webviewToken))) {
+            return;
+          }
           this.output.appendLine(`[table] Operation failed: ${formatError(errorValue)}`);
+          if (message.type === "ready") {
+            return;
+          }
           return panel.webview.postMessage({ type: "operationRejected", message: formatError(errorValue) }).then(() => undefined);
         });
     });
+    const viewStateSubscription = panel.onDidChangeViewState((event) => {
+      const visible = event.webviewPanel.visible;
+      if (!visible && panelWasVisible) {
+        revealState.epoch.invalidate();
+        revealState.mailbox.markUnavailable();
+      } else if (visible && !panelWasVisible) {
+        revealState.epoch.begin(createNonce());
+        void this.requestPanelReady(panel, revealState);
+      }
+      panelWasVisible = visible;
+    });
     panel.onDidDispose(() => {
-      stateSubscription.dispose();
-      messageSubscription.dispose();
+      revealState.epoch.invalidate();
       const currentPanels = this.panels.get(document);
       currentPanels?.delete(panel);
       if (currentPanels?.size === 0) {
+        this.clearPendingReveals(document);
+        revealState.mailbox.cancel();
+        revealState.sourceUri = undefined;
+        revealState.sourceTarget = undefined;
+        revealState.revealGeneration = undefined;
+      } else if (currentPanels !== undefined) {
+        this.restorePendingReveal(document, revealState);
+      }
+      this.testPausedRevealPanels.delete(panel);
+      this.panelRevealStates.delete(panel);
+      stateSubscription.dispose();
+      messageSubscription.dispose();
+      viewStateSubscription.dispose();
+      if (currentPanels?.size === 0) {
         this.panels.delete(document);
+        this.documentRevealGenerations.delete(document);
+      } else if (currentPanels !== undefined) {
+        void this.handoffPendingReveal(document, currentPanels).catch((errorValue: unknown) => {
+          this.output.appendLine(`[table] Reveal handoff failed: ${formatError(errorValue)}`);
+        });
       }
     });
-    await this.sendState(document);
-    await this.sendPendingReveal(document, panel);
+    void this.requestPanelReady(panel, revealState);
+  }
+
+  public isEditorReady(uri: vscode.Uri): boolean {
+    for (const [document, panels] of this.panels) {
+      if (document.sources.some((source) => source.uri.toString() === uri.toString())
+        && [...panels].some((panel) => {
+          const state = this.panelRevealStates.get(panel);
+          return state?.mailbox.isReady === true && panel.active && panel.visible;
+        })) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  public getTestState(uri: vscode.Uri): {
+    readonly panelCount: number;
+    readonly activeReadyPanelCount: number;
+    readonly pendingRevealCount: number;
+    readonly lastRevealResult?: TableRevealResult;
+    readonly lastRevealTarget?: TableRevealTarget;
+  } {
+    const uriKey = uri.toString();
+    const matchingPanels = [...this.panels]
+      .filter(([document]) => document.sources.some((source) => source.uri.toString() === uriKey))
+      .flatMap(([, panels]) => [...panels]);
+    const base = {
+      panelCount: matchingPanels.length,
+      activeReadyPanelCount: matchingPanels.filter((panel) => {
+        const state = this.panelRevealStates.get(panel);
+        return state?.mailbox.isReady === true && panel.active && panel.visible;
+      }).length,
+      pendingRevealCount: (this.pendingReveals.has(uriKey) ? 1 : 0)
+        + matchingPanels.filter((panel) => this.panelRevealStates.get(panel)?.mailbox.pendingTarget !== undefined).length,
+    };
+    const lastReveal = matchingPanels
+      .map((panel) => this.panelRevealStates.get(panel)?.lastReveal)
+      .find((reveal) => reveal?.sourceUri === uriKey);
+    return lastReveal === undefined
+      ? base
+      : { ...base, lastRevealResult: lastReveal.result, lastRevealTarget: lastReveal.target };
   }
 
   public async revealReference(value: unknown): Promise<void> {
@@ -237,25 +359,60 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       || match.documentType.id !== location.documentTypeId) {
       throw new Error("Table reference location is outside its declared Project Document Type.");
     }
+    const target = { sheetId: location.sheetId, rowId: location.rowId };
+    const sourceUri = uri.toString();
+    const revealGeneration = ++this.revealSequence;
+    this.clearRevealResults(sourceUri);
     for (const [document, panels] of this.panels) {
-      if (document.sources.some((source) => source.uri.toString() === uri.toString())) {
-        await Promise.all([...panels].map((panel) => panel.webview.postMessage({
-          type: "revealReference",
-          sheetId: location.sheetId,
-          rowId: location.rowId,
-        })));
-        [...panels][0]?.reveal();
-        return;
+      if (!document.sources.some((source) => source.uri.toString() === sourceUri)) {
+        continue;
       }
+      this.beginDocumentReveal(document, revealGeneration);
+      const panel = chooseRevealPanel(panels);
+      const state = panel === undefined ? undefined : this.panelRevealStates.get(panel);
+      if (panel === undefined || state === undefined) {
+        break;
+      }
+      state.sourceUri = sourceUri;
+      state.sourceTarget = target;
+      state.revealGeneration = revealGeneration;
+      state.mailbox.enqueue(target);
+      panel.reveal();
+      await this.sendPanelReveal(panel, state, state.epoch.capture());
+      return;
     }
-    this.pendingReveals.set(uri.toString(), { sheetId: location.sheetId, rowId: location.rowId });
-    await vscode.commands.executeCommand("vscode.openWith", uri, TABLE_EDITOR_VIEW_TYPE);
+    const pending: PendingTableReveal = { sequence: revealGeneration, target };
+    this.pendingReveals.set(sourceUri, pending);
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", uri, TABLE_EDITOR_VIEW_TYPE);
+    } catch (error) {
+      if (this.pendingReveals.get(sourceUri) === pending) {
+        this.pendingReveals.delete(sourceUri);
+      }
+      throw error;
+    }
   }
 
   public hasOpenProject(project: ProjectContext): boolean {
     return [...this.panels.keys()].some((document) => (
       document.match.project.markerUri.toString() === project.markerUri.toString()
     ));
+  }
+
+  public pauseNextRevealForTest(uri: vscode.Uri): boolean {
+    const uriKey = uri.toString();
+    for (const [document, panels] of this.panels) {
+      if (!document.sources.some((source) => source.uri.toString() === uriKey)) {
+        continue;
+      }
+      const panel = chooseRevealPanel(panels);
+      const state = panel === undefined ? undefined : this.panelRevealStates.get(panel);
+      if (panel !== undefined && state?.mailbox.isReady === true) {
+        this.testPausedRevealPanels.add(panel);
+        return true;
+      }
+    }
+    return false;
   }
 
   public async saveCustomDocument(document: TableCustomDocument): Promise<void> {
@@ -314,18 +471,62 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       disposable.dispose();
     }
     this.panels.clear();
+    this.panelRevealStates.clear();
+    this.pendingReveals.clear();
+    this.documentRevealGenerations.clear();
+    this.testPausedRevealPanels.clear();
   }
 
   private async handleMessage(
     document: TableCustomDocument,
     panel: vscode.WebviewPanel,
     message: WebviewMessage,
+    webviewEpoch: number,
   ): Promise<void> {
-    if (await handleReferenceMessage(message, panel.webview, document.match.project, this.references)) {
+    const initialState = this.panelRevealStates.get(panel);
+    if (initialState === undefined || !this.isCurrentPanelEpoch(panel, initialState, webviewEpoch)) {
       return;
     }
     if (message.type === "ready") {
-      await this.sendState(document);
+      await this.handlePanelReady(document, panel, initialState, message, webviewEpoch);
+      return;
+    }
+    if (!initialState.epoch.acceptsMessage(message.webviewToken)) {
+      return;
+    }
+    if (message.type === TABLE_REVEAL_RESULT_MESSAGE_TYPE) {
+      if (typeof message.requestId !== "string" || typeof message.found !== "boolean") {
+        return;
+      }
+      if (initialState.mailbox.acknowledge(message.requestId) !== true) {
+        return;
+      }
+      const isCurrentReveal = initialState.revealGeneration !== undefined
+        && initialState.revealGeneration === this.documentRevealGenerations.get(document);
+      const result: TableRevealResult = {
+        type: TABLE_REVEAL_RESULT_MESSAGE_TYPE,
+        requestId: message.requestId,
+        found: message.found,
+        ...(typeof message.message === "string" ? { message: message.message } : {}),
+      };
+      initialState.lastReveal = !isCurrentReveal
+        || initialState.sourceUri === undefined
+        || initialState.sourceTarget === undefined
+        ? undefined
+        : { sourceUri: initialState.sourceUri, target: initialState.sourceTarget, result };
+      initialState.sourceUri = undefined;
+      initialState.sourceTarget = undefined;
+      initialState.revealGeneration = undefined;
+      if (isCurrentReveal && !result.found) {
+        this.output.appendLine(`[table] Reveal target was not found: ${result.message ?? "unknown target"}`);
+      }
+      const panels = this.panels.get(document);
+      if (panels !== undefined) {
+        await this.handoffPendingReveal(document, panels);
+      }
+      return;
+    }
+    if (await handleReferenceMessage(message, panel.webview, document.match.project, this.references)) {
       return;
     }
     if (message.type !== "applyOperations") {
@@ -402,7 +603,7 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
     ]);
   }
 
-  private async sendState(document: TableCustomDocument): Promise<void> {
+  private async sendState(document: TableCustomDocument, targetPanel?: vscode.WebviewPanel): Promise<boolean> {
     const diagnostics = [
       ...validateTableDocument(document.document, document.tableType),
       ...await this.references.validate(
@@ -419,19 +620,173 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       isDirty: document.isDirty,
       diagnostics,
     };
-    await Promise.all([...this.panels.get(document) ?? []].map((panel) => panel.webview.postMessage(message)));
+    const panels = targetPanel === undefined
+      ? [...this.panels.get(document) ?? []].filter(
+          (panel) => this.panelRevealStates.get(panel)?.mailbox.isReady === true,
+        )
+      : [targetPanel];
+    const results = await Promise.all(panels.map((panel) => panel.webview.postMessage(message)));
+    return panels.length > 0 && results.every((posted) => posted);
   }
 
-  private async sendPendingReveal(document: TableCustomDocument, panel: vscode.WebviewPanel): Promise<void> {
-    const source = document.sources.find((candidate) => this.pendingReveals.has(candidate.uri.toString()));
-    if (source === undefined) {
+  private claimPendingReveal(document: TableCustomDocument, state: TablePanelRevealState): void {
+    const candidates = document.sources
+      .map((source) => ({ sourceUri: source.uri.toString(), pending: this.pendingReveals.get(source.uri.toString()) }))
+      .filter((entry): entry is { readonly sourceUri: string; readonly pending: PendingTableReveal } => (
+        entry.pending !== undefined
+      ));
+    if (candidates.length === 0 || state.mailbox.pendingTarget !== undefined) {
       return;
     }
-    const reveal = this.pendingReveals.get(source.uri.toString());
-    this.pendingReveals.delete(source.uri.toString());
-    if (reveal !== undefined) {
-      await panel.webview.postMessage({ type: "revealReference", ...reveal });
+    const selected = candidates.sort((left, right) => right.pending.sequence - left.pending.sequence)[0];
+    candidates.forEach((entry) => this.pendingReveals.delete(entry.sourceUri));
+    if (selected !== undefined) {
+      const currentGeneration = this.documentRevealGenerations.get(document);
+      if (currentGeneration !== undefined && selected.pending.sequence < currentGeneration) {
+        return;
+      }
+      if (currentGeneration === undefined || selected.pending.sequence > currentGeneration) {
+        this.cancelPanelReveals(document);
+        this.documentRevealGenerations.set(document, selected.pending.sequence);
+      }
+      state.sourceUri = selected.sourceUri;
+      state.sourceTarget = selected.pending.target;
+      state.revealGeneration = selected.pending.sequence;
+      state.mailbox.enqueue(selected.pending.target);
     }
+  }
+
+  private async sendPanelReveal(
+    panel: vscode.WebviewPanel,
+    state: TablePanelRevealState,
+    webviewEpoch: number,
+  ): Promise<void> {
+    if (!this.isCurrentPanelEpoch(panel, state, webviewEpoch) || !state.epoch.isReady) {
+      return;
+    }
+    const request = state.mailbox.deliverable;
+    if (request === undefined) {
+      return;
+    }
+    if (this.testPausedRevealPanels.delete(panel)) {
+      return;
+    }
+    if (!await panel.webview.postMessage(request)
+      && this.isCurrentPanelEpoch(panel, state, webviewEpoch)) {
+      state.mailbox.markUnavailable();
+    }
+  }
+
+  private async handoffPendingReveal(
+    document: TableCustomDocument,
+    panels: ReadonlySet<vscode.WebviewPanel>,
+  ): Promise<void> {
+    const panel = chooseReadyTableRevealRecipient([...panels].flatMap((candidate) => {
+      const state = this.panelRevealStates.get(candidate);
+      return state === undefined ? [] : [{
+        value: candidate,
+        mailbox: state.mailbox,
+        active: candidate.active,
+        visible: candidate.visible,
+      }];
+    }));
+    const state = panel === undefined ? undefined : this.panelRevealStates.get(panel);
+    if (panel === undefined || state === undefined) {
+      return;
+    }
+    this.claimPendingReveal(document, state);
+    if (state.mailbox.pendingTarget === undefined) {
+      return;
+    }
+    panel.reveal();
+    await this.sendPanelReveal(panel, state, state.epoch.capture());
+  }
+
+  private clearPendingReveals(document: TableCustomDocument): void {
+    document.sources.forEach((source) => this.pendingReveals.delete(source.uri.toString()));
+  }
+
+  private beginDocumentReveal(document: TableCustomDocument, generation: number): void {
+    this.documentRevealGenerations.set(document, generation);
+    this.clearPendingReveals(document);
+    this.cancelPanelReveals(document);
+  }
+
+  private cancelPanelReveals(document: TableCustomDocument): void {
+    for (const panel of this.panels.get(document) ?? []) {
+      const state = this.panelRevealStates.get(panel);
+      if (state === undefined) {
+        continue;
+      }
+      state.mailbox.cancel();
+      state.sourceUri = undefined;
+      state.sourceTarget = undefined;
+      state.revealGeneration = undefined;
+    }
+  }
+
+  private clearRevealResults(sourceUri: string): void {
+    for (const state of this.panelRevealStates.values()) {
+      if (state.lastReveal?.sourceUri === sourceUri) {
+        state.lastReveal = undefined;
+      }
+    }
+  }
+
+  private restorePendingReveal(document: TableCustomDocument, state: TablePanelRevealState): void {
+    const target = state.mailbox.pendingTarget;
+    const generation = state.revealGeneration;
+    if (state.sourceUri !== undefined
+      && target !== undefined
+      && generation !== undefined
+      && generation === this.documentRevealGenerations.get(document)
+      && !this.pendingReveals.has(state.sourceUri)) {
+      this.pendingReveals.set(state.sourceUri, { sequence: generation, target });
+    }
+  }
+
+  private async handlePanelReady(
+    document: TableCustomDocument,
+    panel: vscode.WebviewPanel,
+    state: TablePanelRevealState,
+    message: WebviewMessage,
+    webviewEpoch: number,
+  ): Promise<void> {
+    if (typeof message.instanceId !== "string" || message.instanceId.length === 0) {
+      return;
+    }
+    if (message.webviewToken === undefined) {
+      await this.requestPanelReady(panel, state);
+      return;
+    }
+    if (!panel.visible || !state.epoch.canAcceptReady(message.webviewToken)) {
+      return;
+    }
+    if (!await this.sendState(document, panel)
+      || !this.isCurrentPanelEpoch(panel, state, webviewEpoch)
+      || !panel.visible
+      || !state.epoch.markReady(message.webviewToken)) {
+      return;
+    }
+    state.mailbox.markReady();
+    this.claimPendingReveal(document, state);
+    await this.sendPanelReveal(panel, state, webviewEpoch);
+  }
+
+  private async requestPanelReady(panel: vscode.WebviewPanel, state: TablePanelRevealState): Promise<void> {
+    const token = state.epoch.currentToken;
+    if (this.panelRevealStates.get(panel) !== state || !panel.visible || token === undefined) {
+      return;
+    }
+    await panel.webview.postMessage({ type: "requestReady", webviewToken: token });
+  }
+
+  private isCurrentPanelEpoch(
+    panel: vscode.WebviewPanel,
+    state: TablePanelRevealState,
+    webviewEpoch: number,
+  ): boolean {
+    return this.panelRevealStates.get(panel) === state && state.epoch.isCurrent(webviewEpoch);
   }
 
   private updateDiagnostics(document: TableCustomDocument, items: readonly DocumentDiagnostic[]): void {
@@ -457,6 +812,13 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       document.sources,
     );
   }
+}
+
+function chooseRevealPanel(panels: ReadonlySet<vscode.WebviewPanel>): vscode.WebviewPanel | undefined {
+  const values = [...panels];
+  return values.find((panel) => panel.active && panel.visible)
+    ?? values.find((panel) => panel.visible)
+    ?? values[0];
 }
 
 async function loadTableSources(
@@ -636,8 +998,8 @@ function readReferenceLocation(value: unknown): ReferenceLocation | undefined {
     || !isIdentifier(value.projectId)
     || !isIdentifier(value.documentTypeId)
     || !isProjectRelativePath(value.path)
-    || (value.sheetId !== undefined && !isIdentifier(value.sheetId))
-    || (value.rowId !== undefined && typeof value.rowId !== "string")) {
+    || (value.sheetId !== undefined && !isTableLocationId(value.sheetId))
+    || (value.rowId !== undefined && !isTableLocationId(value.rowId))) {
     return undefined;
   }
   return {
@@ -655,6 +1017,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isIdentifier(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+}
+
+function isTableLocationId(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= 512
+    && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
 function isProjectRelativePath(value: unknown): value is string {

@@ -12,7 +12,7 @@
   },
   "type": "commonjs",
   "engines": {
-    "vscode": "^1.105.0"
+    "vscode": "^1.105.1"
   },
   "categories": [
     "Other"
@@ -263,9 +263,14 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "build": "npm run clean && npm run build:graph-editor && npm run build:entity-editor && npm run build:structured-editor && npm run build:table-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap && npm run check",
     "watch": "npm run clean && npm run build:graph-editor && npm run build:entity-editor && npm run build:structured-editor && npm run build:table-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap --watch",
-    "package:vsix": "npm run build && npm run prepare:package && vsce package --no-dependencies --out artifacts/visualbridge.vsix"
+    "package:vsix": "npm run build && npm run prepare:package && vsce package --no-dependencies --out artifacts/visualbridge.vsix",
+    "test:unit": "node ./test/runUnitTests.mjs",
+    "test:host": "npm run build && node ./test/runTest.mjs",
+    "test:cli": "node ./scripts/test-vsix-cli.mjs ./artifacts/visualbridge.vsix"
   },
   "devDependencies": {
+    "@types/node": "^24.13.1",
+    "@types/vscode": "^1.105.0",
     "@visualbridge/core": "*",
     "@visualbridge/entity": "*",
     "@visualbridge/entity-editor": "*",
@@ -275,8 +280,7 @@
     "@visualbridge/structured-editor": "*",
     "@visualbridge/table": "*",
     "@visualbridge/table-editor": "*",
-    "@types/node": "^24.13.1",
-    "@types/vscode": "^1.105.0",
+    "@vscode/test-electron": "3.1.0",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.28.2",
     "minimatch": "^10.2.6",

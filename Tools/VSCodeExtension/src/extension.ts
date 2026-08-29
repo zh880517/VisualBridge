@@ -55,6 +55,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   status.name = "VisualBridge Projects";
   status.command = "visualbridge.refreshProjects";
 
+  if (context.extensionMode !== vscode.ExtensionMode.Production) {
+    context.subscriptions.push(
+      vscode.commands.registerCommand(
+        "visualbridge.test.isEditorReady",
+        (uri: vscode.Uri) => editorProvider.isEditorReady(uri) || tableEditorProvider.isEditorReady(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.getTableEditorState",
+        (uri: vscode.Uri) => tableEditorProvider.getTestState(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.getGraphEditorState",
+        (uri: vscode.Uri) => editorProvider.getGraphEditorTestState(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.pauseNextTableReveal",
+        (uri: vscode.Uri) => tableEditorProvider.pauseNextRevealForTest(uri),
+      ),
+    );
+  }
+
   const updateStatus = (): void => {
     if (projects.projects.length === 0) {
       status.hide();

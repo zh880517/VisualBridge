@@ -15,12 +15,15 @@ import { loadStructuredCatalogRegistry } from "../catalog/structuredCatalogLoade
 import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
 import { handleReferenceMessage } from "../reference/referenceMessages";
 import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
+import { WebviewEpoch } from "./webviewEpoch";
 
 const OVERWRITE = "覆盖";
 const DISCARD_AND_RELOAD = "放弃并刷新";
 
 interface WebviewMessage {
   readonly type?: unknown;
+  readonly webviewToken?: unknown;
+  readonly instanceId?: unknown;
   readonly documentVersion?: unknown;
   readonly operations?: unknown;
   readonly requestId?: unknown;
@@ -39,6 +42,8 @@ export class StructuredEditorSession {
   private baseDiskHash = "";
   private operationQueue: Promise<void> = Promise.resolve();
   private disposed = false;
+  private webviewReady = false;
+  private readonly webviewEpoch = new WebviewEpoch();
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -53,6 +58,7 @@ export class StructuredEditorSession {
 
   public async open(): Promise<void> {
     this.baseDiskHash = await this.readDiskHash();
+    this.webviewEpoch.begin(createNonce());
     const nonce = createNonce();
     const webviewRoot = vscode.Uri.joinPath(this.extensionUri, "dist", "webview");
     const scriptUri = this.panel.webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, "structuredEditor.js"));
@@ -70,13 +76,22 @@ export class StructuredEditorSession {
       },
     });
     this.configureCatalogWatchers();
+    let webviewWasVisible = this.panel.visible;
 
     this.disposables.push(
       this.panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
+        const webviewEpoch = this.webviewEpoch.capture();
         this.operationQueue = this.operationQueue
-          .then(() => this.handleMessage(message))
+          .then(() => this.handleMessage(message, webviewEpoch))
           .catch((errorValue: unknown) => {
+            if (!this.isCurrentWebviewEpoch(webviewEpoch)
+              || (message.type !== "ready" && !this.webviewEpoch.acceptsMessage(message.webviewToken))) {
+              return;
+            }
             this.output.appendLine(`[structured] Operation failed: ${formatError(errorValue)}`);
+            if (message.type === "ready") {
+              return;
+            }
             return this.rejectOperation(`Structured Config 操作失败：${formatError(errorValue)}`);
           });
       }),
@@ -114,19 +129,41 @@ export class StructuredEditorSession {
         void this.sendState();
       }),
       this.panel.onDidDispose(() => this.dispose()),
+      this.panel.onDidChangeViewState((event) => {
+        const visible = event.webviewPanel.visible;
+        if (!visible && webviewWasVisible) {
+          this.webviewEpoch.invalidate();
+          this.webviewReady = false;
+        } else if (visible && !webviewWasVisible) {
+          this.webviewEpoch.begin(createNonce());
+          void this.requestWebviewReady();
+        }
+        webviewWasVisible = visible;
+      }),
     );
-    await this.sendState();
+    void this.requestWebviewReady();
   }
 
-  private async handleMessage(message: WebviewMessage): Promise<void> {
-    if (this.disposed) {
-      return;
-    }
-    if (await handleReferenceMessage(message, this.panel.webview, this.match.project, this.references)) {
+  public get isReady(): boolean {
+    return this.webviewReady
+      && this.webviewEpoch.isReady
+      && !this.disposed
+      && this.panel.active
+      && this.panel.visible;
+  }
+
+  private async handleMessage(message: WebviewMessage, webviewEpoch: number): Promise<void> {
+    if (!this.isCurrentWebviewEpoch(webviewEpoch)) {
       return;
     }
     if (message.type === "ready") {
-      await this.sendState();
+      await this.handleReady(message, webviewEpoch);
+      return;
+    }
+    if (!this.webviewEpoch.acceptsMessage(message.webviewToken)) {
+      return;
+    }
+    if (await handleReferenceMessage(message, this.panel.webview, this.match.project, this.references)) {
       return;
     }
     if (message.type !== "applyOperations") {
@@ -261,15 +298,14 @@ export class StructuredEditorSession {
     }
   }
 
-  private async sendState(options: StructuredStateOptions = {}): Promise<void> {
+  private async sendState(options: StructuredStateOptions = {}): Promise<boolean> {
     if (this.disposed) {
-      return;
+      return false;
     }
     const result = parseStructuredDocument(this.document.getText());
     if (!result.success) {
       this.updateDiagnostics(result.diagnostics);
-      await this.sendInvalid(result.diagnostics, options);
-      return;
+      return this.sendInvalid(result.diagnostics, options);
     }
     const catalogResult = await loadStructuredCatalogRegistry(this.match.project, this.match.documentType.catalogs);
     const configType = catalogResult.ready
@@ -290,10 +326,9 @@ export class StructuredEditorSession {
     ];
     this.updateDiagnostics(diagnostics);
     if (configType === undefined) {
-      await this.sendInvalid(diagnostics, options);
-      return;
+      return this.sendInvalid(diagnostics, options);
     }
-    await this.panel.webview.postMessage({
+    return this.panel.webview.postMessage({
       type: "structuredState",
       documentVersion: this.document.version,
       document: result.document,
@@ -332,8 +367,8 @@ export class StructuredEditorSession {
   private async sendInvalid(
     diagnostics: readonly DocumentDiagnostic[],
     options: StructuredStateOptions = {},
-  ): Promise<void> {
-    await this.panel.webview.postMessage({
+  ): Promise<boolean> {
+    return this.panel.webview.postMessage({
       type: "structuredInvalid",
       documentVersion: this.document.version,
       isDirty: this.document.isDirty,
@@ -372,11 +407,45 @@ export class StructuredEditorSession {
     this.baseDiskHash = await this.readDiskHash();
   }
 
+  private async handleReady(message: WebviewMessage, webviewEpoch: number): Promise<void> {
+    if (typeof message.instanceId !== "string" || message.instanceId.length === 0) {
+      return;
+    }
+    if (message.webviewToken === undefined) {
+      await this.requestWebviewReady();
+      return;
+    }
+    if (!this.panel.visible || !this.webviewEpoch.canAcceptReady(message.webviewToken)) {
+      return;
+    }
+    if (!await this.sendState()
+      || !this.isCurrentWebviewEpoch(webviewEpoch)
+      || !this.panel.visible
+      || !this.webviewEpoch.markReady(message.webviewToken)) {
+      return;
+    }
+    this.webviewReady = true;
+  }
+
+  private async requestWebviewReady(): Promise<void> {
+    const token = this.webviewEpoch.currentToken;
+    if (this.disposed || !this.panel.visible || token === undefined) {
+      return;
+    }
+    await this.panel.webview.postMessage({ type: "requestReady", webviewToken: token });
+  }
+
+  private isCurrentWebviewEpoch(webviewEpoch: number): boolean {
+    return !this.disposed && this.webviewEpoch.isCurrent(webviewEpoch);
+  }
+
   private dispose(): void {
     if (this.disposed) {
       return;
     }
     this.disposed = true;
+    this.webviewEpoch.invalidate();
+    this.webviewReady = false;
     for (const disposable of this.catalogDisposables.splice(0)) {
       disposable.dispose();
     }

@@ -37,9 +37,17 @@ type HostMessage = StructuredStateMessage | StructuredInvalidMessage | {
 } | {
   readonly type: "operationCompleted";
   readonly changed: boolean;
+} | {
+  readonly type: "requestReady";
+  readonly webviewToken: string;
 };
 
-const vscode = acquireVsCodeApi();
+const rawVscode = acquireVsCodeApi();
+const webviewInstanceId = crypto.randomUUID();
+let webviewToken: string | undefined;
+const vscode: VsCodeApi = {
+  postMessage: (message) => rawVscode.postMessage(withWebviewToken(message, webviewToken)),
+};
 const references = new WebviewReferenceBridge(vscode);
 const rootElement = document.getElementById("root");
 if (rootElement === null) {
@@ -57,6 +65,11 @@ function StructuredEditorApp(): ReactElement {
   useEffect(() => {
     const listener = (event: MessageEvent<HostMessage>): void => {
       const message = event.data;
+      if (message.type === "requestReady") {
+        webviewToken = message.webviewToken;
+        vscode.postMessage({ type: "ready", instanceId: webviewInstanceId });
+        return;
+      }
       if (references.handleMessage(message)) {
         return;
       }
@@ -81,7 +94,8 @@ function StructuredEditorApp(): ReactElement {
       }
     };
     window.addEventListener("message", listener);
-    vscode.postMessage({ type: "ready" });
+    webviewToken = undefined;
+    vscode.postMessage({ type: "ready", instanceId: webviewInstanceId });
     return () => {
       window.removeEventListener("message", listener);
       references.dispose();
@@ -133,6 +147,12 @@ function StructuredEditorApp(): ReactElement {
       </footer>
     </div>
   );
+}
+
+function withWebviewToken(message: unknown, token: string | undefined): unknown {
+  return token === undefined || typeof message !== "object" || message === null || Array.isArray(message)
+    ? message
+    : { ...message, webviewToken: token };
 }
 
 function SaveState(props: { readonly dirty: boolean; readonly pending: boolean }): ReactElement {

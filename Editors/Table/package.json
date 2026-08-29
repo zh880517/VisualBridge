@@ -11,7 +11,8 @@
   "scripts": {
     "clean": "node ./scripts/clean.mjs",
     "build": "npm run clean && npm run check && node ./scripts/build.mjs",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run clean && tsc -p tsconfig.test.json && node --test .test-dist/test/tableReveal.test.js"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
@@ -23,6 +24,7 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@types/node": "^24.13.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "esbuild": "^0.28.2"

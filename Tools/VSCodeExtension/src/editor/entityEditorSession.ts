@@ -20,12 +20,15 @@ import { loadEntityCatalogRegistry } from "../catalog/entityCatalogLoader";
 import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
 import { handleReferenceMessage } from "../reference/referenceMessages";
 import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
+import { WebviewEpoch } from "./webviewEpoch";
 
 const OVERWRITE = "覆盖";
 const DISCARD_AND_RELOAD = "放弃并刷新";
 
 interface WebviewMessage {
   readonly type?: unknown;
+  readonly webviewToken?: unknown;
+  readonly instanceId?: unknown;
   readonly documentVersion?: unknown;
   readonly operations?: unknown;
   readonly requestId?: unknown;
@@ -46,6 +49,8 @@ export class EntityEditorSession {
   private baseDiskHash = "";
   private operationQueue: Promise<void> = Promise.resolve();
   private disposed = false;
+  private webviewReady = false;
+  private readonly webviewEpoch = new WebviewEpoch();
   private readonly revealMailbox = new EntityRevealMailbox();
 
   public constructor(
@@ -61,6 +66,7 @@ export class EntityEditorSession {
 
   public async open(): Promise<void> {
     this.baseDiskHash = await this.readDiskHash();
+    this.webviewEpoch.begin(createNonce());
     const nonce = createNonce();
     const webviewRoot = vscode.Uri.joinPath(this.extensionUri, "dist", "webview");
     const scriptUri = this.panel.webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, "entityEditor.js"));
@@ -78,13 +84,22 @@ export class EntityEditorSession {
       },
     });
     this.configureCatalogWatchers();
+    let webviewWasVisible = this.panel.visible;
 
     this.disposables.push(
       this.panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
+        const webviewEpoch = this.webviewEpoch.capture();
         this.operationQueue = this.operationQueue
-          .then(() => this.handleMessage(message))
+          .then(() => this.handleMessage(message, webviewEpoch))
           .catch((errorValue: unknown) => {
+            if (!this.isCurrentWebviewEpoch(webviewEpoch)
+              || (message.type !== "ready" && !this.webviewEpoch.acceptsMessage(message.webviewToken))) {
+              return;
+            }
             this.output.appendLine(`[entity] Operation failed: ${formatError(errorValue)}`);
+            if (message.type === "ready") {
+              return;
+            }
             return this.rejectOperation(`Entity 操作失败：${formatError(errorValue)}`);
           });
       }),
@@ -123,15 +138,19 @@ export class EntityEditorSession {
       }),
       this.panel.onDidDispose(() => this.dispose()),
       this.panel.onDidChangeViewState((event) => {
-        if (event.webviewPanel.visible) {
-          this.revealMailbox.markReady();
-          void this.sendPendingReveal();
-        } else {
+        const visible = event.webviewPanel.visible;
+        if (!visible && webviewWasVisible) {
+          this.webviewEpoch.invalidate();
+          this.webviewReady = false;
           this.revealMailbox.markUnavailable();
+        } else if (visible && !webviewWasVisible) {
+          this.webviewEpoch.begin(createNonce());
+          void this.requestWebviewReady();
         }
+        webviewWasVisible = visible;
       }),
     );
-    await this.sendState();
+    void this.requestWebviewReady();
   }
 
   public async reveal(target: EntityRevealTarget): Promise<void> {
@@ -141,8 +160,23 @@ export class EntityEditorSession {
     await this.sendPendingReveal();
   }
 
-  private async handleMessage(message: WebviewMessage): Promise<void> {
-    if (this.disposed) {
+  public get isReady(): boolean {
+    return this.webviewReady
+      && this.webviewEpoch.isReady
+      && !this.disposed
+      && this.panel.active
+      && this.panel.visible;
+  }
+
+  private async handleMessage(message: WebviewMessage, webviewEpoch: number): Promise<void> {
+    if (!this.isCurrentWebviewEpoch(webviewEpoch)) {
+      return;
+    }
+    if (message.type === "ready") {
+      await this.handleReady(message, webviewEpoch);
+      return;
+    }
+    if (!this.webviewEpoch.acceptsMessage(message.webviewToken)) {
       return;
     }
     if (message.type === ENTITY_REVEAL_RESULT_MESSAGE_TYPE) {
@@ -155,12 +189,6 @@ export class EntityEditorSession {
       return;
     }
     if (await handleReferenceMessage(message, this.panel.webview, this.match.project, this.references)) {
-      return;
-    }
-    if (message.type === "ready") {
-      this.revealMailbox.markReady();
-      await this.sendState();
-      await this.sendPendingReveal();
       return;
     }
     if (message.type !== "applyOperations") {
@@ -288,15 +316,14 @@ export class EntityEditorSession {
     }
   }
 
-  private async sendState(options: EntityStateOptions = {}): Promise<void> {
+  private async sendState(options: EntityStateOptions = {}): Promise<boolean> {
     if (this.disposed) {
-      return;
+      return false;
     }
     const result = parseEntityDocument(this.document.getText());
     this.updateDiagnostics(result.diagnostics);
     if (!result.success) {
-      await this.sendInvalid(result.diagnostics, options);
-      return;
+      return this.sendInvalid(result.diagnostics, options);
     }
     const catalogResult = await loadEntityCatalogRegistry(this.match.project, this.match.documentType.catalogs);
     const diagnostics = [
@@ -311,7 +338,7 @@ export class EntityEditorSession {
         : []),
     ];
     this.updateDiagnostics(diagnostics);
-    await this.panel.webview.postMessage({
+    return this.panel.webview.postMessage({
       type: "entityState",
       documentVersion: this.document.version,
       document: result.document,
@@ -365,8 +392,8 @@ export class EntityEditorSession {
   private async sendInvalid(
     diagnostics: readonly DocumentDiagnostic[],
     options: EntityStateOptions = {},
-  ): Promise<void> {
-    await this.panel.webview.postMessage({
+  ): Promise<boolean> {
+    return this.panel.webview.postMessage({
       type: "entityInvalid",
       documentVersion: this.document.version,
       isDirty: this.document.isDirty,
@@ -406,11 +433,47 @@ export class EntityEditorSession {
     this.baseDiskHash = await this.readDiskHash();
   }
 
+  private async handleReady(message: WebviewMessage, webviewEpoch: number): Promise<void> {
+    if (typeof message.instanceId !== "string" || message.instanceId.length === 0) {
+      return;
+    }
+    if (message.webviewToken === undefined) {
+      await this.requestWebviewReady();
+      return;
+    }
+    if (!this.panel.visible || !this.webviewEpoch.canAcceptReady(message.webviewToken)) {
+      return;
+    }
+    if (!await this.sendState()
+      || !this.isCurrentWebviewEpoch(webviewEpoch)
+      || !this.panel.visible
+      || !this.webviewEpoch.markReady(message.webviewToken)) {
+      return;
+    }
+    this.webviewReady = true;
+    this.revealMailbox.markReady();
+    await this.sendPendingReveal();
+  }
+
+  private async requestWebviewReady(): Promise<void> {
+    const token = this.webviewEpoch.currentToken;
+    if (this.disposed || !this.panel.visible || token === undefined) {
+      return;
+    }
+    await this.panel.webview.postMessage({ type: "requestReady", webviewToken: token });
+  }
+
+  private isCurrentWebviewEpoch(webviewEpoch: number): boolean {
+    return !this.disposed && this.webviewEpoch.isCurrent(webviewEpoch);
+  }
+
   private dispose(): void {
     if (this.disposed) {
       return;
     }
     this.disposed = true;
+    this.webviewEpoch.invalidate();
+    this.webviewReady = false;
     for (const disposable of this.catalogDisposables.splice(0)) {
       disposable.dispose();
     }

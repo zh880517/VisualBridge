@@ -505,6 +505,12 @@ Extension Host
   -> Host Persistence / Provider / UnityConnection
 ```
 
+Custom Editor resolver 只负责建立 DocumentSession、设置 HTML 与注册消息监听，然后必须返回给 VS Code；不得在 resolver 返回前等待发送初始状态。Webview 脚本加载后发送 `ready`，Extension Host 再解析当前权威 Document、Catalog、Reference 与诊断并发送首个状态。此握手避免 resolver 与尚未完成加载的 Webview 相互等待，之后的每次消息仍携带文档版本或 revision 以拒绝陈旧编辑。
+
+当 `retainContextWhenHidden` 为 `false` 时，面板隐藏会使当前 Webview 生命周期失效，但 VS Code 不保证页面立即销毁。Host 必须递增该面板的生命周期 epoch、清除 ready 状态并保留尚未确认的定位请求；旧 epoch 中已经排队的 `ready`、Operation 或 ACK 不得修改新生命周期。面板首次挂载只发送无 token 的 ready proposal；Host 随后发送带新生命周期 token 的 `requestReady` challenge，Webview 回显 token，并把它附加到该生命周期的每一条上行消息。面板重新显示时 Host 重新生成 token：仍存活的页面主动回应，已重建的页面则先重新发送 proposal。Host 只接受当前可见生命周期的 token，且只有回显后的首个权威状态发送成功才能标记就绪并投递定位请求。
+
+多编辑器场景中的定位请求只归属一个面板，并以逻辑文档级 generation 保证“最新请求获胜”；新请求必须取消同一文档所有面板和文档队列中的旧请求。承载当前 generation 的面板在确认前关闭时，请求必须立即交给同一文档的其他已就绪面板，或回到文档级等待队列；任一面板 ACK 释放 mailbox 后还要重试等待中的接管。
+
 ## Unity Bridge
 
 ### 定位
@@ -548,7 +554,7 @@ Unity Adapter
 | 类型 | 运行代码 | 主要用途 |
 | --- | --- | --- |
 | 声明式扩展 | 否 | Schema、类型、属性、节点、菜单、连接规则 |
-| 项目 Provider | 是 | 引用查询、复杂校验、领域操作、数据转换 |
+| 项目 Provider | 是 | V1 的引用查询与复杂校验；领域操作和数据转换属于后续候选能力 |
 | 项目 Webview Module | 是 | 无法用通用控件表达的自定义 UI |
 | VS Code 伴生扩展 | 是 | 深度 VS Code API、跨项目通用能力 |
 
@@ -558,15 +564,14 @@ Unity Adapter
 
 ### 项目 Provider
 
-项目 Provider 作为独立进程运行，通过 stdio JSON-RPC 或后续确定的等价协议与基础插件通信。Provider 可以提供：
+项目 Provider 作为独立进程运行，通过 stdio JSON-RPC 或后续确定的等价协议与基础插件通信。Provider V1 只提供：
 
 - Reference Provider。
 - 自定义 Validator。
-- Document Operation。
-- 数据查询和预览。
-- 项目级导入、转换和辅助命令。
 
-Provider 不直接访问 VS Code API，不直接修改文档文件。修改请求返回领域 Operation，由基础插件或 VisualBridgeCore 执行。
+V1 协议不提供 Document Operation、导入、转换或辅助命令。只有出现第二个真实修改用例并证明可复用边界后，才设计返回既有领域 Operation 的后续能力。
+
+Provider 不直接访问 VS Code API，V1 协议也不提供文件写入接口；但独立进程仍以当前用户权限运行，不是操作系统沙箱，因此它在技术上能够绕过协议直接访问文件。Provider 必须被视为受信任工程代码，宿主通过源文件 Hash、外部变更检测和写入冲突拒绝防止静默覆盖。
 
 ### TypeScript Provider 运行策略
 
@@ -606,9 +611,11 @@ node <mcp-main.ts>
 ### 安全边界
 
 - 未信任工程只加载源文档、Catalog 和声明式扩展。
-- Provider、MCP 和项目 Webview 代码必须在工程受信任后运行。
+- VS Code 只在 Workspace Trust 允许时启动 Provider 或项目 Webview 代码。
+- 独立 MCP 没有 VS Code Workspace Trust，默认不执行 Project Provider；只有宿主显式授权、Project 声明且规范化入口位于允许列表时才启动，单次 Tool 请求不能提升权限。
 - VisualBridge Project File 显式声明扩展，不自动扫描并执行全部脚本。
 - Provider 使用可验证的可执行入口和参数，不拼接 Shell 命令。
+- Provider 是当前用户权限下的受信任工程代码，独立进程只提供故障隔离而不构成 OS 沙箱。
 - 扩展能力以 ProjectContext 为作用域，项目关闭时全部释放。
 - 项目扩展不能替换核心文件解析、稳定 ID 和通信安全策略。
 
@@ -641,7 +648,7 @@ AI Host
   -> AI 会话结束后关闭子进程
 ```
 
-MCP Server 独立加载 Authoring Project，并按需连接 Unity，不要求 VS Code 正在运行。多个 AI Agent 启动各自的 MCP Server，通过 `baseHash`、原子文件写入和调试 Lease 协调。
+当前 MCP Server 独立加载 Authoring Project，不要求 VS Code 正在运行，也不连接 Unity。多个 AI Agent 启动各自的 MCP Server，通过 `baseHash`、Project 锁、依赖 Hash 和原子文件事务协调。Unity 连接与调试 Lease 属于后续 Unity/Debug 阶段。
 
 当前已落地的 `Tools/VisualBridgeMcp` 是仅面向本地 Authoring Project 的 stdio 垂直切片。它从进程工作目录或 `VISUALBRIDGE_WORKSPACE` 环境变量确定发现根目录，复用 Core Project/Reference/Refactor、Built-in Graph/Entity/Structured/Table 的 Parser、Catalog、Operation、Validator、Serializer 与 Table Codec。MCP 支持按来源 `baseHash` 预览并原子提交项目级引用重构。当前不提供独立 CLI，不连接 Unity，也不包含 Runtime/Debug 能力。具体工具与写入结果契约见 `VisualBridgeMcp.md`。
 
@@ -654,8 +661,9 @@ MCP 提供少量稳定的项目级能力：
 - 批量执行 Document Operations。
 - 通过 Semantic Table Model 搜索、查询和修改 `.xlsx` 与 `.csv` Table Document。
 - 搜索和解析数据引用。
-- 发现并 Attach Unity Runtime。
-- 设置断点、控制执行、读取调用栈和变量。
+- 预览并执行 Document Lifecycle 与项目级重构事务。
+
+后续 Unity/Debug 阶段可以在独立协议冻结后增加 Runtime 发现与 Attach、断点、执行控制、调用栈和变量；这些不是当前 `Tools/VisualBridgeMcp` 能力，也不是 Unity 接入前路线图的完成条件。
 
 不为每个节点或属性操作创建大量顶层 Tool。领域差异通过 Document Operation Schema 表达。
 
@@ -843,14 +851,18 @@ Project、Graph Core、Entity Core、Structured Core、Table Core、共享 Form 
 
 阶段目标是人工与 AI 能编辑同一源文件，并得到一致结果。
 
+VS Code 宿主边界使用官方 `@vscode/test-electron` 在最低支持版本 `1.105.1` 的隔离 Extension Host 中验证。固定测试工作区必须由 `TestData` 复制生成，不能修改仓库样例或用户现有 VS Code 配置；Host 测试负责自动激活、Project 发现、命令和 Custom Editor 路由，打包后的 VSIX 另由本机 VS Code CLI 在隔离 User Data / Extensions 目录中验证安装身份与完整运行资源。CLI 安装成功不等同于 Webview 功能通过，领域交互继续由 Core / Editor 测试和针对性的真实页面验证负责。
+
 ### 阶段三：Catalog、Reference 与项目扩展
 
-- Unity 生成基础类型、节点和资产 Catalog。
+- 完成 Unity 接入前的 Authoring / Catalog 交接契约、Catalog Registry、过期状态和只读 Catalog Browser；此阶段使用已提交固定 Catalog，不实现 Unity 生成器。
 - 扩展已落地的 Reference Service 和通用 Reference Picker，增加项目 Provider、反向查找与预览能力。
 - 实现声明式扩展和 TypeScript Provider。
 - 实现 Provider 重启、诊断和 Workspace Trust 边界。
 
 阶段目标是让项目业务能力在不修改基础插件的情况下接入。
+
+阶段三的当前执行范围与完成门槛以 `Doc/PreUnityDevelopmentRoadmap.md` 为准。Unity Catalog Exporter、Importer、Project Discovery File、WebSocket、Runtime 和 Debug 均在该清单完成后另行设计，不能由本阶段文档提前承诺其协议字段。
 
 ### 阶段四：Unity Editor 连接
 

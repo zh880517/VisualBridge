@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { Button } from "@base-ui/react/button";
 import { DragDropProvider } from "@dnd-kit/react";
@@ -17,6 +17,11 @@ import {
   type TableSheetDefinition,
   type TableTypeDefinition,
 } from "@visualbridge/table/webview";
+import {
+  TABLE_REVEAL_MESSAGE_TYPE,
+  TABLE_REVEAL_RESULT_MESSAGE_TYPE,
+  type TableRevealRequest,
+} from "../tableReveal";
 import "../styles.css";
 
 interface VsCodeApi {
@@ -49,12 +54,18 @@ type HostMessage = TableStateMessage | TableInvalidMessage | {
   readonly type: "operationCompleted";
   readonly changed: boolean;
 } | {
-  readonly type: "revealReference";
-  readonly sheetId: string;
-  readonly rowId: string;
-};
+  readonly type: "requestReady";
+  readonly webviewToken: string;
+} | TableRevealRequest;
 
-const vscode = acquireVsCodeApi();
+const rawVscode = acquireVsCodeApi();
+const webviewInstanceId = crypto.randomUUID();
+let webviewToken: string | undefined;
+const vscode: VsCodeApi = {
+  postMessage: (message) => rawVscode.postMessage(withWebviewToken(message, webviewToken)),
+  getState: () => rawVscode.getState(),
+  setState: (state) => rawVscode.setState(state),
+};
 const referenceBridge = new WebviewReferenceBridge(vscode);
 const rootElement = document.getElementById("root");
 if (rootElement === null) {
@@ -63,6 +74,7 @@ if (rootElement === null) {
 createRoot(rootElement).render(<TableEditorApp />);
 
 function TableEditorApp(): ReactElement {
+  const stateRef = useRef<TableStateMessage | undefined>(undefined);
   const [state, setState] = useState<TableStateMessage>();
   const [invalid, setInvalid] = useState<TableInvalidMessage>();
   const [pending, setPending] = useState(false);
@@ -74,14 +86,32 @@ function TableEditorApp(): ReactElement {
   useEffect(() => {
     const listener = (event: MessageEvent<HostMessage>): void => {
       const message = event.data;
+      if (message.type === "requestReady") {
+        webviewToken = message.webviewToken;
+        vscode.postMessage({ type: "ready", instanceId: webviewInstanceId });
+        return;
+      }
       if (referenceBridge.handleMessage(message)) {
         return;
       }
-      if (message.type === "revealReference") {
-        setQuery("");
-        setSheetId(message.sheetId);
-        setSelectedRowId(message.rowId);
+      if (message.type === TABLE_REVEAL_MESSAGE_TYPE) {
+        const sheet = stateRef.current?.document.sheets.find(
+          (candidate) => candidate.id === message.target.sheetId,
+        );
+        const found = sheet?.rows.some((row) => row.id === message.target.rowId) === true;
+        if (found) {
+          setQuery("");
+          setSheetId(message.target.sheetId);
+          setSelectedRowId(message.target.rowId);
+        }
+        vscode.postMessage({
+          type: TABLE_REVEAL_RESULT_MESSAGE_TYPE,
+          requestId: message.requestId,
+          found,
+          ...(!found ? { message: "Table 行不存在或文档状态尚未就绪。" } : {}),
+        });
       } else if (message.type === "tableState") {
+        stateRef.current = message;
         setState(message);
         setInvalid(undefined);
         setPending(false);
@@ -90,6 +120,7 @@ function TableEditorApp(): ReactElement {
           ? current
           : message.document.sheets[0]?.id);
       } else if (message.type === "tableInvalid") {
+        stateRef.current = undefined;
         setInvalid(message);
         setState(undefined);
         setPending(false);
@@ -105,7 +136,8 @@ function TableEditorApp(): ReactElement {
       }
     };
     window.addEventListener("message", listener);
-    vscode.postMessage({ type: "ready" });
+    webviewToken = undefined;
+    vscode.postMessage({ type: "ready", instanceId: webviewInstanceId });
     return () => {
       window.removeEventListener("message", listener);
       referenceBridge.dispose();
@@ -315,6 +347,12 @@ function TableEditorApp(): ReactElement {
       </footer>
     </div>
   );
+}
+
+function withWebviewToken(message: unknown, token: string | undefined): unknown {
+  return token === undefined || typeof message !== "object" || message === null || Array.isArray(message)
+    ? message
+    : { ...message, webviewToken: token };
 }
 
 function SortableRecordItem(props: {

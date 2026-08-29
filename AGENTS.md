@@ -12,6 +12,8 @@ Keep durable documentation in `Doc/`. Put task plans and temporary design notes 
 - `npm run check` — type-check VisualBridgeCore and the VS Code extension.
 - `npm run build` — compile Core and bundle the extension into `Tools/VSCodeExtension/dist/`.
 - `npm run package:vscode` — create a VSIX under `Tools/VSCodeExtension/artifacts/`.
+- `npm run test:vscode:host` — build the extension and run isolated Extension Host integration tests against the fixed VisualBridge fixtures.
+- `npm run test:vscode:cli` — package the VSIX, install it into isolated VS Code user/extension directories, and verify the packaged runtime assets.
 - `dotnet build .\UnityProject\Assembly-CSharp.csproj` — compile-check Unity runtime C# without opening Unity Editor.
 - `dotnet build .\UnityProject\Assembly-CSharp-Editor.csproj` — compile-check editor-only C#.
 - `git diff --check` — detect whitespace errors before review.

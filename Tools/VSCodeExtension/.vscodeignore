@@ -5,5 +5,8 @@ assets/visualbridge-icon-source.png
 node_modules/**
 scripts/**
 src/**
+test/**
+.test-dist/**
 tsconfig.json
+tsconfig.test.json
 dist/**/*.map

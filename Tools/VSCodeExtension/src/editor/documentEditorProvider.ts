@@ -22,6 +22,8 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
   private readonly pendingGraphReveals = new Map<string, GraphRevealTarget>();
   private readonly entitySessions = new Map<string, Set<EntityEditorSession>>();
   private readonly pendingEntityReveals = new Map<string, EntityRevealTarget>();
+  private readonly structuredSessions = new Map<string, Set<StructuredEditorSession>>();
+  private readonly initializedPanels = new Map<string, Set<vscode.WebviewPanel>>();
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -130,7 +132,21 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         this.diagnostics,
         this.output,
       );
-      await session.open();
+      const uriKey = document.uri.toString();
+      let sessions = this.structuredSessions.get(uriKey);
+      if (sessions === undefined) {
+        sessions = new Set();
+        this.structuredSessions.set(uriKey, sessions);
+      }
+      sessions.add(session);
+      const panelSubscription = webviewPanel.onDidDispose(() => this.removeStructuredSession(uriKey, session));
+      try {
+        await session.open();
+      } catch (error) {
+        panelSubscription.dispose();
+        this.removeStructuredSession(uriKey, session);
+        throw error;
+      }
       return;
     }
 
@@ -156,7 +172,43 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     webviewPanel.onDidDispose(() => {
       documentSubscription.dispose();
       projectSubscription.dispose();
+      this.removeInitializedPanel(document.uri.toString(), webviewPanel);
     });
+    this.addInitializedPanel(document.uri.toString(), webviewPanel);
+  }
+
+  public isEditorReady(uri: vscode.Uri): boolean {
+    const uriKey = uri.toString();
+    return [...this.graphSessions.get(uriKey) ?? []].some((session) => session.isReady)
+      || [...this.entitySessions.get(uriKey) ?? []].some((session) => session.isReady)
+      || [...this.structuredSessions.get(uriKey) ?? []].some((session) => session.isReady)
+      || (this.initializedPanels.get(uriKey)?.size ?? 0) > 0;
+  }
+
+  public getGraphEditorTestState(uri: vscode.Uri): {
+    readonly sessionCount: number;
+    readonly readySessionCount: number;
+    readonly activeSessionCount: number;
+    readonly visibleSessionCount: number;
+    readonly maxReadyGeneration: number;
+    readonly sessionIds: readonly number[];
+    readonly readyTokens: readonly string[];
+  } {
+    const states = [...this.graphSessions.get(uri.toString()) ?? []].map((session) => session.testState);
+    return {
+      sessionCount: states.length,
+      readySessionCount: states.filter((state) => state.ready).length,
+      activeSessionCount: states.filter((state) => state.active).length,
+      visibleSessionCount: states.filter((state) => state.visible).length,
+      sessionIds: [...this.graphSessions.get(uri.toString()) ?? []].map(
+        (session) => session.testSessionId,
+      ),
+      readyTokens: states.flatMap((state) => state.readyToken === undefined ? [] : [state.readyToken]),
+      maxReadyGeneration: states.reduce(
+        (maximum, state) => Math.max(maximum, state.readyGeneration),
+        0,
+      ),
+    };
   }
 
   public async revealGraphReference(location: ReferenceLocation): Promise<void> {
@@ -242,6 +294,31 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     sessions?.delete(session);
     if (sessions?.size === 0) {
       this.entitySessions.delete(uriKey);
+    }
+  }
+
+  private removeStructuredSession(uriKey: string, session: StructuredEditorSession): void {
+    const sessions = this.structuredSessions.get(uriKey);
+    sessions?.delete(session);
+    if (sessions?.size === 0) {
+      this.structuredSessions.delete(uriKey);
+    }
+  }
+
+  private addInitializedPanel(uriKey: string, panel: vscode.WebviewPanel): void {
+    let panels = this.initializedPanels.get(uriKey);
+    if (panels === undefined) {
+      panels = new Set();
+      this.initializedPanels.set(uriKey, panels);
+    }
+    panels.add(panel);
+  }
+
+  private removeInitializedPanel(uriKey: string, panel: vscode.WebviewPanel): void {
+    const panels = this.initializedPanels.get(uriKey);
+    panels?.delete(panel);
+    if (panels?.size === 0) {
+      this.initializedPanels.delete(uriKey);
     }
   }
 }

@@ -67,9 +67,19 @@ type HostMessage = EntityStateMessage | EntityInvalidMessage | {
   readonly type: "operationCompleted";
   readonly changed: boolean;
   readonly documentVersion: number;
+} | {
+  readonly type: "requestReady";
+  readonly webviewToken: string;
 } | EntityRevealRequest;
 
-const vscode = acquireVsCodeApi();
+const rawVscode = acquireVsCodeApi();
+const webviewInstanceId = crypto.randomUUID();
+let webviewToken: string | undefined;
+const vscode: VsCodeApi = {
+  postMessage: (message) => rawVscode.postMessage(withWebviewToken(message, webviewToken)),
+  getState: () => rawVscode.getState(),
+  setState: (state) => rawVscode.setState(state),
+};
 const referenceBridge = new WebviewReferenceBridge(vscode);
 const rootElement = document.getElementById("root");
 if (rootElement === null) {
@@ -93,6 +103,11 @@ function EntityEditorApp(): ReactElement {
   useEffect(() => {
     const listener = (event: MessageEvent<HostMessage>): void => {
       const message = event.data;
+      if (message.type === "requestReady") {
+        webviewToken = message.webviewToken;
+        vscode.postMessage({ type: "ready", instanceId: webviewInstanceId });
+        return;
+      }
       if (referenceBridge.handleMessage(message)) {
         return;
       }
@@ -131,7 +146,8 @@ function EntityEditorApp(): ReactElement {
       }
     };
     window.addEventListener("message", listener);
-    vscode.postMessage({ type: "ready" });
+    webviewToken = undefined;
+    vscode.postMessage({ type: "ready", instanceId: webviewInstanceId });
     return () => {
       window.removeEventListener("message", listener);
       referenceBridge.dispose();
@@ -331,6 +347,12 @@ function EntityEditorApp(): ReactElement {
       )}
     </div>
   );
+}
+
+function withWebviewToken(message: unknown, token: string | undefined): unknown {
+  return token === undefined || typeof message !== "object" || message === null || Array.isArray(message)
+    ? message
+    : { ...message, webviewToken: token };
 }
 
 function ComponentCard(props: {
