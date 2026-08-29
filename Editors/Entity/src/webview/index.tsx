@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
+import { Button } from "@base-ui/react/button";
+import { Checkbox } from "@base-ui/react/checkbox";
+import { Collapsible } from "@base-ui/react/collapsible";
+import { Dialog } from "@base-ui/react/dialog";
 import type { DocumentDiagnostic } from "@visualbridge/core";
 import type {
   EntityCatalogRegistry,
@@ -10,7 +14,7 @@ import type {
   RegisteredEntityComponentTypeDefinition,
   RegisteredEntityTypeDefinition,
 } from "@visualbridge/entity";
-import { FieldsEditor } from "@visualbridge/form-editor";
+import { CommonIcon, FieldsEditor, IconButton } from "@visualbridge/form-editor";
 import "../styles.css";
 
 interface VsCodeApi {
@@ -155,11 +159,13 @@ function EntityEditorApp(): ReactElement {
               <span className="eyebrow">Components</span>
               <h2>{state.document.components.length} 个组件</h2>
             </div>
-            <button
-              type="button"
+            <IconButton
+              className="component-add"
+              icon="add"
+              label="添加组件"
               disabled={pending || !state.catalogReady || entityType === undefined}
               onClick={() => setAddOpen(true)}
-            >添加组件</button>
+            />
           </div>
 
           <div className="component-list">
@@ -171,7 +177,6 @@ function EntityEditorApp(): ReactElement {
                 index={index}
                 count={state.document.components.length}
                 componentType={resolveComponentType(state.catalogRegistry, component.componentTypeId)}
-                group={resolveComponentGroupForType(state.catalogRegistry, component.componentTypeId)}
                 pending={pending}
                 submit={submit}
               />
@@ -205,7 +210,6 @@ function EntityEditorApp(): ReactElement {
 function ComponentCard(props: {
   readonly component: EntityComponentInstance;
   readonly componentType: RegisteredEntityComponentTypeDefinition | undefined;
-  readonly group: RegisteredEntityComponentGroupDefinition | undefined;
   readonly index: number;
   readonly count: number;
   readonly pending: boolean;
@@ -214,73 +218,83 @@ function ComponentCard(props: {
   const [expanded, setExpanded] = useState(true);
   const displayName = props.componentType?.title ?? props.component.componentTypeId;
   return (
-    <article className={`entity-card component-card${props.component.enabled ? "" : " disabled"}`}>
+    <Collapsible.Root
+      open={expanded}
+      onOpenChange={setExpanded}
+      render={<article className={`entity-card component-card${props.component.enabled ? "" : " disabled"}`} />}
+    >
       <header className="component-card-header">
-        <button
-          type="button"
-          className="component-collapse"
+        <Collapsible.Trigger
+          className="icon secondary component-collapse"
           aria-label={expanded ? `折叠 ${displayName}` : `展开 ${displayName}`}
-          onClick={() => setExpanded((value) => !value)}
-        >{expanded ? "⌄" : "›"}</button>
-        <input
-          type="checkbox"
+          title={expanded ? "折叠组件" : "展开组件"}
+        >
+          <CommonIcon name={expanded ? "chevronDown" : "chevronRight"} />
+        </Collapsible.Trigger>
+        <Checkbox.Root
+          className="component-enabled"
           aria-label={`启用 ${displayName}`}
           checked={props.component.enabled}
           disabled={props.pending}
-          onChange={(event) => props.submit([{
+          onCheckedChange={(checked) => props.submit([{
             type: "entity.setComponentEnabled",
             componentId: props.component.id,
-            enabled: event.target.checked,
+            enabled: checked,
           }])}
-        />
+        >
+          <Checkbox.Indicator><CommonIcon name="check" /></Checkbox.Indicator>
+        </Checkbox.Root>
         <div className="component-title">
           <strong>{displayName}</strong>
-          <span>{[props.group?.title, ...(props.componentType?.menuPath ?? [])].filter(Boolean).join(" / ")}</span>
         </div>
-        <code>{props.component.id}</code>
         <div className="component-actions">
-          <button
-            type="button"
-            className="icon secondary"
+          <IconButton
+            className="secondary"
+            icon="moveUp"
             title="上移"
+            label={`上移 ${displayName}`}
             disabled={props.pending || props.index === 0}
             onClick={() => props.submit([{
               type: "entity.moveComponent",
               componentId: props.component.id,
               index: props.index - 1,
             }])}
-          >↑</button>
-          <button
-            type="button"
-            className="icon secondary"
+          />
+          <IconButton
+            className="secondary"
+            icon="moveDown"
             title="下移"
+            label={`下移 ${displayName}`}
             disabled={props.pending || props.index === props.count - 1}
             onClick={() => props.submit([{
               type: "entity.moveComponent",
               componentId: props.component.id,
               index: props.index + 1,
             }])}
-          >↓</button>
-          <button
-            type="button"
+          />
+          <IconButton
             className="secondary"
+            icon="copy"
+            title="复制"
+            label={`复制 ${displayName}`}
             disabled={props.pending}
             onClick={() => props.submit([{
               type: "entity.duplicateComponent",
               componentId: props.component.id,
               newComponentId: `component_${crypto.randomUUID()}`,
             }])}
-          >复制</button>
-          <button
-            type="button"
+          />
+          <IconButton
             className="secondary danger-text"
+            icon="delete"
+            title="删除"
+            label={`删除 ${displayName}`}
             disabled={props.pending}
             onClick={() => props.submit([{ type: "entity.removeComponent", componentId: props.component.id }])}
-          >删除</button>
+          />
         </div>
       </header>
-      {expanded && (
-        <div className="component-body">
+      <Collapsible.Panel className="component-body">
           {props.componentType === undefined
             ? (
               <div>
@@ -311,9 +325,8 @@ function ComponentCard(props: {
                 />
               </>
             )}
-        </div>
-      )}
-    </article>
+      </Collapsible.Panel>
+    </Collapsible.Root>
   );
 }
 
@@ -336,37 +349,48 @@ function AddComponentDialog(props: {
       return query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean).every((term) => haystack.includes(term));
     }), [props.componentTypeIds, props.registry, query]);
   return (
-    <div className="dialog-backdrop" role="presentation" onMouseDown={props.onClose}>
-      <section className="add-dialog" role="dialog" aria-modal="true" aria-label="添加组件" onMouseDown={(event) => event.stopPropagation()}>
-        <header>
-          <div>
-            <span className="eyebrow">Component Catalog</span>
-            <h2>添加组件</h2>
-          </div>
-          <button type="button" className="icon secondary" onClick={props.onClose}>×</button>
-        </header>
-        <input
-          autoFocus
-          type="search"
-          placeholder="搜索分组、路径、类型或旧 ID"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-        <div className="add-list">
-          {candidates.map((componentType) => {
-            const group = resolveComponentGroupForType(props.registry, componentType.id);
-            return (
-              <button type="button" className="add-list-item" key={componentType.id} onClick={() => props.onAdd(componentType.id)}>
-                <strong>{componentType.title}</strong>
-                <span>{[componentType.catalogTitle, group?.title, ...componentType.menuPath].filter(Boolean).join(" / ")}</span>
-                <code>{componentType.id}</code>
-              </button>
-            );
-          })}
-          {candidates.length === 0 && <p>没有匹配的允许组件。</p>}
-        </div>
-      </section>
-    </div>
+    <Dialog.Root defaultOpen onOpenChange={(open) => {
+      if (!open) {
+        props.onClose();
+      }
+    }}>
+      <Dialog.Portal>
+        <Dialog.Backdrop className="dialog-backdrop" />
+        <Dialog.Viewport className="dialog-viewport">
+          <Dialog.Popup className="add-dialog">
+            <header>
+              <div>
+                <span className="eyebrow">Component Catalog</span>
+                <Dialog.Title className="add-dialog-title">添加组件</Dialog.Title>
+              </div>
+              <Dialog.Close className="icon secondary" aria-label="关闭" title="关闭">
+                <CommonIcon name="close" />
+              </Dialog.Close>
+            </header>
+            <input
+              autoFocus
+              type="search"
+              placeholder="搜索分组、路径、类型或旧 ID"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+            <div className="add-list">
+              {candidates.map((componentType) => {
+                const group = resolveComponentGroupForType(props.registry, componentType.id);
+                return (
+                  <Button className="add-list-item" key={componentType.id} onClick={() => props.onAdd(componentType.id)}>
+                    <strong>{componentType.title}</strong>
+                    <span>{[componentType.catalogTitle, group?.title, ...componentType.menuPath].filter(Boolean).join(" / ")}</span>
+                    <code>{componentType.id}</code>
+                  </Button>
+                );
+              })}
+              {candidates.length === 0 && <p>没有匹配的允许组件。</p>}
+            </div>
+          </Dialog.Popup>
+        </Dialog.Viewport>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 

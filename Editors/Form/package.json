@@ -10,8 +10,11 @@
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@base-ui/react": "^1.7.0",
     "@visualbridge/core": "*",
-    "react": "^19.2.8"
+    "lucide-react": "^1.35.0",
+    "react": "^19.2.8",
+    "react-colorful": "^5.8.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.18"

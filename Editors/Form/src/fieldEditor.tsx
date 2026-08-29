@@ -1,4 +1,8 @@
 import { useEffect, useMemo, useState, type ReactElement } from "react";
+import { Button } from "@base-ui/react/button";
+import { Checkbox } from "@base-ui/react/checkbox";
+import { HexAlphaColorPicker, HexColorPicker } from "react-colorful";
+import { CommonIcon, IconButton } from "./commonIcons";
 import type {
   FieldDefinition,
   FieldValueDefinition,
@@ -96,36 +100,40 @@ export function FieldValueEditor(props: FieldValueEditorProps): ReactElement {
               onCommit={(nextEntry) => props.onCommit(replaceArrayItem(values, index, nextEntry))}
             />
             <div className="vb-list-actions">
-              <button
-                type="button"
-                className="icon secondary"
+              <IconButton
+                className="secondary"
+                icon="moveUp"
+                label={`上移第 ${index + 1} 项`}
                 title="上移"
                 disabled={disabled || index === 0}
                 onClick={() => props.onCommit(moveArrayItem(values, index, index - 1))}
-              >↑</button>
-              <button
-                type="button"
-                className="icon secondary"
+              />
+              <IconButton
+                className="secondary"
+                icon="moveDown"
+                label={`下移第 ${index + 1} 项`}
                 title="下移"
                 disabled={disabled || index === values.length - 1}
                 onClick={() => props.onCommit(moveArrayItem(values, index, index + 1))}
-              >↓</button>
-              <button
-                type="button"
-                className="icon secondary"
+              />
+              <IconButton
+                className="secondary"
+                icon="delete"
+                label={`删除第 ${index + 1} 项`}
                 title="删除"
                 disabled={disabled}
                 onClick={() => props.onCommit(values.filter((_, candidateIndex) => candidateIndex !== index))}
-              >×</button>
+              />
             </div>
           </div>
         ))}
-        <button
-          type="button"
+        <IconButton
           className="secondary vb-list-add"
+          icon="add"
+          label="添加元素"
           disabled={disabled}
           onClick={() => props.onCommit([...values.map(cloneJsonValue), cloneJsonValue(item.defaultValue)])}
-        >添加元素</button>
+        />
       </div>
     );
   }
@@ -153,13 +161,15 @@ export function FieldValueEditor(props: FieldValueEditorProps): ReactElement {
 
   if (props.definition.valueType === "boolean" || props.definition.editor?.kind === "checkbox") {
     return (
-      <input
-        type="checkbox"
+      <Checkbox.Root
+        className="vb-checkbox"
         aria-label={props.ariaLabel}
         checked={value === true}
         disabled={disabled}
-        onChange={(event) => props.onCommit(event.target.checked)}
-      />
+        onCheckedChange={props.onCommit}
+      >
+        <Checkbox.Indicator><CommonIcon name="check" /></Checkbox.Indicator>
+      </Checkbox.Root>
     );
   }
 
@@ -291,22 +301,62 @@ function ColorEditor(props: {
   readonly onCommit: (value: string) => void;
 }): ReactElement {
   const [draft, setDraft] = useState(props.value);
-  useEffect(() => setDraft(props.value), [props.value]);
-  const pickerValue = /^#[0-9A-Fa-f]{6}/.test(draft) ? draft.slice(0, 7) : "#000000";
+  const [pickerOpen, setPickerOpen] = useState(false);
+  useEffect(() => {
+    setDraft(props.value);
+    setPickerOpen(false);
+  }, [props.value]);
+  const supportsAlpha = /^#[0-9A-Fa-f]{8}$/.test(props.value);
+  const validDraft = /^#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?$/.test(draft);
+  const previewValue = validDraft ? draft.toUpperCase() : props.value.toUpperCase();
+  const pickerValue = supportsAlpha
+    ? /^#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?$/.test(draft) ? draft : props.value
+    : /^#[0-9A-Fa-f]{6}$/.test(draft) ? draft : props.value.slice(0, 7);
+
+  const normalizeForCommit = (value: string): string => {
+    const normalized = value.toUpperCase();
+    return supportsAlpha && /^#[0-9A-F]{6}$/.test(normalized)
+      ? `${normalized}FF`
+      : normalized;
+  };
+
+  const cancelPicker = (): void => {
+    setDraft(props.value);
+    setPickerOpen(false);
+  };
+  const applyPicker = (): void => {
+    if (!validDraft) {
+      return;
+    }
+    const value = normalizeForCommit(draft);
+    setPickerOpen(false);
+    if (value !== props.value.toUpperCase()) {
+      props.onCommit(value);
+    }
+  };
+  const updatePickerDraft = (value: string): void => {
+    setDraft(value.toUpperCase());
+  };
   return (
     <div className="vb-color-editor">
-      <input
-        type="color"
+      <Button
+        type="button"
+        className="vb-color-swatch"
         aria-label={`${props.ariaLabel ?? "颜色"} 选择器`}
-        value={pickerValue}
+        aria-expanded={pickerOpen}
         disabled={props.disabled}
-        onChange={(event) => {
-          const alpha = /^#[0-9A-Fa-f]{8}$/.test(draft) ? draft.slice(7, 9) : "";
-          const value = `${event.target.value.toUpperCase()}${alpha.toUpperCase()}`;
-          setDraft(value);
-          props.onCommit(value);
+        title={pickerOpen ? "关闭颜色选择器" : "打开颜色选择器"}
+        onClick={() => {
+          if (pickerOpen) {
+            cancelPicker();
+          } else {
+            setDraft(props.value);
+            setPickerOpen(true);
+          }
         }}
-      />
+      >
+        <span style={{ backgroundColor: previewValue }} />
+      </Button>
       <input
         type="text"
         aria-label={props.ariaLabel}
@@ -314,15 +364,57 @@ function ColorEditor(props: {
         disabled={props.disabled}
         onChange={(event) => setDraft(event.target.value)}
         onBlur={() => {
+          if (pickerOpen) {
+            return;
+          }
           if (/^#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?$/.test(draft)) {
-            if (draft.toUpperCase() !== props.value.toUpperCase()) {
-              props.onCommit(draft.toUpperCase());
+            const value = normalizeForCommit(draft);
+            if (value !== props.value.toUpperCase()) {
+              props.onCommit(value);
             }
           } else {
             setDraft(props.value);
           }
         }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            if (pickerOpen) {
+              applyPicker();
+            } else {
+              event.currentTarget.blur();
+            }
+          } else if (event.key === "Escape" && pickerOpen) {
+            cancelPicker();
+          }
+        }}
       />
+      {pickerOpen && (
+        <div className="vb-color-picker-panel">
+          {supportsAlpha
+            ? (
+              <HexAlphaColorPicker
+                aria-label={`${props.ariaLabel ?? "颜色"} RGBA`}
+                color={pickerValue}
+                onChange={updatePickerDraft}
+              />
+            )
+            : (
+              <HexColorPicker
+                aria-label={`${props.ariaLabel ?? "颜色"} RGB`}
+                color={pickerValue}
+                onChange={updatePickerDraft}
+              />
+            )}
+          <div className="vb-color-picker-preview">
+            <span style={{ backgroundColor: previewValue }} />
+            <code>{previewValue}</code>
+          </div>
+          <div className="vb-color-picker-actions">
+            <Button type="button" className="secondary" onClick={cancelPicker}>取消</Button>
+            <Button type="button" disabled={!validDraft} onClick={applyPicker}>应用</Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

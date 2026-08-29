@@ -28,6 +28,8 @@ Open the repository root in VS Code and press `F5` to launch an Extension Develo
 
 Use UTF-8 and final newlines. Indent C# with four spaces and TypeScript/JSON with two. Use `PascalCase` for C# types and public members, `camelCase` for locals and parameters, and `PascalCase` for established repository directories. Keep files focused and prefer one public C# type per file. Preserve dependency direction: Protocol → Core → VS Code/MCP adapters; Unity consumes generated protocol contracts, not TypeScript Core code.
 
+For Webview UI, prefer maintained open-source React components over custom browser-control implementations when they cover the required behavior. Use Base UI for accessible headless interaction primitives, Lucide React for shared functional icons, and `react-colorful` for color editing; apply Visual Studio Code theme variables in repository CSS. Review license, maintenance status, React compatibility, bundle impact, and CSP behavior before adding another UI dependency. Do not use the archived `@vscode/webview-ui-toolkit`.
+
 ## Testing Guidelines
 
 Run `npm test` for the fixed Graph, Entity, and MCP semantic suites. Add host-independent tests beside the relevant built-in extension and keep reusable fixtures under `TestData/`. No coverage threshold is established. Unless explicitly requested, do not add Unity tests. Validate Unity changes with the relevant `dotnet build` command and report when generated project files or unavailable Unity assemblies limit verification.
