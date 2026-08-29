@@ -94,7 +94,7 @@ Document Operation 仍先在副本上完整执行。宿主分别校验修改前�
 
 共享 Form Editor 用只读稳定值加通用搜索、跳转图标呈现引用，不允许绕过 Provider 手输不受约束的值。Graph 自有属性布局复用同一 Webview Reference Bridge，Entity、Structured 和 Table 直接复用共享字段控件。
 
-选择按钮向 Extension Host 发送结构化 definition 和当前值，由原生 Quick Pick 展示候选；Webview 只接收最终稳定值。跳转按钮先解析引用，歧义时要求选择具体目标。Table 目标由 Table Editor 定位物理 Sheet/Row；Document 与 Graph Element 目标打开其声明的 Authoring Document，元素级画布聚焦可在后续扩展，不改变 Location 契约。
+选择按钮向 Extension Host 发送结构化 definition 和当前值，由原生 Quick Pick 展示候选；Webview 只接收最终稳定值。跳转按钮先解析引用，歧义时要求选择具体目标。Table 目标由 Table Editor 定位物理 Sheet/Row；Document 目标打开其声明的 Authoring Document；Graph Element 目标还会切换到 Location 指定的 Graph，选择并居中 Node，或居中并临时高亮 Interface Port / Dynamic Port。Graph Webview 未就绪或隐藏重建时，Host 会保留带请求 ID 的定位请求，直到 Webview 返回处理结果；目标作用域已失效时明确失败，不按同名元素猜测。
 
 工作区索引以磁盘上的 Project Table 文档为基线，并用已打开 Table Custom Document 的当前语义快照覆盖同一逻辑表。未保存的新增、删除或改单元格会立即参与其他编辑器的搜索与校验；关闭文档后移除覆盖并回到磁盘基线。
 
@@ -115,4 +115,4 @@ Graph/Structured/Table 的读取与校验结果会附加共享 Reference 诊断�
 
 ## 7. 自动化基线
 
-`npm test` 覆盖 Field Definition 解析、嵌套 occurrence、三个 Provider 的稳定排序与完整定位、严格类型解析、缺失与歧义诊断、Graph 元素身份传播、Table 有效行候选和定位。真实 stdio MCP 测试会预览并提交 Graph Element、Document ID 和跨 Structured/Table 的 Row Key 重构，验证错误 `baseHash` 不会改写任何来源。测试不包含 Unity。
+`npm test` 覆盖 Field Definition 解析、嵌套 occurrence、三个 Provider 的稳定排序与完整定位、严格类型解析、缺失与歧义诊断、Graph 元素身份传播、Graph Editor 定位计划、Table 有效行候选和定位。Graph 定位测试固定验证 Graph / Node / Interface Port / Dynamic Port 的画布目标以及陈旧完整作用域拒绝。真实 stdio MCP 测试会预览并提交 Graph Element、Document ID 和跨 Structured/Table 的 Row Key 重构，验证错误 `baseHash` 不会改写任何来源。测试不包含 Unity。

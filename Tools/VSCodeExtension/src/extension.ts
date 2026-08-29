@@ -131,6 +131,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!isReferenceLocation(location)) {
         throw new Error("Invalid VisualBridge reference location.");
       }
+      if (isGraphElementReferenceLocation(location)) {
+        await editorProvider.revealGraphReference(location);
+        return;
+      }
       const project = projects.projects.find((candidate) => candidate.definition.projectId === location.projectId);
       if (project === undefined) throw new Error(`VisualBridge Project '${location.projectId}' is not open.`);
       const uri = vscode.Uri.joinPath(project.rootUri, ...location.path.split("/"));
@@ -180,4 +184,12 @@ function isReferenceLocation(value: unknown): value is ReferenceLocation {
 
 function isTableReferenceLocation(value: unknown): boolean {
   return isReferenceLocation(value) && value.sheetId !== undefined && value.rowId !== undefined;
+}
+
+function isGraphElementReferenceLocation(value: unknown): boolean {
+  return isReferenceLocation(value)
+    && (value.elementKind === "graph"
+      || value.elementKind === "node"
+      || value.elementKind === "interfacePort"
+      || value.elementKind === "dynamicPort");
 }

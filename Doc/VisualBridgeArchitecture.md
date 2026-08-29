@@ -426,7 +426,7 @@ Reference Provider 提供：
 
 编辑器、MCP 和 AI 都使用相同 Reference Service，不直接理解各业务数据库。
 
-当前 Reference System 已在 Core、Graph、Entity、Structured、Table、VS Code 与 stdio MCP 中落地。共享 Field Definition 使用 `reference.kind`、结构化 `target` 和 `allowMissing` 声明引用，文档只保存字符串或数值稳定键。内置 `document`、`graph.element` 与 `table.row` Provider 分别按 Document Type、完整 Graph 元素作用域和 Table Catalog 有效分表行解析稳定目标；VS Code 提供原生选择、诊断和跳转，MCP 提供相同的结构化 search/resolve 与带预览基线的项目重构。完整契约见 `ReferenceSystem.md`。
+当前 Reference System 已在 Core、Graph、Entity、Structured、Table、VS Code 与 stdio MCP 中落地。共享 Field Definition 使用 `reference.kind`、结构化 `target` 和 `allowMissing` 声明引用，文档只保存字符串或数值稳定键。内置 `document`、`graph.element` 与 `table.row` Provider 分别按 Document Type、完整 Graph 元素作用域和 Table Catalog 有效分表行解析稳定目标；VS Code 提供原生选择、诊断和跳转，其中 Graph Location 会精确切换 Graph、选择/居中 Node 并高亮 Port；MCP 提供相同的结构化 search/resolve 与带预览基线的项目重构。完整契约见 `ReferenceSystem.md`。
 
 ## VS Code 基础插件
 

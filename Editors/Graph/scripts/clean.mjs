@@ -5,3 +5,4 @@ import path from "node:path";
 const editorRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 await rm(path.join(editorRoot, "dist"), { recursive: true, force: true });
+await rm(path.join(editorRoot, ".test-dist"), { recursive: true, force: true });

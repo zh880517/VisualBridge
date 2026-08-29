@@ -38,6 +38,17 @@ import { createRoot } from "react-dom/client";
 import { WebviewReferenceBridge } from "@visualbridge/form-editor";
 import { CommonIcon } from "@visualbridge/form-editor/icons";
 import "@xyflow/react/dist/style.css";
+import {
+  GRAPH_INTERFACE_INPUT_NODE_ID,
+  GRAPH_INTERFACE_OUTPUT_NODE_ID,
+  GRAPH_REVEAL_MESSAGE_TYPE,
+  GRAPH_REVEAL_RESULT_MESSAGE_TYPE,
+  planGraphElementReveal,
+  readGraphRevealTarget,
+  type GraphRevealPlan,
+  type GraphRevealRequest,
+  type GraphRevealResult,
+} from "../graphReveal";
 import "./styles.css";
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -462,7 +473,8 @@ type HostMessage =
   | { readonly type: "referenceSelected"; readonly requestId: string; readonly value: string | number }
   | { readonly type: "referenceCancelled"; readonly requestId: string }
   | { readonly type: "operationCompleted"; readonly documentVersion: number; readonly changed: boolean }
-  | { readonly type: "operationRejected"; readonly message: string };
+  | { readonly type: "operationRejected"; readonly message: string }
+  | GraphRevealRequest;
 
 interface VsCodeApi {
   postMessage(message: unknown): void;
@@ -472,12 +484,13 @@ declare function acquireVsCodeApi(): VsCodeApi;
 
 const vscode = acquireVsCodeApi();
 const referenceBridge = new WebviewReferenceBridge(vscode);
-const INTERFACE_INPUT_NODE_ID = "$visualbridge.interface.inputs";
-const INTERFACE_OUTPUT_NODE_ID = "$visualbridge.interface.outputs";
+const INTERFACE_INPUT_NODE_ID = GRAPH_INTERFACE_INPUT_NODE_ID;
+const INTERFACE_OUTPUT_NODE_ID = GRAPH_INTERFACE_OUTPUT_NODE_ID;
 const GraphPendingContext = createContext(false);
 const GraphNodeTypeVisibilityContext = createContext(true);
 const GraphNodeIdVisibilityContext = createContext(false);
 const GraphDataTypesContext = createContext<readonly DataTypeDefinition[]>([]);
+const GraphRevealContext = createContext<GraphRevealPlan | undefined>(undefined);
 const nodeTypes = {
   visualBridgeNode: VisualBridgeNode,
   visualBridgeInterface: VisualBridgeInterfaceNode,
@@ -487,6 +500,7 @@ function VisualBridgeNode({ data, selected }: NodeProps<GraphFlowNode>): React.J
   const pending = useContext(GraphPendingContext);
   const showNodeTypes = useContext(GraphNodeTypeVisibilityContext);
   const showNodeIds = useContext(GraphNodeIdVisibilityContext);
+  const reveal = useContext(GraphRevealContext);
   if (data.flavor !== "node") {
     return <article className="graph-node">Invalid node</article>;
   }
@@ -516,8 +530,11 @@ function VisualBridgeNode({ data, selected }: NodeProps<GraphFlowNode>): React.J
   const dataOutputs = data.ports.filter(
     (port) => port.kind === "data" && port.direction === "output" && !dynamicPortIds.has(port.id),
   );
+  const revealed = reveal?.graphId === data.graphId
+    && (reveal.elementKind === "node" || reveal.elementKind === "dynamicPort")
+    && reveal.nodeId === data.model.id;
   return (
-    <article className={`graph-node${selected ? " selected" : ""}${data.model.kind === "subgraph" ? " subgraph" : ""}`}>
+    <article className={`graph-node${selected ? " selected" : ""}${revealed ? " revealed" : ""}${data.model.kind === "subgraph" ? " subgraph" : ""}`}>
       <header className="graph-node-header" title={data.model.title || data.typeTitle}>
         <span className={`graph-node-icon${data.nodeType?.icon === undefined ? " empty" : ""}`} aria-hidden="true">
           {data.nodeType?.icon ?? ""}
@@ -877,6 +894,7 @@ function InlineNodeScalarProperty({
 
 function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; readonly pending: boolean }): React.JSX.Element | null {
   const dataTypes = useContext(GraphDataTypesContext);
+  const reveal = useContext(GraphRevealContext);
   const [selectedPortId, setSelectedPortId] = useState<string>();
   const [dragState, setDragState] = useState<{
     readonly sourcePortId: string;
@@ -998,6 +1016,10 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
                 pending={pending}
                 connected={group.listPortMode === "element" && data.connectedInputPortIds.has(port.id)}
                 selected={selectedPortId === port.id}
+                revealed={reveal?.elementKind === "dynamicPort"
+                  && reveal.graphId === data.graphId
+                  && reveal.nodeId === data.model.id
+                  && reveal.portId === port.id}
                 onSelect={() => setSelectedPortId(port.id)}
                 dragging={groupDragState?.sourcePortId === port.id}
                 dropPosition={groupDragState?.targetPortId === port.id ? groupDragState.position : undefined}
@@ -1050,6 +1072,7 @@ function DynamicPortRow({
   pending,
   connected,
   selected,
+  revealed,
   onSelect,
   dragging,
   dropPosition,
@@ -1068,6 +1091,7 @@ function DynamicPortRow({
   readonly pending: boolean;
   readonly connected: boolean;
   readonly selected: boolean;
+  readonly revealed: boolean;
   readonly onSelect: () => void;
   readonly dragging: boolean;
   readonly dropPosition: "before" | "after" | undefined;
@@ -1100,7 +1124,7 @@ function DynamicPortRow({
   };
   return (
     <article
-      className={`graph-dynamic-port-row${dataColorStyle === undefined ? "" : " typed"}${selected ? " selected" : ""}${dragging ? " dragging" : ""}${dropPosition === undefined ? "" : ` drop-${dropPosition}`}`}
+      className={`graph-dynamic-port-row${dataColorStyle === undefined ? "" : " typed"}${selected ? " selected" : ""}${revealed ? " revealed" : ""}${dragging ? " dragging" : ""}${dropPosition === undefined ? "" : ` drop-${dropPosition}`}`}
       style={dataColorStyle}
       role="option"
       aria-selected={selected}
@@ -1268,6 +1292,7 @@ function DynamicPortValueEditor({
 
 function VisualBridgeInterfaceNode({ data }: NodeProps<GraphFlowNode>): React.JSX.Element {
   const pending = useContext(GraphPendingContext);
+  const reveal = useContext(GraphRevealContext);
   if (data.flavor !== "interface") {
     return <article className="graph-interface-node">Invalid interface</article>;
   }
@@ -1334,8 +1359,11 @@ function VisualBridgeInterfaceNode({ data }: NodeProps<GraphFlowNode>): React.JS
     ...port,
     direction: data.side === "inputs" ? "output" as const : "input" as const,
   }));
+  const revealedPortId = reveal?.elementKind === "interfacePort" && reveal.graphId === data.graphId
+    ? reveal.portId
+    : undefined;
   return (
-    <article className={`graph-interface-node ${data.side}`}>
+    <article className={`graph-interface-node ${data.side}${revealedPortId === undefined ? "" : " revealed"}`}>
       <header>
         <span>{data.title}</span>
         {data.editable && dynamicPorts.length === 0 && (
@@ -1351,7 +1379,11 @@ function VisualBridgeInterfaceNode({ data }: NodeProps<GraphFlowNode>): React.JS
           </span>
         )}
       </header>
-      <PortColumn ports={fixedPorts} align={data.side === "inputs" ? "right" : "left"} />
+      <PortColumn
+        ports={fixedPorts}
+        align={data.side === "inputs" ? "right" : "left"}
+        {...(revealedPortId === undefined ? {} : { revealedPortId })}
+      />
       {dynamicPorts.length > 0 && (
         <div className="graph-interface-parameter-list nodrag nowheel" role="listbox" aria-label={data.title}>
           {dynamicPorts.map((port) => (
@@ -1361,6 +1393,7 @@ function VisualBridgeInterfaceNode({ data }: NodeProps<GraphFlowNode>): React.JS
               port={port}
               pending={pending}
               selected={selectedPortId === port.id}
+              revealed={revealedPortId === port.id}
               dragging={draggingPortId === port.id}
               dropPosition={dropTarget?.portId === port.id ? dropTarget.position : undefined}
               onSelect={() => setSelectedPortId(port.id)}
@@ -1395,6 +1428,7 @@ function InterfaceParameterRow({
   port,
   pending,
   selected,
+  revealed,
   dragging,
   dropPosition,
   onSelect,
@@ -1411,6 +1445,7 @@ function InterfaceParameterRow({
   readonly port: PortDefinition;
   readonly pending: boolean;
   readonly selected: boolean;
+  readonly revealed: boolean;
   readonly dragging: boolean;
   readonly dropPosition: "before" | "after" | undefined;
   readonly onSelect: () => void;
@@ -1446,7 +1481,7 @@ function InterfaceParameterRow({
   };
   return (
     <div
-      className={`graph-interface-parameter${selected ? " selected" : ""}${dragging ? " dragging" : ""}${dropPosition === undefined ? "" : ` drop-${dropPosition}`}`}
+      className={`graph-interface-parameter${selected ? " selected" : ""}${revealed ? " revealed" : ""}${dragging ? " dragging" : ""}${dropPosition === undefined ? "" : ` drop-${dropPosition}`}`}
       style={graphDataTypeStyle(port.dataTypeId, dataTypes)}
       role="option"
       aria-selected={selected}
@@ -1564,9 +1599,11 @@ function InterfaceParameterRow({
 function PortColumn({
   ports,
   align = "left",
+  revealedPortId,
 }: {
   readonly ports: readonly PortDefinition[];
   readonly align?: "left" | "right";
+  readonly revealedPortId?: string;
 }): React.JSX.Element {
   const dataTypes = useContext(GraphDataTypesContext);
   return (
@@ -1574,7 +1611,7 @@ function PortColumn({
       {ports.map((port) => (
         <div
           key={`${port.direction}:${port.id}`}
-          className={`graph-port ${port.kind}`}
+          className={`graph-port ${port.kind}${revealedPortId === port.id ? " revealed" : ""}`}
           style={graphDataTypeStyle(port.dataTypeId, dataTypes)}
           title={port.dataTypeId}
         >
@@ -1633,6 +1670,9 @@ function GraphEditorApp(): React.JSX.Element {
   const pendingSelectionHistoryRef = useRef<SelectionHistoryEntry | undefined>(undefined);
   const lastCompletedOperationVersionRef = useRef<number | undefined>(undefined);
   const clipboardPasteIndexRef = useRef(0);
+  const applyingRevealRequestIdRef = useRef<string | undefined>(undefined);
+  const currentRevealRequestIdRef = useRef<string | undefined>(undefined);
+  const revealTimerRef = useRef<number | undefined>(undefined);
   const [graphDocument, setGraphDocument] = useState<GraphDocument>();
   const [catalogRegistry, setCatalogRegistry] = useState<GraphCatalogRegistry>(emptyCatalogRegistry());
   const [catalogReady, setCatalogReady] = useState(false);
@@ -1640,6 +1680,7 @@ function GraphEditorApp(): React.JSX.Element {
   const [activeGraphId, setActiveGraphIdValue] = useState("");
   const [flowNodes, setFlowNodes] = useState<GraphFlowNode[]>([]);
   const [flowEdges, setFlowEdges] = useState<GraphFlowEdge[]>([]);
+  const [flowGraphId, setFlowGraphId] = useState<string>();
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<GraphFlowNode, GraphFlowEdge>>();
   const [selected, setSelected] = useState<Selection>();
   const [pending, setPending] = useState(false);
@@ -1653,6 +1694,12 @@ function GraphEditorApp(): React.JSX.Element {
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [showNodeTypes, setShowNodeTypes] = useState(true);
   const [showNodeIds, setShowNodeIds] = useState(false);
+  const [pendingRevealRequest, setPendingRevealRequest] = useState<GraphRevealRequest>();
+  const [activeReveal, setActiveReveal] = useState<{
+    readonly request: GraphRevealRequest;
+    readonly plan: GraphRevealPlan;
+  }>();
+  const [revealedElement, setRevealedElement] = useState<GraphRevealPlan>();
 
   const activeGraph = useMemo(
     () => graphDocument?.graphs.find((graph) => graph.id === activeGraphId),
@@ -1842,6 +1889,32 @@ function GraphEditorApp(): React.JSX.Element {
       if (referenceBridge.handleMessage(message)) {
         return;
       }
+      if (message.type === GRAPH_REVEAL_MESSAGE_TYPE) {
+        const target = readGraphRevealTarget(message.target);
+        if (typeof message.requestId !== "string" || target === undefined) {
+          const result: GraphRevealResult = {
+            type: GRAPH_REVEAL_RESULT_MESSAGE_TYPE,
+            requestId: typeof message.requestId === "string" ? message.requestId : "invalid",
+            found: false,
+            message: "Graph 定位请求无效。",
+          };
+          vscode.postMessage(result);
+          return;
+        }
+        if (currentRevealRequestIdRef.current === message.requestId) {
+          return;
+        }
+        currentRevealRequestIdRef.current = message.requestId;
+        if (revealTimerRef.current !== undefined) {
+          window.clearTimeout(revealTimerRef.current);
+          revealTimerRef.current = undefined;
+        }
+        applyingRevealRequestIdRef.current = undefined;
+        setRevealedElement(undefined);
+        setActiveReveal(undefined);
+        setPendingRevealRequest({ type: GRAPH_REVEAL_MESSAGE_TYPE, requestId: message.requestId, target });
+        return;
+      }
       if (message.type === "graphState") {
         if (message.documentChanged === true && message.historyAction === undefined) {
           const ownOperation = pendingSelectionHistoryRef.current !== undefined
@@ -1978,20 +2051,140 @@ function GraphEditorApp(): React.JSX.Element {
     vscode.postMessage({ type: "ready" });
     return () => {
       window.removeEventListener("message", receiveMessage);
+      if (revealTimerRef.current !== undefined) {
+        window.clearTimeout(revealTimerRef.current);
+      }
       referenceBridge.dispose();
     };
   }, [pasteClipboardPayload, updateSelection]);
 
   useEffect(() => {
+    if (pendingRevealRequest === undefined) {
+      return;
+    }
+    if (graphDocument === undefined) {
+      if (invalidDiagnostics.length === 0) {
+        return;
+      }
+      const result: GraphRevealResult = {
+        type: GRAPH_REVEAL_RESULT_MESSAGE_TYPE,
+        requestId: pendingRevealRequest.requestId,
+        found: false,
+        message: "Graph Document 当前无效，无法定位引用目标。",
+      };
+      vscode.postMessage(result);
+      currentRevealRequestIdRef.current = undefined;
+      setPendingRevealRequest(undefined);
+      return;
+    }
+    const result = planGraphElementReveal(graphDocument, pendingRevealRequest.target);
+    if (!result.success) {
+      const response: GraphRevealResult = {
+        type: GRAPH_REVEAL_RESULT_MESSAGE_TYPE,
+        requestId: pendingRevealRequest.requestId,
+        found: false,
+        message: result.message,
+      };
+      vscode.postMessage(response);
+      currentRevealRequestIdRef.current = undefined;
+      setStatus({ message: result.message, error: true });
+      setPendingRevealRequest(undefined);
+      return;
+    }
+    activeGraphIdRef.current = result.plan.graphId;
+    setActiveGraphIdValue(result.plan.graphId);
+    updateSelection(result.plan.selectedNodeId === undefined
+      ? undefined
+      : { nodeIds: [result.plan.selectedNodeId], edgeIds: [] }, true, false);
+    setContextMenu(undefined);
+    setPicker(undefined);
+    setSubgraphPickerOpen(false);
+    setActiveReveal({ request: pendingRevealRequest, plan: result.plan });
+    setPendingRevealRequest(undefined);
+  }, [graphDocument, invalidDiagnostics.length, pendingRevealRequest, updateSelection]);
+
+  useEffect(() => {
     if (graphDocument === undefined || activeGraph === undefined) {
       setFlowNodes([]);
       setFlowEdges([]);
+      setFlowGraphId(undefined);
       return;
     }
     const currentSelection = selectedRef.current;
     setFlowNodes(toFlowNodes(graphDocument, activeGraph, catalogRegistry, currentSelection, commitNode, postOperations, setStatus));
     setFlowEdges(activeGraph.edges.map((edge) => toFlowEdge(edge, currentSelection, graphDocument, activeGraph, catalogRegistry)));
+    setFlowGraphId(activeGraph.id);
   }, [activeGraph, catalogRegistry, commitNode, graphDocument, postOperations]);
+
+  useEffect(() => {
+    if (activeReveal === undefined
+      || flowInstance === undefined
+      || activeGraphId !== activeReveal.plan.graphId
+      || flowGraphId !== activeReveal.plan.graphId) {
+      return;
+    }
+    if (!flowNodes.every((node) => node.data.graphId === activeReveal.plan.graphId)) {
+      return;
+    }
+    if (activeReveal.plan.canvasNodeId !== undefined
+      && !flowNodes.some((node) => node.id === activeReveal.plan.canvasNodeId)) {
+      return;
+    }
+    if (applyingRevealRequestIdRef.current === activeReveal.request.requestId) {
+      return;
+    }
+    applyingRevealRequestIdRef.current = activeReveal.request.requestId;
+    setRevealedElement(activeReveal.plan);
+    const fitOptions = activeReveal.plan.canvasNodeId === undefined
+      ? { padding: 0.24, maxZoom: 1, duration: 300 }
+      : {
+          nodes: [{ id: activeReveal.plan.canvasNodeId }],
+          padding: 0.4,
+          minZoom: 0.8,
+          maxZoom: 1.25,
+          duration: 300,
+        };
+    void flowInstance.fitView(fitOptions).then(() => {
+      if (currentRevealRequestIdRef.current !== activeReveal.request.requestId) {
+        return;
+      }
+      const response: GraphRevealResult = {
+        type: GRAPH_REVEAL_RESULT_MESSAGE_TYPE,
+        requestId: activeReveal.request.requestId,
+        found: true,
+      };
+      vscode.postMessage(response);
+      currentRevealRequestIdRef.current = undefined;
+      applyingRevealRequestIdRef.current = undefined;
+      setStatus({ message: `已定位 ${activeReveal.plan.elementKind} '${activeReveal.plan.elementId}'。`, error: false });
+      setActiveReveal(undefined);
+      revealTimerRef.current = window.setTimeout(() => {
+        setRevealedElement((current) => current?.elementKind === activeReveal.plan.elementKind
+          && current.elementId === activeReveal.plan.elementId
+          && current.graphId === activeReveal.plan.graphId
+          ? undefined
+          : current);
+        revealTimerRef.current = undefined;
+      }, 2400);
+    }).catch((error: unknown) => {
+      if (currentRevealRequestIdRef.current !== activeReveal.request.requestId) {
+        return;
+      }
+      const message = `无法聚焦 Graph 引用目标：${String(error)}`;
+      const response: GraphRevealResult = {
+        type: GRAPH_REVEAL_RESULT_MESSAGE_TYPE,
+        requestId: activeReveal.request.requestId,
+        found: false,
+        message,
+      };
+      vscode.postMessage(response);
+      currentRevealRequestIdRef.current = undefined;
+      applyingRevealRequestIdRef.current = undefined;
+      setStatus({ message, error: true });
+      setRevealedElement(undefined);
+      setActiveReveal(undefined);
+    });
+  }, [activeGraphId, activeReveal, flowGraphId, flowInstance, flowNodes]);
 
   const handleNodesChange = useCallback((changes: NodeChange<GraphFlowNode>[]): void => {
     setFlowNodes((current) => applyNodeChanges(changes, current));
@@ -2562,47 +2755,52 @@ function GraphEditorApp(): React.JSX.Element {
           ? <InvalidDocument diagnostics={[{ severity: "error", code: "graph.missingActiveGraph", path: "graphs", message: "当前子图不存在。" }]} />
           : (
             <main className={`graph-content${inspectorCollapsed ? " inspector-collapsed" : ""}`}>
-              <div ref={canvasRef} className="graph-canvas">
+              <div
+                ref={canvasRef}
+                className={`graph-canvas${revealedElement?.elementKind === "graph" && revealedElement.graphId === activeGraph.id ? " revealed" : ""}`}
+              >
                 <GraphPendingContext.Provider value={pending}>
                   <GraphNodeTypeVisibilityContext.Provider value={showNodeTypes}>
                     <GraphNodeIdVisibilityContext.Provider value={showNodeIds}>
-                      <ReactFlow<GraphFlowNode, GraphFlowEdge>
-                        nodes={flowNodes}
-                        edges={flowEdges}
-                        nodeTypes={nodeTypes}
-                        onNodesChange={handleNodesChange}
-                        onEdgesChange={handleEdgesChange}
-                        onSelectionChange={handleSelectionChange}
-                        onConnect={handleConnect}
-                        onConnectEnd={handleConnectEnd}
-                        onNodeDragStop={handleNodeDragStop}
-                        onNodeContextMenu={handleNodeContextMenu}
-                        onEdgeContextMenu={handleEdgeContextMenu}
-                        onSelectionContextMenu={handleSelectionContextMenu}
-                        onPaneContextMenu={handlePaneContextMenu}
-                        onNodeDoubleClick={(_, node) => openSubgraph(node.id)}
-                        onPaneClick={() => setContextMenu(undefined)}
-                        onInit={setFlowInstance}
-                        nodesDraggable={!pending}
-                        nodesConnectable={!pending && catalogReady}
-                        elementsSelectable={!pending}
-                        selectionOnDrag
-                        selectionMode={SelectionMode.Partial}
-                        panOnDrag={[1]}
-                        panActivationKeyCode={null}
-                        deleteKeyCode={null}
-                        connectionRadius={24}
-                        snapToGrid
-                        snapGrid={[10, 10]}
-                        fitView
-                        fitViewOptions={{ maxZoom: 1, padding: 0.24 }}
-                        minZoom={0.2}
-                        maxZoom={2}
-                      >
-                        <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
-                        <MiniMap pannable zoomable nodeStrokeWidth={3} />
-                        <Controls showInteractive={false} />
-                      </ReactFlow>
+                      <GraphRevealContext.Provider value={revealedElement}>
+                        <ReactFlow<GraphFlowNode, GraphFlowEdge>
+                          nodes={flowNodes}
+                          edges={flowEdges}
+                          nodeTypes={nodeTypes}
+                          onNodesChange={handleNodesChange}
+                          onEdgesChange={handleEdgesChange}
+                          onSelectionChange={handleSelectionChange}
+                          onConnect={handleConnect}
+                          onConnectEnd={handleConnectEnd}
+                          onNodeDragStop={handleNodeDragStop}
+                          onNodeContextMenu={handleNodeContextMenu}
+                          onEdgeContextMenu={handleEdgeContextMenu}
+                          onSelectionContextMenu={handleSelectionContextMenu}
+                          onPaneContextMenu={handlePaneContextMenu}
+                          onNodeDoubleClick={(_, node) => openSubgraph(node.id)}
+                          onPaneClick={() => setContextMenu(undefined)}
+                          onInit={setFlowInstance}
+                          nodesDraggable={!pending}
+                          nodesConnectable={!pending && catalogReady}
+                          elementsSelectable={!pending}
+                          selectionOnDrag
+                          selectionMode={SelectionMode.Partial}
+                          panOnDrag={[1]}
+                          panActivationKeyCode={null}
+                          deleteKeyCode={null}
+                          connectionRadius={24}
+                          snapToGrid
+                          snapGrid={[10, 10]}
+                          fitView
+                          fitViewOptions={{ maxZoom: 1, padding: 0.24 }}
+                          minZoom={0.2}
+                          maxZoom={2}
+                        >
+                          <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
+                          <MiniMap pannable zoomable nodeStrokeWidth={3} />
+                          <Controls showInteractive={false} />
+                        </ReactFlow>
+                      </GraphRevealContext.Provider>
                     </GraphNodeIdVisibilityContext.Provider>
                   </GraphNodeTypeVisibilityContext.Provider>
                 </GraphPendingContext.Provider>

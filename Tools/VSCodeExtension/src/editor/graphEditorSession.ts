@@ -10,7 +10,12 @@ import {
   serializeGraphDocument,
   validateGraphDocument,
 } from "@visualbridge/graph";
-import { createGraphEditorHtml } from "@visualbridge/graph-editor";
+import {
+  GRAPH_REVEAL_RESULT_MESSAGE_TYPE,
+  GraphRevealMailbox,
+  createGraphEditorHtml,
+  type GraphRevealTarget,
+} from "@visualbridge/graph-editor";
 import { loadGraphCatalogRegistry } from "../catalog/graphCatalogLoader";
 import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
 import { handleReferenceMessage } from "../reference/referenceMessages";
@@ -29,6 +34,8 @@ interface WebviewMessage {
   readonly requestId?: unknown;
   readonly definition?: unknown;
   readonly value?: unknown;
+  readonly found?: unknown;
+  readonly message?: unknown;
 }
 
 interface GraphStateOptions {
@@ -42,6 +49,7 @@ export class GraphEditorSession {
   private baseDiskHash = "";
   private operationQueue: Promise<void> = Promise.resolve();
   private disposed = false;
+  private readonly revealMailbox = new GraphRevealMailbox();
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -122,20 +130,52 @@ export class GraphEditorSession {
         void this.sendState();
       }),
       this.panel.onDidDispose(() => this.dispose()),
+      this.panel.onDidChangeViewState((event) => {
+        if (event.webviewPanel.visible) {
+          this.revealMailbox.markReady();
+          void this.sendPendingReveal();
+        } else {
+          this.revealMailbox.markUnavailable();
+        }
+      }),
     );
 
     await this.sendState();
+  }
+
+  public async reveal(target: GraphRevealTarget): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    this.revealMailbox.enqueue(target);
+    this.panel.reveal();
+    await this.sendPendingReveal();
   }
 
   private async handleMessage(message: WebviewMessage): Promise<void> {
     if (this.disposed) {
       return;
     }
+    if (message.type === GRAPH_REVEAL_RESULT_MESSAGE_TYPE) {
+      if (typeof message.requestId !== "string" || typeof message.found !== "boolean") {
+        return;
+      }
+      if (this.revealMailbox.acknowledge(message.requestId)) {
+        if (!message.found) {
+          this.output.appendLine(
+            `[graph] Reveal target was not found in ${this.match.relativePath}: ${typeof message.message === "string" ? message.message : "unknown target"}`,
+          );
+        }
+      }
+      return;
+    }
     if (await handleReferenceMessage(message, this.panel.webview, this.match.project, this.references)) {
       return;
     }
     if (message.type === "ready") {
+      this.revealMailbox.markReady();
       await this.sendState();
+      await this.sendPendingReveal();
       return;
     }
     if (message.type === "requestReplacementCandidates") {
@@ -359,6 +399,16 @@ export class GraphEditorSession {
           ).map((nodeType) => nodeType.id)
         : [],
     });
+  }
+
+  private async sendPendingReveal(): Promise<void> {
+    const pendingReveal = this.revealMailbox.deliverable;
+    if (this.disposed || pendingReveal === undefined) {
+      return;
+    }
+    if (!await this.panel.webview.postMessage(pendingReveal)) {
+      this.revealMailbox.markUnavailable();
+    }
   }
 
   private getCatalogUris(): readonly vscode.Uri[] {

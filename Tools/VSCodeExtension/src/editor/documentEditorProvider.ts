@@ -1,7 +1,9 @@
 import * as nodePath from "node:path";
 import * as vscode from "vscode";
+import type { ReferenceLocation } from "@visualbridge/core";
 import { ENTITY_EDITOR_ID } from "@visualbridge/entity";
 import { GRAPH_EDITOR_ID } from "@visualbridge/graph";
+import { readGraphRevealTarget, type GraphRevealTarget } from "@visualbridge/graph-editor";
 import { STRUCTURED_EDITOR_ID } from "@visualbridge/structured";
 import { TABLE_EDITOR_ID } from "@visualbridge/table";
 import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
@@ -15,6 +17,9 @@ export const DEFAULT_EDITOR_VIEW_TYPE = "visualbridge.documentEditor";
 export const OPTIONAL_EDITOR_VIEW_TYPE = "visualbridge.documentEditor.option";
 
 export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
+  private readonly graphSessions = new Map<string, Set<GraphEditorSession>>();
+  private readonly pendingGraphReveals = new Map<string, GraphRevealTarget>();
+
   public constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly projects: ProjectRegistry,
@@ -52,7 +57,26 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         this.diagnostics,
         this.output,
       );
-      await session.open();
+      const uriKey = document.uri.toString();
+      let sessions = this.graphSessions.get(uriKey);
+      if (sessions === undefined) {
+        sessions = new Set();
+        this.graphSessions.set(uriKey, sessions);
+      }
+      sessions.add(session);
+      const panelSubscription = webviewPanel.onDidDispose(() => this.removeGraphSession(uriKey, session));
+      try {
+        await session.open();
+        const pendingReveal = this.pendingGraphReveals.get(uriKey);
+        if (pendingReveal !== undefined) {
+          this.pendingGraphReveals.delete(uriKey);
+          await session.reveal(pendingReveal);
+        }
+      } catch (error) {
+        panelSubscription.dispose();
+        this.removeGraphSession(uriKey, session);
+        throw error;
+      }
       return;
     }
 
@@ -112,6 +136,54 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
       projectSubscription.dispose();
     });
   }
+
+  public async revealGraphReference(location: ReferenceLocation): Promise<void> {
+    const target = readGraphRevealTarget(location);
+    if (target === undefined || !isProjectRelativePath(location.path)) {
+      throw new Error("Invalid Graph element reference location.");
+    }
+    const project = this.projects.projects.find(
+      (candidate) => candidate.definition.projectId === location.projectId,
+    );
+    if (project === undefined) {
+      throw new Error(`VisualBridge Project '${location.projectId}' is not open.`);
+    }
+    const uri = vscode.Uri.joinPath(project.rootUri, ...location.path.split("/"));
+    const match = this.projects.resolveDocument(uri);
+    if (match?.project.markerUri.toString() !== project.markerUri.toString()
+      || match.documentType.editor !== GRAPH_EDITOR_ID
+      || match.documentType.id !== location.documentTypeId) {
+      throw new Error("Graph reference location is outside its declared Project Document Type.");
+    }
+    const uriKey = uri.toString();
+    const session = [...(this.graphSessions.get(uriKey) ?? [])][0];
+    if (session !== undefined) {
+      await session.reveal(target);
+      return;
+    }
+    this.pendingGraphReveals.set(uriKey, target);
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", uri, OPTIONAL_EDITOR_VIEW_TYPE);
+    } catch (error) {
+      if (this.pendingGraphReveals.get(uriKey) === target) {
+        this.pendingGraphReveals.delete(uriKey);
+      }
+      throw error;
+    }
+  }
+
+  private removeGraphSession(uriKey: string, session: GraphEditorSession): void {
+    const sessions = this.graphSessions.get(uriKey);
+    sessions?.delete(session);
+    if (sessions?.size === 0) {
+      this.graphSessions.delete(uriKey);
+    }
+  }
+}
+
+function isProjectRelativePath(value: string): boolean {
+  return !value.includes("\\")
+    && !value.split("/").some((segment) => segment.length === 0 || segment === "." || segment === "..");
 }
 
 function createEditorHtml(
