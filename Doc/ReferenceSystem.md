@@ -4,7 +4,7 @@
 
 Reference System 为 Graph、Entity、Structured 和 Table Document 提供同一套跨文档引用契约。字段所属模块只声明“引用什么”，不直接扫描文件、解析业务表或实现选择器。Core 负责稳定契约、Provider 注册、搜索、解析和诊断；VS Code 与 MCP 只负责宿主交互和持久化边界。
 
-当前内置 `document`、`graph.element` 和 `table.row` 三类 Provider。它们分别引用 Project Document Type 下的稳定 Document ID、Graph 文档内部的稳定元素 ID，以及 Table Type/Sheet 下的有效记录。Unity Asset、运行时实例和项目自定义 Provider 仍是后续能力；当前不增加 Unity Exporter、Importer、Runtime 或 Debug 代码。
+当前内置 `document`、`entity.component`、`graph.element` 和 `table.row` 四类 Provider。它们分别引用 Project Document Type 下的稳定 Document ID、Entity 文档中的稳定 Component 实例 ID、Graph 文档内部的稳定元素 ID，以及 Table Type/Sheet 下的有效记录。Unity Asset、运行时实例和项目自定义 Provider 仍是后续能力；当前不增加 Unity Exporter、Importer、Runtime 或 Debug 代码。
 
 ## 2. 字段契约
 
@@ -53,6 +53,12 @@ Graph 属性、Graph 动态端口值、Entity 根字段、Component 字段、Str
 
 Graph 元素 Location 显式保存 `elementKind`、`elementId`、`graphId`、`nodeId` 和 `portId`。端口 ID 允许只在其 Graph 或 Node 作用域内唯一，因此不能退化为只有 `elementId` 的定位。
 
+### `entity.component`
+
+`entity.component` 的 `target` 只包含 `documentTypeId`，持久值是 Component 实例的稳定 `id`。可重命名的 `documentId` 不进入 target；Provider 扫描该 Project Document Type 声明的全部 Entity 文档，同值跨文档重复时返回 `ambiguous`，不会按路径、标题或加载顺序猜测目标。
+
+候选 Location 保存 `documentId`、`componentId`、`elementKind: "component"` 和与组件 ID 相同的 `elementId`。因此 target 保持稳定，导航和重构仍能校验完整所属文档。Component Type ID 只决定结构与显示名称，不是 Component 实例引用值。
+
 ### `table.row`
 
 `table.row` 的 `target` 为：
@@ -94,13 +100,13 @@ Document Operation 仍先在副本上完整执行。宿主分别校验修改前�
 
 共享 Form Editor 用只读稳定值加通用搜索、跳转图标呈现引用，不允许绕过 Provider 手输不受约束的值。Graph 自有属性布局复用同一 Webview Reference Bridge，Entity、Structured 和 Table 直接复用共享字段控件。
 
-选择按钮向 Extension Host 发送结构化 definition 和当前值，由原生 Quick Pick 展示候选；Webview 只接收最终稳定值。跳转按钮先解析引用，歧义时要求选择具体目标。Table 目标由 Table Editor 定位物理 Sheet/Row；Document 目标打开其声明的 Authoring Document；Graph Element 目标还会切换到 Location 指定的 Graph，选择并居中 Node，或居中并临时高亮 Interface Port / Dynamic Port。Graph Webview 未就绪或隐藏重建时，Host 会保留带请求 ID 的定位请求，直到 Webview 返回处理结果；目标作用域已失效时明确失败，不按同名元素猜测。
+选择按钮向 Extension Host 发送结构化 definition 和当前值，由原生 Quick Pick 展示候选；Webview 只接收最终稳定值。跳转按钮先解析引用，歧义时要求选择具体目标。Table 目标由 Table Editor 定位物理 Sheet/Row；Document 目标打开其声明的 Authoring Document；Graph Element 目标会切换到指定 Graph，选择并居中 Node，或居中并临时高亮 Port；Entity Component 目标会打开所属 Entity、展开对应卡片、滚动聚焦并临时高亮。Graph 与 Entity Webview 未就绪或隐藏重建时，Host 会保留带请求 ID 的最新定位请求，直到 Webview 返回处理结果；完整作用域失效时明确失败，不按同名元素猜测。
 
 工作区索引以磁盘上的 Project Table 文档为基线，并用已打开 Table Custom Document 的当前语义快照覆盖同一逻辑表。未保存的新增、删除或改单元格会立即参与其他编辑器的搜索与校验；关闭文档后移除覆盖并回到磁盘基线。
 
 Document Browser 使用同一 Reference Service 的解析候选展示每个文档的出站引用，并按候选 Location 的 Project、Document Type 与物理路径派生 `Referenced By` 关系。反向关系仅是工作区索引视图，不写回任何 Authoring Document；缺失或歧义引用继续使用本文件定义的诊断和解析状态。完整 Browser 契约见 `DocumentBrowser.md`。
 
-Project Refactoring 使用解析候选的完整 Location，而不是仅按引用值，批量重命名 `document`、`graph.element` 或 `table.row` 目标及所有唯一解析到该位置的入站 occurrence。Graph 元素重命名通过 `graph.renameElement` 原子更新结构身份、连线端点和子图调用映射；CSV 分表和 XLSX 与文本 Document 参与同一个带哈希检查与回滚的 Host 事务。完整契约见 `ProjectRefactoring.md`。
+Project Refactoring 使用解析候选的完整 Location，而不是仅按引用值，批量重命名 `document`、`entity.component`、`graph.element` 或 `table.row` 目标及所有唯一解析到该位置的入站 occurrence。Entity Component 通过 `entity.renameComponent` 修改实例身份；Graph 元素通过 `graph.renameElement` 原子更新结构身份、连线端点和子图调用映射；CSV 分表和 XLSX 与文本 Document 参与同一个带哈希检查与回滚的 Host 事务。完整契约见 `ProjectRefactoring.md`。
 
 ## 6. MCP
 
@@ -115,4 +121,4 @@ Graph/Structured/Table 的读取与校验结果会附加共享 Reference 诊断�
 
 ## 7. 自动化基线
 
-`npm test` 覆盖 Field Definition 解析、嵌套 occurrence、三个 Provider 的稳定排序与完整定位、严格类型解析、缺失与歧义诊断、Graph 元素身份传播、Graph Editor 定位计划、Table 有效行候选和定位。Graph 定位测试固定验证 Graph / Node / Interface Port / Dynamic Port 的画布目标以及陈旧完整作用域拒绝。真实 stdio MCP 测试会预览并提交 Graph Element、Document ID 和跨 Structured/Table 的 Row Key 重构，验证错误 `baseHash` 不会改写任何来源。测试不包含 Unity。
+`npm test` 覆盖 Field Definition 解析、嵌套 occurrence、四个 Provider 的稳定排序与完整定位、严格类型解析、缺失与歧义诊断、Entity / Graph 身份传播、Entity / Graph Editor 定位计划、Table 有效行候选和定位。Entity 定位测试固定验证完整所属文档、组件存在性和 Webview 请求生命周期；Graph 定位测试固定验证 Graph / Node / Interface Port / Dynamic Port 的画布目标以及陈旧完整作用域拒绝。真实 stdio MCP 测试会预览并提交 Entity Component、Graph Element、Document ID 和跨 Structured/Table 的 Row Key 重构，验证错误 `baseHash` 不会改写任何来源。测试不包含 Unity。

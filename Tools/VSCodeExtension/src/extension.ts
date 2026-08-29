@@ -135,6 +135,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await editorProvider.revealGraphReference(location);
         return;
       }
+      if (isEntityComponentReferenceLocation(location)) {
+        await editorProvider.revealEntityReference(location);
+        return;
+      }
       const project = projects.projects.find((candidate) => candidate.definition.projectId === location.projectId);
       if (project === undefined) throw new Error(`VisualBridge Project '${location.projectId}' is not open.`);
       const uri = vscode.Uri.joinPath(project.rootUri, ...location.path.split("/"));
@@ -192,4 +196,11 @@ function isGraphElementReferenceLocation(value: unknown): boolean {
       || value.elementKind === "node"
       || value.elementKind === "interfacePort"
       || value.elementKind === "dynamicPort");
+}
+
+function isEntityComponentReferenceLocation(value: unknown): boolean {
+  return isReferenceLocation(value)
+    && value.elementKind === "component"
+    && value.componentId !== undefined
+    && value.elementId === value.componentId;
 }

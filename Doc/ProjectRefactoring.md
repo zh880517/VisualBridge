@@ -4,11 +4,11 @@
 
 Project Refactoring 在整个 Authoring Project 范围内修改一个语义身份及其引用。它不是文本查找替换，也不按文件扩展名猜测文档类型。Core 根据 Reference Provider 已解析出的目标位置建立确定性影响计划，各 Document Type 使用既有 Catalog、Parser、Operation、Validator 和 Serializer 生成修改，VS Code Host 只负责交互、并发检查与多载体提交。
 
-当前落地 `document`、`graph.element` 和 `table.row` 三类目标重命名，并同步修改 Graph、Entity、Structured 和 Table 中所有唯一解析到同一完整 Location 的 Reference Occurrence。Unity Catalog Exporter、Importer、Runtime 和 Debug 不在本阶段范围内。
+当前落地 `document`、`entity.component`、`graph.element` 和 `table.row` 四类目标重命名，并同步修改 Graph、Entity、Structured 和 Table 中所有唯一解析到同一完整 Location 的 Reference Occurrence。Unity Catalog Exporter、Importer、Runtime 和 Debug 不在本阶段范围内。
 
 ## 2. 身份与匹配规则
 
-稳定引用值与显示名称、文件路径分离。重构计划以 Reference Provider 返回的完整 `ReferenceLocation` 作为目标身份，包括 Project、Document Type、物理路径，以及 Document/Graph/Node/Port 或 Sheet/Row 作用域；旧值只用于并发校验，不单独决定目标。
+稳定引用值与显示名称、文件路径分离。重构计划以 Reference Provider 返回的完整 `ReferenceLocation` 作为目标身份，包括 Project、Document Type、物理路径，以及 Document/Component、Graph/Node/Port 或 Sheet/Row 作用域；旧值只用于并发校验，不单独决定目标。
 
 因此 V1 遵守以下规则：
 
@@ -17,6 +17,7 @@ Project Refactoring 在整个 Authoring Project 范围内修改一个语义身�
 - 字符串与数值引用不能互相改型；数值输入必须是有限数。
 - 新值如果已经能够解析到其他目标，或者同一物理表中存在隐藏于分表去重结果之外的重复键，重构被拒绝。
 - `document` 只重命名 Graph、Entity 和 Structured 文件内容中的稳定 Document ID；Table 没有伪造的 Document ID。
+- `entity.component` 只重命名 Entity Document 内的稳定 Component 实例 ID。Provider 在整个 Project Document Type 范围检查新值冲突，目标适配器再次校验 `documentId`、`componentId` 与当前源一致。
 - `graph.element` 只重命名 Graph、Node、Interface Port 和 Dynamic Port。Graph ID 会同步 `rootGraphId`、`subgraphId`；Node/Port ID 会同步所有受影响 Edge Endpoint 和父图子图调用端口。Catalog 中的类型、静态端口和 Component ID 不属于实例身份重构。
 - `table.row` 修改目标物理行的 `keyColumnId` 单元格，并额外检查被分表去重隐藏的物理重复键。
 
@@ -24,7 +25,7 @@ Project Refactoring 在整个 Authoring Project 范围内修改一个语义身�
 
 `Core/Reference/referenceRefactor.ts` 输出稳定排序的 `ReferenceValueRenamePlan`。计划包含目标、旧值、新值以及每个受影响文档的语义 occurrence path，不包含 VS Code URI、文件锁或 UI 状态。
 
-共享 Field 模型提供递归 reference value 替换，覆盖对象、数组和 Catalog 默认值物化。Entity、Structured 与 Table 直接复用该能力；Graph 适配 Graph 属性和动态端口。四类适配都通过各自既有语义变换并重新校验，不能绕过 Document Type 规则直接做文本或未知 JSON 对象替换。Graph Element 使用正式 `graph.renameElement` Operation；Document ID 使用对应 Document Core 的 rename 语义；Table Row 使用 `table.setCell`。
+共享 Field 模型提供递归 reference value 替换，覆盖对象、数组和 Catalog 默认值物化。Entity、Structured 与 Table 直接复用该能力；Graph 适配 Graph 属性和动态端口。四类文档适配都通过各自既有语义变换并重新校验，不能绕过 Document Type 规则直接做文本或未知 JSON 对象替换。Entity Component 使用 `entity.renameComponent` Operation；Graph Element 使用 `graph.renameElement` Operation；Document ID 使用对应 Document Core 的 rename 语义；Table Row 使用 `table.setCell`。
 
 ## 4. VS Code 影响预览
 
@@ -60,4 +61,4 @@ Document Browser 的 `References` 和 `Referenced By` 项提供通用 Replace �
 
 ## 7. 后续扩展
 
-新增 Reference Provider 时，应同时定义其可编辑目标适配器，再复用 Core 计划与 Host 事务；不能在 Project Refactoring 中添加按字符串猜测目标的特殊分支。Component、Catalog Type、Unity Asset 和 Runtime Instance 只有在正式 Provider、Location 作用域和目标适配器同时存在后才能加入。
+新增 Reference Provider 时，应同时定义其可编辑目标适配器，再复用 Core 计划与 Host 事务；不能在 Project Refactoring 中添加按字符串猜测目标的特殊分支。Catalog Type、Unity Asset 和 Runtime Instance 只有在正式 Provider、Location 作用域和目标适配器同时存在后才能加入。

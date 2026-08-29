@@ -67,7 +67,7 @@ function createServer(): McpServer {
     {
       title: "Search or resolve VisualBridge references",
       description:
-        "Uses the shared project Reference Service to search candidates or resolve one typed stable value. Built-in table.row targets use Table Type, Sheet, and key-column semantics rather than filenames or display names.",
+        "Uses the shared project Reference Service to search candidates or resolve one typed stable value. Built-in document, entity.component, graph.element, and table.row providers use stable semantic selectors rather than filenames or display names.",
       inputSchema: z.object({
         projectFile: z.string().optional(),
         action: z.enum(["search", "resolve"]),
@@ -100,11 +100,11 @@ function createServer(): McpServer {
     {
       title: "Preview or apply a VisualBridge reference refactor",
       description:
-        "Renames one uniquely resolved document, graph.element, or table.row stable value and every reference resolved to that exact location. Preview returns source baseHashes and previewHash; apply requires both and rejects any changed project state before an atomic multi-file commit.",
+        "Renames one uniquely resolved document, entity.component, graph.element, or table.row stable value and every reference resolved to that exact location. Preview returns source baseHashes and previewHash; apply requires both and rejects any changed project state before an atomic multi-file commit.",
       inputSchema: z.object({
         projectFile: z.string().optional(),
         action: z.enum(["preview", "apply"]),
-        kind: z.enum(["document", "graph.element", "table.row"]),
+        kind: z.enum(["document", "entity.component", "graph.element", "table.row"]),
         target: z.record(z.string(), z.json()),
         oldValue: z.union([z.string(), z.number().finite()]),
         newValue: z.union([z.string(), z.number().finite()]),

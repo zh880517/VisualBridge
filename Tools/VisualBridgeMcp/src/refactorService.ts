@@ -12,14 +12,12 @@ import {
   type ReferenceValueRenamePlan,
 } from "@visualbridge/core";
 import {
-  buildEntityCatalogRegistry,
+  applyEntityOperations,
   collectEntityReferences,
-  parseEntityCatalog,
   parseEntityDocument,
   renameEntityDocumentId,
   replaceEntityReferenceValues,
   serializeEntityDocument,
-  type EntityCatalog,
   type EntityCatalogRegistry,
 } from "@visualbridge/entity";
 import {
@@ -56,6 +54,7 @@ import {
 import type { VisualBridgeReferenceService } from "./referenceService.js";
 import type { TableService } from "./tableService.js";
 import { hashBytes } from "./atomicTextFile.js";
+import { loadMcpEntityRegistry } from "./entityRegistry.js";
 
 interface PreparedWrite {
   readonly path: string;
@@ -235,7 +234,7 @@ export class ReferenceRefactorService {
       } else if (source.documentType.editor === "entity") {
         const parsed = parseEntityDocument(text);
         if (!parsed.success) throw invalidSource(source.path, parsed.diagnostics);
-        const registry = await cachedRegistry(entityRegistries, source.documentType.id, () => loadEntityRegistry(project, source));
+        const registry = await cachedRegistry(entityRegistries, source.documentType.id, () => loadMcpEntityRegistry(project, source.documentType));
         documentId = parsed.document.documentId;
         title = parsed.document.title;
         occurrences = collectEntityReferences(parsed.document, registry);
@@ -350,7 +349,7 @@ export class ReferenceRefactorService {
       }
       after = Buffer.from(serializeGraphDocument(next), "utf8");
     } else if (indexed.editor === "entity") {
-      const registry = await loadEntityRegistry(project, declared);
+      const registry = await loadMcpEntityRegistry(project, declared.documentType);
       const parsed = parseEntityDocument(text);
       if (!parsed.success) throw invalidSource(indexed.path, parsed.diagnostics);
       let next = parsed.document;
@@ -363,6 +362,24 @@ export class ReferenceRefactorService {
       if (isTarget && plan.kind === "document") {
         assertDocumentTarget(next.documentId, plan, indexed.path);
         const renamed = renameEntityDocumentId(next, requireString(plan.newValue), registry);
+        if (!renamed.success) throw invalidSource(indexed.path, renamed.diagnostics);
+        next = renamed.document;
+      } else if (isTarget && plan.kind === "entity.component") {
+        const location = plan.target.location!;
+        if (location.documentId !== next.documentId
+          || location.elementKind !== "component"
+          || location.componentId !== plan.oldValue
+          || location.elementId !== plan.oldValue) {
+          throw new VisualBridgeMcpError(
+            "refactor.targetChanged",
+            "The Entity component location is incomplete or changed.",
+          );
+        }
+        const renamed = applyEntityOperations(next, [{
+          type: "entity.renameComponent",
+          componentId: requireString(plan.oldValue),
+          newComponentId: requireString(plan.newValue),
+        }], registry);
         if (!renamed.success) throw invalidSource(indexed.path, renamed.diagnostics);
         next = renamed.document;
       } else if (isTarget) {
@@ -401,7 +418,7 @@ export class ReferenceRefactorService {
   }
 }
 
-const SUPPORTED_KINDS = new Set(["document", "graph.element", "table.row"]);
+const SUPPORTED_KINDS = new Set(["document", "entity.component", "graph.element", "table.row"]);
 
 function previewResult(prepared: PreparedRefactor): Record<string, unknown> {
   return {
@@ -446,21 +463,6 @@ async function loadGraphRegistry(project: ProjectContext, source: DeclaredDocume
   }
   const built = buildGraphCatalogRegistry(catalogs);
   if (!built.success) throw invalidSource(`${source.documentType.id} Graph Catalog Registry`, built.diagnostics);
-  return built.document;
-}
-
-async function loadEntityRegistry(project: ProjectContext, source: DeclaredDocumentContext): Promise<EntityCatalogRegistry> {
-  if (source.documentType.catalogs.length === 0) {
-    throw new VisualBridgeMcpError("refactor.catalogUnavailable", `Entity Document Type '${source.documentType.id}' has no Catalogs.`);
-  }
-  const catalogs: EntityCatalog[] = [];
-  for (const catalogPath of source.documentType.catalogs) {
-    const parsed = parseEntityCatalog(decodeUtf8(await readFile(await resolveExistingProjectPath(project, catalogPath)), catalogPath));
-    if (!parsed.success) throw invalidSource(catalogPath, parsed.diagnostics);
-    catalogs.push(parsed.document);
-  }
-  const built = buildEntityCatalogRegistry(catalogs);
-  if (!built.success) throw invalidSource(`${source.documentType.id} Entity Catalog Registry`, built.diagnostics);
   return built.document;
 }
 
@@ -521,7 +523,7 @@ function assertDocumentTarget(currentId: string, plan: ReferenceValueRenamePlan,
 }
 
 function requireString(value: string | number): string {
-  if (typeof value !== "string") throw new VisualBridgeMcpError("refactor.invalidValue", "Document and Graph element IDs must be strings.");
+  if (typeof value !== "string") throw new VisualBridgeMcpError("refactor.invalidValue", "Document, Graph element, and Entity component IDs must be strings.");
   return value;
 }
 

@@ -18,6 +18,7 @@ export interface ReferenceLocation {
   readonly documentTypeId: string;
   readonly path: string;
   readonly documentId?: string;
+  readonly componentId?: string;
   readonly elementKind?: string;
   readonly elementId?: string;
   readonly graphId?: string;
@@ -163,6 +164,7 @@ function candidateKey(candidate: ReferenceCandidate): string {
     location?.documentTypeId ?? "",
     location?.path ?? "",
     location?.documentId ?? "",
+    location?.componentId ?? "",
     location?.elementKind ?? "",
     location?.elementId ?? "",
     location?.graphId ?? "",

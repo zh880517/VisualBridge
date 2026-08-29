@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { Button } from "@base-ui/react/button";
 import { Checkbox } from "@base-ui/react/checkbox";
@@ -24,6 +24,14 @@ import {
   WebviewReferenceBridge,
   type ReferenceEditorActions,
 } from "@visualbridge/form-editor";
+import {
+  ENTITY_REVEAL_MESSAGE_TYPE,
+  ENTITY_REVEAL_RESULT_MESSAGE_TYPE,
+  planEntityComponentReveal,
+  readEntityRevealTarget,
+  type EntityRevealRequest,
+  type EntityRevealResult,
+} from "../entityReveal";
 import "../styles.css";
 
 interface VsCodeApi {
@@ -59,7 +67,7 @@ type HostMessage = EntityStateMessage | EntityInvalidMessage | {
   readonly type: "operationCompleted";
   readonly changed: boolean;
   readonly documentVersion: number;
-};
+} | EntityRevealRequest;
 
 const vscode = acquireVsCodeApi();
 const referenceBridge = new WebviewReferenceBridge(vscode);
@@ -77,6 +85,10 @@ function EntityEditorApp(): ReactElement {
   const [status, setStatus] = useState("正在加载 Entity Document…");
   const [addOpen, setAddOpen] = useState(false);
   const [addIndex, setAddIndex] = useState<number>();
+  const [pendingReveal, setPendingReveal] = useState<EntityRevealRequest>();
+  const [revealedComponentId, setRevealedComponentId] = useState<string>();
+  const revealTimer = useRef<number | undefined>(undefined);
+  const revealRequestId = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     const listener = (event: MessageEvent<HostMessage>): void => {
@@ -84,7 +96,21 @@ function EntityEditorApp(): ReactElement {
       if (referenceBridge.handleMessage(message)) {
         return;
       }
-      if (message.type === "entityState") {
+      if (message.type === ENTITY_REVEAL_MESSAGE_TYPE) {
+        const target = readEntityRevealTarget(message.target);
+        if (target === undefined) {
+          const result: EntityRevealResult = {
+            type: ENTITY_REVEAL_RESULT_MESSAGE_TYPE,
+            requestId: message.requestId,
+            found: false,
+            message: "Entity component reference location is invalid.",
+          };
+          vscode.postMessage(result);
+          return;
+        }
+        revealRequestId.current = message.requestId;
+        setPendingReveal({ ...message, target });
+      } else if (message.type === "entityState") {
         setState(message);
         setInvalid(undefined);
         setPending(false);
@@ -109,8 +135,57 @@ function EntityEditorApp(): ReactElement {
     return () => {
       window.removeEventListener("message", listener);
       referenceBridge.dispose();
+      if (revealTimer.current !== undefined) window.clearTimeout(revealTimer.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (pendingReveal === undefined || state === undefined || invalid !== undefined) return;
+    const plan = planEntityComponentReveal(state.document, pendingReveal.target);
+    if (!plan.success) {
+      setStatus(plan.message);
+      vscode.postMessage({
+        type: ENTITY_REVEAL_RESULT_MESSAGE_TYPE,
+        requestId: pendingReveal.requestId,
+        found: false,
+        message: plan.message,
+      } satisfies EntityRevealResult);
+      setPendingReveal(undefined);
+      return;
+    }
+    if (revealTimer.current !== undefined) window.clearTimeout(revealTimer.current);
+    setRevealedComponentId(plan.componentId);
+    setPendingReveal(undefined);
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      if (revealRequestId.current !== pendingReveal.requestId) return;
+      const component = [...document.querySelectorAll<HTMLElement>("[data-component-id]")]
+        .find((element) => element.dataset.componentId === plan.componentId);
+      if (component === undefined) {
+        setRevealedComponentId(undefined);
+        vscode.postMessage({
+          type: ENTITY_REVEAL_RESULT_MESSAGE_TYPE,
+          requestId: pendingReveal.requestId,
+          found: false,
+          message: `组件 '${plan.componentId}' 未能显示。`,
+        } satisfies EntityRevealResult);
+        return;
+      }
+      component.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "center",
+      });
+      component.focus({ preventScroll: true });
+      vscode.postMessage({
+        type: ENTITY_REVEAL_RESULT_MESSAGE_TYPE,
+        requestId: pendingReveal.requestId,
+        found: true,
+      } satisfies EntityRevealResult);
+      revealTimer.current = window.setTimeout(() => {
+        setRevealedComponentId((current) => current === plan.componentId ? undefined : current);
+        revealTimer.current = undefined;
+      }, 2400);
+    }));
+  }, [invalid, pendingReveal, state]);
 
   const submit = (operations: readonly EntityOperation[]): void => {
     if (state === undefined || pending) {
@@ -216,6 +291,7 @@ function EntityEditorApp(): ReactElement {
                   component={component}
                   index={index}
                   componentType={resolveComponentType(state.catalogRegistry, component.componentTypeId)}
+                  revealed={revealedComponentId === component.id}
                   pending={pending}
                   referenceActions={referenceBridge}
                   submit={submit}
@@ -262,11 +338,15 @@ function ComponentCard(props: {
   readonly componentType: RegisteredEntityComponentTypeDefinition | undefined;
   readonly index: number;
   readonly pending: boolean;
+  readonly revealed: boolean;
   readonly referenceActions: ReferenceEditorActions;
   readonly submit: (operations: readonly EntityOperation[]) => void;
   readonly onAdd: () => void;
 }): ReactElement {
   const [expanded, setExpanded] = useState(true);
+  useEffect(() => {
+    if (props.revealed) setExpanded(true);
+  }, [props.revealed]);
   const displayName = props.componentType?.title ?? props.component.componentTypeId;
   const { ref, handleRef, isDragging, isDropTarget } = useSortable({
     id: props.component.id,
@@ -282,7 +362,9 @@ function ComponentCard(props: {
       onOpenChange={setExpanded}
       render={<article
         ref={ref}
-        className={`entity-card component-card${props.component.enabled ? "" : " disabled"}${isDragging ? " dragging" : ""}${isDropTarget ? " drop-target" : ""}`}
+        data-component-id={props.component.id}
+        tabIndex={-1}
+        className={`entity-card component-card${props.component.enabled ? "" : " disabled"}${props.revealed ? " revealed" : ""}${isDragging ? " dragging" : ""}${isDropTarget ? " drop-target" : ""}`}
       />}
     >
       <header className="component-card-header">

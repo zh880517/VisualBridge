@@ -12,6 +12,7 @@ import {
   type ReferenceValueRenamePlan,
 } from "@visualbridge/core";
 import {
+  applyEntityOperations,
   collectEntityReferences,
   parseEntityDocument,
   renameEntityDocumentId,
@@ -67,7 +68,7 @@ interface TableSourceSnapshot {
   readonly sheetIds: readonly string[];
 }
 
-const SUPPORTED_RENAME_KINDS = new Set(["document", "graph.element", "table.row"]);
+const SUPPORTED_RENAME_KINDS = new Set(["document", "entity.component", "graph.element", "table.row"]);
 
 export class WorkspaceReferenceRefactor {
   public constructor(
@@ -272,6 +273,21 @@ export class WorkspaceReferenceRefactor {
         assertDocumentTarget(next.documentId, targetPlan, indexed.path);
         const renamed = renameEntityDocumentId(next, requireStringReplacement(targetPlan), catalog.registry);
         if (!renamed.success) throw new Error(firstDiagnostic(renamed.diagnostics, "Entity document rename is invalid."));
+        next = renamed.document;
+      } else if (targetPlan?.kind === "entity.component") {
+        const location = targetPlan.target.location!;
+        if (location.documentId !== next.documentId
+          || location.elementKind !== "component"
+          || location.componentId !== targetPlan.oldValue
+          || location.elementId !== targetPlan.oldValue) {
+          throw new Error("The Entity component target location is incomplete or changed.");
+        }
+        const renamed = applyEntityOperations(next, [{
+          type: "entity.renameComponent",
+          componentId: requireStringValue(targetPlan.oldValue),
+          newComponentId: requireStringReplacement(targetPlan),
+        }], catalog.registry);
+        if (!renamed.success) throw new Error(firstDiagnostic(renamed.diagnostics, "Entity component rename is invalid."));
         next = renamed.document;
       } else if (targetPlan !== undefined) {
         throw new Error(`Reference target '${targetPlan.kind}' cannot be stored in an Entity document.`);

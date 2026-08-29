@@ -46,6 +46,7 @@ export type EntityOperation =
   | { readonly type: "entity.setTitle"; readonly title: string }
   | { readonly type: "entity.setProperty"; readonly propertyId: string; readonly value: JsonValue }
   | { readonly type: "entity.addComponent"; readonly componentId: string; readonly componentTypeId: string; readonly index?: number }
+  | { readonly type: "entity.renameComponent"; readonly componentId: string; readonly newComponentId: string }
   | { readonly type: "entity.removeComponent"; readonly componentId: string }
   | { readonly type: "entity.moveComponent"; readonly componentId: string; readonly index: number }
   | { readonly type: "entity.setComponentEnabled"; readonly componentId: string; readonly enabled: boolean }
@@ -362,6 +363,20 @@ function applyOperation(
       document.components.splice(index, 1);
       return undefined;
     }
+    case "entity.renameComponent": {
+      const component = findComponent(document, operation.componentId);
+      if (component === undefined) {
+        return operationError(operationPath, `Unknown Component instance '${operation.componentId}'.`);
+      }
+      if (operation.componentId === operation.newComponentId) {
+        return operationError(operationPath, "The new Component instance ID must be different.");
+      }
+      if (document.components.some((candidate) => candidate.id === operation.newComponentId)) {
+        return operationError(operationPath, `Component instance ID '${operation.newComponentId}' already exists.`);
+      }
+      component.id = operation.newComponentId;
+      return undefined;
+    }
     case "entity.moveComponent": {
       const index = document.components.findIndex((component) => component.id === operation.componentId);
       if (index < 0) {
@@ -494,6 +509,14 @@ function parseOperation(
       checkKeys(value, ["type", "componentId"], path, diagnostics);
       const componentId = readIdentifier(value.componentId, `${path}.componentId`, diagnostics);
       return componentId === undefined ? undefined : { type: value.type, componentId };
+    }
+    case "entity.renameComponent": {
+      checkKeys(value, ["type", "componentId", "newComponentId"], path, diagnostics);
+      const componentId = readIdentifier(value.componentId, `${path}.componentId`, diagnostics);
+      const newComponentId = readIdentifier(value.newComponentId, `${path}.newComponentId`, diagnostics);
+      return componentId === undefined || newComponentId === undefined
+        ? undefined
+        : { type: value.type, componentId, newComponentId };
     }
     case "entity.moveComponent": {
       checkKeys(value, ["type", "componentId", "index"], path, diagnostics);

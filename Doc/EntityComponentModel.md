@@ -242,7 +242,7 @@ Entity、Structured 和 Table Document 的字段 List 共享同一个编辑器�
 
 Catalog Parser 会拒绝控件与 JSON 形态不兼容、数组缺少 `item`、对象缺少 `fields`、默认值类型错误和同级字段身份冲突。
 
-Entity 根字段与每个 Component 字段都会递归收集引用。当前 `table.row` Provider 可将普通 C# `int`/`string` ID 字段指向项目表格记录；VS Code 使用原生候选列表并可跳转到具体分表行，Entity Operation 若新引入缺失、歧义或无效 target 会被原子拒绝。引用的完整跨文档契约见 `ReferenceSystem.md`。
+Entity 根字段与每个 Component 字段都会递归收集引用。`table.row` 可将普通 C# `int`/`string` ID 字段指向项目表格记录；`entity.component` 可将字符串字段指向同一 Project Document Type 下的稳定 Component 实例 ID。后者的 target 只保存 `documentTypeId`，完整 `documentId` / `componentId` 由 Provider Location 返回；跨文档同 ID 会明确歧义。VS Code 使用原生候选列表，可精确打开并展开、高亮 Component 卡片；Entity Operation 若新引入缺失、歧义或无效 target 会被原子拒绝。引用的完整跨文档契约见 `ReferenceSystem.md`。
 
 ## Entity Document V1
 
@@ -285,13 +285,14 @@ Serializer 固定顶层字段顺序，按字段键确定性排序，并保留 Co
 - `entity.setTitle`
 - `entity.setProperty`
 - `entity.addComponent`
+- `entity.renameComponent`
 - `entity.removeComponent`
 - `entity.moveComponent`
 - `entity.setComponentEnabled`
 - `entity.setComponentProperty`
 - `entity.duplicateComponent`
 
-一批 Operation 先在副本上完整执行和校验。任一操作失败或引入新的语义 error 时，整批拒绝且原文档不变。添加 Component 会从 Catalog 字段创建默认属性；复制 Component 使用新的实例 ID 并深复制 JSON 值。
+一批 Operation 先在副本上完整执行和校验。任一操作失败或引入新的语义 error 时，整批拒绝且原文档不变。添加 Component 会从 Catalog 字段创建默认属性；复制 Component 使用新的实例 ID 并深复制 JSON 值；项目级 Component 重命名通过 `entity.renameComponent` 修改目标实例，再由统一重构计划更新所有解析到该完整位置的引用。
 
 ## VS Code 编辑器
 
@@ -304,6 +305,7 @@ Serializer 固定顶层字段顺序，按字段键确定性排序，并保留 Co
 - 未知 Component Type 的只读 JSON 展示与原样保留。
 - VS Code Problems 诊断、文本 Document 脏状态、Save 和 Undo/Redo。
 - 外部磁盘修改检测；覆盖或放弃刷新由用户明确选择。
+- 引用跳转按完整 Location 打开所属 Entity，展开、滚动聚焦并临时高亮目标 Component；陈旧文档或缺失组件不会按同名猜测。
 
 Webview 只发送 Operation，不直接读写文件。Extension Host 使用 `WorkspaceEdit` 修改当前文本 Document，因此正常 VS Code Save、Undo 和 Redo 仍然有效。编辑器没有 Export 按钮；Authoring JSON 本身就是需要保存和提交的源文件。
 
@@ -319,4 +321,4 @@ Webview 只发送 Operation，不直接读写文件。Extension Host 使用 `Wor
 - Importer / Compiler 的产物是派生数据，不能反向成为权威编辑源。
 - Unity Runtime、Debug 和导入编译协议在正式设计后单独实现；当前代码不预留半成品运行路径。
 
-固定语义样例位于 `TestData/EntitySemanticProject`。它使用项目自定义 `.herojson` 后缀，并覆盖多 Catalog Registry、稳定 ID / alias、跨 Catalog Group 引用、数值、颜色、递归对象、List、组件限制、启用状态、Operation 原子性和确定性序列化。
+固定语义样例位于 `TestData/EntitySemanticProject`。它使用项目自定义 `.herojson` 后缀，并覆盖多 Catalog Registry、稳定 ID / alias、跨 Catalog Group 引用、Entity Component 引用、数值、颜色、递归对象、List、组件限制、启用状态、Operation 原子性和确定性序列化。

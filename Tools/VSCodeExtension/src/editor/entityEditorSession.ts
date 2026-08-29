@@ -10,7 +10,12 @@ import {
   serializeEntityDocument,
   validateEntityDocument,
 } from "@visualbridge/entity";
-import { createEntityEditorHtml } from "@visualbridge/entity-editor";
+import {
+  ENTITY_REVEAL_RESULT_MESSAGE_TYPE,
+  EntityRevealMailbox,
+  createEntityEditorHtml,
+  type EntityRevealTarget,
+} from "@visualbridge/entity-editor";
 import { loadEntityCatalogRegistry } from "../catalog/entityCatalogLoader";
 import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
 import { handleReferenceMessage } from "../reference/referenceMessages";
@@ -26,6 +31,8 @@ interface WebviewMessage {
   readonly requestId?: unknown;
   readonly definition?: unknown;
   readonly value?: unknown;
+  readonly found?: unknown;
+  readonly message?: unknown;
 }
 
 interface EntityStateOptions {
@@ -39,6 +46,7 @@ export class EntityEditorSession {
   private baseDiskHash = "";
   private operationQueue: Promise<void> = Promise.resolve();
   private disposed = false;
+  private readonly revealMailbox = new EntityRevealMailbox();
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -114,19 +122,45 @@ export class EntityEditorSession {
         void this.sendState();
       }),
       this.panel.onDidDispose(() => this.dispose()),
+      this.panel.onDidChangeViewState((event) => {
+        if (event.webviewPanel.visible) {
+          this.revealMailbox.markReady();
+          void this.sendPendingReveal();
+        } else {
+          this.revealMailbox.markUnavailable();
+        }
+      }),
     );
     await this.sendState();
+  }
+
+  public async reveal(target: EntityRevealTarget): Promise<void> {
+    if (this.disposed) return;
+    this.revealMailbox.enqueue(target);
+    this.panel.reveal();
+    await this.sendPendingReveal();
   }
 
   private async handleMessage(message: WebviewMessage): Promise<void> {
     if (this.disposed) {
       return;
     }
+    if (message.type === ENTITY_REVEAL_RESULT_MESSAGE_TYPE) {
+      if (typeof message.requestId !== "string" || typeof message.found !== "boolean") return;
+      if (this.revealMailbox.acknowledge(message.requestId) && !message.found) {
+        this.output.appendLine(
+          `[entity] Reveal target was not found in ${this.match.relativePath}: ${typeof message.message === "string" ? message.message : "unknown target"}`,
+        );
+      }
+      return;
+    }
     if (await handleReferenceMessage(message, this.panel.webview, this.match.project, this.references)) {
       return;
     }
     if (message.type === "ready") {
+      this.revealMailbox.markReady();
       await this.sendState();
+      await this.sendPendingReveal();
       return;
     }
     if (message.type !== "applyOperations") {
@@ -300,6 +334,14 @@ export class EntityEditorSession {
     return this.match.documentType.catalogs.map(
       (catalogPath) => vscode.Uri.joinPath(this.match.project.rootUri, ...catalogPath.split("/")),
     );
+  }
+
+  private async sendPendingReveal(): Promise<void> {
+    const pendingReveal = this.revealMailbox.deliverable;
+    if (this.disposed || pendingReveal === undefined) return;
+    if (!await this.panel.webview.postMessage(pendingReveal)) {
+      this.revealMailbox.markUnavailable();
+    }
   }
 
   private configureCatalogWatchers(): void {

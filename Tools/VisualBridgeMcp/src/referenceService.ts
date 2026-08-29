@@ -10,7 +10,11 @@ import {
   type ReferenceOccurrence,
   type ReferenceResolution,
 } from "@visualbridge/core";
-import { parseEntityDocument } from "@visualbridge/entity";
+import {
+  createEntityComponentReferenceProvider,
+  parseEntityDocument,
+  type EntityReferenceDocument,
+} from "@visualbridge/entity";
 import {
   createGraphElementReferenceProvider,
   parseGraphDocument,
@@ -20,6 +24,7 @@ import { parseStructuredDocument } from "@visualbridge/structured";
 import { createTableRowReferenceProvider } from "@visualbridge/table";
 import type { VisualBridgeWorkspace } from "./projectWorkspace.js";
 import type { TableService } from "./tableService.js";
+import { loadMcpEntityRegistry } from "./entityRegistry.js";
 
 export class VisualBridgeReferenceService {
   public constructor(
@@ -105,11 +110,13 @@ export class VisualBridgeReferenceService {
     const project = await this.workspace.resolveProject(projectFile);
     let semanticDocuments: Promise<{
       readonly documents: readonly DocumentReferenceDocument[];
+      readonly entities: readonly EntityReferenceDocument[];
       readonly graphs: readonly GraphReferenceDocument[];
     }> | undefined;
     const loadSemanticDocuments = () => (semanticDocuments ??= this.loadSemanticDocuments(project.projectFile));
     return new ReferenceService([
       createDocumentReferenceProvider(() => loadSemanticDocuments().then((loaded) => loaded.documents)),
+      createEntityComponentReferenceProvider(() => loadSemanticDocuments().then((loaded) => loaded.entities)),
       createGraphElementReferenceProvider(() => loadSemanticDocuments().then((loaded) => loaded.graphs)),
       createTableRowReferenceProvider(() => this.tables.loadReferenceDocuments(project.projectFile)),
     ]);
@@ -117,12 +124,15 @@ export class VisualBridgeReferenceService {
 
   private async loadSemanticDocuments(projectFile: string): Promise<{
     readonly documents: readonly DocumentReferenceDocument[];
+    readonly entities: readonly EntityReferenceDocument[];
     readonly graphs: readonly GraphReferenceDocument[];
   }> {
     const project = await this.workspace.resolveProject(projectFile);
     const declared = await this.workspace.listDeclaredDocuments(project);
     const documents: DocumentReferenceDocument[] = [];
+    const entities: EntityReferenceDocument[] = [];
     const graphs: GraphReferenceDocument[] = [];
+    const entityRegistries = new Map<string, ReturnType<typeof loadMcpEntityRegistry>>();
     for (const source of declared) {
       if (source.documentType.editor !== "graph"
         && source.documentType.editor !== "entity"
@@ -144,6 +154,18 @@ export class VisualBridgeReferenceService {
         const parsed = parseEntityDocument(text);
         if (parsed.success) {
           documents.push(documentReference(project.definition.projectId, source.documentType.id, source.documentType.editor, source.path, parsed.document.documentId, parsed.document.title));
+          let registry = entityRegistries.get(source.documentType.id);
+          if (registry === undefined) {
+            registry = loadMcpEntityRegistry(project, source.documentType);
+            entityRegistries.set(source.documentType.id, registry);
+          }
+          entities.push({
+            projectId: project.definition.projectId,
+            documentTypeId: source.documentType.id,
+            path: source.path,
+            document: parsed.document,
+            registry: await registry,
+          });
         }
       } else {
         const parsed = parseStructuredDocument(text);
@@ -160,8 +182,9 @@ export class VisualBridgeReferenceService {
       }
     }
     documents.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
+    entities.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
     graphs.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
-    return { documents, graphs };
+    return { documents, entities, graphs };
   }
 }
 

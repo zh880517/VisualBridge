@@ -86,6 +86,25 @@
           }
         },
         {
+          "id": "primaryComponentId",
+          "title": "Primary Component",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "string",
+          "defaultValue": "health",
+          "editor": {
+            "kind": "reference",
+            "readOnly": false,
+            "integer": false
+          },
+          "reference": {
+            "kind": "entity.component",
+            "target": {
+              "documentTypeId": "hero-config"
+            }
+          }
+        },
+        {
           "id": "tint",
           "title": "Tint",
           "aliases": [],

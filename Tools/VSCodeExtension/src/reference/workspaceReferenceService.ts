@@ -11,7 +11,11 @@ import {
   type ReferenceOccurrence,
   type ReferenceResolution,
 } from "@visualbridge/core";
-import { parseEntityDocument } from "@visualbridge/entity";
+import {
+  createEntityComponentReferenceProvider,
+  parseEntityDocument,
+  type EntityReferenceDocument,
+} from "@visualbridge/entity";
 import {
   createGraphElementReferenceProvider,
   parseGraphDocument,
@@ -28,6 +32,7 @@ import {
   type TableSheet,
   type TableTypeDefinition,
 } from "@visualbridge/table";
+import { loadEntityCatalogRegistry } from "../catalog/entityCatalogLoader";
 import { loadTableCatalogRegistry } from "../catalog/tableCatalogLoader";
 import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
 
@@ -42,6 +47,7 @@ export class WorkspaceReferenceService implements vscode.Disposable {
   private readonly tableDocuments = new Map<string, Promise<readonly TableReferenceDocument[]>>();
   private readonly semanticDocuments = new Map<string, Promise<{
     readonly documents: readonly DocumentReferenceDocument[];
+    readonly entities: readonly EntityReferenceDocument[];
     readonly graphs: readonly GraphReferenceDocument[];
   }>>();
   private readonly openTableDocuments = new Map<string, {
@@ -223,6 +229,7 @@ export class WorkspaceReferenceService implements vscode.Disposable {
   private createService(project: ProjectContext): ReferenceService {
     return new ReferenceService([
       createDocumentReferenceProvider(() => this.loadSemanticDocuments(project).then((loaded) => loaded.documents)),
+      createEntityComponentReferenceProvider(() => this.loadSemanticDocuments(project).then((loaded) => loaded.entities)),
       createGraphElementReferenceProvider(() => this.loadSemanticDocuments(project).then((loaded) => loaded.graphs)),
       createTableRowReferenceProvider(() => this.loadTableDocuments(project)),
     ]);
@@ -230,6 +237,7 @@ export class WorkspaceReferenceService implements vscode.Disposable {
 
   private loadSemanticDocuments(project: ProjectContext): Promise<{
     readonly documents: readonly DocumentReferenceDocument[];
+    readonly entities: readonly EntityReferenceDocument[];
     readonly graphs: readonly GraphReferenceDocument[];
   }> {
     const key = project.markerUri.toString();
@@ -272,10 +280,13 @@ async function loadProjectSemanticDocuments(
   output: vscode.OutputChannel,
 ): Promise<{
   readonly documents: readonly DocumentReferenceDocument[];
+  readonly entities: readonly EntityReferenceDocument[];
   readonly graphs: readonly GraphReferenceDocument[];
 }> {
   const documents: DocumentReferenceDocument[] = [];
+  const entities: EntityReferenceDocument[] = [];
   const graphs: GraphReferenceDocument[] = [];
+  const entityRegistries = new Map<string, ReturnType<typeof loadEntityCatalogRegistry>>();
   for (const documentType of project.definition.documentTypes.filter((candidate) => (
     candidate.editor === "graph" || candidate.editor === "entity" || candidate.editor === "structured"
   ))) {
@@ -314,6 +325,23 @@ async function loadProjectSemanticDocuments(
             documentId: parsed.document.documentId,
             title: parsed.document.title,
           });
+          let catalog = entityRegistries.get(documentType.id);
+          if (catalog === undefined) {
+            catalog = loadEntityCatalogRegistry(project, documentType.catalogs);
+            entityRegistries.set(documentType.id, catalog);
+          }
+          const loadedCatalog = await catalog;
+          if (loadedCatalog.ready) {
+            entities.push({
+              projectId: project.definition.projectId,
+              documentTypeId: documentType.id,
+              path,
+              document: parsed.document,
+              registry: loadedCatalog.registry,
+            });
+          } else {
+            output.appendLine(`[reference] Entity Catalog for '${documentType.id}' is unavailable; component references cannot be indexed.`);
+          }
         } else {
           const parsed = parseStructuredDocument(text);
           if (!parsed.success) throw new Error(formatDiagnostics(parsed.diagnostics));
@@ -332,8 +360,9 @@ async function loadProjectSemanticDocuments(
     }
   }
   documents.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
+  entities.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
   graphs.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
-  return { documents, graphs };
+  return { documents, entities, graphs };
 }
 
 async function loadProjectTableDocuments(

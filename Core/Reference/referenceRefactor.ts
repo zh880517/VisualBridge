@@ -92,6 +92,7 @@ export function referenceLocationKey(location: ReferenceLocation): string {
     location.documentTypeId,
     location.path,
     location.documentId ?? "",
+    location.componentId ?? "",
     location.elementKind ?? "",
     location.elementId ?? "",
     location.graphId ?? "",

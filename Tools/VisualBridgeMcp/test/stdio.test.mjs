@@ -11,6 +11,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = path.resolve(packageRoot, "../..");
 const fixtureRoot = path.join(repositoryRoot, "TestData", "GraphSemanticProject");
+const entityFixtureRoot = path.join(repositoryRoot, "TestData", "EntitySemanticProject");
 const tableFixtureRoot = path.join(repositoryRoot, "TestData", "TableSemanticProject");
 const structuredFixtureRoot = path.join(repositoryRoot, "TestData", "StructuredSemanticProject");
 const serverPath = path.join(packageRoot, "dist", "server.js");
@@ -457,6 +458,94 @@ test("stdio MCP reads and atomically edits a Structured Config with shared refer
 
     const directoryEntries = await readdir(path.dirname(structuredFile));
     assert.ok(!directoryEntries.some((name) => name.includes(".visualbridge")));
+  } catch (error) {
+    assert.fail(`${error instanceof Error ? error.stack ?? error.message : String(error)}\nMCP stderr:\n${stderr}`);
+  } finally {
+    await client.close().catch(() => undefined);
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("stdio MCP resolves and atomically refactors Entity Component instance references", async () => {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), "visualbridge-entity-mcp-"));
+  const projectRoot = path.join(temporaryRoot, "EntitySemanticProject");
+  await cp(entityFixtureRoot, projectRoot, { recursive: true });
+  const environment = Object.fromEntries(
+    Object.entries(process.env).filter((entry) => entry[1] !== undefined),
+  );
+  environment.VISUALBRIDGE_WORKSPACE = temporaryRoot;
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [serverPath],
+    env: environment,
+    stderr: "pipe",
+  });
+  let stderr = "";
+  transport.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
+  const client = new Client({ name: "visualbridge-entity-stdio-test", version: "0.1.0" });
+
+  try {
+    await client.connect(transport);
+    const projects = await call(client, "visualbridge_project", {});
+    const projectFile = projects.projects[0].projectFile;
+    const definition = { documentTypeId: "hero-config" };
+    const resolved = await call(client, "visualbridge_references", {
+      projectFile,
+      action: "resolve",
+      kind: "entity.component",
+      target: definition,
+      value: "health",
+    });
+    assert.equal(resolved.status, "resolved");
+    assert.deepEqual(resolved.candidates[0].location, {
+      projectId: "visualbridge.entity-semantics",
+      documentTypeId: "hero-config",
+      path: "Config/Entities/Player.herojson",
+      documentId: "sample.player",
+      componentId: "health",
+      elementKind: "component",
+      elementId: "health",
+    });
+
+    const preview = await call(client, "visualbridge_refactor_reference", {
+      projectFile,
+      action: "preview",
+      kind: "entity.component",
+      target: definition,
+      oldValue: "health",
+      newValue: "health_primary",
+    });
+    assert.equal(preview.status, "preview");
+    assert.deepEqual(preview.sources.map((source) => source.path), ["Config/Entities/Player.herojson"]);
+    assert.equal(preview.changes.length, 1);
+    assert.equal(preview.changes[0].occurrencePath, "properties.primaryComponentId");
+
+    const applied = await call(client, "visualbridge_refactor_reference", {
+      projectFile,
+      action: "apply",
+      kind: "entity.component",
+      target: definition,
+      oldValue: "health",
+      newValue: "health_primary",
+      previewHash: preview.previewHash,
+      baseHashes: preview.baseHashes,
+    });
+    assert.equal(applied.status, "applied");
+    assert.equal(applied.referencesChanged, 1);
+    const entity = JSON.parse(await readFile(
+      path.join(projectRoot, "Config", "Entities", "Player.herojson"),
+      "utf8",
+    ));
+    assert.deepEqual(entity.components.map((component) => component.id), ["health_primary", "move"]);
+    assert.equal(entity.properties.primaryComponentId, "health_primary");
+    const renamed = await call(client, "visualbridge_references", {
+      projectFile,
+      action: "resolve",
+      kind: "entity.component",
+      target: definition,
+      value: "health_primary",
+    });
+    assert.equal(renamed.status, "resolved");
   } catch (error) {
     assert.fail(`${error instanceof Error ? error.stack ?? error.message : String(error)}\nMCP stderr:\n${stderr}`);
   } finally {

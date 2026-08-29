@@ -226,7 +226,7 @@ VisualBridge Project File 不保存编辑器窗口状态、连接端口、当前
 
 工程索引的宿主实现允许按规模选择概要扫描或完整语义快照，但索引结果必须使用各 Document Type 既有 Parser、Catalog Registry、Validator 和 Reference Collector，不允许另建简化语义。当前 VS Code Document Browser V1 在激活、Project 变化和匹配文件保存或增删后建立四类文档的完整语义快照，用于错误和引用入口；它不会在每次打开文档时重扫。后续大工程可改为按 Document Type 和文件增量刷新，但不得改变稳定排序、诊断和引用结果。
 
-项目级重构同样建立在语义索引和 Reference Provider 之上。当前支持唯一解析的 `document`、`graph.element` 和 `table.row`：Core 生成按完整目标位置匹配的确定性影响计划，各 Document Type 通过正式语义变换、Validator 和 Serializer 生成修改，VS Code 与 MCP Host 使用源哈希、临时载体和 rollback 副本提交多文件事务。不得退化为跨工程文本替换。完整约束见 `ProjectRefactoring.md`。
+项目级重构同样建立在语义索引和 Reference Provider 之上。当前支持唯一解析的 `document`、`entity.component`、`graph.element` 和 `table.row`：Core 生成按完整目标位置匹配的确定性影响计划，各 Document Type 通过正式语义变换、Validator 和 Serializer 生成修改，VS Code 与 MCP Host 使用源哈希、临时载体和 rollback 副本提交多文件事务。不得退化为跨工程文本替换。完整约束见 `ProjectRefactoring.md`。
 
 ## Document System
 
@@ -426,7 +426,7 @@ Reference Provider 提供：
 
 编辑器、MCP 和 AI 都使用相同 Reference Service，不直接理解各业务数据库。
 
-当前 Reference System 已在 Core、Graph、Entity、Structured、Table、VS Code 与 stdio MCP 中落地。共享 Field Definition 使用 `reference.kind`、结构化 `target` 和 `allowMissing` 声明引用，文档只保存字符串或数值稳定键。内置 `document`、`graph.element` 与 `table.row` Provider 分别按 Document Type、完整 Graph 元素作用域和 Table Catalog 有效分表行解析稳定目标；VS Code 提供原生选择、诊断和跳转，其中 Graph Location 会精确切换 Graph、选择/居中 Node 并高亮 Port；MCP 提供相同的结构化 search/resolve 与带预览基线的项目重构。完整契约见 `ReferenceSystem.md`。
+当前 Reference System 已在 Core、Graph、Entity、Structured、Table、VS Code 与 stdio MCP 中落地。共享 Field Definition 使用 `reference.kind`、结构化 `target` 和 `allowMissing` 声明引用，文档只保存字符串或数值稳定键。内置 `document`、`entity.component`、`graph.element` 与 `table.row` Provider 分别按 Document Type、Entity Component 实例、完整 Graph 元素作用域和 Table Catalog 有效分表行解析稳定目标；VS Code 提供原生选择、诊断和精确跳转，其中 Entity Location 会展开并高亮 Component 卡片，Graph Location 会切换 Graph、选择/居中 Node 并高亮 Port；MCP 提供相同的结构化 search/resolve 与带预览基线的项目重构。完整契约见 `ReferenceSystem.md`。
 
 ## VS Code 基础插件
 
@@ -869,7 +869,7 @@ Project、Graph Core、Entity Core、Structured Core、Table Core、共享 Form 
 
 ### 阶段六：更多 Document Type
 
-- Graph、Entity、Structured、Table 与 `document`/`graph.element`/`table.row` 引用和项目级重构已完成当前版本；继续增加新的 Document Type 或 Reference Provider。
+- Graph、Entity、Structured、Table 与 `document`/`entity.component`/`graph.element`/`table.row` 引用和项目级重构已完成当前版本；继续增加新的 Document Type 或 Reference Provider。
 - 验证 Form、Reference、Validation 和扩展机制是否真正通用。
 - 根据两个垂直切片提炼共享 API，避免只为 Graph 过度抽象。
 

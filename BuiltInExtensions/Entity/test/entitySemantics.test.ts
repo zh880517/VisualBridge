@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { findMatchingDocumentTypes, parseProjectFile } from "@visualbridge/core";
+import { ReferenceService, findMatchingDocumentTypes, parseProjectFile } from "@visualbridge/core";
 import {
   applyEntityOperations,
   buildEntityCatalogRegistry,
   collectEntityReferences,
+  createEntityComponentReferenceProvider,
   parseEntityCatalog,
   parseEntityDocument,
   renameEntityDocumentId,
@@ -114,6 +115,15 @@ test("shared fields validate numeric, color, list, and custom object structures"
     value: 101,
     path: "properties.primarySkillId",
   }]);
+  assert.deepEqual(references.filter((reference) => reference.path === "properties.primaryComponentId"), [{
+    definition: {
+      kind: "entity.component",
+      target: { documentTypeId: "hero-config" },
+      allowMissing: false,
+    },
+    value: "health",
+    path: "properties.primaryComponentId",
+  }]);
   const renamed = replaceEntityReferenceValues(
     document,
     registry,
@@ -164,6 +174,64 @@ test("Entity Operations add, edit, enable, move, duplicate, and remove Component
   assert.equal(result.document.components[0]?.enabled, true);
   assert.deepEqual(result.document.components[2]?.properties.damageStages, [12, 24, 48]);
   assert.equal(result.document.components[1]?.properties.maxHealth, 250);
+});
+
+test("Entity Operations rename stable Component instance IDs atomically", () => {
+  const { document, registry } = loadFixture();
+  const renamed = applyEntityOperations(document, [{
+    type: "entity.renameComponent",
+    componentId: "health",
+    newComponentId: "health_primary",
+  }], registry);
+  assert.equal(renamed.success, true, formatDiagnostics(renamed.diagnostics));
+  assert.deepEqual(renamed.success && renamed.document.components.map((component) => component.id), [
+    "health_primary",
+    "move",
+  ]);
+  assert.equal(applyEntityOperations(document, [{
+    type: "entity.renameComponent",
+    componentId: "health",
+    newComponentId: "move",
+  }], registry).success, false);
+  assert.equal(document.components[0]?.id, "health");
+});
+
+test("entity.component references resolve stable instance IDs with complete owner locations", async () => {
+  const { document, registry } = loadFixture();
+  const definition = {
+    kind: "entity.component",
+    target: { documentTypeId: "hero-config" },
+    allowMissing: false,
+  } as const;
+  const source = {
+    projectId: "visualbridge.entity-semantics",
+    documentTypeId: "hero-config",
+    path: "Config/Entities/Player.herojson",
+    document,
+    registry,
+  };
+  const service = new ReferenceService([createEntityComponentReferenceProvider(async () => [source])]);
+  const searched = await service.search(definition, "sample player health", 20);
+  assert.deepEqual(searched.map((candidate) => candidate.value), ["health"]);
+  const resolved = await service.resolve(definition, "health");
+  assert.equal(resolved.status, "resolved");
+  assert.deepEqual(resolved.candidates[0]?.location, {
+    projectId: "visualbridge.entity-semantics",
+    documentTypeId: "hero-config",
+    path: "Config/Entities/Player.herojson",
+    documentId: "sample.player",
+    componentId: "health",
+    elementKind: "component",
+    elementId: "health",
+  });
+  assert.equal((await service.resolve(definition, 1)).status, "missing");
+
+  const ambiguous = new ReferenceService([createEntityComponentReferenceProvider(async () => [
+    source,
+    { ...source, path: "Config/Entities/Clone.herojson", document: { ...document, documentId: "sample.clone" } },
+  ])]);
+  assert.equal((await ambiguous.resolve(definition, "health")).status, "ambiguous");
+  assert.deepEqual(await service.search({ ...definition, target: { documentTypeId: "hero-config", documentId: "sample.player" } }, "", 20), []);
 });
 
 test("disallowed Component types and failed batches never mutate the baseline", () => {
