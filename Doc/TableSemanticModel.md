@@ -4,7 +4,7 @@
 
 Table V1 edits constrained game-data tables carried by UTF-8 CSV-compatible text files or `.xlsx` workbooks. The editor, validation, future MCP adapter and future Unity compiler share one semantic model and one Table Operation API. They do not implement separate CSV and Excel business rules.
 
-The current implementation includes Table Catalog V1, CSV and XLSX codecs, atomic Table Operation batches, a record-oriented VS Code table editor, project-defined file associations, partitioned logical tables and fixed semantic fixtures. It does not add Unity code. Unity Catalog export, authoring import, runtime compilation and debugging remain future work.
+The current implementation includes Table Catalog V1, CSV and XLSX codecs, atomic Table Operation batches, a record-oriented VS Code table editor, project-defined file associations, partitioned logical tables, fixed semantic fixtures and a stdio MCP adapter for semantic query/search/validation/editing. It does not add Unity code. Unity Catalog export, authoring import, runtime compilation and debugging remain future work.
 
 ## 2. C# owns the data definition
 
@@ -155,8 +155,8 @@ V1 supports ordinary game-data worksheets. Known typed cells, worksheet ordering
 
 Macros, `.xls`, pivot tables, charts, external links, formula authoring and arbitrary workbook round-trip fidelity are outside V1. Formulas can be read through their cached result, but the Table editor does not promise to preserve complex formula-driven data-region semantics after structural row edits.
 
-## 10. Deferred Unity and MCP work
+## 10. MCP and deferred Unity work
 
 No Unity Table Exporter, importer, runtime, `ScriptableObject` layer or Debug feature is implemented in this phase. Future Unity integration must export Table Catalog JSON from ordinary game structures and consume the same effective logical rows and encodings documented here.
 
-The current stdio MCP vertical slice remains Graph-focused. Before AI modification of CSV/XLSX is enabled, MCP must expose Table query/search/validation/operation tools backed by these codecs and Table Operations, with the same base-hash conflict contract. AI must not bypass the semantic layer by editing workbook bytes or raw CSV cells directly.
+The stdio MCP adapter exposes Table Catalog query, document/sheet reading, semantic row search, validation and TableOperation batch tools. It returns typed cells rather than raw CSV rows or workbook objects. Partitioned CSV families use one combined `baseHash` over the sorted member paths and source hashes; XLSX uses the workbook hash. Any changed source, added/removed partition or held logical-table lock rejects the complete modification request. Writes stage all affected outputs before replacement and verify every persisted hash. AI must not bypass this semantic layer by editing workbook bytes or raw CSV cells directly.

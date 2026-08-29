@@ -37,6 +37,13 @@ export interface GraphDocumentContext {
   readonly absoluteGraphPath: string;
 }
 
+export interface TableDocumentContext {
+  readonly project: ProjectContext;
+  readonly documentType: DocumentTypeDefinition;
+  readonly tablePath: string;
+  readonly absoluteTablePath: string;
+}
+
 export class VisualBridgeMcpError extends Error {
   public constructor(
     public readonly code: string,
@@ -187,6 +194,57 @@ export class VisualBridgeWorkspace {
         candidates.length === 0
           ? "The selected project does not declare the requested Graph Document Type."
           : "The selected project declares multiple Graph Document Types; provide documentTypeId.",
+      );
+    }
+    return { project, documentType: candidates[0]! };
+  }
+
+  public async resolveTableDocument(
+    tablePath: string,
+    projectFile?: string,
+    documentTypeId?: string,
+  ): Promise<TableDocumentContext> {
+    const project = await this.resolveProject(projectFile);
+    const normalizedTablePath = normalizeRelativePath(tablePath, "path");
+    const candidates = findMatchingDocumentTypes(
+      project.definition,
+      normalizedTablePath,
+      matches,
+      {
+        editor: "table",
+        ...(documentTypeId === undefined ? {} : { documentTypeId }),
+      },
+    );
+    if (candidates.length !== 1) {
+      throw new VisualBridgeMcpError(
+        candidates.length === 0 ? "table.notDeclared" : "table.ambiguousDocumentType",
+        candidates.length === 0
+          ? `Table '${normalizedTablePath}' is not declared by the selected VisualBridge Project.`
+          : `Table '${normalizedTablePath}' matches multiple Table Document Types; provide documentTypeId.`,
+      );
+    }
+    return {
+      project,
+      documentType: candidates[0]!,
+      tablePath: normalizedTablePath,
+      absoluteTablePath: await resolveExistingProjectPath(project, normalizedTablePath),
+    };
+  }
+
+  public async resolveTableDocumentType(
+    projectFile?: string,
+    documentTypeId?: string,
+  ): Promise<{ readonly project: ProjectContext; readonly documentType: DocumentTypeDefinition }> {
+    const project = await this.resolveProject(projectFile);
+    const candidates = project.definition.documentTypes.filter((documentType) =>
+      documentType.editor === "table" && (documentTypeId === undefined || documentType.id === documentTypeId),
+    );
+    if (candidates.length !== 1) {
+      throw new VisualBridgeMcpError(
+        candidates.length === 0 ? "table.documentTypeNotFound" : "table.ambiguousDocumentType",
+        candidates.length === 0
+          ? "The selected project does not declare the requested Table Document Type."
+          : "The selected project declares multiple Table Document Types; provide documentTypeId.",
       );
     }
     return { project, documentType: candidates[0]! };

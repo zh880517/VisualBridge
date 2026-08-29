@@ -4,19 +4,21 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
 import { GraphService } from "./graphService.js";
 import { VisualBridgeMcpError, VisualBridgeWorkspace } from "./projectWorkspace.js";
+import { TableService } from "./tableService.js";
 
 const workspaceRoot = process.env.VISUALBRIDGE_WORKSPACE === undefined
   ? process.cwd()
   : path.resolve(process.env.VISUALBRIDGE_WORKSPACE);
 const workspace = await VisualBridgeWorkspace.create(workspaceRoot);
 const graphService = new GraphService(workspace);
+const tableService = new TableService(workspace);
 
 function createServer(): McpServer {
   const server = new McpServer(
     { name: "visualbridge", version: "0.1.0" },
     {
       instructions:
-        "Discover a VisualBridge Project first. Read a Graph to obtain baseHash before calling visualbridge_apply_graph_operations. Never retry a conflict with a stale baseHash.",
+        "Discover a VisualBridge Project first. Read or validate a Graph/Table to obtain baseHash before applying Operations. Never retry a conflict with a stale baseHash, and never edit CSV/XLSX carrier bytes outside the Table tools.",
     },
   );
 
@@ -148,6 +150,108 @@ function createServer(): McpServer {
       })),
   );
 
+  server.registerTool(
+    "visualbridge_table_catalog",
+    {
+      title: "Query a VisualBridge Table Catalog Registry",
+      description:
+        "Loads the selected Table Document Type's Catalogs into the shared Table Registry and returns a summary or complete Table Type definitions.",
+      inputSchema: z.object({
+        projectFile: z.string().optional(),
+        documentTypeId: z.string().optional(),
+        view: z.enum(["summary", "tableTypes"]).default("summary"),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ projectFile, documentTypeId, view }) => handle(() =>
+      tableService.queryCatalog(projectFile, documentTypeId, view)),
+  );
+
+  server.registerTool(
+    "visualbridge_table",
+    {
+      title: "Read a VisualBridge Table",
+      description:
+        "Reads a declared CSV family or XLSX workbook through the shared Table codecs. Returns the combined baseHash, source hashes, physical sheets, diagnostics, and an optional semantic row page.",
+      inputSchema: tablePathSchema.extend({
+        sheetId: z.string().optional().describe("Physical sheet ID returned by a prior Table read."),
+        offset: z.number().int().min(0).default(0),
+        limit: z.number().int().min(1).max(1000).default(100),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ projectFile, documentTypeId, path: tablePath, sheetId, offset, limit }) => handle(() =>
+      tableService.readTable({
+        ...(projectFile === undefined ? {} : { projectFile }),
+        ...(documentTypeId === undefined ? {} : { documentTypeId }),
+        ...(sheetId === undefined ? {} : { sheetId }),
+        tablePath,
+        offset,
+        limit,
+      })),
+  );
+
+  server.registerTool(
+    "visualbridge_search_table_rows",
+    {
+      title: "Search VisualBridge Table rows",
+      description:
+        "Searches semantic row display names and typed cells. By default partition duplicate policy is applied and only the effective logical rows are returned.",
+      inputSchema: tablePathSchema.extend({
+        query: z.string().max(512).default(""),
+        sheetDefinitionId: z.string().optional().describe("Stable Sheet definition ID from the Table Catalog."),
+        effectiveOnly: z.boolean().default(true),
+        limit: z.number().int().min(1).max(200).default(50),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ projectFile, documentTypeId, path: tablePath, query, sheetDefinitionId, effectiveOnly, limit }) =>
+      handle(() => tableService.searchRows({
+        ...(projectFile === undefined ? {} : { projectFile }),
+        ...(documentTypeId === undefined ? {} : { documentTypeId }),
+        ...(sheetDefinitionId === undefined ? {} : { sheetDefinitionId }),
+        tablePath,
+        query,
+        effectiveOnly,
+        limit,
+      })),
+  );
+
+  server.registerTool(
+    "visualbridge_validate_table",
+    {
+      title: "Validate a VisualBridge Table",
+      description:
+        "Runs the shared Table Catalog, CSV/XLSX codec, partition, Field, and semantic validators without modifying any source.",
+      inputSchema: tablePathSchema,
+      annotations: { readOnlyHint: true },
+    },
+    async ({ projectFile, documentTypeId, path: tablePath }) => handle(() =>
+      tableService.validateTable(tablePath, projectFile, documentTypeId)),
+  );
+
+  server.registerTool(
+    "visualbridge_apply_table_operations",
+    {
+      title: "Atomically apply VisualBridge Table Operations",
+      description:
+        "Applies one non-empty TableOperation batch through shared semantics. Requires the combined baseHash returned by read/validate, rejects any changed CSV partition or workbook, and stages all changed sources before replacement.",
+      inputSchema: tablePathSchema.extend({
+        baseHash: z.string().regex(/^[a-f0-9]{64}$/).describe("Exact combined SHA-256 baseline returned by a prior Table read or validation."),
+        operations: z.array(z.unknown()).min(1).describe("Ordered TableOperation batch applied as one semantic transaction."),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    async ({ projectFile, documentTypeId, path: tablePath, baseHash, operations }) => handle(() =>
+      tableService.applyOperations({
+        ...(projectFile === undefined ? {} : { projectFile }),
+        ...(documentTypeId === undefined ? {} : { documentTypeId }),
+        tablePath,
+        baseHash,
+        operations,
+      })),
+  );
+
   return server;
 }
 
@@ -155,6 +259,12 @@ const graphPathSchema = z.object({
   projectFile: z.string().optional(),
   documentTypeId: z.string().optional(),
   path: z.string().describe("Project-relative declared .vbgraph path using '/' separators."),
+});
+
+const tablePathSchema = z.object({
+  projectFile: z.string().optional(),
+  documentTypeId: z.string().optional(),
+  path: z.string().describe("Project-relative declared CSV/XLSX Table path using '/' separators."),
 });
 
 async function handle(action: () => Promise<Record<string, unknown>>) {

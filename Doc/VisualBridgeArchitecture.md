@@ -625,7 +625,7 @@ AI Host
 
 MCP Server 独立加载 Authoring Project，并按需连接 Unity，不要求 VS Code 正在运行。多个 AI Agent 启动各自的 MCP Server，通过 `baseHash`、原子文件写入和调试 Lease 协调。
 
-当前已落地的 `Tools/VisualBridgeMcp` 是仅面向本地 Authoring Project 的 stdio 垂直切片。它从进程工作目录或 `VISUALBRIDGE_WORKSPACE` 环境变量确定发现根目录，复用 Core Project File Parser 和 Built-in Graph Parser、Catalog Registry、Validator、GraphOperation 与 Serializer。当前不提供独立 CLI，不连接 Unity，也不包含 Runtime/Debug 能力。具体工具与写入结果契约见 `VisualBridgeMcp.md`。
+当前已落地的 `Tools/VisualBridgeMcp` 是仅面向本地 Authoring Project 的 stdio 垂直切片。它从进程工作目录或 `VISUALBRIDGE_WORKSPACE` 环境变量确定发现根目录，复用 Core Project File Parser、Built-in Graph 的 Parser/Catalog/Validator/GraphOperation/Serializer，以及 Built-in Table 的 Catalog、CSV/XLSX Codec、有效分表行、Validator 和 TableOperation。当前不提供独立 CLI，不连接 Unity，也不包含 Runtime/Debug 能力。具体工具与写入结果契约见 `VisualBridgeMcp.md`。
 
 ### MCP 能力边界
 

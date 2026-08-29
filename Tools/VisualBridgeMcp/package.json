@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "esbuild src/server.ts --bundle --platform=node --format=esm --outfile=dist/server.js --sourcemap && npm run check",
+    "build": "esbuild src/server.ts --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=dist/server.js --sourcemap && npm run check",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/stdio.test.mjs"
   },
@@ -16,6 +16,7 @@
     "@modelcontextprotocol/server": "^2.0.0",
     "@visualbridge/core": "*",
     "@visualbridge/graph": "*",
+    "@visualbridge/table": "*",
     "minimatch": "^10.2.6",
     "zod": "^4.4.3"
   },
