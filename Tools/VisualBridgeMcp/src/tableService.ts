@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  compareUtf16CodeUnits,
   referenceValuesEqual,
   type DocumentDiagnostic,
   type JsonValue,
@@ -49,6 +50,7 @@ import {
   type TableDocumentContext,
 } from "./projectWorkspace.js";
 import type { VisualBridgeReferenceService } from "./referenceService.js";
+import { hashSourceManifest } from "./sourceManifest.js";
 import type { DocumentCatalogRequest, DocumentRequest } from "./documentAdapterRegistry.js";
 import { pageItems } from "./pagination.js";
 import {
@@ -140,7 +142,7 @@ export class TableService {
     const query = normalizeCatalogSearchQuery(request.query);
     const filtered = definitions
       .filter((definition) => query.length === 0 || JSON.stringify(definition).toLowerCase().includes(query))
-      .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
+      .sort((left, right) => compareUtf16CodeUnits(stableJson(left), stableJson(right)));
     const page = pageItems(
       filtered,
       request.cursor,
@@ -463,7 +465,7 @@ export class TableService {
         }
       }
     }
-    return result.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
+    return result.sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
   }
 
   public async prepareReferenceRename(options: {
@@ -779,11 +781,11 @@ export class TableService {
     }
     const relativeDirectory = path.posix.dirname(context.tablePath);
     const absoluteDirectory = path.dirname(context.absoluteTablePath);
-    const extension = path.extname(context.tablePath).toLocaleLowerCase();
+    const extension = path.extname(context.tablePath).toLowerCase();
     const entries = await readdir(absoluteDirectory, { withFileTypes: true });
     const candidates: string[] = [];
     for (const entry of entries) {
-      if (!entry.isFile() || path.extname(entry.name).toLocaleLowerCase() !== extension) {
+      if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== extension) {
         continue;
       }
       const candidatePath = relativeDirectory === "." ? entry.name : `${relativeDirectory}/${entry.name}`;
@@ -808,7 +810,7 @@ export class TableService {
     if (!candidates.includes(context.tablePath)) {
       candidates.push(context.tablePath);
     }
-    return candidates.sort((left, right) => left.localeCompare(right));
+    return candidates.sort(compareUtf16CodeUnits);
   }
 
   private async loadCatalog(
@@ -1157,23 +1159,11 @@ function invalidTableLoadResult(errorValue: TableLoadError, requestedHash?: stri
   };
 }
 
-function hashSourceManifest(sources: readonly TableSource[]): string {
-  if (sources.length === 1) {
-    return sources[0]!.hash;
-  }
-  const hash = createHash("sha256");
-  for (const source of sources) {
-    hash.update(source.path);
-    hash.update("\0");
-    hash.update(source.hash);
-    hash.update("\0");
-  }
-  return hash.digest("hex");
-}
-
 function hashPathManifest(entries: readonly { readonly path: string; readonly hash: string }[]): string {
   const hash = createHash("sha256");
-  for (const entry of entries) {
+  const ordered = [...entries].sort((left, right) =>
+    compareUtf16CodeUnits(left.path, right.path) || compareUtf16CodeUnits(left.hash, right.hash));
+  for (const entry of ordered) {
     hash.update(entry.path);
     hash.update("\0");
     hash.update(entry.hash);
@@ -1219,7 +1209,7 @@ function stableJson(value: unknown): string {
   }
   if (value !== null && typeof value === "object") {
     return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareUtf16CodeUnits(left, right))
       .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
       .join(",")}}`;
   }

@@ -5,6 +5,7 @@ import type {
   FieldDefinition,
 } from "@visualbridge/core";
 import {
+  compareUtf16CodeUnits,
   createUnknownCatalogSource,
   parseCatalogSourceDefinition,
   parseFieldDefinitions,
@@ -290,7 +291,7 @@ export function searchEntityComponentTypes(
   }
   const terms = (options.query ?? "")
     .trim()
-    .toLocaleLowerCase()
+    .toLowerCase()
     .split(/\s+/)
     .filter((term) => term.length > 0);
   const limit = Math.max(1, Math.floor(options.limit ?? 50));
@@ -309,11 +310,11 @@ export function searchEntityComponentTypes(
         ...componentType.menuPath,
         componentType.source?.providerId,
         componentType.source?.typeName,
-      ].filter((entry): entry is string => entry !== undefined).join(" ").toLocaleLowerCase();
+      ].filter((entry): entry is string => entry !== undefined).join(" ").toLowerCase();
       return terms.every((term) => haystack.includes(term));
     })
-    .sort((left, right) => componentDisplayPath(left, registry).localeCompare(componentDisplayPath(right, registry))
-      || left.id.localeCompare(right.id))
+    .sort((left, right) => compareUtf16CodeUnits(componentDisplayPath(left, registry), componentDisplayPath(right, registry))
+      || compareUtf16CodeUnits(left.id, right.id))
     .slice(0, limit);
 }
 
@@ -324,24 +325,24 @@ export function serializeEntityCatalog(catalog: EntityCatalog): string {
     title: catalog.title,
     source: serializeCatalogSourceDefinition(catalog.source),
     componentGroups: [...catalog.componentGroups]
-      .sort((left, right) => left.id.localeCompare(right.id))
-      .map((group) => ({ id: group.id, title: group.title, aliases: [...group.aliases].sort() })),
+      .sort((left, right) => compareUtf16CodeUnits(left.id, right.id))
+      .map((group) => ({ id: group.id, title: group.title, aliases: [...group.aliases].sort(compareUtf16CodeUnits) })),
     entityTypes: [...catalog.entityTypes]
-      .sort((left, right) => left.id.localeCompare(right.id))
+      .sort((left, right) => compareUtf16CodeUnits(left.id, right.id))
       .map((entityType) => ({
         id: entityType.id,
         title: entityType.title,
-        aliases: [...entityType.aliases].sort(),
+        aliases: [...entityType.aliases].sort(compareUtf16CodeUnits),
         ...(entityType.description === undefined ? {} : { description: entityType.description }),
-        allowedComponentGroupIds: [...entityType.allowedComponentGroupIds].sort(),
+        allowedComponentGroupIds: [...entityType.allowedComponentGroupIds].sort(compareUtf16CodeUnits),
         properties: entityType.properties.map(serializeFieldDefinition),
       })),
     componentTypes: [...catalog.componentTypes]
-      .sort((left, right) => left.id.localeCompare(right.id))
+      .sort((left, right) => compareUtf16CodeUnits(left.id, right.id))
       .map((componentType) => ({
         id: componentType.id,
         title: componentType.title,
-        aliases: [...componentType.aliases].sort(),
+        aliases: [...componentType.aliases].sort(compareUtf16CodeUnits),
         ...(componentType.description === undefined ? {} : { description: componentType.description }),
         groupId: componentType.groupId,
         menuPath: [...componentType.menuPath],

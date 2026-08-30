@@ -33,6 +33,20 @@ VS Code 的 `WorkspaceDocumentIndex` 负责宿主适配：
 
 当前实现建立按 Project、Document Type、Catalog 依赖和逻辑物理来源键控的不可变语义快照。插件激活时完整建立基线；Project、Catalog 或匹配文件保存、创建和删除后重新发现来源，但只对依赖键变化的逻辑文档运行正式 Parser/Validator，其他单元直接复用。CSV 分表按完整物理文件族作为一个逻辑单元。Reference Service 直接消费同一 Project Snapshot，单遍生成引用诊断和解析结果，不再为索引刷新重复扫描 Project。文本 Custom Editor 的已保存版本进入索引；Table Custom Editor 的未保存语义作为 Reference Picker 临时覆盖层，不改写已提交索引。取消、事件合并、进度和陈旧 generation 丢弃的完整契约见 [`WorkspaceIndexPerformance.md`](WorkspaceIndexPerformance.md)。
 
+```mermaid
+flowchart LR
+  A[Project / Catalog / Source 事件] --> B[WorkspaceDocumentIndex 合并刷新]
+  B --> C[按依赖键选择受影响逻辑 Document]
+  C --> D[正式 Parser + Catalog Registry + Validator]
+  D --> E[共享 Reference Snapshot]
+  E --> F[不可变 Document Index generation]
+  F --> G[Documents Tree / Problems / Quick Pick]
+  G --> H{用户动作}
+  H -->|Open / Reveal| I[Project Registry 再次路由]
+  H -->|Create / Copy / Move / Delete| J[Document Lifecycle preview/apply]
+  H -->|Rename stable ID| K[Project Refactoring preview/apply]
+```
+
 ## 3. 浏览树
 
 Activity Bar 的 VisualBridge 容器提供 `Documents` 视图：
@@ -73,6 +87,8 @@ Table 分表在树中只显示一个逻辑文档。展开 `Sources` 可以看到
 - 引用 kind、字段路径、稳定值、候选标题和目标路径。
 
 打开操作仍调用 `VisualBridge: Open Document`，由 Project Registry 再次确认唯一 Document Type，并按 `editor` 路由到 Graph、Entity、Structured 或 Table Custom Editor。Document Browser 不通过扩展名猜测编辑器。
+
+实际使用入口位于 Activity Bar 的 VisualBridge 容器。视图标题按钮依次提供 Refresh、Search、Create 和 Validate All；文档或引用行的右侧图标只在该项支持相应动作时出现。完整逐步操作见 [`AuthoringUserGuide.md`](AuthoringUserGuide.md)。
 
 ## 5. 统一创建
 
@@ -118,7 +134,7 @@ Document Item 图标和 `Problems` 分组直接展示当前索引快照中的 er
 - 缺失、歧义或 Provider 不可用分别使用错误或警告图标；
 - `Referenced By` 根据已解析候选的 Project、Document Type 与物理路径反向聚合来源文档。
 
-`References` 与 `Referenced By` 中唯一解析且可重构的 `document`、`entity.component`、`graph.element` 和 `table.row` 提供通用 Replace 图标。该入口调用 Project Refactoring：以解析后的完整目标位置建立影响计划，预览所有 occurrence 和物理载体，再原子修改目标稳定 ID 与入站引用。它不执行文本查找替换，也不会修改同值但指向另一目标的字段。完整事务契约见 `ProjectRefactoring.md`。
+`References` 与 `Referenced By` 中唯一解析且可重构的 `document`、`entity.component`、`graph.element` 和 `table.row` 提供通用 Replace 图标。该入口调用 Project Refactoring：以解析后的完整目标位置建立影响计划，预览所有 occurrence 和物理载体，再原子修改目标稳定 ID 与入站引用。它不执行文本查找替换，也不会修改同值但指向另一目标的字段。完整事务契约见 [`ProjectRefactoring.md`](ProjectRefactoring.md)。
 
 反向关系是索引派生数据，不写入 Authoring Document。当前四个内置 Provider 共用相同 Browser 结构；Graph Element 跳转会进入对应 Graph 并聚焦具体 Node 或 Port，Entity Component 跳转会展开并高亮对应 Component 卡片，而不是只打开文件。
 

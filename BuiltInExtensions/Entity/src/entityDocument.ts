@@ -8,6 +8,7 @@ import type {
 } from "@visualbridge/core";
 import {
   cloneJsonValue,
+  compareUtf16CodeUnits,
   collectFieldReferences,
   createDefaultProperties,
   isJsonValue,
@@ -651,7 +652,7 @@ function readIndex(value: unknown, path: string, diagnostics: DocumentDiagnostic
 function normalizeProperties(properties: Readonly<Record<string, JsonValue>>): Record<string, JsonValue> {
   return Object.fromEntries(
     Object.entries(properties)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareUtf16CodeUnits(left, right))
       .map(([key, value]) => [key, normalizeJsonValue(value)]),
   );
 }

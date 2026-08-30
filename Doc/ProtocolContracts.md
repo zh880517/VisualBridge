@@ -30,13 +30,31 @@ Protocol/contract-manifest.json
 
 所有公开 object 默认采用 `additionalProperties: false`。只有以下边界允许领域拥有的 JSON 键：Catalog/Document selector、Reference target、Graph/Entity/Structured/Table 的 JSON value/property，以及成功 Tool 输出的领域 data。错误 details 也是有意 opaque 的 JSON value。opaque 不代表任意 JavaScript 值；它仍只能是 JSON null、boolean、有限 number、string、array 或 object。
 
+### Schema 与功能归属
+
+| Schema | 对外契约与权威实现 |
+| --- | --- |
+| `visualbridge-primitives` | Stable ID、路径、Hash、JSON value 等跨域 primitive。 |
+| `visualbridge-project` | Project V1、Document Type 与任意后缀路由；语义权威在 Core Project Registry。 |
+| `visualbridge-project-provider` | 受信 Project Provider V2 JSON-RPC 请求、响应与分页。 |
+| `visualbridge-catalog-source` | Catalog Source、source hash 和来源清单。 |
+| `visualbridge-graph-catalog` / `visualbridge-graph` | Graph Catalog V4、Graph Document V3 与 GraphOperation。 |
+| `visualbridge-entity-catalog` / `visualbridge-entity` | Entity Catalog/Document V1 与 EntityOperation。 |
+| `visualbridge-structured-catalog` / `visualbridge-structured` | Structured Catalog/Document V1 与 `structured.setField`。 |
+| `visualbridge-table-catalog` | Table Catalog V1、列编码和分表策略；CSV/XLSX 物理字节由 Table Codec 负责，不伪装成 JSON Document Schema。 |
+| `visualbridge-authoring-contracts` | Reference、Refactor、Lifecycle、Transaction 与统一 Document transport。 |
+| `visualbridge-mcp-tools` | 七个 stdio MCP Tool 的严格输入/输出信封。 |
+
+Graph、Entity、Structured、Table Catalog 中重复出现的 Field/value-shape 序列化定义是冻结后的公共 wire shape；编辑器语义只有一份，权威实现位于 Core Form model 和 `Editors/Form`。Schema parity 不是四个文件的文本或 bytes 相等检查：生成器会把四个 Catalog 的 10 个共享 `$defs` 解析后做结构 `deepEqual`，还会以同一组正反例行为矩阵分别执行四个 validator。最小 scalar、递归 object/array、结构化 select 和 number Reference 等正例必须全部接受；空白标题、重复 alias、错误递归 shape、缺失 select option 等反例必须全部拒绝。结构不同或任一 validator 的接受/拒绝结果不同都构成 drift。Host 或 Unity 不得据此复制另一套字段编辑规则。Table 的语义传输仍是 JSON 值，但 CSV family 与 XLSX 是 Host Codec 边界，其物理格式不由 JSON Schema 描述。
+
 ## 3. 通用 primitive
 
 | Primitive | 冻结规则 |
 | --- | --- |
 | Stable ID / alias | `A-Z a-z 0-9 . _ -`，首字符必须为字母或数字，最长 128。 |
 | normalized path | Project 相对路径，使用 `/`，禁止绝对路径、盘符、反斜杠、空段、`.`、`..` 和 `:`，最长 1024。 |
-| SHA-256 | 64 位小写十六进制。 |
+| SHA-256 | 64 个小写十六进制字符。 |
+| JSON value | `null`、boolean、有限 number、string、array 或 object；递归层级中的非有限数值同样非法。 |
 | reference value | 只允许 string 或 number；重构前后必须保持相同 JSON primitive 类型。 |
 | format version | 正整数；具体文档、消息和私有恢复格式在 manifest 分别登记。 |
 | lock owner | 私有 V1：UUID token、正整数 PID、UTC ISO date-time `startedAt`，拒绝未知字段。 |
@@ -45,7 +63,9 @@ Protocol/contract-manifest.json
 
 ## 4. 规范顺序与 Hash
 
-所有需要稳定顺序的键、路径、候选和 target manifest 使用 UTF-16 code-unit ordinal 比较，不使用当前区域设置。Canonical JSON 递归按该顺序排列 object key；array 顺序保持其领域含义。协议 Hash 统一使用 SHA-256、小写 64 位十六进制，但每个 Hash 的输入域不同，不能互换：
+所有需要稳定顺序的键、路径、候选和 target manifest 使用 UTF-16 code-unit ordinal 比较，不使用当前区域设置。Canonical JSON 递归按该顺序排列 object key；array 顺序保持其领域含义。协议 Hash 统一使用 SHA-256、64 个小写十六进制字符，但每个 Hash 的输入域不同，不能互换：
+
+TypeScript 实现只以 Core `Ordering/ordinal.ts` 导出的 `compareUtf16CodeUnits` 为权威；Core、Built-in、Node Host、MCP 和 VS Code Host 不得各自复制 comparator，也不得以 `localeCompare`、ICU 或无 comparator 的 `sort()` 生成协议结果。Webview 可以按本地化标题排列临时菜单或 Picker，但该展示顺序不得进入 Operation、序列化、Hash、cursor、plan 或 source manifest。
 
 | Hash | 输入域与用途 |
 | --- | --- |
@@ -144,3 +164,5 @@ npm run test --workspace @visualbridge/protocol-contract
 ```
 
 变更流程为：先修改 Schema/manifest，再重新生成；随后运行 drift check、声明编译、AJV 正反例和真实 stdio MCP 一致性检查。CI 必须先构建 MCP，因为 live check 检查的是实际 `dist/server.js`。未来加入 C# generator 时，只能读取同一组 Schema 和 manifest，并必须加入同样的 deterministic generation/drift gate；不得另建手写 Unity DTO 作为第二事实来源。
+
+完整的外部 Host/MCP 接入步骤见 [`IntegrationGuide.md`](IntegrationGuide.md)，最终文档与验证覆盖矩阵见 [`DocumentationCompleteness.md`](DocumentationCompleteness.md)。

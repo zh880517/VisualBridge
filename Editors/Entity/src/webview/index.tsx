@@ -486,6 +486,7 @@ function AddComponentDialog(props: {
     .filter((componentType): componentType is RegisteredEntityComponentTypeDefinition => componentType !== undefined)
     .filter((componentType) => {
       const group = resolveComponentGroupForType(props.registry, componentType.id);
+      // Locale-aware matching affects only this transient picker filter, never protocol or persisted order.
       const haystack = [componentType.title, componentType.id, ...componentType.aliases, group?.title, ...componentType.menuPath]
         .filter((entry): entry is string => entry !== undefined)
         .join(" ")

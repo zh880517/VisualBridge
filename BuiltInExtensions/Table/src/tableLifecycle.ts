@@ -1,4 +1,5 @@
 import {
+  compareUtf16CodeUnits,
   referenceValuesEqual,
   type DocumentDiagnostic,
   type DocumentLifecycleDeleteTarget,
@@ -79,7 +80,7 @@ export function collectTableOwnedIdentities(
       }
     }
   }
-  return [...identities.values()].sort((left, right) => left.identityKey.localeCompare(right.identityKey));
+  return [...identities.values()].sort((left, right) => compareUtf16CodeUnits(left.identityKey, right.identityKey));
 }
 
 export function collectAddressableTableIdentityKeys(

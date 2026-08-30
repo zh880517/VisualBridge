@@ -2,8 +2,13 @@
   "formatVersion": 1,
   "projectId": "GraphSemanticProject",
   "documentRoots": [
-    "Graph"
+    "Graph",
+    "Tables"
   ],
+  "tableLayout": {
+    "nameKeyRow": 2,
+    "dataStartRow": 3
+  },
   "documentTypes": [
     {
       "id": "logicGraph",
@@ -16,6 +21,17 @@
         "Catalog/Common.vbgraphcatalog",
         "Catalog/Logic.vbgraphcatalog",
         "Catalog/Blocked.vbgraphcatalog"
+      ]
+    },
+    {
+      "id": "sample.table.skills",
+      "editor": "table",
+      "include": [
+        "Tables/Skills_*.skillstable"
+      ],
+      "exclude": [],
+      "catalogs": [
+        "Catalog/Skills.vbtablecatalog"
       ]
     }
   ]

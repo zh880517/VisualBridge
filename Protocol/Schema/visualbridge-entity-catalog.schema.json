@@ -338,6 +338,15 @@
       },
       "additionalProperties": false
     },
+    "editorOption": {
+      "type": "object",
+      "required": ["title", "value"],
+      "properties": {
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "value": true
+      },
+      "additionalProperties": false
+    },
     "editor": {
       "type": "object",
       "required": [
@@ -377,26 +386,12 @@
         "options": {
           "type": "array",
           "minItems": 1,
-          "items": {
-            "type": "object",
-            "required": [
-              "title",
-              "value"
-            ],
-            "properties": {
-              "title": {
-                "$ref": "#/$defs/nonEmptyString"
-              },
-              "value": true
-            },
-            "additionalProperties": false
-          }
+          "items": { "$ref": "#/$defs/editorOption" }
         }
       },
       "allOf": [
         {
           "if": {
-            "type": "object",
             "properties": {
               "kind": {
                 "const": "select"
@@ -407,7 +402,6 @@
             ]
           },
           "then": {
-            "type": "object",
             "required": [
               "options"
             ],
@@ -416,7 +410,6 @@
             }
           },
           "else": {
-            "type": "object",
             "properties": {
               "options": false
             }

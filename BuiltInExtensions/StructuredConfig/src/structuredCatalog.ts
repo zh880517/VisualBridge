@@ -5,6 +5,7 @@ import type {
   FieldDefinition,
 } from "@visualbridge/core";
 import {
+  compareUtf16CodeUnits,
   parseCatalogSourceDefinition,
   parseFieldDefinitions,
   serializeCatalogSourceDefinition,
@@ -160,11 +161,11 @@ export function serializeStructuredCatalog(catalog: StructuredCatalog): string {
     title: catalog.title,
     source: serializeCatalogSourceDefinition(catalog.source),
     configTypes: [...catalog.configTypes]
-      .sort((left, right) => left.id.localeCompare(right.id))
+      .sort((left, right) => compareUtf16CodeUnits(left.id, right.id))
       .map((configType) => ({
         id: configType.id,
         title: configType.title,
-        aliases: [...configType.aliases].sort(),
+        aliases: [...configType.aliases].sort(compareUtf16CodeUnits),
         ...(configType.description === undefined ? {} : { description: configType.description }),
         ...(configType.source === undefined ? {} : { source: configType.source }),
         properties: configType.properties.map(serializeFieldDefinition),

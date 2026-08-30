@@ -112,7 +112,7 @@ test("reference service searches deterministically and validates resolved, missi
   const provider: ReferenceProvider = {
     kind: "table.row",
     async search(request) {
-      return candidates.filter((entry) => entry.title.toLocaleLowerCase().includes(request.query.toLocaleLowerCase()));
+      return candidates.filter((entry) => entry.title.toLowerCase().includes(request.query.toLowerCase()));
     },
     async resolve(request) {
       return candidates.filter((entry) => entry.value === request.value);
@@ -361,6 +361,35 @@ test("reference cursor pages have no gaps, preserve value types, and reject chan
   });
   assert.equal(wrongValueType.status, "cursor.invalid");
   assert.equal(searchCount, searchCountBeforeRejection);
+});
+
+test("reference candidates and cursors are invariant across Unicode provider permutations", async () => {
+  const values = ["é", "e\u0301", "😀", "\uE000"];
+  const candidates = values.map((value): ReferenceCandidate => ({
+    kind: "sample.unicode",
+    target: { scope: "unicode" },
+    value,
+    title: value,
+  }));
+  const definition = {
+    kind: "sample.unicode",
+    target: { scope: "unicode" },
+    allowMissing: false,
+  } as const;
+  const createService = (items: readonly ReferenceCandidate[]) => new ReferenceService([{
+    kind: "sample.unicode",
+    async search() { return items; },
+    async resolve() { return []; },
+  }], "unicode-snapshot");
+
+  const forward = await createService(candidates).searchPage(definition, "", 3);
+  const reverse = await createService([...candidates].reverse()).searchPage(definition, "", 3);
+
+  assert.deepEqual(reverse, forward);
+  assert.equal(forward.status, "ok");
+  if (forward.status !== "ok") return;
+  assert.deepEqual(forward.candidates.map((candidate) => candidate.value), ["e\u0301", "é", "😀"]);
+  assert.ok(forward.nextCursor !== undefined);
 });
 
 test("provider pages must advance strictly beyond the previous stable-order boundary", async () => {

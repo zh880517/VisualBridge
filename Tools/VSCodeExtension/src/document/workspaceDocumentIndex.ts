@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import {
+  compareUtf16CodeUnits,
   IncrementalSemanticSnapshotStore,
   searchIndexedDocuments,
   sortIndexedDocuments,
@@ -110,7 +111,7 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
           && location.documentTypeId === target.documentTypeId
           && targetPaths.has(location.path);
       }) ? [{ source, reference }] : []
-    ))).sort((left, right) => compareOrdinal(
+  ))).sort((left, right) => compareUtf16CodeUnits(
       `${left.source.title}\u0000${left.reference.occurrence.path}`,
       `${right.source.title}\u0000${right.reference.occurrence.path}`,
     ));
@@ -374,9 +375,6 @@ function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === "AbortError";
 }
 
-function compareOrdinal(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
 
 function formatError(value: unknown): string {
   return value instanceof Error ? value.message : String(value);

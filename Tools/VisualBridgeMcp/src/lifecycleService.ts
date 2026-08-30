@@ -5,6 +5,7 @@ import {
   DocumentLifecycleService as CoreDocumentLifecycleService,
   buildCanonicalDocumentLifecycleDependencies,
   buildOwnedStableIdentityCollisionIndex,
+  compareUtf16CodeUnits,
   prepareDocumentLifecycleApply,
   referenceLocationKey,
   referenceValuesEqual,
@@ -1074,12 +1075,12 @@ async function buildDependencies(
 ): Promise<readonly DocumentLifecycleDependency[]> {
   const projectPath = path.relative(project.projectRoot, project.absoluteProjectFile).replaceAll("\\", "/");
   const projectHash = hashBytes(await readFile(project.absoluteProjectFile));
-  const catalogPaths = [...new Set(project.definition.documentTypes.flatMap((documentType) => documentType.catalogs))].sort();
+  const catalogPaths = [...new Set(project.definition.documentTypes.flatMap((documentType) => documentType.catalogs))].sort(compareUtf16CodeUnits);
   const catalogManifest = await Promise.all(catalogPaths.map(async (catalogPath) => ({
     path: catalogPath,
     hash: hashBytes(await readFile(await resolveExistingProjectPath(project, catalogPath))),
   })));
-  const documentPaths = [...new Set(indexed.flatMap((document) => document.sourcePaths))].sort();
+  const documentPaths = [...new Set(indexed.flatMap((document) => document.sourcePaths))].sort(compareUtf16CodeUnits);
   const documentManifest = await Promise.all(documentPaths.map(async (documentPath) => ({
     path: documentPath,
     hash: hashBytes(await readFile(await resolveExistingProjectPath(project, documentPath))),
@@ -1111,7 +1112,7 @@ async function buildSourceBaseHashes(
       `Lifecycle source '${operation.source.path}' is absent from the Project document index.`,
     );
   }
-  const hashes = await Promise.all([...new Set(source.sourcePaths)].sort().map(async (sourcePath) => [
+  const hashes = await Promise.all([...new Set(source.sourcePaths)].sort(compareUtf16CodeUnits).map(async (sourcePath) => [
     sourcePath,
     hashBytes(await readFile(await resolveExistingProjectPath(project, sourcePath))),
   ] as const));
@@ -1122,7 +1123,7 @@ async function buildDependencyPreconditions(
   project: ProjectContext,
   dependencies: readonly DocumentLifecycleDependency[],
 ): Promise<readonly ProjectTransactionPrecondition[]> {
-  const paths = [...new Set(dependencies.flatMap((dependency) => dependency.paths))].sort();
+  const paths = [...new Set(dependencies.flatMap((dependency) => dependency.paths))].sort(compareUtf16CodeUnits);
   return Promise.all(paths.map(async (sourcePath) => {
     const absolutePath = sourcePath === path.relative(project.projectRoot, project.absoluteProjectFile).replaceAll("\\", "/")
       ? project.absoluteProjectFile
@@ -1212,7 +1213,7 @@ function assertParameterKeys(parameters: Readonly<Record<string, JsonValue>>, al
   const allowedKeys = new Set(allowed);
   const unexpected = Object.keys(parameters).filter((key) => !allowedKeys.has(key));
   if (unexpected.length > 0) {
-    throw new VisualBridgeMcpError("lifecycle.invalidParameters", `Unexpected create parameter '${unexpected.sort()[0]}'.`);
+    throw new VisualBridgeMcpError("lifecycle.invalidParameters", `Unexpected create parameter '${unexpected.sort(compareUtf16CodeUnits)[0]}'.`);
   }
 }
 
@@ -1325,7 +1326,7 @@ function sortJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortJson);
   if (typeof value === "object" && value !== null) {
     return Object.fromEntries(Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareUtf16CodeUnits(left, right))
       .map(([key, entry]) => [key, sortJson(entry)]));
   }
   return value;

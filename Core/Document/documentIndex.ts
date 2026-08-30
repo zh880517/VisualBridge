@@ -3,6 +3,7 @@ import type {
   ReferenceOccurrence,
   ReferenceResolution,
 } from "../Reference/reference";
+import { compareUtf16CodeUnits } from "../Ordering/ordinal";
 
 export interface IndexedDocumentReference {
   readonly occurrence: ReferenceOccurrence;
@@ -33,7 +34,7 @@ export function documentIndexKey(document: Pick<IndexedDocument, "projectId" | "
 }
 
 export function sortIndexedDocuments(documents: readonly IndexedDocument[]): readonly IndexedDocument[] {
-  return [...documents].sort((left, right) => documentIndexKey(left).localeCompare(documentIndexKey(right)));
+  return [...documents].sort((left, right) => compareUtf16CodeUnits(documentIndexKey(left), documentIndexKey(right)));
 }
 
 export function searchIndexedDocuments(
@@ -42,7 +43,7 @@ export function searchIndexedDocuments(
 ): readonly IndexedDocument[] {
   const terms = query
     .trim()
-    .toLocaleLowerCase()
+    .toLowerCase()
     .split(/\s+/u)
     .filter((term) => term.length > 0);
   if (terms.length === 0) {
@@ -68,7 +69,7 @@ export function searchIndexedDocuments(
           candidate.location?.path ?? "",
         ]),
       ]),
-    ].join("\n").toLocaleLowerCase();
+    ].join("\n").toLowerCase();
     return terms.every((term) => searchable.includes(term));
   }));
 }

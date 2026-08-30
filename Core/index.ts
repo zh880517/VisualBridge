@@ -5,6 +5,8 @@ export * from "./Document/documentIndex";
 export * from "./Document/incrementalSemanticSnapshot";
 export * from "./Document/documentLifecycle";
 export * from "./Form/field";
+export * from "./Ordering/canonicalJson";
+export * from "./Ordering/ordinal";
 export * from "./Project/projectFile";
 export * from "./Project/projectMatcher";
 export * from "./Project/projectOperation";

@@ -4,6 +4,7 @@ import * as nodePath from "node:path";
 import * as vscode from "vscode";
 import { withProjectTransaction } from "@visualbridge/node-host";
 import {
+  compareUtf16CodeUnits,
   createReferenceValueRenamePlan,
   documentIndexKey,
   referenceLocationKey,
@@ -687,7 +688,7 @@ async function commitWrites(
   writes: readonly PreparedWrite[],
   dependencies: readonly PreparedWrite[],
 ): Promise<void> {
-  const ordered = [...writes].sort((left, right) => left.uri.fsPath.localeCompare(right.uri.fsPath));
+  const ordered = [...writes].sort((left, right) => compareUtf16CodeUnits(left.uri.fsPath, right.uri.fsPath));
   const dependencyByPath = new Map(dependencies.map((dependency) => [dependency.uri.fsPath, dependency]));
   await withProjectTransaction(project.rootUri.fsPath, (transaction) => transaction.commit(
     ordered.map((write) => ({
@@ -706,7 +707,7 @@ async function commitWrites(
 
 function uniqueDocuments(documents: readonly IndexedDocument[]): readonly IndexedDocument[] {
   return [...new Map(documents.map((document) => [documentIndexKey(document), document])).values()]
-    .sort((left, right) => documentIndexKey(left).localeCompare(documentIndexKey(right)));
+    .sort((left, right) => compareUtf16CodeUnits(documentIndexKey(left), documentIndexKey(right)));
 }
 
 function sourceUri(project: ProjectContext, path: string): vscode.Uri {

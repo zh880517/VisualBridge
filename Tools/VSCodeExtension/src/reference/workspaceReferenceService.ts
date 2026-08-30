@@ -2,6 +2,7 @@ import * as nodePath from "node:path";
 import * as vscode from "vscode";
 import { minimatch } from "minimatch";
 import {
+  compareUtf16CodeUnits,
   createDocumentReferenceProvider,
   ReferenceService,
   type DocumentReferenceDocument,
@@ -255,7 +256,7 @@ export class WorkspaceReferenceService implements vscode.Disposable {
     sources: readonly { readonly uri: vscode.Uri; readonly sheetIds: readonly string[] }[],
   ): void {
     const projectKey = project.markerUri.toString();
-    const sourcePaths = sources.map((source) => relativeProjectPath(project, source.uri)).sort();
+    const sourcePaths = sources.map((source) => relativeProjectPath(project, source.uri)).sort(compareUtf16CodeUnits);
     const sheetPaths: Record<string, string> = {};
     sources.forEach((source) => {
       const relativePath = relativeProjectPath(project, source.uri);
@@ -354,7 +355,7 @@ export class WorkspaceReferenceService implements vscode.Disposable {
       && documentSourcePaths(document).some((path) => entry.sourcePaths.has(path))
     )));
     return [...visibleDiskDocuments, ...overrides.map((entry) => entry.document)]
-      .sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
+      .sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
   }
 }
 
@@ -442,9 +443,9 @@ async function loadProjectSemanticDocuments(
       }
     }
   }
-  documents.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
-  entities.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
-  graphs.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
+  documents.sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
+  entities.sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
+  graphs.sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
   return { documents, entities, graphs };
 }
 
@@ -485,7 +486,7 @@ async function loadProjectTableDocuments(
         }
         continue;
       }
-      const key = `${nodePath.dirname(uri.fsPath).toLocaleLowerCase()}\u0000${nodePath.extname(uri.fsPath).toLocaleLowerCase()}`;
+      const key = `${nodePath.dirname(uri.fsPath).toLowerCase()}\u0000${nodePath.extname(uri.fsPath).toLowerCase()}`;
       const group = csvGroups.get(key) ?? [];
       group.push(uri);
       csvGroups.set(key, group);
@@ -493,7 +494,7 @@ async function loadProjectTableDocuments(
     for (const group of csvGroups.values()) {
       const sheets: TableSheet[] = [];
       const sheetPaths: Record<string, string> = {};
-      for (const uri of group.sort((left, right) => left.path.localeCompare(right.path))) {
+      for (const uri of group.sort((left, right) => compareUtf16CodeUnits(left.path, right.path))) {
         try {
           const bytes = await vscode.workspace.fs.readFile(uri);
           const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -523,7 +524,7 @@ async function loadProjectTableDocuments(
       }
     }
   }
-  return result.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
+  return result.sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
 }
 
 async function findDocumentUris(
@@ -544,7 +545,7 @@ async function findDocumentUris(
       }
     }
   }
-  return [...result.values()].sort((left, right) => left.path.localeCompare(right.path));
+  return [...result.values()].sort((left, right) => compareUtf16CodeUnits(left.path, right.path));
 }
 
 function referenceDocument(

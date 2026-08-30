@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { compareUtf16CodeUnits } from "@visualbridge/core";
 import {
   ProjectProviderHost,
   ProjectProviderRuntimeError,
@@ -293,7 +294,7 @@ async function captureAuthoringManifest(projectRoot) {
   const paths = ["VisualBridge.project.vbjson"];
   await collectFiles(projectRoot, "Catalog", paths);
   await collectFiles(projectRoot, "Config", paths);
-  return await Promise.all(paths.sort().map(async (relativePath) => ({
+  return await Promise.all(paths.sort(compareUtf16CodeUnits).map(async (relativePath) => ({
     path: relativePath,
     hash: sha256(await readFile(path.join(projectRoot, ...relativePath.split("/")))),
   })));
@@ -301,7 +302,7 @@ async function captureAuthoringManifest(projectRoot) {
 
 async function collectFiles(projectRoot, relativeDirectory, result) {
   const entries = await readdir(path.join(projectRoot, ...relativeDirectory.split("/")), { withFileTypes: true });
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name, "en"))) {
+  for (const entry of entries.sort((left, right) => compareUtf16CodeUnits(left.name, right.name))) {
     const relativePath = `${relativeDirectory}/${entry.name}`;
     if (entry.isFile()) result.push(relativePath);
     else if (entry.isDirectory()) await collectFiles(projectRoot, relativePath, result);

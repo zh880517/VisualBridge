@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFile, readdir, symlink } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { compareUtf16CodeUnits } from "@visualbridge/core";
 import {
   ProjectProviderExternalModificationError,
   ProjectProviderRuntime,
@@ -385,7 +386,7 @@ async function captureAuthoringManifest(projectRoot) {
   const paths = ["VisualBridge.project.vbjson"];
   await collectFiles(projectRoot, "Catalog", paths);
   await collectFiles(projectRoot, "Config", paths);
-  const entries = await Promise.all(paths.sort().map(async (relativePath) => ({
+  const entries = await Promise.all(paths.sort(compareUtf16CodeUnits).map(async (relativePath) => ({
     path: relativePath,
     hash: sha256(await readFile(path.join(projectRoot, ...relativePath.split("/")))),
   })));

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { compareUtf16CodeUnits } from "@visualbridge/core";
 import { VisualBridgeMcpError } from "./projectWorkspace.js";
 
 export interface Page<T> {
@@ -144,7 +145,7 @@ function sortJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortJson);
   if (typeof value === "object" && value !== null) {
     return Object.fromEntries(Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareUtf16CodeUnits(left, right))
       .map(([key, entry]) => [key, sortJson(entry)]));
   }
   return value;

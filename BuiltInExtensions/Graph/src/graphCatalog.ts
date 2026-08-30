@@ -2,15 +2,19 @@ import type {
   CatalogSourceDefinition,
   DocumentDiagnostic,
   DocumentParseResult,
-  ReferenceDefinition,
+  FieldDefinition,
+  FieldValueDefinition,
 } from "@visualbridge/core";
 import {
+  compareUtf16CodeUnits,
   createUnknownCatalogSource,
   parseCatalogSourceDefinition,
-  parseReferenceDefinition,
+  parseFieldDefinitions,
+  parseFieldValueDefinition,
   serializeCatalogSourceDefinition,
+  serializeFieldDefinition,
+  serializeFieldValueDefinition,
 } from "@visualbridge/core";
-import type { JsonValue } from "./graphDocument";
 
 export const GRAPH_CATALOG_FORMAT_VERSION = 4;
 
@@ -18,8 +22,6 @@ export type GraphPortKind = "flow" | "data";
 export type GraphPortDirection = "input" | "output";
 export type GraphPortConnectionMode = "single" | "multiple";
 export type GraphListPortMode = "list" | "element";
-export type GraphPropertyValueType = "string" | "number" | "boolean" | "json";
-export type GraphPropertyEditorKind = "text" | "multiline" | "number" | "checkbox" | "select" | "json" | "reference";
 
 export interface GraphDataTypeDefinition {
   readonly id: string;
@@ -40,32 +42,6 @@ export interface GraphPortDefinition {
   readonly maxConnections?: number;
 }
 
-export interface GraphPropertyEditorOption {
-  readonly title: string;
-  readonly value: JsonValue;
-}
-
-export interface GraphPropertyEditorDefinition {
-  readonly kind: GraphPropertyEditorKind;
-  readonly readOnly: boolean;
-  readonly min?: number;
-  readonly max?: number;
-  readonly options: readonly GraphPropertyEditorOption[];
-}
-
-export interface GraphPropertyDefinition {
-  readonly id: string;
-  readonly aliases: readonly string[];
-  readonly title: string;
-  readonly description?: string;
-  readonly valueType: GraphPropertyValueType;
-  readonly dataTypeId?: string;
-  readonly required: boolean;
-  readonly defaultValue?: JsonValue;
-  readonly editor?: GraphPropertyEditorDefinition;
-  readonly reference?: ReferenceDefinition;
-}
-
 export interface GraphDynamicPortGroupDefinition {
   readonly id: string;
   readonly aliases: readonly string[];
@@ -78,13 +54,7 @@ export interface GraphDynamicPortGroupDefinition {
     readonly dataTypeId?: string;
     readonly maxConnections?: number;
   };
-  readonly item: {
-    readonly valueType: GraphPropertyValueType;
-    readonly dataTypeId?: string;
-    readonly defaultValue: JsonValue;
-    readonly editor?: GraphPropertyEditorDefinition;
-    readonly reference?: ReferenceDefinition;
-  };
+  readonly item: FieldValueDefinition;
   readonly maxItems?: number;
 }
 
@@ -126,7 +96,7 @@ export interface GraphTypeDefinition {
     readonly output: GraphPortConnectionMode;
   };
   readonly allowedNodeSelectors?: readonly GraphNodeSelector[];
-  readonly properties: readonly GraphPropertyDefinition[];
+  readonly properties: readonly FieldDefinition[];
   readonly nodeConstraints: readonly GraphNodeCountConstraint[];
   readonly initialNodes: readonly GraphInitialNodeDefinition[];
   readonly allowSubgraphs: boolean;
@@ -150,7 +120,7 @@ export interface GraphNodeTypeDefinition {
   readonly subgraph?: GraphSubgraphNodeDefinition;
   readonly ports: readonly GraphPortDefinition[];
   readonly dynamicPortGroups: readonly GraphDynamicPortGroupDefinition[];
-  readonly properties: readonly GraphPropertyDefinition[];
+  readonly properties: readonly FieldDefinition[];
 }
 
 export interface GraphCatalog {
@@ -234,12 +204,7 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
 
   const diagnostics: DocumentDiagnostic[] = [];
   checkKeys(value, ["formatVersion", "catalogId", "title", "source", "dataTypes", "graphTypes", "nodeTypes"], "$", diagnostics);
-  if (
-    value.formatVersion !== 1
-    && value.formatVersion !== 2
-    && value.formatVersion !== 3
-    && value.formatVersion !== GRAPH_CATALOG_FORMAT_VERSION
-  ) {
+  if (value.formatVersion !== GRAPH_CATALOG_FORMAT_VERSION) {
     diagnostics.push(error(
       "graphCatalog.unsupportedVersion",
       "formatVersion",
@@ -248,12 +213,8 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
   }
 
   const catalogId = readIdentifier(value.catalogId, "catalogId", diagnostics);
-  const title = value.title === undefined && (value.formatVersion === 1 || value.formatVersion === 2)
-    ? catalogId
-    : readNonEmptyString(value.title, "title", diagnostics);
-  const sourceResult = value.source === undefined && value.formatVersion !== GRAPH_CATALOG_FORMAT_VERSION
-    ? { success: true as const, value: createUnknownCatalogSource() }
-    : parseCatalogSourceDefinition(value.source);
+  const title = readNonEmptyString(value.title, "title", diagnostics);
+  const sourceResult = parseCatalogSourceDefinition(value.source);
   if (!sourceResult.success) {
     diagnostics.push(...sourceResult.issues.map((issue) => error(
       "graphCatalog.invalidSource",
@@ -263,8 +224,7 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
   }
   const dataTypes = readDataTypes(value.dataTypes, diagnostics);
   const nodeTypes = readNodeTypes(value.nodeTypes, diagnostics);
-  const legacyFormat = value.formatVersion === 1 || value.formatVersion === 2 || value.formatVersion === 3;
-  if (value.graphTypes === undefined && !legacyFormat) {
+  if (value.graphTypes === undefined) {
     diagnostics.push(error(
       "graphCatalog.missingGraphTypes",
       "graphTypes",
@@ -273,7 +233,7 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
   }
   const graphTypes = value.graphTypes === undefined
     ? []
-    : readGraphTypes(value.graphTypes, value.formatVersion, catalogId, diagnostics);
+    : readGraphTypes(value.graphTypes, diagnostics);
   validateUniqueIds(dataTypes, "dataTypes", "graphCatalog.duplicateDataTypeId", diagnostics);
   validateUniqueIds(nodeTypes, "nodeTypes", "graphCatalog.duplicateNodeTypeId", diagnostics);
   validateUniqueIds(graphTypes, "graphTypes", "graphCatalog.duplicateGraphTypeId", diagnostics);
@@ -410,30 +370,30 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
 }
 
 export function serializeGraphCatalog(catalog: GraphCatalog): string {
-  const normalized: GraphCatalog = {
+  const normalized = {
     formatVersion: GRAPH_CATALOG_FORMAT_VERSION,
     catalogId: catalog.catalogId,
     title: catalog.title,
     source: serializeCatalogSourceDefinition(catalog.source),
     dataTypes: [...catalog.dataTypes]
-      .sort((left, right) => left.id.localeCompare(right.id))
+      .sort((left, right) => compareUtf16CodeUnits(left.id, right.id))
       .map((dataType) => ({
         id: dataType.id,
         title: dataType.title,
         ...(dataType.color === undefined ? {} : { color: dataType.color }),
         ...(dataType.acceptsAnySource ? { acceptsAnySource: true } : {}),
-        accepts: [...dataType.accepts].sort(),
+        accepts: [...dataType.accepts].sort(compareUtf16CodeUnits),
       })),
     graphTypes: [...catalog.graphTypes]
-      .sort((left, right) => left.id.localeCompare(right.id))
+      .sort((left, right) => compareUtf16CodeUnits(left.id, right.id))
       .map((graphType) => ({
         id: graphType.id,
-        aliases: [...graphType.aliases].sort(),
+        aliases: [...graphType.aliases].sort(compareUtf16CodeUnits),
         title: graphType.title,
         ...(graphType.description === undefined ? {} : { description: graphType.description }),
         usage: graphType.usage,
         ...(graphType.source === undefined ? {} : { source: serializeNodeSource(graphType.source) }),
-        supportedCatalogIds: [...graphType.supportedCatalogIds].sort(),
+        supportedCatalogIds: [...graphType.supportedCatalogIds].sort(compareUtf16CodeUnits),
         portConnectionRules: {
           input: graphType.portConnectionRules.input,
           output: graphType.portConnectionRules.output,
@@ -441,7 +401,7 @@ export function serializeGraphCatalog(catalog: GraphCatalog): string {
         ...(graphType.allowedNodeSelectors === undefined ? {} : {
           allowedNodeSelectors: graphType.allowedNodeSelectors.map(serializeNodeSelector),
         }),
-        properties: graphType.properties.map(serializePropertyDefinition),
+        properties: graphType.properties.map(serializeFieldDefinition),
         nodeConstraints: graphType.nodeConstraints.map((constraint) => ({
           id: constraint.id,
           selector: serializeNodeSelector(constraint.selector),
@@ -454,29 +414,29 @@ export function serializeGraphCatalog(catalog: GraphCatalog): string {
         })),
         allowSubgraphs: graphType.allowSubgraphs,
         ...(graphType.allowedSubgraphTypeIds === undefined ? {} : {
-          allowedSubgraphTypeIds: [...graphType.allowedSubgraphTypeIds].sort(),
+          allowedSubgraphTypeIds: [...graphType.allowedSubgraphTypeIds].sort(compareUtf16CodeUnits),
         }),
       })),
     nodeTypes: [...catalog.nodeTypes]
-      .sort((left, right) => left.id.localeCompare(right.id))
+      .sort((left, right) => compareUtf16CodeUnits(left.id, right.id))
       .map((nodeType) => ({
         id: nodeType.id,
-        aliases: [...nodeType.aliases].sort(),
+        aliases: [...nodeType.aliases].sort(compareUtf16CodeUnits),
         title: nodeType.title,
         ...(nodeType.icon === undefined ? {} : { icon: nodeType.icon }),
         category: nodeType.category,
         menuPath: [...nodeType.menuPath],
-        tags: [...nodeType.tags].sort(),
-        traits: [...nodeType.traits].sort(),
+        tags: [...nodeType.tags].sort(compareUtf16CodeUnits),
+        traits: [...nodeType.traits].sort(compareUtf16CodeUnits),
         ...(nodeType.source === undefined ? {} : { source: serializeNodeSource(nodeType.source) }),
         ...(nodeType.subgraph === undefined ? {} : {
           subgraph: nodeType.subgraph.graphTypeIds === undefined
             ? {}
-            : { graphTypeIds: [...nodeType.subgraph.graphTypeIds].sort() },
+            : { graphTypeIds: [...nodeType.subgraph.graphTypeIds].sort(compareUtf16CodeUnits) },
         }),
         ports: nodeType.ports.map((port) => ({
             id: port.id,
-            aliases: [...port.aliases].sort(),
+            aliases: [...port.aliases].sort(compareUtf16CodeUnits),
             title: port.title,
             ...(port.description === undefined ? {} : { description: port.description }),
             kind: port.kind,
@@ -486,7 +446,7 @@ export function serializeGraphCatalog(catalog: GraphCatalog): string {
           })),
         dynamicPortGroups: nodeType.dynamicPortGroups.map((group) => ({
             id: group.id,
-            aliases: [...group.aliases].sort(),
+            aliases: [...group.aliases].sort(compareUtf16CodeUnits),
             title: group.title,
             ...(group.description === undefined ? {} : { description: group.description }),
             ...(group.listPortMode === undefined ? {} : { listPortMode: group.listPortMode }),
@@ -496,16 +456,10 @@ export function serializeGraphCatalog(catalog: GraphCatalog): string {
               ...(group.port.dataTypeId === undefined ? {} : { dataTypeId: group.port.dataTypeId }),
               ...(group.port.maxConnections === undefined ? {} : { maxConnections: group.port.maxConnections }),
             },
-            item: {
-              valueType: group.item.valueType,
-              ...(group.item.dataTypeId === undefined ? {} : { dataTypeId: group.item.dataTypeId }),
-              defaultValue: sortJsonValue(group.item.defaultValue),
-              ...(group.item.editor === undefined ? {} : { editor: serializePropertyEditor(group.item.editor) }),
-              ...(group.item.reference === undefined ? {} : { reference: serializeReferenceDefinition(group.item.reference) }),
-            },
+            item: serializeFieldValueDefinition(group.item),
             ...(group.maxItems === undefined ? {} : { maxItems: group.maxItems }),
           })),
-        properties: nodeType.properties.map(serializePropertyDefinition),
+        properties: nodeType.properties.map(serializeFieldDefinition),
       })),
   };
   return `${JSON.stringify(normalized, undefined, 2)}\n`;
@@ -520,47 +474,11 @@ function serializeNodeSource(source: GraphNodeSourceDefinition): GraphNodeSource
   };
 }
 
-function serializePropertyDefinition(property: GraphPropertyDefinition): GraphPropertyDefinition {
-  return {
-    id: property.id,
-    aliases: [...property.aliases].sort(),
-    title: property.title,
-    ...(property.description === undefined ? {} : { description: property.description }),
-    valueType: property.valueType,
-    ...(property.dataTypeId === undefined ? {} : { dataTypeId: property.dataTypeId }),
-    required: property.required,
-    ...(property.defaultValue === undefined ? {} : { defaultValue: sortJsonValue(property.defaultValue) }),
-    ...(property.editor === undefined ? {} : { editor: serializePropertyEditor(property.editor) }),
-    ...(property.reference === undefined ? {} : { reference: serializeReferenceDefinition(property.reference) }),
-  };
-}
-
-function serializeReferenceDefinition(reference: ReferenceDefinition): ReferenceDefinition {
-  return {
-    kind: reference.kind,
-    target: sortJsonValue(reference.target as unknown as JsonValue) as Readonly<Record<string, import("@visualbridge/core").JsonValue>>,
-    allowMissing: reference.allowMissing,
-  };
-}
-
 function serializeNodeSelector(selector: GraphNodeSelector): GraphNodeSelector {
   return {
-    ...(selector.nodeTypeIds === undefined ? {} : { nodeTypeIds: [...selector.nodeTypeIds].sort() }),
-    ...(selector.tags === undefined ? {} : { tags: [...selector.tags].sort() }),
-    ...(selector.traits === undefined ? {} : { traits: [...selector.traits].sort() }),
-  };
-}
-
-function serializePropertyEditor(editor: GraphPropertyEditorDefinition): GraphPropertyEditorDefinition {
-  return {
-    kind: editor.kind,
-    readOnly: editor.readOnly,
-    ...(editor.min === undefined ? {} : { min: editor.min }),
-    ...(editor.max === undefined ? {} : { max: editor.max }),
-    options: editor.options.map((option) => ({
-      title: option.title,
-      value: sortJsonValue(option.value),
-    })),
+    ...(selector.nodeTypeIds === undefined ? {} : { nodeTypeIds: [...selector.nodeTypeIds].sort(compareUtf16CodeUnits) }),
+    ...(selector.tags === undefined ? {} : { tags: [...selector.tags].sort(compareUtf16CodeUnits) }),
+    ...(selector.traits === undefined ? {} : { traits: [...selector.traits].sort(compareUtf16CodeUnits) }),
   };
 }
 
@@ -656,9 +574,9 @@ export function buildGraphCatalogRegistry(
       dataTypeIds,
       diagnostics,
     ));
-    nodeType.properties.forEach((property, propertyIndex) => validateRegistryDataTypeReference(
-      property.dataTypeId,
-      `${path}.properties[${propertyIndex}].dataTypeId`,
+    nodeType.properties.forEach((property, propertyIndex) => validateFieldDataTypeReferences(
+      property,
+      `${path}.properties[${propertyIndex}]`,
       "graphCatalogRegistry.unknownPropertyDataType",
       dataTypeIds,
       diagnostics,
@@ -671,9 +589,9 @@ export function buildGraphCatalogRegistry(
         dataTypeIds,
         diagnostics,
       );
-      validateRegistryDataTypeReference(
-        group.item.dataTypeId,
-        `${path}.dynamicPortGroups[${groupIndex}].item.dataTypeId`,
+      validateFieldDataTypeReferences(
+        group.item,
+        `${path}.dynamicPortGroups[${groupIndex}].item`,
         "graphCatalogRegistry.unknownDynamicPortItemDataType",
         dataTypeIds,
         diagnostics,
@@ -691,9 +609,9 @@ export function buildGraphCatalogRegistry(
         ));
       }
     });
-    graphType.properties.forEach((property, propertyIndex) => validateRegistryDataTypeReference(
-      property.dataTypeId,
-      `${path}.properties[${propertyIndex}].dataTypeId`,
+    graphType.properties.forEach((property, propertyIndex) => validateFieldDataTypeReferences(
+      property,
+      `${path}.properties[${propertyIndex}]`,
       "graphCatalogRegistry.unknownGraphPropertyDataType",
       dataTypeIds,
       diagnostics,
@@ -835,6 +753,26 @@ function validateRegistryDataTypeReference(
   }
 }
 
+function validateFieldDataTypeReferences(
+  definition: FieldValueDefinition,
+  path: string,
+  code: string,
+  dataTypeIds: ReadonlySet<string>,
+  diagnostics: DocumentDiagnostic[],
+): void {
+  validateRegistryDataTypeReference(definition.dataTypeId, `${path}.dataTypeId`, code, dataTypeIds, diagnostics);
+  definition.fields.forEach((field, index) => validateFieldDataTypeReferences(
+    field,
+    `${path}.fields[${index}]`,
+    code,
+    dataTypeIds,
+    diagnostics,
+  ));
+  if (definition.item !== undefined) {
+    validateFieldDataTypeReferences(definition.item, `${path}.item`, code, dataTypeIds, diagnostics);
+  }
+}
+
 function validateRegistrySelectorNodeTypes(
   selector: GraphNodeSelector,
   path: string,
@@ -946,8 +884,8 @@ export function searchGraphNodeTypes(
       return queryTerms.every((term) => searchText.includes(term));
     })
     .sort((left, right) => {
-      const pathComparison = nodeDisplayPath(left).localeCompare(nodeDisplayPath(right));
-      return pathComparison !== 0 ? pathComparison : left.id.localeCompare(right.id);
+      const pathComparison = compareUtf16CodeUnits(nodeDisplayPath(left), nodeDisplayPath(right));
+      return pathComparison !== 0 ? pathComparison : compareUtf16CodeUnits(left.id, right.id);
     })
     .slice(0, limit);
 }
@@ -993,7 +931,7 @@ export function resolveNodeProperty(
   catalog: GraphCatalogLookup,
   nodeTypeId: string,
   propertyId: string,
-): GraphPropertyDefinition | undefined {
+): FieldDefinition | undefined {
   const nodeType = resolveNodeType(catalog, nodeTypeId);
   return nodeType === undefined ? undefined : resolvePropertyDefinition(nodeType, propertyId);
 }
@@ -1030,7 +968,7 @@ export function resolveListPortDefinition(
 export function resolvePropertyDefinition(
   nodeType: GraphNodeTypeDefinition,
   propertyId: string,
-): GraphPropertyDefinition | undefined {
+): FieldDefinition | undefined {
   return nodeType.properties.find(
     (property) => property.id === propertyId || property.aliases.includes(propertyId),
   );
@@ -1090,8 +1028,6 @@ function readDataTypes(value: unknown, diagnostics: DocumentDiagnostic[]): reado
 
 function readGraphTypes(
   value: unknown,
-  formatVersion: unknown,
-  catalogId: string | undefined,
   diagnostics: DocumentDiagnostic[],
 ): readonly GraphTypeDefinition[] {
   if (!Array.isArray(value)) {
@@ -1117,18 +1053,13 @@ function readGraphTypes(
       ? "any" as const
       : readEnum(entry.usage, ["root", "subgraph", "any"] as const, `${path}.usage`, diagnostics);
     const source = entry.source === undefined ? undefined : readNodeSource(entry.source, `${path}.source`, diagnostics);
-    const legacyFormat = formatVersion === 1 || formatVersion === 2 || formatVersion === 3;
     let supportedCatalogIds: readonly string[] | undefined;
     if (entry.supportedCatalogIds === undefined) {
-      if (legacyFormat && catalogId !== undefined) {
-        supportedCatalogIds = [catalogId];
-      } else {
-        diagnostics.push(error(
-          "graphCatalog.missingSupportedCatalogs",
-          `${path}.supportedCatalogIds`,
-          "Graph Catalog V4 Graph Types require at least one supported Catalog.",
-        ));
-      }
+      diagnostics.push(error(
+        "graphCatalog.missingSupportedCatalogs",
+        `${path}.supportedCatalogIds`,
+        "Graph Catalog V4 Graph Types require at least one supported Catalog.",
+      ));
     } else {
       supportedCatalogIds = readIdentifierArray(entry.supportedCatalogIds, `${path}.supportedCatalogIds`, diagnostics);
       if (supportedCatalogIds.length === 0) {
@@ -1146,11 +1077,9 @@ function readGraphTypes(
       );
     }
     const portConnectionRules = entry.portConnectionRules === undefined
-      ? legacyFormat
-        ? { input: "multiple" as const, output: "multiple" as const }
-        : undefined
+      ? undefined
       : readPortConnectionRules(entry.portConnectionRules, `${path}.portConnectionRules`, diagnostics);
-    if (entry.portConnectionRules === undefined && !legacyFormat) {
+    if (entry.portConnectionRules === undefined) {
       diagnostics.push(error(
         "graphCatalog.missingPortConnectionRules",
         `${path}.portConnectionRules`,
@@ -1160,14 +1089,14 @@ function readGraphTypes(
     const allowedNodeSelectors = entry.allowedNodeSelectors === undefined
       ? undefined
       : readNodeSelectors(entry.allowedNodeSelectors, `${path}.allowedNodeSelectors`, diagnostics);
-    if (entry.properties === undefined && !legacyFormat) {
+    if (entry.properties === undefined) {
       diagnostics.push(error(
         "graphCatalog.missingGraphTypeProperties",
         `${path}.properties`,
         "Graph Catalog V4 Graph Types require a properties array.",
       ));
     }
-    const properties = readPropertyDefinitions(entry.properties ?? [], `${path}.properties`, diagnostics);
+    const properties = parseFieldDefinitions(entry.properties ?? [], `${path}.properties`, diagnostics, { allowEmpty: true });
     const nodeConstraints = entry.nodeConstraints === undefined
       ? []
       : readNodeConstraints(entry.nodeConstraints, `${path}.nodeConstraints`, diagnostics);
@@ -1360,7 +1289,7 @@ function readNodeTypes(value: unknown, diagnostics: DocumentDiagnostic[]): reado
     const dynamicPortGroups = entry.dynamicPortGroups === undefined
       ? []
       : readDynamicPortGroups(entry.dynamicPortGroups, `${path}.dynamicPortGroups`, diagnostics);
-    const properties = readPropertyDefinitions(entry.properties, `${path}.properties`, diagnostics);
+    const properties = parseFieldDefinitions(entry.properties, `${path}.properties`, diagnostics, { allowEmpty: true });
     return id === undefined || title === undefined || category === undefined
       ? []
       : [{ id, aliases, title, ...(icon === undefined ? {} : { icon }), category, menuPath, tags, traits, ...(source === undefined ? {} : { source }), ...(subgraph === undefined ? {} : { subgraph }), ports, dynamicPortGroups, properties }];
@@ -1451,42 +1380,7 @@ function readDynamicPortItem(
   path: string,
   diagnostics: DocumentDiagnostic[],
 ): GraphDynamicPortGroupDefinition["item"] | undefined {
-  if (!isRecord(value)) {
-    diagnostics.push(error("graphCatalog.invalidDynamicPortItem", path, "Expected an object."));
-    return undefined;
-  }
-  checkKeys(value, ["valueType", "dataTypeId", "defaultValue", "editor", "reference"], path, diagnostics);
-  const valueType = readEnum(value.valueType, ["string", "number", "boolean", "json"] as const, `${path}.valueType`, diagnostics);
-  const dataTypeId = value.dataTypeId === undefined
-    ? undefined
-    : readIdentifier(value.dataTypeId, `${path}.dataTypeId`, diagnostics);
-  const rawDefaultValue = value.defaultValue;
-  const defaultValue = isJsonValue(rawDefaultValue) ? rawDefaultValue : undefined;
-  if (defaultValue === undefined) {
-    diagnostics.push(error("graphCatalog.invalidDefaultValue", `${path}.defaultValue`, "Dynamic port items require a JSON defaultValue."));
-  } else if (valueType !== undefined && !matchesValueType(defaultValue, valueType)) {
-    diagnostics.push(error(
-      "graphCatalog.defaultValueTypeMismatch",
-      `${path}.defaultValue`,
-      `Default value does not match '${valueType}'.`,
-    ));
-  }
-  const editor = value.editor === undefined
-    ? undefined
-    : readPropertyEditor(value.editor, `${path}.editor`, valueType, diagnostics);
-  const reference = value.reference === undefined
-    ? undefined
-    : parseReferenceDefinition(value.reference, `${path}.reference`, diagnostics);
-  validateReferenceContract(reference, editor, valueType, path, diagnostics);
-  return valueType === undefined || defaultValue === undefined
-    ? undefined
-    : {
-        valueType,
-        ...(dataTypeId === undefined ? {} : { dataTypeId }),
-        defaultValue,
-        ...(editor === undefined ? {} : { editor }),
-        ...(reference === undefined ? {} : { reference }),
-      };
+  return parseFieldValueDefinition(value, path, diagnostics);
 }
 
 function readPorts(
@@ -1530,74 +1424,6 @@ function readPorts(
   });
 }
 
-function readPropertyDefinitions(
-  value: unknown,
-  basePath: string,
-  diagnostics: DocumentDiagnostic[],
-): readonly GraphPropertyDefinition[] {
-  if (!Array.isArray(value)) {
-    diagnostics.push(error("graphCatalog.invalidProperties", basePath, "Expected an array."));
-    return [];
-  }
-
-  return value.flatMap((entry, index) => {
-    const path = `${basePath}[${index}]`;
-    if (!isRecord(entry)) {
-      diagnostics.push(error("graphCatalog.invalidProperty", path, "Expected an object."));
-      return [];
-    }
-    checkKeys(entry, ["id", "aliases", "title", "description", "valueType", "dataTypeId", "required", "defaultValue", "editor", "reference"], path, diagnostics);
-    const id = readIdentifier(entry.id, `${path}.id`, diagnostics);
-    const aliases = entry.aliases === undefined ? [] : readIdentifierArray(entry.aliases, `${path}.aliases`, diagnostics);
-    const title = readString(entry.title, `${path}.title`, diagnostics);
-    const description = entry.description === undefined ? undefined : readString(entry.description, `${path}.description`, diagnostics);
-    const valueType = readEnum(
-      entry.valueType,
-      ["string", "number", "boolean", "json"] as const,
-      `${path}.valueType`,
-      diagnostics,
-    );
-    const required = entry.required === undefined
-      ? false
-      : readBoolean(entry.required, `${path}.required`, diagnostics);
-    const dataTypeId = entry.dataTypeId === undefined
-      ? undefined
-      : readIdentifier(entry.dataTypeId, `${path}.dataTypeId`, diagnostics);
-    const rawDefaultValue = entry.defaultValue;
-    const defaultValue = isJsonValue(rawDefaultValue) ? rawDefaultValue : undefined;
-    if (rawDefaultValue !== undefined && defaultValue === undefined) {
-      diagnostics.push(error("graphCatalog.invalidDefaultValue", `${path}.defaultValue`, "Expected a JSON value."));
-    } else if (defaultValue !== undefined && valueType !== undefined && !matchesValueType(defaultValue, valueType)) {
-      diagnostics.push(error(
-        "graphCatalog.defaultValueTypeMismatch",
-        `${path}.defaultValue`,
-        `Default value does not match '${valueType}'.`,
-      ));
-    }
-    const editor = entry.editor === undefined
-      ? undefined
-      : readPropertyEditor(entry.editor, `${path}.editor`, valueType, diagnostics);
-    const reference = entry.reference === undefined
-      ? undefined
-      : parseReferenceDefinition(entry.reference, `${path}.reference`, diagnostics);
-    validateReferenceContract(reference, editor, valueType, path, diagnostics);
-    return id === undefined || title === undefined || valueType === undefined || required === undefined
-      ? []
-      : [{
-          id,
-          aliases,
-          title,
-          ...(description === undefined ? {} : { description }),
-          valueType,
-          ...(dataTypeId === undefined ? {} : { dataTypeId }),
-          required,
-          ...(defaultValue === undefined ? {} : { defaultValue }),
-          ...(editor === undefined ? {} : { editor }),
-          ...(reference === undefined ? {} : { reference }),
-        }];
-  });
-}
-
 function readNodeSource(
   value: unknown,
   path: string,
@@ -1619,101 +1445,6 @@ function readNodeSource(
   return providerId === undefined || typeName === undefined
     ? undefined
     : { providerId, ...(assemblyName === undefined ? {} : { assemblyName }), typeName, ...(wrapperTypeName === undefined ? {} : { wrapperTypeName }) };
-}
-
-function readPropertyEditor(
-  value: unknown,
-  path: string,
-  valueType: GraphPropertyValueType | undefined,
-  diagnostics: DocumentDiagnostic[],
-): GraphPropertyEditorDefinition | undefined {
-  if (!isRecord(value)) {
-    diagnostics.push(error("graphCatalog.invalidPropertyEditor", path, "Expected an object."));
-    return undefined;
-  }
-  checkKeys(value, ["kind", "readOnly", "min", "max", "options"], path, diagnostics);
-  const kind = readEnum(
-    value.kind,
-    ["text", "multiline", "number", "checkbox", "select", "json", "reference"] as const,
-    `${path}.kind`,
-    diagnostics,
-  );
-  const readOnly = value.readOnly === undefined ? false : readBoolean(value.readOnly, `${path}.readOnly`, diagnostics);
-  const min = value.min === undefined ? undefined : readFiniteNumber(value.min, `${path}.min`, diagnostics);
-  const max = value.max === undefined ? undefined : readFiniteNumber(value.max, `${path}.max`, diagnostics);
-  const options = value.options === undefined ? [] : readPropertyEditorOptions(value.options, `${path}.options`, diagnostics);
-  if (min !== undefined && max !== undefined && min > max) {
-    diagnostics.push(error("graphCatalog.invalidPropertyRange", path, "Editor min cannot be greater than max."));
-  }
-  if (kind === "select" && options.length === 0) {
-    diagnostics.push(error("graphCatalog.missingPropertyOptions", `${path}.options`, "Select editors require at least one option."));
-  }
-  if (kind !== undefined && valueType !== undefined && !isEditorCompatible(kind, valueType)) {
-    diagnostics.push(error(
-      "graphCatalog.propertyEditorTypeMismatch",
-      `${path}.kind`,
-      `Editor '${kind}' is not compatible with '${valueType}'.`,
-    ));
-  }
-  if ((min !== undefined || max !== undefined) && kind !== "number") {
-    diagnostics.push(error(
-      "graphCatalog.unexpectedPropertyRange",
-      path,
-      "Editor min and max are only valid for number editors.",
-    ));
-  }
-  if (options.length > 0 && kind !== "select") {
-    diagnostics.push(error(
-      "graphCatalog.unexpectedPropertyOptions",
-      `${path}.options`,
-      "Editor options are only valid for select editors.",
-    ));
-  }
-  if (valueType !== undefined) {
-    options.forEach((option, index) => {
-      if (!matchesValueType(option.value, valueType)) {
-        diagnostics.push(error(
-          "graphCatalog.propertyOptionTypeMismatch",
-          `${path}.options[${index}].value`,
-          `Option value does not match '${valueType}'.`,
-        ));
-      }
-    });
-  }
-  return kind === undefined || readOnly === undefined
-    ? undefined
-    : { kind, readOnly, ...(min === undefined ? {} : { min }), ...(max === undefined ? {} : { max }), options };
-}
-
-function readPropertyEditorOptions(
-  value: unknown,
-  basePath: string,
-  diagnostics: DocumentDiagnostic[],
-): readonly GraphPropertyEditorOption[] {
-  if (!Array.isArray(value)) {
-    diagnostics.push(error("graphCatalog.invalidPropertyOptions", basePath, "Expected an array."));
-    return [];
-  }
-  const seen = new Set<string>();
-  return value.flatMap((entry, index) => {
-    const path = `${basePath}[${index}]`;
-    if (!isRecord(entry)) {
-      diagnostics.push(error("graphCatalog.invalidPropertyOption", path, "Expected an object."));
-      return [];
-    }
-    checkKeys(entry, ["title", "value"], path, diagnostics);
-    const title = readString(entry.title, `${path}.title`, diagnostics);
-    if (!isJsonValue(entry.value)) {
-      diagnostics.push(error("graphCatalog.invalidPropertyOptionValue", `${path}.value`, "Expected a JSON value."));
-      return [];
-    }
-    const key = JSON.stringify(sortJsonValue(entry.value));
-    if (seen.has(key)) {
-      diagnostics.push(error("graphCatalog.duplicatePropertyOption", `${path}.value`, "Option values must be unique."));
-    }
-    seen.add(key);
-    return title === undefined ? [] : [{ title, value: entry.value }];
-  });
 }
 
 function validateUniqueIds(
@@ -1869,14 +1600,6 @@ function readNonNegativeInteger(value: unknown, path: string, diagnostics: Docum
   return value;
 }
 
-function readFiniteNumber(value: unknown, path: string, diagnostics: DocumentDiagnostic[]): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    diagnostics.push(error("graphCatalog.invalidNumber", path, "Expected a finite number."));
-    return undefined;
-  }
-  return value;
-}
-
 function readEnum<const TValue extends string>(
   value: unknown,
   allowed: readonly TValue[],
@@ -1888,88 +1611,6 @@ function readEnum<const TValue extends string>(
     return undefined;
   }
   return value as TValue;
-}
-
-function matchesValueType(value: JsonValue, valueType: GraphPropertyValueType): boolean {
-  return valueType === "json" || typeof value === valueType;
-}
-
-function isEditorCompatible(kind: GraphPropertyEditorKind, valueType: GraphPropertyValueType): boolean {
-  switch (kind) {
-    case "text":
-    case "multiline":
-      return valueType === "string";
-    case "reference":
-      return valueType === "string" || valueType === "number";
-    case "number":
-      return valueType === "number";
-    case "checkbox":
-      return valueType === "boolean";
-    case "json":
-      return valueType === "json";
-    case "select":
-      return true;
-  }
-}
-
-function validateReferenceContract(
-  reference: ReferenceDefinition | undefined,
-  editor: GraphPropertyEditorDefinition | undefined,
-  valueType: GraphPropertyValueType | undefined,
-  path: string,
-  diagnostics: DocumentDiagnostic[],
-): void {
-  if (reference === undefined) {
-    if (editor?.kind === "reference") {
-      diagnostics.push(error(
-        "graphCatalog.missingReferenceDefinition",
-        `${path}.reference`,
-        "Reference editors require a reference definition.",
-      ));
-    }
-    return;
-  }
-  if (editor?.kind !== "reference") {
-    diagnostics.push(error(
-      "graphCatalog.missingReferenceEditor",
-      `${path}.editor.kind`,
-      "Reference definitions require a reference editor.",
-    ));
-  }
-  if (valueType !== "string" && valueType !== "number") {
-    diagnostics.push(error(
-      "graphCatalog.invalidReferenceValueType",
-      `${path}.valueType`,
-      "References require a string or number JSON value.",
-    ));
-  }
-}
-
-function isJsonValue(value: unknown): value is JsonValue {
-  if (value === null || typeof value === "string" || typeof value === "boolean") {
-    return true;
-  }
-  if (typeof value === "number") {
-    return Number.isFinite(value);
-  }
-  if (Array.isArray(value)) {
-    return value.every(isJsonValue);
-  }
-  return isRecord(value) && Object.values(value).every(isJsonValue);
-}
-
-function sortJsonValue(value: JsonValue): JsonValue {
-  if (Array.isArray(value)) {
-    return value.map(sortJsonValue);
-  }
-  if (isRecord(value)) {
-    return Object.fromEntries(
-      Object.entries(value)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, child]) => [key, sortJsonValue(child as JsonValue)]),
-    );
-  }
-  return value;
 }
 
 function checkKeys(

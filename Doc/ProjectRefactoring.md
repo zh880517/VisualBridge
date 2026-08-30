@@ -40,6 +40,30 @@ Document Browser 的 `References` 和 `Referenced By` 项提供通用 Replace �
 
 用户确认前不修改源文件。若索引到预览之间 occurrence、Catalog、Document Type 或目标键发生变化，准备阶段拒绝继续。
 
+```mermaid
+sequenceDiagram
+  participant User
+  participant Host as VS Code / MCP Host
+  participant Ref as Reference Service
+  participant Tx as Project Transaction
+  User->>Host: preview exact target + old/new typed value
+  Host->>Ref: resolve target and build impact plan
+  Ref-->>Host: impacts + base/dependency hashes
+  Host-->>User: previewHash + deterministic plan
+  User->>Host: apply same request and hashes
+  Host->>Tx: acquire lock and rebuild authoritative plan
+  alt target, source, dependency or plan changed
+    Tx-->>Host: conflict, no bytes overwritten
+    Host-->>User: refresh and preview again
+  else plan is identical
+    Tx->>Tx: stage, publish, verify, cleanup
+    Tx-->>Host: committed
+    Host-->>User: applied and refresh views
+  end
+```
+
+VS Code 用户从 Document Browser 的 `References` / `Referenced By` 项或编辑器稳定身份入口执行 Replace，核对预览中的目标、occurrence 和物理来源后确认。出现 conflict 时刷新 Project 后重新开始；出现 `refactor.committedRefreshFailed` 时文件已经提交，只刷新 Table Editor / Document Index，不能重复执行写入。完整操作步骤见 [`AuthoringUserGuide.md`](AuthoringUserGuide.md)。
+
 ## 5. 多文件事务
 
 重构准备阶段重新读取全部载体并保存 SHA-256 基线。Graph、Entity 和 Structured 使用确定性 JSON Serializer；CSV 分表逐物理源使用原 CSV Codec；XLSX 使用现有 Workbook Codec，保留无关 Worksheet、样式和未修改单元格。
@@ -70,6 +94,6 @@ Document Browser 的 `References` 和 `Referenced By` 项提供通用 Replace �
 - Safe Delete 的入站检查基于完整目标 Location 和删除闭包，不以旧值文本搜索替代解析；
 - Lifecycle apply 与 Refactor apply 都必须在 Project 锁内重建相同计划并复核所有来源和依赖。
 
-## 8. 后续扩展
+## 8. 扩展约束
 
 新增 Reference Provider 时，应同时定义其可编辑目标适配器，再复用 Core 计划与 Host 事务；不能在 Project Refactoring 中添加按字符串猜测目标的特殊分支。Catalog Type、Unity Asset 和 Runtime Instance 只有在正式 Provider、Location 作用域和目标适配器同时存在后才能加入。

@@ -19,6 +19,7 @@
     "@visualbridge/node-host": "*",
     "@visualbridge/structured": "*",
     "@visualbridge/table": "*",
+    "ajv": "8.20.0",
     "minimatch": "10.2.6"
   }
 }

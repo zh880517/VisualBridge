@@ -54,10 +54,10 @@ AI Host 每个会话启动一个进程，通过 stdin/stdout 通信。发现根�
 1. 环境变量 `VISUALBRIDGE_WORKSPACE`。
 2. 进程当前目录。
 
-运行要求是 Node.js `>=20`。新 checkout 先在仓库根目录安装并构建：
+运行要求固定为 Node.js `22.22.1` 和 npm `10.9.4`。新 checkout 先在仓库根目录按 lockfile 安装并构建：
 
 ```text
-npm install
+npm ci
 npm run build --workspace @visualbridge/mcp
 ```
 
@@ -67,9 +67,9 @@ npm run build --workspace @visualbridge/mcp
 node Tools/VisualBridgeMcp/dist/server.js
 ```
 
-通用 AI Host 配置形态如下；实际配置文件位置由 Host 决定：
+通用 AI Host 配置形态如下；这是 Host-specific template，不是 VisualBridge 协议契约，实际配置文件位置由 Host 决定：
 
-```json
+```text
 {
   "mcpServers": {
     "visualbridge": {
@@ -83,7 +83,7 @@ node Tools/VisualBridgeMcp/dist/server.js
 }
 ```
 
-stdout 只承载 MCP 协议，诊断写入 stderr。发现过程递归查找 `VisualBridge.project.vbjson`，跳过 `.git`、`.codegraph`、`node_modules` 和 Unity `Library`。无效 Project 与重复 `projectId` 返回发现问题，不成为可选择上下文。
+stdout 只承载 MCP 协议。Transport 错误和 Provider stderr 写入进程 stderr；Project 发现、路径、Schema 与工具执行失败通过结构化 MCP Tool Error 返回，不承诺额外 stderr 副本。发现过程递归查找 `VisualBridge.project.vbjson`，跳过 `.git`、`.codegraph`、`node_modules` 和 Unity `Library`。无效 Project 与重复 `projectId` 返回发现问题，不成为可选择上下文。
 
 ## V2 稳定工具面
 
@@ -109,7 +109,7 @@ MCP V2 提供单一 `visualbridge_document_lifecycle` 工具。它只接受 `pre
 
 目标 preview 请求示例：
 
-```json
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/visualbridge_document_lifecycle.input
 {
   "projectFile": "Game/VisualBridge.project.vbjson",
   "action": "preview",
@@ -150,7 +150,7 @@ Create 的 `parameters` 按 editor 固定且拒绝未知字段：
 
 例如以下 Table Create preview 即使目标使用项目自定义扩展名，也会创建 XLSX，而不是按后缀猜测：
 
-```json
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/visualbridge_document_lifecycle.input
 {
   "projectFile": "Game/VisualBridge.project.vbjson",
   "action": "preview",
@@ -175,7 +175,7 @@ Core 的共享 dependency builder 为 MCP 与 VS Code 生成同一结构：每�
 
 Apply 请求必须重复完全相同的 operation：
 
-```json
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/visualbridge_document_lifecycle.input
 {
   "projectFile": "Game/VisualBridge.project.vbjson",
   "action": "apply",
@@ -236,7 +236,7 @@ Apply 必须原样提交 preview 使用的完整 operation、`previewHash`、`pl
 
 Copy preview 只把副本内部引用记为 `internalRetarget`，把仍指向 closure 外或明确 `allowMissing` 的引用记为 `outboundPreserved`。它不产生 `targetLocationChanged`，因为 remap 后的副本是新身份；只有保持身份不变的 Move 使用该 impact 描述 Location path 变化。
 
-上例中的 64 位 Hash 和 `planPayload` 只是满足 Schema 的示意值；真实 apply 必须逐字使用同一次 preview 返回值，不能使用示例常量。Apply 缺少任一字段会被 Schema 拒绝；preview 反过来也会拒绝这些 apply-only 字段。
+上例中的 64 字符 Hash 和 `planPayload` 只是满足 Schema 的示意值；真实 apply 必须逐字使用同一次 preview 返回值，不能使用示例常量。Apply 缺少任一字段会被 Schema 拒绝；preview 反过来也会拒绝这些 apply-only 字段。
 
 Delete target 是严格判别联合：
 
@@ -266,7 +266,7 @@ Document Delete 的 `plan.ownedIdentities` 包含整个 Document；`entity.compo
 
 每个成功结果都使用：
 
-```json
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/toolOutput
 {
   "contractVersion": 2,
   "status": "ok",
@@ -276,7 +276,7 @@ Document Delete 的 `plan.ownedIdentities` 包含整个 Document；`entity.compo
 
 只读请求返回 `status: "ok"`。Lifecycle 预览返回 `preview`；Lifecycle apply 若当前可信计划含 blocker 返回 `blocked`。其他写入返回 `applied`、`unchanged`、`invalid` 或 `conflict`。领域数据始终位于 `data`，不会在 `data.status` 中重复信封状态。Project、路径、Catalog、权限、Schema、I/O、无法建立可信语义快照或事务不确定错误使用 MCP Tool Error：
 
-```json
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/toolOutput
 {
   "contractVersion": 2,
   "status": "error",
@@ -294,7 +294,7 @@ Document Delete 的 `plan.ownedIdentities` 包含整个 Document；`entity.compo
 
 先发现：
 
-```json
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/visualbridge_project.input
 {
   "action": "discover"
 }
@@ -302,7 +302,7 @@ Document Delete 的 `plan.ownedIdentities` 包含整个 Document；`entity.compo
 
 再读取一个 Project：
 
-```json
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/visualbridge_project.input
 {
   "action": "read",
   "projectFile": "Game/VisualBridge.project.vbjson"
@@ -311,7 +311,7 @@ Document Delete 的 `plan.ownedIdentities` 包含整个 Document；`entity.compo
 
 `read` 返回完整 Project 定义、每个 Document Type 的 `adapterAvailable` 和当前内置 `supportedEditors`。`listDocuments` 可按 `editor`、`documentTypeId` 和路径查询过滤，并使用不透明 `cursor` / `nextCursor` 分页。调用方必须把 Cursor 原样回传给产生它的同类查询；解析或修改属于不受支持的行为，跨查询复用会被拒绝。
 
-```json
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/visualbridge_project.input
 {
   "action": "listDocuments",
   "projectFile": "Game/VisualBridge.project.vbjson",
@@ -327,7 +327,7 @@ Document Delete 的 `plan.ownedIdentities` 包含整个 Document；`entity.compo
 
 Catalog 查询必须显式传入：
 
-```json
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/visualbridge_catalog.input
 {
   "action": "search",
   "projectFile": "Game/VisualBridge.project.vbjson",
@@ -353,7 +353,7 @@ Catalog 查询必须显式传入：
 
 `search` 必须显式传可搜索 kind；`summary` 只用于 `read`。Catalog read 示例：
 
-```json
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/visualbridge_catalog.input
 {
   "action": "read",
   "projectFile": "Game/VisualBridge.project.vbjson",
@@ -369,7 +369,7 @@ Catalog search 查找类型定义；Document search 查找当前实例，两者�
 
 Graph、Entity、Structured 文本和 Table 载体都通过同一个工具：
 
-```json
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/visualbridge_document.input
 {
   "action": "read",
   "projectFile": "Game/VisualBridge.project.vbjson",
@@ -392,7 +392,7 @@ Table `read` 可通过 `selector.sheetId` 返回一个物理 Sheet 的语义 Row
 
 Document search 和 validate 示例：
 
-```json
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/visualbridge_document.input
 {
   "action": "search",
   "projectFile": "Game/VisualBridge.project.vbjson",
@@ -405,7 +405,7 @@ Document search 和 validate 示例：
 }
 ```
 
-```json
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/visualbridge_document.input
 {
   "action": "validate",
   "projectFile": "Game/VisualBridge.project.vbjson",
@@ -447,15 +447,15 @@ sequenceDiagram
   MCP-->>AI: applied / unchanged / invalid / blocked / conflict
 ```
 
-示例：
+示例（`baseHash` 是合法格式的 64 字符小写十六进制示例值）：
 
-```json
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/visualbridge_apply_operations.input
 {
   "projectFile": "Game/VisualBridge.project.vbjson",
   "documentTypeId": "hero-config",
   "editor": "entity",
   "path": "Config/Entities/Player.herojson",
-  "baseHash": "<read returned SHA-256>",
+  "baseHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "operations": [
     { "type": "entity.setTitle", "title": "Player" },
     { "type": "entity.setComponentEnabled", "componentId": "move", "enabled": true }
@@ -505,7 +505,7 @@ sequenceDiagram
   Host->>Sources: stage every changed source + flush
   Host->>Journal: write prepared entries + flush
   loop deterministic source order
-    Host->>Sources: original -> backup; staged -> target
+    Host->>Sources: original -> backup, staged -> target
   end
   Host->>Sources: verify every persisted hash
   alt all hashes match
@@ -556,7 +556,7 @@ Lifecycle 与普通 Operation 的业务状态：
 
 Project Provider 授权只从启动环境读取：`VISUALBRIDGE_PROVIDER_ENABLED=1` 且 `VISUALBRIDGE_PROVIDER_ALLOWLIST` 是入口绝对路径 JSON 数组。默认、`0` 或未设置均禁用；启用但 allowlist 非法时 Server 拒绝启动。声明、PowerShell 示例、进程生命周期、源文件直接写入检测和故障处理见 [`ProjectProvider.md`](ProjectProvider.md)。Provider Validator 诊断会并入 Document read/validate 和 Operation 的修改后校验；Provider error 保留原数据，外部写入冲突拒绝覆盖。
 
-```json
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/visualbridge_references.input
 {
   "projectFile": "Game/VisualBridge.project.vbjson",
   "action": "search",
@@ -575,7 +575,7 @@ Project Provider 授权只从启动环境读取：`VISUALBRIDGE_PROVIDER_ENABLED
 
 `visualbridge_refactor_reference.preview` 唯一解析旧目标，构建确定性影响计划，并返回 `previewHash` 与完整 `baseHashes`。`apply` 必须原样带回两者；Host 在 Project 锁内重建计划，Project、Catalog、Document 或 CSV family 任一依赖变化都会拒绝。Entity Component、Graph Element、Table Row 和 Document ID 都通过正式领域变换，不做项目级字符串替换。
 
-```json
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/visualbridge_refactor_reference.input
 {
   "projectFile": "Game/VisualBridge.project.vbjson",
   "action": "preview",

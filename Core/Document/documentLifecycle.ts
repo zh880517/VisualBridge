@@ -1,4 +1,5 @@
 import type { JsonValue } from "../Form/field";
+import { compareUtf16CodeUnits } from "../Ordering/ordinal";
 import type { IndexedDocument } from "./documentIndex";
 import type {
   ReferenceDefinition,
@@ -363,12 +364,6 @@ export function remapOwnedStableIdentityCollisionTargets(
       value: replacement,
     }];
   });
-}
-
-/** Locale-independent lexicographic total order over JavaScript UTF-16 code units. */
-export function compareUtf16CodeUnits(left: string, right: string): number {
-  if (left === right) return 0;
-  return left < right ? -1 : 1;
 }
 
 /**

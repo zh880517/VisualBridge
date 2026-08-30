@@ -1,4 +1,5 @@
 import type { JsonValue } from "../Form/field";
+import { compareUtf16CodeUnits } from "../Ordering/ordinal";
 import {
   DEFAULT_REFERENCE_SNAPSHOT_DEPENDENCY_KEY,
   normalizeReferenceQuery,
@@ -43,7 +44,7 @@ export function createDocumentReferenceProvider(
           documentId: document.documentId,
         },
       }))
-      .sort((left, right) => candidateKey(left).localeCompare(candidateKey(right)))
+      .sort((left, right) => compareUtf16CodeUnits(candidateKey(left), candidateKey(right)))
   );
   const searchPage = async (request: ReferenceSearchPageRequest) => {
     const target = readTarget(request.target);

@@ -60,7 +60,6 @@
           "aliases": [],
           "valueType": "string",
           "dataTypeId": "string",
-          "required": true,
           "defaultValue": "Hello"
         }
       ]

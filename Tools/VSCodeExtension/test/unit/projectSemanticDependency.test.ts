@@ -50,3 +50,42 @@ test("Project snapshot document dependencies are order independent and content s
     projectSemanticSnapshotDependencyKey(emptyProject, [left, { ...right, dependencyKey: "changed" }]),
   );
 });
+
+test("Project snapshot hashes are invariant across Unicode path permutations", () => {
+  const documents = ["e\u0301", "é", "😀", "\uE000"].map((path) => ({
+    documentTypeId: "sample.unicode",
+    path: `Config/${path}.sample`,
+    dependencyKey: path,
+  }));
+  const baseline = projectSemanticSnapshotDependencyKey(emptyProject, documents);
+
+  assert.equal(projectSemanticSnapshotDependencyKey(emptyProject, [...documents].reverse()), baseline);
+  assert.equal(
+    projectSemanticSnapshotDependencyKey(emptyProject, [documents[2]!, documents[0]!, documents[3]!, documents[1]!]),
+    baseline,
+  );
+});
+
+test("Project snapshot hashes recursively canonicalize Unicode object keys", () => {
+  const metadataEntries = [
+    ["\uE000", "private-use"],
+    ["\uDE00", "low-surrogate"],
+    ["😀", "surrogate-pair"],
+    ["\uD83D", "high-surrogate"],
+    ["é", "composed"],
+    ["e\u0301", "decomposed"],
+  ] as const;
+  const left = {
+    ...emptyProject,
+    metadata: Object.fromEntries(metadataEntries),
+  } as VisualBridgeProjectDefinition;
+  const right = Object.fromEntries([
+    ["metadata", Object.fromEntries([...metadataEntries].reverse())],
+    ...Object.entries(emptyProject).reverse(),
+  ]) as unknown as VisualBridgeProjectDefinition;
+
+  assert.equal(
+    projectSemanticSnapshotDependencyKey(left, []),
+    projectSemanticSnapshotDependencyKey(right, []),
+  );
+});

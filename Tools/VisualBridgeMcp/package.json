@@ -9,9 +9,9 @@
     "node": "22.22.1"
   },
   "scripts": {
-    "build": "npm run build --workspace @visualbridge/node-host && esbuild src/server.ts src/projectTransaction.ts src/providerAuthorization.ts src/projectProviderService.ts src/referenceSnapshot.ts --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outdir=dist --sourcemap && npm run check",
+    "build": "npm run build --workspace @visualbridge/node-host && esbuild src/server.ts src/projectTransaction.ts src/providerAuthorization.ts src/projectProviderService.ts src/referenceSnapshot.ts src/sourceManifest.ts --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outdir=dist --sourcemap && npm run check",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test test/projectTransaction.test.mjs test/providerAuthorization.test.mjs test/referenceSnapshot.test.mjs test/stdio.test.mjs"
+    "test": "npm run build && node --test test/projectTransaction.test.mjs test/providerAuthorization.test.mjs test/referenceSnapshot.test.mjs test/sourceManifest.test.mjs test/stdio.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",

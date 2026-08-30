@@ -45,6 +45,7 @@ schemas.forEach(({ name, schema }) => {
   if (ajv.getSchema(schema.$id) === undefined) throw new Error(`AJV did not compile ${name}.`);
 });
 verifyContractExamples(ajv);
+verifySharedFormSchemaParity(ajv);
 await verifyImplementationRegistry();
 
 const index = {
@@ -168,6 +169,167 @@ function verifyContractExamples(compiler) {
   assertValid(structuredError, { code: -32001, message: "Unavailable", data: { kind: "providerUnavailable", retryable: true } }, "structured Provider error");
   assertInvalid(structuredError, { code: -32001, message: "Unavailable", data: { kind: "providerUnavailable" } }, "structured Provider error without retryable");
   assertInvalid(structuredError, { code: -32001, message: "Unavailable", data: { kind: "internalError", retryable: true } }, "structured Provider error with mismatched kind");
+}
+
+function verifySharedFormSchemaParity(compiler) {
+  const catalogSchemas = [
+    "visualbridge-graph-catalog.schema.json",
+    "visualbridge-entity-catalog.schema.json",
+    "visualbridge-structured-catalog.schema.json",
+    "visualbridge-table-catalog.schema.json",
+  ];
+  const schemasByName = new Map(schemas.map(({ name, schema }) => [name, schema]));
+  const sharedDefinitions = [
+    "identifier",
+    "identifierArray",
+    "nonEmptyString",
+    "field",
+    "valueDefinition",
+    "valueType",
+    "valueShape",
+    "reference",
+    "editorOption",
+    "editor",
+  ];
+  const baselineSchema = schemasByName.get(catalogSchemas[0]);
+  if (baselineSchema === undefined) throw new Error(`Shared Form parity schema '${catalogSchemas[0]}' is missing.`);
+  for (const schemaName of catalogSchemas.slice(1)) {
+    const schema = schemasByName.get(schemaName);
+    if (schema === undefined) throw new Error(`Shared Form parity schema '${schemaName}' is missing.`);
+    for (const definitionName of sharedDefinitions) {
+      assert.deepEqual(
+        schema.$defs?.[definitionName],
+        baselineSchema.$defs?.[definitionName],
+        `${schemaName} shared Form $defs/${definitionName} drifted from ${catalogSchemas[0]}.`,
+      );
+    }
+  }
+  const cases = [
+    {
+      label: "minimal scalar field",
+      definition: "field",
+      value: { id: "title", title: "Title", valueType: "string", defaultValue: "" },
+      valid: true,
+    },
+    {
+      label: "recursive object field",
+      definition: "field",
+      value: {
+        id: "position",
+        aliases: [],
+        title: "Position",
+        valueType: "object",
+        defaultValue: { x: 0 },
+        fields: [{ id: "x", title: "X", valueType: "number", defaultValue: 0 }],
+      },
+      valid: true,
+    },
+    {
+      label: "recursive array value",
+      definition: "valueDefinition",
+      value: {
+        valueType: "array",
+        defaultValue: [null],
+        item: { valueType: "json", defaultValue: null, editor: { kind: "json" } },
+      },
+      valid: true,
+    },
+    {
+      label: "structured select option",
+      definition: "field",
+      value: {
+        id: "mode",
+        title: "Mode",
+        valueType: "object",
+        defaultValue: { id: 1 },
+        fields: [],
+        editor: { kind: "select", options: [{ title: "One", value: { id: 1 } }] },
+      },
+      valid: true,
+    },
+    {
+      label: "number reference",
+      definition: "field",
+      value: {
+        id: "target",
+        title: "Target",
+        valueType: "number",
+        defaultValue: 1,
+        editor: { kind: "reference", integer: true },
+        reference: { kind: "table.row", target: { tableTypeId: "skills" }, allowMissing: false },
+      },
+      valid: true,
+    },
+    {
+      label: "whitespace field title",
+      definition: "field",
+      value: { id: "title", title: "   ", valueType: "string", defaultValue: "" },
+      valid: false,
+    },
+    {
+      label: "duplicate aliases",
+      definition: "field",
+      value: { id: "title", aliases: ["old", "old"], title: "Title", valueType: "string", defaultValue: "" },
+      valid: false,
+    },
+    {
+      label: "scalar with object fields",
+      definition: "field",
+      value: { id: "title", title: "Title", valueType: "string", defaultValue: "", fields: [] },
+      valid: false,
+    },
+    {
+      label: "object without fields",
+      definition: "field",
+      value: { id: "value", title: "Value", valueType: "object", defaultValue: {} },
+      valid: false,
+    },
+    {
+      label: "array without item",
+      definition: "valueDefinition",
+      value: { valueType: "array", defaultValue: [] },
+      valid: false,
+    },
+    {
+      label: "select without options",
+      definition: "field",
+      value: { id: "mode", title: "Mode", valueType: "string", defaultValue: "a", editor: { kind: "select" } },
+      valid: false,
+    },
+    {
+      label: "non-select with options",
+      definition: "field",
+      value: {
+        id: "count",
+        title: "Count",
+        valueType: "number",
+        defaultValue: 0,
+        editor: { kind: "number", options: [{ title: "Zero", value: 0 }] },
+      },
+      valid: false,
+    },
+  ];
+
+  for (const testCase of cases) {
+    const results = catalogSchemas.map((schemaName) => {
+      const schema = schemasByName.get(schemaName);
+      if (schema === undefined) throw new Error(`Shared Form parity schema '${schemaName}' is missing.`);
+      const validator = requireValidator(compiler, `${schema.$id}#/$defs/${testCase.definition}`);
+      return { schemaName, valid: validator(testCase.value) };
+    });
+    for (const result of results) {
+      assert.equal(
+        result.valid,
+        testCase.valid,
+        `${result.schemaName} shared ${testCase.definition} disagrees for ${testCase.label}.`,
+      );
+    }
+    assert.equal(
+      new Set(results.map((result) => result.valid)).size,
+      1,
+      `Shared Form Schema parity drift for ${testCase.label}: ${JSON.stringify(results)}.`,
+    );
+  }
 }
 
 async function verifyImplementationRegistry() {

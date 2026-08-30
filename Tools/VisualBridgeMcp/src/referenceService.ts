@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  compareUtf16CodeUnits,
   createDocumentReferenceProvider,
   documentIndexKey,
   ReferenceService,
@@ -299,7 +300,7 @@ export class VisualBridgeReferenceService {
       });
     }
     for (const table of await this.tables.loadReferenceDocuments(project.projectFile, true)) {
-      const sourcePaths = [...new Set([table.path, ...Object.values(table.sheetPaths ?? {})])].sort();
+      const sourcePaths = [...new Set([table.path, ...Object.values(table.sheetPaths ?? {})])].sort(compareUtf16CodeUnits);
       const occurrences = collectTableReferences(table.document, table.tableType);
       const referenceDiagnostics = await references.validate(occurrences);
       assertIndexable(sourcePaths[0] ?? table.path, referenceDiagnostics);
@@ -317,7 +318,7 @@ export class VisualBridgeReferenceService {
         ),
       });
     }
-    return documents.sort((left, right) => documentIndexKey(left).localeCompare(documentIndexKey(right)));
+    return documents.sort((left, right) => compareUtf16CodeUnits(documentIndexKey(left), documentIndexKey(right)));
   }
 
   private async loadSemanticDocuments(project: ProjectContext): Promise<{
@@ -378,9 +379,9 @@ export class VisualBridgeReferenceService {
         }
       }
     }
-    documents.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
-    entities.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
-    graphs.sort((left, right) => `${left.documentTypeId}\u0000${left.path}`.localeCompare(`${right.documentTypeId}\u0000${right.path}`));
+    documents.sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
+    entities.sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
+    graphs.sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
     return { documents, entities, graphs };
   }
 }

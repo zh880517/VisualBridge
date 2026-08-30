@@ -24,7 +24,7 @@ Catalog 顶层另有全平台共用的 `source` 来源快照状态，用于区�
 
 ## 编辑器大类、项目子类与文件扩展名
 
-VisualBridge 插件按少量稳定的编辑器大类注册能力。当前大类包括 `graph` 和 `entity`，后续可以增加 `table` 等大类。项目通过 `documentTypes` 声明业务子类：
+VisualBridge 插件按少量稳定的编辑器大类注册能力。当前已落地 `graph`、`entity`、`structured` 和 `table` 四类编辑器；项目通过 `documentTypes` 声明业务子类：
 
 - `documentTypes[].editor` 选择编辑器大类，例如 `entity`。
 - `documentTypes[].id` 是项目内稳定的业务子类 ID，例如 `hero-config`、`monster-config`。
@@ -35,7 +35,7 @@ VisualBridge 插件按少量稳定的编辑器大类注册能力。当前大类�
 
 例如，同一个 Entity 编辑器可以处理项目自定义的 `.herojson` 和 `.monsterdata`：
 
-```json
+```json visualbridge-schema=visualbridge-project.schema.json visualbridge-parser=project
 {
   "formatVersion": 1,
   "projectId": "game.authoring",
@@ -67,11 +67,12 @@ Entity Catalog 使用 JSON，默认便利后缀为 `.vbentitycatalog`。一个 E
 
 Catalog 顶层结构：
 
-```json
+```json visualbridge-schema=visualbridge-entity-catalog.schema.json visualbridge-parser=entity-catalog
 {
   "formatVersion": 1,
   "catalogId": "game.entity.gameplay",
   "title": "Gameplay",
+  "source": { "status": "unknown" },
   "componentGroups": [],
   "entityTypes": [],
   "componentTypes": []
@@ -82,7 +83,7 @@ Catalog 顶层结构：
 
 Component Group 表达 Entity 类型允许挂载的组件大组，等价于旧编辑器中用于组织组件菜单和限制 Entity 种类的分组概念：
 
-```json
+```json visualbridge-schema=visualbridge-entity-catalog.schema.json#/$defs/componentGroup
 {
   "id": "game.group.combat",
   "title": "Combat",
@@ -96,7 +97,7 @@ Component Group 表达 Entity 类型允许挂载的组件大组，等价于旧�
 
 Entity Type 描述一类根配置结构以及它允许的 Component Group：
 
-```json
+```json visualbridge-schema=visualbridge-entity-catalog.schema.json#/$defs/entityType
 {
   "id": "game.entity.player",
   "title": "Player",
@@ -116,7 +117,7 @@ Entity Type 描述一类根配置结构以及它允许的 Component Group：
 
 Component Type 描述可添加到 Entity 的运行时组件结构：
 
-```json
+```json visualbridge-schema=visualbridge-entity-catalog.schema.json#/$defs/componentType
 {
   "id": "game.component.health",
   "title": "Health",
@@ -135,7 +136,7 @@ Component Type 描述可添加到 Entity 的运行时组件结构：
 
 ## 全项目共享字段模型
 
-字段不是 Entity 私有能力。`Core/Form` 定义宿主无关的字段语义，`Editors/Form` 提供可复用 React 控件；Entity 是当前第一个完整使用者。Graph 属性、Structured Document、Table 单元格和后续自定义结构编辑应逐步复用同一字段定义、校验和 UI 组件，不各自实现数值、颜色或普通自定义结构体编辑规则。
+字段不是 Entity 私有能力。`Core/Form` 定义宿主无关的字段语义，`Editors/Form` 提供可复用 React 控件；Graph 属性、Entity 根字段与 Component、Structured Document 和 Table 单元格已经复用同一字段定义、校验和 UI 组件。各编辑器仍把字段提交转换为自己的领域 Operation，不让 Form 直接写文档。递归 Object/List、Reference、颜色/数值控件和提交边界详见 [`FormFieldEditor.md`](FormFieldEditor.md)，VS Code 会话与持久化边界见 [`VSCodeHost.md`](VSCodeHost.md)。
 
 字段定义包含：
 
@@ -154,7 +155,7 @@ Component Type 描述可添加到 Entity 的运行时组件结构：
 
 ### 数值
 
-```json
+```json visualbridge-schema=visualbridge-entity-catalog.schema.json#/$defs/field
 {
   "id": "level",
   "title": "Level",
@@ -176,7 +177,7 @@ Component Type 描述可添加到 Entity 的运行时组件结构：
 
 ### 颜色
 
-```json
+```json visualbridge-schema=visualbridge-entity-catalog.schema.json#/$defs/field
 {
   "id": "tint",
   "title": "Tint",
@@ -198,7 +199,7 @@ Component Type 描述可添加到 Entity 的运行时组件结构：
 
 普通游戏结构体使用递归 `object` 描述，不要求继承 VisualBridge 类型：
 
-```json
+```json visualbridge-schema=visualbridge-entity-catalog.schema.json#/$defs/field
 {
   "id": "spawn",
   "title": "Spawn",
@@ -250,7 +251,7 @@ Entity 根字段与每个 Component 字段都会递归收集引用。`table.row`
 
 Entity Document 使用 JSON，默认便利后缀为 `.vbentity`；项目可以通过 `include` 改成任意扩展名。
 
-```json
+```json visualbridge-schema=visualbridge-entity.schema.json visualbridge-parser=entity-document
 {
   "formatVersion": 1,
   "documentId": "game.player.default",
@@ -305,7 +306,7 @@ Entity 的完整生命周期使用共享 [`DocumentLifecycle.md`](DocumentLifecy
 - Safe Delete Document 的 closure 包含 Document 与全部 Component；Safe Delete Component 的 closure 只包含目标 Component。闭包外任何可能解析到这些身份的 occurrence 都会阻止删除。
 - 未知 Component Type、字段结构、Catalog 或 Reference Provider 使 coverage 不完整时 fail closed；删除后仍必须满足 Entity Type/Group/Component 约束和完整字段校验。
 
-`entity.removeComponent` 是 Lifecycle 内部可复用的低层 Operation。PU-03 guard 落地后，公共编辑器和 `visualbridge_apply_operations` 直接提交该操作会返回 `lifecycle.required`；Component 卡片的删除按钮改为调用 Lifecycle preview/apply。Component Duplicate 仍是同一文档内的普通 Operation，与 whole-document Copy 不同。
+`entity.removeComponent` 是 Lifecycle 内部可复用的低层 Operation。当前公共编辑器和 `visualbridge_apply_operations` 直接提交该操作会返回 `lifecycle.required`；Component 卡片的删除按钮调用共享 Lifecycle preview/apply。Component Duplicate 仍是同一文档内的普通 Operation，与 whole-document Copy 不同。
 
 Component Safe Delete 的 target 固定为 `{ "kind": "entity.component", "componentId": "..." }`，并与完整 source selector 一起提交；Document Delete 使用 `{ "kind": "document" }`。`componentId` 必须来自当前语义文档，不能传 Component Type ID、标题或菜单路径。
 
@@ -332,7 +333,7 @@ Entity 不定义专用顶层 Tool。`visualbridge_catalog` 读取或搜索 Compo
 当前 Entity Webview 提供：
 
 - Entity 标题、类型和根字段编辑。
-- Component 卡片折叠、启用开关、复制，以及共享列表风格的拖拽排序、在后添加和删除操作组；当前删除使用领域 Operation，PU-03 guard 合入后必须进入 Lifecycle preview/apply。
+- Component 卡片折叠、启用开关、复制，以及共享列表风格的拖拽排序、在后添加和删除操作组；删除当前已进入共享 Lifecycle preview/apply，直接提交低层领域 Operation 会被 guard 拒绝。
 - 按 Catalog / Group / 菜单路径组织的可搜索 Add Component 对话框。
 - 数值、颜色、选择项、普通对象和 List 的共享字段控件。
 - 未知 Component Type 的只读 JSON 展示与原样保留。

@@ -32,7 +32,7 @@ function decodeValue(
         return value;
       }
       case "boolean": {
-        const normalized = raw.trim().toLocaleLowerCase();
+        const normalized = raw.trim().toLowerCase();
         if (normalized === "true" || normalized === "1") {
           return true;
         }

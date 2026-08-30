@@ -4,6 +4,7 @@ import { realpath } from "node:fs/promises";
 import * as vscode from "vscode";
 import { minimatch } from "minimatch";
 import {
+  compareUtf16CodeUnits,
   PROJECT_FILE_GLOB,
   type DocumentTypeDefinition,
   type VisualBridgeProjectDefinition,
@@ -62,7 +63,7 @@ export class ProjectRegistry implements vscode.Disposable {
     const nextProjects: ProjectContext[] = [];
     const nextDiagnostics = new Map<string, { uri: vscode.Uri; items: vscode.Diagnostic[] }>();
 
-    for (const markerUri of markerUris.sort((left, right) => left.toString().localeCompare(right.toString()))) {
+    for (const markerUri of markerUris.sort((left, right) => compareUtf16CodeUnits(left.toString(), right.toString()))) {
       try {
         const bytes = await vscode.workspace.fs.readFile(markerUri);
         const result = parseProjectFile(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
@@ -207,7 +208,7 @@ export class ProjectRegistry implements vscode.Disposable {
         }
       }
     }
-    return [...paths].sort(compareOrdinal);
+    return [...paths].sort(compareUtf16CodeUnits);
   }
 
   public validateDefinition(
@@ -305,10 +306,6 @@ function matches(pattern: string, relativePath: string): boolean {
   });
 }
 
-function compareOrdinal(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -375,7 +372,7 @@ async function validateProjectWorkspace(project: ProjectContext): Promise<readon
       }
     }
   }
-  for (const relativePath of [...candidatePaths].sort(compareOrdinal)) {
+  for (const relativePath of [...candidatePaths].sort(compareUtf16CodeUnits)) {
     const owners = findMatchingDocumentTypes(project.definition, relativePath, matches);
     if (owners.length > 1) {
       issues.push(
@@ -414,7 +411,7 @@ async function validateProjectWorkspace(project: ProjectContext): Promise<readon
     }
   }
 
-  return [...new Set(issues)].sort(compareOrdinal);
+  return [...new Set(issues)].sort(compareUtf16CodeUnits);
 }
 
 function isPathInside(rootPath: string, candidatePath: string): boolean {
@@ -522,5 +519,5 @@ function segmentMatches(pattern: string, candidate: string): boolean {
 }
 
 function normalizeGlobCase(value: string): string {
-  return process.platform === "win32" ? value.toLocaleLowerCase("en-US") : value;
+  return process.platform === "win32" ? value.toLowerCase() : value;
 }

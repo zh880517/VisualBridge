@@ -337,7 +337,7 @@ test("shared dependency builder canonicalizes the same physical and Reference sn
 });
 
 test("lifecycle canonical ordering is a UTF-16 total order independent of reverse Unicode input", () => {
-  const ordered = ["Z", "a", "e\u0301", "é", "😀", "\uE000"];
+  const ordered = ["Z", "a", "e\u0301", "é", "\uD83D", "😀", "\uDE00", "\uE000"];
   const reversed = [...ordered].reverse();
   const makePlan = (values: readonly string[]): DocumentLifecyclePlan => ({
     version: 1,

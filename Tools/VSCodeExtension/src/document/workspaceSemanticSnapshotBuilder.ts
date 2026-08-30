@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import * as nodePath from "node:path";
 import * as vscode from "vscode";
 import {
+  canonicalJsonStringify,
+  compareUtf16CodeUnits,
   type DocumentDiagnostic,
   type DocumentReferenceDocument,
   type DocumentTypeDefinition,
@@ -138,7 +140,7 @@ export function buildReferenceSnapshots(
     const projectKey = project.markerUri.toString();
     const projectDocuments = prepared.filter((entry) => entry.projectKey === projectKey);
     const sort = <T extends { readonly documentTypeId: string; readonly path: string }>(values: readonly T[]): readonly T[] => (
-      [...values].sort((left, right) => compareOrdinal(
+      [...values].sort((left, right) => compareUtf16CodeUnits(
         `${left.documentTypeId}\u0000${left.path}`,
         `${right.documentTypeId}\u0000${right.path}`,
       ))
@@ -170,7 +172,7 @@ function source(
   sourceHashes: readonly string[],
   load: (signal: AbortSignal) => Promise<PreparedWorkspaceDocument>,
 ): SemanticSnapshotSource<PreparedWorkspaceDocument> {
-  const dependencyKey = hashText(JSON.stringify({
+  const dependencyKey = hashText(canonicalJsonStringify({
     project: project.definition,
     documentType,
     tableLayout: documentType.editor === "table" ? project.definition.tableLayout : undefined,
@@ -336,7 +338,7 @@ async function planTableSources(
   const result: SemanticSnapshotSource<PreparedWorkspaceDocument>[] = [];
   const remaining = new Map(uris.map((uri) => [uri.toString(), uri]));
   while (remaining.size > 0) {
-    const active = [...remaining.values()].sort((left, right) => compareOrdinal(left.path, right.path))[0]!;
+    const active = [...remaining.values()].sort((left, right) => compareUtf16CodeUnits(left.path, right.path))[0]!;
     const activeCapture = captures.get(active.toString())!;
     if (activeCapture.bytes === undefined || isXlsx(activeCapture.bytes)) {
       remaining.delete(active.toString());
@@ -348,7 +350,7 @@ async function planTableSources(
     }
     const family = selectCsvFamily(active, [...remaining.values()], tableType);
     family.forEach((uri) => remaining.delete(uri.toString()));
-    const sourcePaths = family.map((uri) => relativeProjectPath(project, uri)).sort(compareOrdinal);
+    const sourcePaths = family.map((uri) => relativeProjectPath(project, uri)).sort(compareUtf16CodeUnits);
     const familyCaptures = family.map((uri) => ({ uri, captured: captures.get(uri.toString())! }));
     result.push(source(
       project,
@@ -438,14 +440,14 @@ async function prepareCsv(
       diagnostics.push({ severity: "error", code: "document.unreadable", path: physicalName, message: formatError(errorValue) });
     }
   }
-  sourcePaths.sort(compareOrdinal);
+  sourcePaths.sort(compareUtf16CodeUnits);
   const document: TableDocument = { format: "csv", sheets };
   return prepareTable(
     project,
     documentType,
     sourcePaths[0] ?? "",
     sourcePaths,
-    hashText(entries.map((entry) => `${relativeProjectPath(project, entry.uri)}\u0000${entry.captured.hash}`).sort(compareOrdinal).join("\n")),
+    hashText(entries.map((entry) => `${relativeProjectPath(project, entry.uri)}\u0000${entry.captured.hash}`).sort(compareUtf16CodeUnits).join("\n")),
     document,
     tableType,
     diagnostics,
@@ -548,7 +550,7 @@ function catalogDependencyKey<TCatalog, TRegistry>(
   documentType: DocumentTypeDefinition,
   catalog: CatalogRegistryLoadResult<TCatalog, TRegistry>,
 ): string {
-  return hashText(JSON.stringify({
+  return hashText(canonicalJsonStringify({
     projectId: project.definition.projectId,
     documentTypeId: documentType.id,
     editor: documentType.editor,
@@ -594,7 +596,7 @@ async function findDocumentUris(
       }
     }
   }
-  return [...result.values()].sort((left, right) => compareOrdinal(left.path, right.path));
+  return [...result.values()].sort((left, right) => compareUtf16CodeUnits(left.path, right.path));
 }
 
 function selectCsvFamily(
@@ -603,16 +605,16 @@ function selectCsvFamily(
   tableType: TableTypeDefinition,
 ): readonly vscode.Uri[] {
   if (!tableType.sheets.some((sheet) => sheet.partition !== undefined)) return [active];
-  const activeDirectory = nodePath.dirname(active.fsPath).toLocaleLowerCase();
-  const activeExtension = nodePath.extname(active.fsPath).toLocaleLowerCase();
+  const activeDirectory = nodePath.dirname(active.fsPath).toLowerCase();
+  const activeExtension = nodePath.extname(active.fsPath).toLowerCase();
   const physicalName = nodePath.basename(active.fsPath, nodePath.extname(active.fsPath));
   if (!matchTableSheetDefinitions(tableType, physicalName).some((sheet) => sheet.partition !== undefined)) return [active];
   return candidates.filter((candidate) => {
-    if (nodePath.dirname(candidate.fsPath).toLocaleLowerCase() !== activeDirectory
-      || nodePath.extname(candidate.fsPath).toLocaleLowerCase() !== activeExtension) return false;
+    if (nodePath.dirname(candidate.fsPath).toLowerCase() !== activeDirectory
+      || nodePath.extname(candidate.fsPath).toLowerCase() !== activeExtension) return false;
     const name = nodePath.basename(candidate.fsPath, nodePath.extname(candidate.fsPath));
     return matchTableSheetDefinitions(tableType, name).some((sheet) => sheet.partition !== undefined);
-  }).sort((left, right) => compareOrdinal(left.path, right.path));
+  }).sort((left, right) => compareUtf16CodeUnits(left.path, right.path));
 }
 
 async function captureText(uri: vscode.Uri): Promise<CapturedText> {
@@ -659,9 +661,6 @@ function hashBytes(value: Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function compareOrdinal(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
 
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) throw new DOMException("Workspace semantic snapshot build was cancelled.", "AbortError");

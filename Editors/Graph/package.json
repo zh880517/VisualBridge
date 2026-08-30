@@ -16,6 +16,7 @@
     "test": "npm run clean && tsc -p tsconfig.test.json && node --test .test-dist/test/graphReveal.test.js"
   },
   "dependencies": {
+    "@visualbridge/core": "*",
     "@visualbridge/form-editor": "*",
     "@xyflow/react": "12.11.5",
     "react": "19.2.8",

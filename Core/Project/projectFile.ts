@@ -1,4 +1,5 @@
 import { BUILT_IN_REFERENCE_KINDS } from "../Reference/reference";
+import { compareUtf16CodeUnits } from "../Ordering/ordinal";
 
 export const PROJECT_FILE_NAME = "VisualBridge.project.vbjson";
 export const PROJECT_FILE_GLOB = `**/${PROJECT_FILE_NAME}`;
@@ -339,7 +340,7 @@ function rejectUnknownKeys(
   issues: ProjectFileIssue[],
 ): void {
   const allowedKeys = new Set(allowed);
-  for (const key of Object.keys(value).sort()) {
+  for (const key of Object.keys(value).sort(compareUtf16CodeUnits)) {
     if (!allowedKeys.has(key)) {
       issues.push({ path: `${path}.${key}`, message: `Unknown property '${key}'.` });
     }

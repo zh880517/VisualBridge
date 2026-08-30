@@ -8,6 +8,7 @@ import {
   buildGraphCatalogRegistry,
   collectGraphReferences,
   collectGraphOwnedIdentities,
+  createDefaultPropertyValues,
   createGraphElementReferenceProvider,
   getGraphNodePorts,
   getReplacementCandidates,
@@ -584,9 +585,9 @@ test("Graph properties preserve declarative table-row reference contracts", () =
         title: "Skill",
         valueType: "number",
         dataTypeId: "int",
-        required: true,
         defaultValue: 101,
-        editor: { kind: "reference", readOnly: false, options: [] },
+        fields: [],
+        editor: { kind: "reference", readOnly: false, integer: true, options: [] },
         reference: {
           kind: "table.row",
           target: { tableTypeId: "sample.table.skills", sheetId: "skills" },
@@ -626,6 +627,153 @@ test("Graph properties preserve declarative table-row reference contracts", () =
   const reparsed = parseGraphCatalog(serialized);
   assert.equal(reparsed.success, true, formatDiagnostics(reparsed.diagnostics));
   assert.equal(serializeGraphCatalog(reparsed.document), serialized);
+});
+
+test("Graph fields reuse the complete shared Form definition recursively", () => {
+  const { catalogs, document } = loadFixture();
+  const fixtureStep = catalogs[0]!.nodeTypes.find((nodeType) => nodeType.id === "sample.step")!;
+  const sharedProperties = fixtureStep.properties.filter((property) => property.id !== "label");
+  const complexItem = {
+    valueType: "object" as const,
+    dataTypeId: "sample.settings",
+    defaultValue: { targetId: 101, weights: [1, 2] },
+    fields: [{
+      id: "targetId",
+      aliases: [],
+      title: "Target",
+      valueType: "number" as const,
+      dataTypeId: "int",
+      defaultValue: 101,
+      fields: [],
+      editor: { kind: "reference" as const, readOnly: false, integer: true, options: [] },
+      reference: {
+        kind: "table.row",
+        target: { tableTypeId: "sample.table.skills", sheetId: "skills" },
+        allowMissing: false,
+      },
+    }, {
+      id: "weights",
+      aliases: [],
+      title: "Weights",
+      valueType: "array" as const,
+      defaultValue: [1, 2],
+      fields: [],
+      item: { valueType: "number" as const, defaultValue: 0, fields: [] },
+    }],
+  };
+  const common: GraphCatalog = {
+    ...catalogs[0]!,
+    dataTypes: [...catalogs[0]!.dataTypes, { id: "sample.settings", title: "Settings", accepts: [], acceptsAnySource: false }],
+    nodeTypes: catalogs[0]!.nodeTypes.map((nodeType) => nodeType.id !== "sample.step" ? nodeType : {
+      ...nodeType,
+      dynamicPortGroups: [...nodeType.dynamicPortGroups, {
+        id: "complex-items",
+        aliases: [],
+        title: "Complex Items",
+        listPortMode: "element" as const,
+        port: { kind: "data" as const, direction: "input" as const, dataTypeId: "sample.settings", maxConnections: 1 },
+        item: complexItem,
+      }],
+    }),
+  };
+  const logic: GraphCatalog = {
+    ...catalogs[1]!,
+    graphTypes: catalogs[1]!.graphTypes.map((graphType) => graphType.id !== "sample.root" ? graphType : {
+      ...graphType,
+      properties: [...graphType.properties, sharedProperties[0]!],
+    }),
+  };
+  const registryResult = buildGraphCatalogRegistry([common, logic, catalogs[2]!]);
+  assert.equal(registryResult.success, true, formatDiagnostics(registryResult.diagnostics));
+
+  assert.deepEqual(createDefaultPropertyValues(sharedProperties), {
+    tint: "#336699FF",
+    mode: "walk",
+    settings: { enabled: true, targetId: 101, targets: [102, 103], position: { x: 1, y: 2, z: 3 } },
+    payload: { nested: [true, 42, "text"] },
+  });
+  const withSharedFields: GraphDocument = {
+    ...document,
+    graphs: document.graphs.map((graph) => graph.id !== "root" ? graph : {
+      ...graph,
+      properties: { ...graph.properties, tint: "#11223344" },
+      nodes: graph.nodes.map((node) => node.id !== "step_a" ? node : {
+        ...node,
+        properties: { ...node.properties, ...createDefaultPropertyValues(sharedProperties) },
+        dynamicPorts: [...node.dynamicPorts, {
+          id: "complex-a",
+          groupId: "complex-items",
+          title: "Complex A",
+          value: { targetId: 101, weights: [1, 2] },
+        }],
+      }),
+    }),
+  };
+  assert.deepEqual(
+    validateGraphDocument(withSharedFields, registryResult.document).filter((diagnostic) => diagnostic.severity === "error"),
+    [],
+  );
+
+  const rootIndex = withSharedFields.graphs.findIndex((graph) => graph.id === "root");
+  const root = withSharedFields.graphs[rootIndex]!;
+  const stepIndex = root.nodes.findIndex((node) => node.id === "step_a");
+  const propertyPath = `graphs[${rootIndex}].nodes[${stepIndex}].properties.settings.targets[1]`;
+  const dynamicPath = `graphs[${rootIndex}].nodes[${stepIndex}].dynamicPorts[0].value.targetId`;
+  const occurrences = collectGraphReferences(withSharedFields, registryResult.document);
+  assert.equal(occurrences.some((occurrence) => occurrence.path === propertyPath && occurrence.value === 103), true);
+  assert.equal(occurrences.some((occurrence) => occurrence.path === dynamicPath && occurrence.value === 101), true);
+  const replaced = replaceGraphReferenceValues(
+    withSharedFields,
+    registryResult.document,
+    new Set([propertyPath, dynamicPath]),
+    202,
+  );
+  assert.equal(replaced.success, true, formatDiagnostics(replaced.diagnostics));
+  const replacedText = replaced.success ? serializeGraphDocument(replaced.document) : "";
+  assert.match(replacedText, /"targets": \[\n\s+102,\n\s+202/u);
+  assert.match(replacedText, /"targetId": 202/u);
+
+  const invalid: GraphDocument = {
+    ...withSharedFields,
+    graphs: withSharedFields.graphs.map((graph) => graph.id !== "root" ? graph : {
+      ...graph,
+      nodes: graph.nodes.map((node) => node.id !== "step_a" ? node : {
+        ...node,
+        properties: {
+          ...node.properties,
+          tint: "blue",
+          settings: { enabled: true, targetId: 1.5, targets: [102], position: { x: 1, y: "bad", z: 3 } },
+        },
+      }),
+    }),
+  };
+  const invalidDiagnostics = validateGraphDocument(invalid, registryResult.document);
+  assert.ok(invalidDiagnostics.some((diagnostic) => diagnostic.code === "field.invalidColor"));
+  assert.ok(invalidDiagnostics.some((diagnostic) => diagnostic.code === "field.invalidInteger"));
+  assert.ok(invalidDiagnostics.some((diagnostic) => diagnostic.code === "field.invalidValueType"));
+
+  const serialized = serializeGraphCatalog(common);
+  const reparsed = parseGraphCatalog(serialized);
+  assert.equal(reparsed.success, true, formatDiagnostics(reparsed.diagnostics));
+  assert.equal(serializeGraphCatalog(reparsed.document), serialized);
+});
+
+test("Graph Catalog rejects legacy versions and the removed required-property dialect", () => {
+  const { catalogs } = loadFixture();
+  const catalog = JSON.parse(serializeGraphCatalog(catalogs[0]!)) as Record<string, unknown>;
+  catalog.formatVersion = 3;
+  const legacy = parseGraphCatalog(JSON.stringify(catalog));
+  assert.equal(legacy.success, false);
+  assert.ok(legacy.diagnostics.some((diagnostic) => diagnostic.code === "graphCatalog.unsupportedVersion"));
+
+  catalog.formatVersion = 4;
+  const nodeTypes = catalog.nodeTypes as Array<{ properties: Array<Record<string, unknown>> }>;
+  nodeTypes.find((nodeType) => nodeType.properties.length > 0)!.properties[0]!.required = true;
+  const required = parseGraphCatalog(JSON.stringify(catalog));
+  assert.equal(required.success, false);
+  assert.ok(required.diagnostics.some((diagnostic) => (
+    diagnostic.code === "field.unknownDefinitionKey" && diagnostic.message.includes("required")
+  )));
 });
 
 test("node search uses shared Registry metadata, aliases, Graph Type filters, and stable ordering", () => {

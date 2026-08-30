@@ -18,7 +18,7 @@ Project 根目录用固定文件名 `VisualBridge.project.vbjson` 标识。格�
 
 示例：
 
-```json
+```json visualbridge-schema=visualbridge-project.schema.json visualbridge-parser=project
 {
   "formatVersion": 1,
   "projectId": "sample.game",
@@ -112,11 +112,11 @@ sequenceDiagram
 
 来源状态是显式可判定的联合类型：
 
-```json
+```json visualbridge-schema=visualbridge-catalog-source.schema.json visualbridge-parser=catalog-source
 { "status": "unknown" }
 ```
 
-```json
+```json visualbridge-schema=visualbridge-catalog-source.schema.json visualbridge-parser=catalog-source
 {
   "status": "current",
   "providerId": "unity",
@@ -124,7 +124,7 @@ sequenceDiagram
 }
 ```
 
-```json
+```json visualbridge-schema=visualbridge-catalog-source.schema.json visualbridge-parser=catalog-source
 {
   "status": "stale",
   "providerId": "unity",

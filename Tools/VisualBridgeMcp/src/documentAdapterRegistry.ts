@@ -1,4 +1,5 @@
 import { VisualBridgeMcpError } from "./projectWorkspace.js";
+import { compareUtf16CodeUnits } from "@visualbridge/core";
 
 export type CatalogAction = "read" | "search";
 
@@ -63,6 +64,6 @@ export class McpDocumentAdapterRegistry {
   }
 
   public listEditors(): readonly string[] {
-    return [...this.adapters.keys()].sort((left, right) => left.localeCompare(right));
+    return [...this.adapters.keys()].sort(compareUtf16CodeUnits);
   }
 }

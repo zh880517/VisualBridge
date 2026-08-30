@@ -1,0 +1,22 @@
+{
+  "name": "@visualbridge/documentation",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": "22.22.1"
+  },
+  "scripts": {
+    "check": "node scripts/check-docs.mjs"
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "github-slugger": "2.0.0",
+    "jsdom": "29.1.1",
+    "mermaid": "11.17.2",
+    "remark-gfm": "4.0.1",
+    "remark-parse": "11.0.0",
+    "unified": "11.0.5"
+  }
+}

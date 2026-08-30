@@ -16,6 +16,7 @@ Use Node.js 22.22.1 and npm 10.9.4 as declared by `.nvmrc`, `engines.node`, and 
 - `npm run package:vscode` — create a VSIX under `Tools/VSCodeExtension/artifacts/`.
 - `npm run test:vscode:host` — build the extension and run isolated Extension Host integration tests against the fixed VisualBridge fixtures.
 - `npm run test:vscode:cli` — package the VSIX, install it into isolated VS Code user/extension directories, and verify the packaged runtime assets.
+- `npm run check:docs` — validate final-document coverage, links, anchors, Mermaid diagrams, command/editor manifests, and schema-bound JSON examples.
 - `dotnet build .\UnityProject\Assembly-CSharp.csproj` — compile-check Unity runtime C# without opening Unity Editor.
 - `dotnet build .\UnityProject\Assembly-CSharp-Editor.csproj` — compile-check editor-only C#.
 - `git diff --check` — detect whitespace errors before review.

@@ -120,7 +120,7 @@ function hashBytes(value: Uint8Array): string {
 
 function pathIdentity(value: string): string {
   const resolved = path.resolve(value);
-  return process.platform === "win32" ? resolved.toLocaleLowerCase("en-US") : resolved;
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 function isNodeError(errorValue: unknown, code: string): errorValue is NodeJS.ErrnoException {

@@ -96,6 +96,15 @@ test("MCP V2 exposes seven stable tools and routes Graph semantics with real cro
     assert.equal(graph.valid, true);
     assert.match(graph.baseHash, /^[a-f0-9]{64}$/);
     assert.equal(graph.document.documentId, "semantic-sample");
+    const defaultTableReference = await call(client, "visualbridge_references", {
+      projectFile,
+      action: "resolve",
+      kind: "table.row",
+      target: { tableTypeId: "sample.table.skills", sheetId: "skills" },
+      value: 101,
+    });
+    assert.equal(defaultTableReference.status, "resolved");
+    assert.equal(defaultTableReference.candidates.length, 1);
     const search = await call(client, "visualbridge_document", {
       ...selector,
       action: "search",

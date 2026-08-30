@@ -5,6 +5,7 @@ import type {
   DocumentTypeDefinition,
   ProjectFileIssue,
 } from "@visualbridge/core";
+import { compareUtf16CodeUnits } from "@visualbridge/core";
 import type { EntityCatalog, EntityCatalogRegistry } from "@visualbridge/entity";
 import type { GraphCatalog, GraphCatalogRegistry } from "@visualbridge/graph";
 import {
@@ -106,11 +107,11 @@ export class CatalogBrowser implements vscode.TreeDataProvider<CatalogBrowserNod
 
   private async refreshOnce(): Promise<void> {
     const snapshots: CatalogRegistrySnapshot[] = [];
-    for (const project of [...this.projects.projects].sort((left, right) => compare(
+    for (const project of [...this.projects.projects].sort((left, right) => compareUtf16CodeUnits(
       left.definition.projectId,
       right.definition.projectId,
     ))) {
-      for (const documentType of [...project.definition.documentTypes].sort((left, right) => compare(left.id, right.id))) {
+      for (const documentType of [...project.definition.documentTypes].sort((left, right) => compareUtf16CodeUnits(left.id, right.id))) {
         const snapshot = await loadSnapshot(project, documentType);
         if (snapshot !== undefined) snapshots.push(snapshot);
       }
@@ -358,7 +359,7 @@ function createTree(
   snapshots: readonly CatalogRegistrySnapshot[],
   projects: readonly ProjectContext[],
 ): readonly CatalogBrowserNode[] {
-  return [...new Set(snapshots.map((snapshot) => snapshot.projectId))].sort(compare).map((projectId) => {
+  return [...new Set(snapshots.map((snapshot) => snapshot.projectId))].sort(compareUtf16CodeUnits).map((projectId) => {
     const project = projects.find((entry) => entry.definition.projectId === projectId);
     const registryNodes = snapshots.filter((snapshot) => snapshot.projectId === projectId).map((snapshot) => {
       const sourceNodes = snapshot.sources.map((source) => {
@@ -445,11 +446,11 @@ function definition(
   kind: string,
   entry: { readonly id: string; readonly title: string; readonly aliases?: readonly string[] },
 ): CatalogDefinitionSnapshot {
-  return { kind, id: entry.id, title: entry.title, aliases: [...entry.aliases ?? []].sort(compare) };
+  return { kind, id: entry.id, title: entry.title, aliases: [...entry.aliases ?? []].sort(compareUtf16CodeUnits) };
 }
 
 function sortDefinitions(definitions: readonly CatalogDefinitionSnapshot[]): readonly CatalogDefinitionSnapshot[] {
-  return [...definitions].sort((left, right) => compare(`${left.kind}\0${left.id}`, `${right.kind}\0${right.id}`));
+  return [...definitions].sort((left, right) => compareUtf16CodeUnits(`${left.kind}\0${left.id}`, `${right.kind}\0${right.id}`));
 }
 
 function severity(value: DocumentDiagnostic["severity"]): vscode.DiagnosticSeverity {
@@ -458,8 +459,4 @@ function severity(value: DocumentDiagnostic["severity"]): vscode.DiagnosticSever
     : value === "warning"
       ? vscode.DiagnosticSeverity.Warning
       : vscode.DiagnosticSeverity.Information;
-}
-
-function compare(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }

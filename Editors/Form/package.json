@@ -12,7 +12,8 @@
   },
   "scripts": {
     "build": "npm run check",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test .test-dist/test/fieldEditorLogic.test.js"
   },
   "dependencies": {
     "@base-ui/react": "1.7.0",
@@ -23,6 +24,7 @@
     "react-colorful": "5.8.0"
   },
   "devDependencies": {
+    "@types/node": "22.20.1",
     "@types/react": "19.2.18"
   }
 }

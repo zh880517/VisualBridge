@@ -207,11 +207,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           abortAfterMilliseconds?: number,
         ) => {
           const markerIdentity = process.platform === "win32"
-            ? markerUri.fsPath.toLocaleLowerCase("en-US")
+            ? markerUri.fsPath.toLowerCase()
             : markerUri.fsPath;
           const project = projects.projects.find((candidate) => (
             (process.platform === "win32"
-              ? candidate.markerUri.fsPath.toLocaleLowerCase("en-US")
+              ? candidate.markerUri.fsPath.toLowerCase()
               : candidate.markerUri.fsPath) === markerIdentity
           ));
           if (project === undefined) throw new Error(`Project '${markerUri.toString()}' is unavailable.`);

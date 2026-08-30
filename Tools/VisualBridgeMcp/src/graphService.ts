@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { buildCatalogBundle, type DocumentDiagnostic, type JsonValue } from "@visualbridge/core";
+import { buildCatalogBundle, compareUtf16CodeUnits, type DocumentDiagnostic, type JsonValue } from "@visualbridge/core";
 import {
   graphCatalogAdapter,
   graphDocumentAdapter,
@@ -68,7 +68,7 @@ export class GraphService {
           throw new VisualBridgeMcpError("catalog.kindUnsupported", `Graph Catalog kind '${kind}' is not supported.`);
       }
     }
-    const query = request.query.trim().toLocaleLowerCase();
+    const query = request.query.trim().toLowerCase();
     let definitions: readonly unknown[];
     if (kind === "nodeTypes") {
       const graphTypeId = optionalString(request.selector.graphTypeId, "selector.graphTypeId");
@@ -92,8 +92,8 @@ export class GraphService {
         throw new VisualBridgeMcpError("catalog.kindUnsupported", `Graph Catalog kind '${kind}' is not searchable.`);
       }
       definitions = source
-        .filter((definition) => query.length === 0 || JSON.stringify(definition).toLocaleLowerCase().includes(query))
-        .sort((left, right) => left.id.localeCompare(right.id));
+        .filter((definition) => query.length === 0 || JSON.stringify(definition).toLowerCase().includes(query))
+        .sort((left, right) => compareUtf16CodeUnits(left.id, right.id));
     }
     const page = pageItems(definitions, request.cursor, request.limit, catalogCursorScope(request, "graph", kind));
     return { ...base, kind, query: request.query, results: page.items, nextCursor: page.nextCursor };
@@ -124,7 +124,7 @@ export class GraphService {
         diagnostics: loaded.diagnostics,
       };
     }
-    const query = request.query.trim().toLocaleLowerCase();
+    const query = request.query.trim().toLowerCase();
     const kind = optionalString(request.selector.kind, "selector.kind") ?? "all";
     if (!GRAPH_SEARCH_KINDS.has(kind)) {
       throw new VisualBridgeMcpError(
@@ -403,7 +403,7 @@ function graphSearchEntries(document: GraphDocument): readonly (Record<string, u
       graphTypeId: graph.graphTypeId,
       title: graph.title,
       path: graphPath,
-      searchText: `${graph.id} ${graph.graphTypeId ?? ""} ${graph.title}`.toLocaleLowerCase(),
+      searchText: `${graph.id} ${graph.graphTypeId ?? ""} ${graph.title}`.toLowerCase(),
     });
     collectSearchValues(graph.properties, `${graphPath}.properties`, { graphId: graph.id }, entries);
     graph.interfacePorts.forEach((port, portIndex) => entries.push({
@@ -412,7 +412,7 @@ function graphSearchEntries(document: GraphDocument): readonly (Record<string, u
       portId: port.id,
       title: port.title,
       path: `${graphPath}.interfacePorts[${portIndex}]`,
-      searchText: `${port.id} ${port.title} ${port.kind} ${port.direction} ${port.dataTypeId ?? ""}`.toLocaleLowerCase(),
+      searchText: `${port.id} ${port.title} ${port.kind} ${port.direction} ${port.dataTypeId ?? ""}`.toLowerCase(),
     }));
     graph.nodes.forEach((node, nodeIndex) => {
       const nodePath = `${graphPath}.nodes[${nodeIndex}]`;
@@ -423,7 +423,7 @@ function graphSearchEntries(document: GraphDocument): readonly (Record<string, u
         nodeTypeId: node.nodeTypeId,
         title: node.title,
         path: nodePath,
-        searchText: `${node.id} ${node.nodeTypeId ?? ""} ${node.title}`.toLocaleLowerCase(),
+        searchText: `${node.id} ${node.nodeTypeId ?? ""} ${node.title}`.toLowerCase(),
       });
       collectSearchValues(node.properties, `${nodePath}.properties`, { graphId: graph.id, nodeId: node.id }, entries);
       node.dynamicPorts.forEach((port, portIndex) => entries.push({
@@ -433,7 +433,7 @@ function graphSearchEntries(document: GraphDocument): readonly (Record<string, u
         portId: port.id,
         title: port.title,
         path: `${nodePath}.dynamicPorts[${portIndex}]`,
-        searchText: `${port.id} ${port.groupId} ${port.title}`.toLocaleLowerCase(),
+        searchText: `${port.id} ${port.groupId} ${port.title}`.toLowerCase(),
       }));
     });
     graph.edges.forEach((edge, edgeIndex) => entries.push({
@@ -442,7 +442,7 @@ function graphSearchEntries(document: GraphDocument): readonly (Record<string, u
       edgeId: edge.id,
       edgeKind: edge.kind,
       path: `${graphPath}.edges[${edgeIndex}]`,
-      searchText: JSON.stringify(edge).toLocaleLowerCase(),
+      searchText: JSON.stringify(edge).toLowerCase(),
     }));
   });
   return entries;
@@ -459,7 +459,7 @@ function collectSearchValues(
     return;
   }
   if (typeof value === "object" && value !== null) {
-    Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).forEach(([key, entry]) =>
+    Object.entries(value).sort(([left], [right]) => compareUtf16CodeUnits(left, right)).forEach(([key, entry]) =>
       collectSearchValues(entry, `${path}.${key}`, location, entries));
     return;
   }
@@ -468,7 +468,7 @@ function collectSearchValues(
     ...location,
     path,
     value,
-    searchText: `${path} ${String(value)}`.toLocaleLowerCase(),
+    searchText: `${path} ${String(value)}`.toLowerCase(),
   });
 }
 

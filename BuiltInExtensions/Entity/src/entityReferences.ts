@@ -1,4 +1,5 @@
 import {
+  compareUtf16CodeUnits,
   DEFAULT_REFERENCE_SNAPSHOT_DEPENDENCY_KEY,
   normalizeReferenceQuery,
   paginateReferenceCandidates,
@@ -106,7 +107,7 @@ function collectCandidates(
         },
       };
     }));
-  return candidates.sort((left, right) => candidateKey(left).localeCompare(candidateKey(right)));
+  return candidates.sort((left, right) => compareUtf16CodeUnits(candidateKey(left), candidateKey(right)));
 }
 
 function readTarget(value: Readonly<Record<string, JsonValue>>): EntityComponentReferenceTarget | undefined {

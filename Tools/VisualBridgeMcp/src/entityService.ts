@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { buildCatalogBundle, type DocumentDiagnostic, type JsonValue } from "@visualbridge/core";
+import { buildCatalogBundle, compareUtf16CodeUnits, type DocumentDiagnostic, type JsonValue } from "@visualbridge/core";
 import {
   entityCatalogAdapter,
   entityDocumentAdapter,
@@ -142,7 +142,7 @@ export class EntityService {
         diagnostics: loaded.diagnostics,
       };
     }
-    const query = request.query.trim().toLocaleLowerCase();
+    const query = request.query.trim().toLowerCase();
     const results = entitySearchEntries(loaded.document).filter((entry) =>
       query.length === 0 || entry.searchText.includes(query));
     const page = pageItems(
@@ -319,8 +319,8 @@ export class EntityService {
     }
     const terms = queryTerms(query);
     return source
-      .filter((definition) => terms.every((term) => JSON.stringify(definition).toLocaleLowerCase().includes(term)))
-      .sort((left, right) => left.title.localeCompare(right.title) || left.id.localeCompare(right.id));
+      .filter((definition) => terms.every((term) => JSON.stringify(definition).toLowerCase().includes(term)))
+      .sort((left, right) => compareUtf16CodeUnits(left.title, right.title) || compareUtf16CodeUnits(left.id, right.id));
   }
 }
 
@@ -393,7 +393,7 @@ function entitySearchEntries(document: EntityDocument): readonly (Record<string,
     entityTypeId: document.entityTypeId,
     title: document.title,
     path: "$",
-    searchText: `${document.documentId} ${document.entityTypeId} ${document.title}`.toLocaleLowerCase(),
+    searchText: `${document.documentId} ${document.entityTypeId} ${document.title}`.toLowerCase(),
   }];
   collectValueEntries(document.properties, "properties", undefined, entries);
   document.components.forEach((component, index) => {
@@ -404,7 +404,7 @@ function entitySearchEntries(document: EntityDocument): readonly (Record<string,
       componentTypeId: component.componentTypeId,
       enabled: component.enabled,
       path: `components[${index}]`,
-      searchText: `${component.id} ${component.componentTypeId}`.toLocaleLowerCase(),
+      searchText: `${component.id} ${component.componentTypeId}`.toLowerCase(),
     });
     collectValueEntries(component.properties, `components[${index}].properties`, component.id, entries);
   });
@@ -422,7 +422,7 @@ function collectValueEntries(
     return;
   }
   if (typeof value === "object" && value !== null) {
-    Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).forEach(([key, entry]) =>
+    Object.entries(value).sort(([left], [right]) => compareUtf16CodeUnits(left, right)).forEach(([key, entry]) =>
       collectValueEntries(entry, `${path}.${key}`, componentId, entries));
     return;
   }
@@ -432,7 +432,7 @@ function collectValueEntries(
     path,
     ...(componentId === undefined ? {} : { componentId }),
     value,
-    searchText: `${path} ${text}`.toLocaleLowerCase(),
+    searchText: `${path} ${text}`.toLowerCase(),
   });
 }
 
@@ -447,7 +447,7 @@ function optionalString(value: unknown, path: string): string | undefined {
 }
 
 function queryTerms(query: string): readonly string[] {
-  return query.trim().toLocaleLowerCase().split(/\s+/).filter((term) => term.length > 0);
+  return query.trim().toLowerCase().split(/\s+/).filter((term) => term.length > 0);
 }
 
 function decodeUtf8(bytes: Uint8Array, displayPath: string): string {

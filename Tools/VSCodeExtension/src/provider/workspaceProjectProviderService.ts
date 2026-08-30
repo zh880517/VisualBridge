@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import * as nodePath from "node:path";
 import * as vscode from "vscode";
 import {
+  compareUtf16CodeUnits,
   type DocumentDiagnostic,
   type ProjectProviderDocumentSnapshot,
   type ReferenceProvider,
@@ -213,7 +214,7 @@ export class WorkspaceProjectProviderService implements vscode.Disposable {
 }
 
 function hashManifest(entries: readonly ProjectProviderSourceManifestEntry[]): string {
-  return hashBytes(Buffer.from(JSON.stringify([...entries].sort((left, right) => compareOrdinal(left.path, right.path)))));
+  return hashBytes(Buffer.from(JSON.stringify([...entries].sort((left, right) => compareUtf16CodeUnits(left.path, right.path)))));
 }
 
 function currentProviderGenerationKey(cachedHost: CachedHost): string {
@@ -228,10 +229,6 @@ function isFileNotFound(errorValue: unknown): boolean {
   return errorValue instanceof vscode.FileSystemError
     ? errorValue.code === "FileNotFound"
     : errorValue instanceof Error && "code" in errorValue && errorValue.code === "ENOENT";
-}
-
-function compareOrdinal(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function formatError(errorValue: unknown): string {

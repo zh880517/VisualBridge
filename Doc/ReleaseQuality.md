@@ -27,6 +27,7 @@ npm run check
 npm run audit:dependencies
 npm test
 npm run build
+npm run check:docs
 npm run package:vscode
 npm run test:cli --workspace visualbridge
 git diff --check
@@ -51,9 +52,10 @@ The temporary cache can be removed after the gate. Do not update the lockfile fr
 2. verifies the observed Node and npm versions before dependency installation;
 3. runs `npm ci` from the committed lockfile;
 4. runs dependency policy, a moderate-or-higher dependency audit, monorepo type checks, all tests, and the complete build;
-5. creates the VSIX and exercises it through the installed VS Code CLI;
-6. rejects whitespace errors, tracked-file changes, and unexpected untracked files created by generation/build/test/package;
-7. uploads only the resulting VSIX artifact.
+5. validates final documentation after the product parsers and MCP runtime have been built;
+6. creates the VSIX and exercises it through the installed VS Code CLI;
+7. rejects whitespace errors, tracked-file changes, and unexpected untracked files created by generation/build/test/package;
+8. uploads only the resulting VSIX artifact.
 
 The workflow pins third-party GitHub Actions by full commit SHA. `setup-node` may cache npm downloads keyed by `package-lock.json`, but it never caches `node_modules`, build output, VS Code user data, or installed extensions. Tests create isolated user-data, extension, workspace, and Provider process state.
 
@@ -67,4 +69,4 @@ The extension manifest is `private: true` and `license: "UNLICENSED"`. No licens
 
 `Samples/PreUnityAuthoring` is the formal text-reviewable project used before Unity integration. It contains a Project file, custom Graph/Entity/Structured document extensions, all four built-in Catalog/document families, a partition-compatible UTF-8 tab-delimited CSV Table, and an optional Project Provider V2 example. XLSX is deliberately omitted from this minimum sample; the Table test suite owns its binary round-trip coverage.
 
-Run `npm run test:samples` to exercise the production Project parser and matcher, Graph/Entity/Structured/Table Catalog registries and validators, typed CSV parser, and Project Provider host against the sample. The sample README explains how to open it from the installed VSIX and how to remove the optional trusted Provider declaration.
+Run `npm run test:samples` to exercise the production Project parser and matcher, Graph/Entity/Structured/Table Catalog registries and validators, typed CSV parser, and Project Provider host against the sample. Run `npm run check:docs` to validate its documented entry points and schema/parser-bound examples together with the final manuals. The sample README explains how to open it from the installed VSIX and how to remove the optional trusted Provider declaration.

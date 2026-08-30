@@ -28,14 +28,19 @@ import {
   useMemo,
   useRef,
   useState,
-  type ChangeEvent,
   type CSSProperties,
   type FormEvent,
-  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createRoot } from "react-dom/client";
-import { WebviewReferenceBridge } from "@visualbridge/form-editor";
+import {
+  compareUtf16CodeUnits,
+  createDefaultProperties as createDefaultFieldProperties,
+  type FieldDefinition,
+  type FieldValueDefinition,
+  type JsonValue,
+} from "@visualbridge/core";
+import { FieldValueEditor, WebviewReferenceBridge } from "@visualbridge/form-editor";
 import { CommonIcon } from "@visualbridge/form-editor/icons";
 import "@xyflow/react/dist/style.css";
 import {
@@ -51,7 +56,6 @@ import {
 } from "../graphReveal";
 import "./styles.css";
 
-type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 type PortKind = "flow" | "data";
 type PortDirection = "input" | "output";
 
@@ -121,38 +125,6 @@ interface PortDefinition {
   readonly dynamic?: boolean;
 }
 
-interface PropertyEditorOption {
-  readonly title: string;
-  readonly value: JsonValue;
-}
-
-interface PropertyEditorDefinition {
-  readonly kind: "text" | "multiline" | "number" | "checkbox" | "select" | "json" | "reference";
-  readonly readOnly: boolean;
-  readonly min?: number;
-  readonly max?: number;
-  readonly options: readonly PropertyEditorOption[];
-}
-
-interface ReferenceDefinition {
-  readonly kind: string;
-  readonly target: Readonly<Record<string, JsonValue>>;
-  readonly allowMissing: boolean;
-}
-
-interface PropertyDefinition {
-  readonly id: string;
-  readonly aliases?: readonly string[];
-  readonly title: string;
-  readonly description?: string;
-  readonly valueType: "string" | "number" | "boolean" | "json";
-  readonly dataTypeId?: string;
-  readonly required: boolean;
-  readonly defaultValue?: JsonValue;
-  readonly editor?: PropertyEditorDefinition;
-  readonly reference?: ReferenceDefinition;
-}
-
 interface DynamicPortGroupDefinition {
   readonly id: string;
   readonly aliases: readonly string[];
@@ -165,13 +137,7 @@ interface DynamicPortGroupDefinition {
     readonly dataTypeId?: string;
     readonly maxConnections?: number;
   };
-  readonly item: {
-    readonly valueType: PropertyDefinition["valueType"];
-    readonly dataTypeId?: string;
-    readonly defaultValue: JsonValue;
-    readonly editor?: PropertyEditorDefinition;
-    readonly reference?: ReferenceDefinition;
-  };
+  readonly item: FieldValueDefinition;
   readonly maxItems?: number;
 }
 
@@ -189,7 +155,7 @@ interface NodeTypeDefinition {
   readonly subgraph?: { readonly graphTypeIds?: readonly string[] };
   readonly ports: readonly PortDefinition[];
   readonly dynamicPortGroups?: readonly DynamicPortGroupDefinition[];
-  readonly properties: readonly PropertyDefinition[];
+  readonly properties: readonly FieldDefinition[];
 }
 
 interface DataTypeDefinition {
@@ -234,7 +200,7 @@ interface GraphTypeDefinition {
     readonly output: "single" | "multiple";
   };
   readonly allowedNodeSelectors?: readonly NodeSelector[];
-  readonly properties: readonly PropertyDefinition[];
+  readonly properties: readonly FieldDefinition[];
   readonly nodeConstraints: readonly NodeCountConstraint[];
   readonly initialNodes: readonly InitialNodeDefinition[];
   readonly allowSubgraphs: boolean;
@@ -625,12 +591,12 @@ function InlineNodeTitle({ data, pending }: { readonly data: GraphNodeData; read
 
 function resolvePropertyInputPort(
   nodeType: NodeTypeDefinition | undefined,
-  property: PropertyDefinition,
+  property: FieldDefinition,
 ): PortDefinition | undefined {
   if (nodeType === undefined) {
     return undefined;
   }
-  const propertyIds = new Set([property.id, ...(property.aliases ?? [])]);
+  const propertyIds = new Set([property.id, ...property.aliases]);
   return nodeType.ports.find((port) =>
     port.kind === "data"
     && port.direction === "input"
@@ -640,8 +606,8 @@ function resolvePropertyInputPort(
 
 function InlineNodeProperties({ data, pending }: { readonly data: GraphNodeData; readonly pending: boolean }): React.JSX.Element {
   const definitions = data.nodeType?.properties ?? [];
-  const declaredPropertyIds = new Set(definitions.flatMap((definition) => [definition.id, ...(definition.aliases ?? [])]));
-  const unknownDefinitions: readonly PropertyDefinition[] = Object.entries(data.model.properties)
+  const declaredPropertyIds = new Set(definitions.flatMap((definition) => [definition.id, ...definition.aliases]));
+  const unknownDefinitions: readonly FieldDefinition[] = Object.entries(data.model.properties)
     .filter(([propertyId]) => !declaredPropertyIds.has(propertyId))
     .map(([propertyId, value]) => ({
       id: propertyId,
@@ -655,7 +621,8 @@ function InlineNodeProperties({ data, pending }: { readonly data: GraphNodeData;
           : typeof value === "boolean"
             ? "boolean"
             : "json",
-      required: false,
+      defaultValue: cloneJsonValue(value),
+      fields: [],
     }));
   return (
     <div className="graph-node-properties nodrag nowheel" onDoubleClick={(event) => event.stopPropagation()}>
@@ -672,11 +639,11 @@ function InlineNodeProperty({
   pending,
 }: {
   readonly data: GraphNodeData;
-  readonly definition: PropertyDefinition;
+  readonly definition: FieldDefinition;
   readonly pending: boolean;
 }): React.JSX.Element {
   const dataTypes = useContext(GraphDataTypesContext);
-  const propertyIds = [definition.id, ...(definition.aliases ?? [])];
+  const propertyIds = [definition.id, ...definition.aliases];
   const serializedPropertyIds = propertyIds.filter((propertyId) => Object.hasOwn(data.model.properties, propertyId));
   const serializedPropertyId = serializedPropertyIds[0];
   const value = serializedPropertyId === undefined ? undefined : data.model.properties[serializedPropertyId];
@@ -684,20 +651,13 @@ function InlineNodeProperty({
   const inputPort = resolvePropertyInputPort(data.nodeType, definition);
   const dataColorStyle = graphDataTypeStyle(inputPort?.dataTypeId ?? definition.dataTypeId, dataTypes);
   const fieldTitle = definition.title;
-  const commit = (nextValue: JsonValue | undefined): void => {
-    if (
-      (nextValue === undefined && serializedPropertyIds.length === 0)
-      || (nextValue !== undefined && serializedPropertyIds.length === 1 && jsonValuesEqual(value, nextValue))
-    ) {
+  const commit = (nextValue: JsonValue): void => {
+    if (serializedPropertyIds.length === 1 && serializedPropertyId === definition.id && jsonValuesEqual(value, nextValue)) {
       return;
     }
     const properties = { ...data.model.properties };
     propertyIds.forEach((propertyId) => delete properties[propertyId]);
-    if (nextValue === undefined) {
-      // Removing a field clears both its current ID and any historical aliases.
-    } else {
-      properties[serializedPropertyId ?? definition.id] = nextValue;
-    }
+    properties[definition.id] = nextValue;
     if (!jsonValuesEqual(properties, data.model.properties)) {
       data.commitNode(data.model.id, data.model.title, properties);
     }
@@ -727,174 +687,21 @@ function InlineNodeProperty({
         : editor}
     </div>
   );
-  if (definition.editor?.kind === "select") {
-    const selectedIndex = definition.editor.options.findIndex((option) => jsonValuesEqual(option.value, value));
-    const selectedValue = selectedIndex < 0 ? "" : String(selectedIndex);
-    return wrapEditor(
-      <label className="graph-node-property">
-        <span>{fieldTitle}</span>
-        <select
-          value={selectedValue}
-          disabled={pending || definition.editor.readOnly}
-          onChange={(event) => {
-            const option = definition.editor?.options[Number(event.target.value)];
-            if (option !== undefined) {
-              commit(cloneJsonValue(option.value));
-            }
-          }}
-        >
-          {value === undefined && <option value="">未设置</option>}
-          {definition.editor.options.map((option, index) => (
-            <option key={`${index}:${JSON.stringify(option.value)}`} value={String(index)}>{option.title}</option>
-          ))}
-        </select>
-      </label>,
-    );
-  }
-  if (definition.valueType === "boolean" || definition.editor?.kind === "checkbox") {
-    return wrapEditor(
-      <label className="graph-node-property boolean">
-        <span>{fieldTitle}</span>
-        <input
-          type="checkbox"
-          checked={value === true}
-          disabled={pending || definition.editor?.readOnly}
-          onChange={(event) => commit(event.target.checked)}
-        />
-      </label>,
-    );
-  }
   return wrapEditor(
-    <InlineNodeScalarProperty
-      key={`${data.model.id}:${definition.id}:${JSON.stringify(value)}`}
-      definition={definition}
-      value={value}
-      editor={definition.editor}
-      pending={pending}
-      commit={commit}
-      reportStatus={data.reportStatus}
-    />,
-  );
-}
-
-function InlineNodeScalarProperty({
-  definition,
-  value,
-  editor,
-  pending,
-  commit,
-  reportStatus,
-}: {
-  readonly definition: PropertyDefinition;
-  readonly value: JsonValue | undefined;
-  readonly editor: PropertyEditorDefinition | undefined;
-  readonly pending: boolean;
-  readonly commit: (value: JsonValue | undefined) => void;
-  readonly reportStatus: (status: { message: string; error: boolean }) => void;
-}): React.JSX.Element {
-  if (editor?.kind === "reference" && definition.reference !== undefined
-    && (typeof value === "string" || typeof value === "number")) {
-    return (
-      <label className="graph-node-property graph-reference-editor" title={definition.description}>
-        <span>{definition.title}</span>
-        <span className="graph-reference-value">
-          <input type="text" value={String(value)} readOnly title={`${definition.reference.kind}: ${String(value)}`} />
-          <button
-            type="button"
-            className="icon secondary"
-            aria-label={`选择${definition.title}`}
-            title="选择引用"
-            disabled={pending || editor.readOnly}
-            onClick={() => {
-              void referenceBridge.pick(definition.reference!, value).then((nextValue) => {
-                if (nextValue !== undefined && (typeof nextValue !== typeof value || nextValue !== value)) {
-                  commit(nextValue);
-                }
-              });
-            }}
-          >
-            <CommonIcon name="search" />
-          </button>
-          <button
-            type="button"
-            className="icon secondary"
-            aria-label={`打开${definition.title}`}
-            title="打开引用"
-            onClick={() => referenceBridge.reveal(definition.reference!, value)}
-          >
-            <CommonIcon name="open" />
-          </button>
-        </span>
-      </label>
-    );
-  }
-  const usesJsonEditor = definition.valueType === "json" || editor?.kind === "json";
-  const usesMultilineEditor = editor?.kind === "multiline";
-  const initialText = usesJsonEditor
-    ? value === undefined ? "" : JSON.stringify(value)
-    : value === undefined ? "" : String(value);
-  const [text, setText] = useState(initialText);
-  const finish = (): void => {
-    if (definition.valueType === "number") {
-      if (text.trim().length === 0) {
-        commit(undefined);
-        return;
-      }
-      const numberValue = Number(text);
-      if (!Number.isFinite(numberValue)) {
-        reportStatus({ message: `字段“${definition.title}”必须是有效数字。`, error: true });
-        setText(initialText);
-        return;
-      }
-      commit(numberValue);
-      return;
-    }
-    if (usesJsonEditor) {
-      if (text.trim().length === 0) {
-        commit(undefined);
-        return;
-      }
-      try {
-        const jsonValue = JSON.parse(text) as unknown;
-        if (!isJsonValue(jsonValue)) {
-          throw new Error("值不是有效 JSON");
-        }
-        commit(jsonValue);
-      } catch (errorValue) {
-        reportStatus({ message: `字段“${definition.title}”无法解析：${String(errorValue)}`, error: true });
-        setText(initialText);
-      }
-      return;
-    }
-    commit(text);
-  };
-  const commonProps = {
-    value: text,
-    readOnly: pending || (editor?.readOnly ?? false),
-    onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setText(event.target.value),
-    onBlur: finish,
-    onKeyDown: (event: ReactKeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-      event.stopPropagation();
-      if (event.key === "Enter" && (!usesJsonEditor && !usesMultilineEditor || event.ctrlKey || event.metaKey)) {
-        event.preventDefault();
-        event.currentTarget.blur();
-      } else if (event.key === "Escape") {
-        setText(initialText);
-      }
-    },
-  };
-  return (
-    <label className="graph-node-property" title={definition.description}>
-      <span>{definition.title}</span>
-      {usesJsonEditor || usesMultilineEditor
-        ? <textarea {...commonProps} rows={2} spellCheck={false} />
-        : <input
-            {...commonProps}
-            type={definition.valueType === "number" ? "number" : "text"}
-            {...(editor?.min === undefined ? {} : { min: editor.min })}
-            {...(editor?.max === undefined ? {} : { max: editor.max })}
-          />}
-    </label>
+    <div className="graph-node-property">
+      <span title={definition.description}>{fieldTitle}</span>
+      <div className="graph-node-property-value">
+        <FieldValueEditor
+          key={`${data.model.id}:${definition.id}:${JSON.stringify(value)}`}
+          definition={definition}
+          value={value}
+          disabled={pending}
+          ariaLabel={definition.title}
+          referenceActions={referenceBridge}
+          onCommit={commit}
+        />
+      </div>
+    </div>,
   );
 }
 
@@ -1211,7 +1018,6 @@ function DynamicPortRow({
             port={port}
             pending={pending}
             commit={commit}
-            reportStatus={data.reportStatus}
           />
         )}
       {group.listPortMode !== "list" && (
@@ -1232,66 +1038,21 @@ function DynamicPortValueEditor({
   port,
   pending,
   commit,
-  reportStatus,
 }: {
   readonly group: DynamicPortGroupDefinition;
   readonly port: GraphDynamicPort;
   readonly pending: boolean;
   readonly commit: (value: JsonValue) => void;
-  readonly reportStatus: GraphNodeData["reportStatus"];
 }): React.JSX.Element {
-  const definition: PropertyDefinition = {
-    id: port.id,
-    aliases: [],
-    title: "值",
-    valueType: group.item.valueType,
-    ...(group.item.dataTypeId === undefined ? {} : { dataTypeId: group.item.dataTypeId }),
-    required: true,
-    defaultValue: group.item.defaultValue,
-    ...(group.item.editor === undefined ? {} : { editor: group.item.editor }),
-    ...(group.item.reference === undefined ? {} : { reference: group.item.reference }),
-  };
-  if (definition.editor?.kind === "select") {
-    const selectedIndex = definition.editor.options.findIndex((option) => jsonValuesEqual(option.value, port.value));
-    return (
-      <select
-        aria-label={`动态端口值 ${port.id}`}
-        value={selectedIndex < 0 ? "" : String(selectedIndex)}
-        disabled={pending || definition.editor.readOnly}
-        onChange={(event) => {
-          const option = definition.editor?.options[Number(event.target.value)];
-          if (option !== undefined) {
-            commit(cloneJsonValue(option.value));
-          }
-        }}
-      >
-        {selectedIndex < 0 && <option value="">未设置</option>}
-        {definition.editor.options.map((option, index) => (
-          <option key={`${index}:${JSON.stringify(option.value)}`} value={String(index)}>{option.title}</option>
-        ))}
-      </select>
-    );
-  }
-  if (definition.valueType === "boolean" || definition.editor?.kind === "checkbox") {
-    return (
-      <input
-        type="checkbox"
-        aria-label={`动态端口值 ${port.id}`}
-        checked={port.value === true}
-        disabled={pending || definition.editor?.readOnly}
-        onChange={(event) => commit(event.target.checked)}
-      />
-    );
-  }
   return (
-    <InlineNodeScalarProperty
+    <FieldValueEditor
       key={`${port.id}:${JSON.stringify(port.value)}`}
-      definition={definition}
+      definition={group.item}
       value={port.value}
-      editor={definition.editor}
-      pending={pending}
-      commit={(value) => commit(value === undefined ? cloneJsonValue(group.item.defaultValue) : value)}
-      reportStatus={reportStatus}
+      disabled={pending}
+      ariaLabel={`动态端口值 ${port.id}`}
+      referenceActions={referenceBridge}
+      onCommit={commit}
     />
   );
 }
@@ -1858,7 +1619,10 @@ function GraphEditorApp(): React.JSX.Element {
           }];
     });
     const selectionBefore = createSelectionSnapshot(activeGraphIdRef.current, selectedRef.current);
-    updateSelection({ nodeIds: nodes.map((node) => node.id).sort(), edgeIds: edges.map((edge) => edge.id).sort() }, true, false);
+    updateSelection({
+      nodeIds: nodes.map((node) => node.id).sort(compareUtf16CodeUnits),
+      edgeIds: edges.map((edge) => edge.id).sort(compareUtf16CodeUnits),
+    }, true, false);
     postOperations([
       ...nodes.map((node) => ({ type: "graph.addNode" as const, graphId: graph.id, node })),
       ...edges.map((edge) => ({ type: "graph.addEdge" as const, graphId: graph.id, edge })),
@@ -2210,8 +1974,11 @@ function GraphEditorApp(): React.JSX.Element {
   }, []);
 
   const handleSelectionChange = useCallback((selection: { nodes: GraphFlowNode[]; edges: GraphFlowEdge[] }): void => {
-    const nodeIds = selection.nodes.filter((candidate) => candidate.data.flavor === "node").map((node) => node.id).sort();
-    const edgeIds = selection.edges.map((edge) => edge.id).sort();
+    const nodeIds = selection.nodes
+      .filter((candidate) => candidate.data.flavor === "node")
+      .map((node) => node.id)
+      .sort(compareUtf16CodeUnits);
+    const edgeIds = selection.edges.map((edge) => edge.id).sort(compareUtf16CodeUnits);
     updateSelection(nodeIds.length === 0 && edgeIds.length === 0 ? undefined : { nodeIds, edgeIds }, false, true);
   }, [updateSelection]);
 
@@ -3283,6 +3050,7 @@ function buildNodeTypeMenu(nodeTypes: readonly NodeTypeDefinition[]): readonly N
     });
     current.nodeTypes.push(nodeType);
   });
+  // Localized title collation is UI-only; protocol data, hashes, and cursors never consume this order.
   const freeze = (branch: MutableBranch): NodeTypeMenuBranch => ({
     title: branch.title,
     branches: [...branch.branches.values()].sort((left, right) => left.title.localeCompare(right.title)).map(freeze),
@@ -3742,9 +3510,7 @@ function findGraphPath(document: GraphDocument, targetGraphId: string): readonly
 }
 
 function createDefaultProperties(nodeType: NodeTypeDefinition): Readonly<Record<string, JsonValue>> {
-  return Object.fromEntries(nodeType.properties.flatMap((property) =>
-    property.defaultValue === undefined ? [] : [[property.id, cloneJsonValue(property.defaultValue)]],
-  ));
+  return createDefaultFieldProperties(nodeType.properties);
 }
 
 function parseGraphClipboardPayload(text: string): GraphClipboardPayload | undefined {
@@ -3839,9 +3605,7 @@ function cloneGraphEdge(edge: GraphEdgeModel): GraphEdgeModel {
 }
 
 function createDefaultGraphProperties(graphType: GraphTypeDefinition): Readonly<Record<string, JsonValue>> {
-  return Object.fromEntries(graphType.properties.flatMap((property) =>
-    property.defaultValue === undefined ? [] : [[property.id, cloneJsonValue(property.defaultValue)]],
-  ));
+  return createDefaultFieldProperties(graphType.properties);
 }
 
 function resolveNodeTypeDefinition(registry: GraphCatalogRegistry, nodeTypeId: string): NodeTypeDefinition | undefined {
@@ -3869,9 +3633,6 @@ function isNodeTypeAvailable(
   flavor: "atomic" | "subgraph",
 ): boolean {
   if ((flavor === "atomic") === (nodeType.subgraph !== undefined)) {
-    return false;
-  }
-  if (nodeType.properties.some((property) => property.required && property.defaultValue === undefined)) {
     return false;
   }
   const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphTypeDefinition(catalogRegistry, graph.graphTypeId);
@@ -3993,6 +3754,7 @@ function getConnectionNodeOptions(
       const targetPort = fromRole === "source" ? port : fromPort;
       return arePortsCompatible(catalogRegistry, sourcePort, targetPort) ? [{ nodeType, port }] : [];
     });
+  // Localized title collation is UI-only; the selected IDs remain the semantic payload.
   }).sort((left, right) =>
     left.nodeType.title.localeCompare(right.nodeType.title)
     || left.port.title.localeCompare(right.port.title),
@@ -4055,7 +3817,7 @@ function planConnectionCandidate(
   const issue = getConnectionCapacityIssue(graph, catalogRegistry, source, "source", replacementEdgeIds)
     ?? getConnectionCapacityIssue(graph, catalogRegistry, target, "target", replacementEdgeIds);
   return {
-    replacementEdgeIds: [...replacementEdgeIds].sort(),
+    replacementEdgeIds: [...replacementEdgeIds].sort(compareUtf16CodeUnits),
     ...(issue === undefined ? {} : { issue }),
   };
 }
@@ -4240,8 +4002,8 @@ function jsonValuesEqual(left: JsonValue | undefined, right: JsonValue | undefin
       && left.length === right.length
       && left.every((value, index) => jsonValuesEqual(value, right[index]));
   }
-  if (typeof left === "object" || typeof right === "object") {
-    if (typeof left !== "object" || typeof right !== "object") {
+  if (isJsonObject(left) || isJsonObject(right)) {
+    if (!isJsonObject(left) || !isJsonObject(right)) {
       return false;
     }
     const leftKeys = Object.keys(left).sort();

@@ -62,7 +62,7 @@ export function readProjectProviderAuthorization(
         `${PROVIDER_ALLOWLIST_ENV}[${index}] must not contain relative or redundant path segments.`,
       );
     }
-    const identity = process.platform === "win32" ? normalized.toLocaleLowerCase("en-US") : normalized;
+    const identity = process.platform === "win32" ? normalized.toLowerCase() : normalized;
     if (seen.has(identity)) {
       throw new ProjectProviderAuthorizationError(
         `${PROVIDER_ALLOWLIST_ENV}[${index}] duplicates another allowed entry path.`,

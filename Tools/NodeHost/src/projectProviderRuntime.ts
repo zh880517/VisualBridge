@@ -4,6 +4,7 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import {
+  compareUtf16CodeUnits,
   PROJECT_PROVIDER_PROTOCOL_VERSION,
   parseProjectProviderHostMessage,
   parseProjectProviderResponse,
@@ -779,7 +780,7 @@ export class ProjectProviderRuntime implements AsyncDisposable {
         "Project Provider source manifest must contain the Project marker and complete Authoring source set.",
       );
     }
-    const entries = [...manifest].sort((left, right) => compareOrdinal(left.path, right.path));
+    const entries = [...manifest].sort((left, right) => compareUtf16CodeUnits(left.path, right.path));
     const seen = new Set<string>();
     const hashes = new Map<string, string | undefined>();
     for (const entry of entries) {
@@ -1101,7 +1102,7 @@ function compareManifestSnapshots(
     .filter((sourcePath) => before.hashes.get(sourcePath) !== after.hashes.get(sourcePath)
       || !before.hashes.has(sourcePath)
       || !after.hashes.has(sourcePath))
-    .sort(compareOrdinal);
+    .sort(compareUtf16CodeUnits);
 }
 
 function manifestFailurePaths(errorValue: unknown): readonly string[] {
@@ -1115,10 +1116,6 @@ function manifestFailurePaths(errorValue: unknown): readonly string[] {
 function pathIdentity(value: string): string {
   const resolved = path.resolve(value);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-}
-
-function compareOrdinal(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function formatIssues(issues: readonly { readonly path: string; readonly message: string }[]): string {

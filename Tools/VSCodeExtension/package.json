@@ -281,16 +281,10 @@
         "displayName": "VisualBridge Editor",
         "selector": [
           {
-            "filenamePattern": "*.vbdoc"
-          },
-          {
             "filenamePattern": "*.vbgraph"
           },
           {
             "filenamePattern": "*.vbentity"
-          },
-          {
-            "filenamePattern": "*.vbform"
           },
           {
             "filenamePattern": "*.vbconfig"
@@ -368,7 +362,7 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "build": "npm run clean && npm run build:graph-editor && npm run build:entity-editor && npm run build:project-editor && npm run build:structured-editor && npm run build:table-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap && npm run check",
     "watch": "npm run clean && npm run build:graph-editor && npm run build:entity-editor && npm run build:project-editor && npm run build:structured-editor && npm run build:table-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap --watch",
-    "package:vsix": "npm run build && npm run prepare:package && vsce package --no-dependencies --out artifacts/visualbridge.vsix",
+    "package:vsix": "npm run build:host-dependencies && npm run build && npm run prepare:package && vsce package --no-dependencies --out artifacts/visualbridge.vsix",
     "test:unit": "node ./test/runUnitTests.mjs",
     "test:host": "npm run build:host-dependencies && npm run build && node ./test/runTest.mjs && node ./test/runRestrictedTest.mjs",
     "test:host:trusted": "npm run build:host-dependencies && npm run build && node ./test/runTest.mjs",

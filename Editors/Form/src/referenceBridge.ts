@@ -1,11 +1,19 @@
 import type { ReferenceDefinition } from "@visualbridge/core";
-import type { ReferenceEditorActions } from "./fieldEditor";
+
+export interface ReferenceEditorActions {
+  readonly pick: (
+    definition: ReferenceDefinition,
+    currentValue: string | number,
+  ) => Promise<string | number | undefined>;
+  readonly reveal: (definition: ReferenceDefinition, currentValue: string | number) => void;
+}
 
 interface MessageApi {
   postMessage(message: unknown): void;
 }
 
 interface PendingRequest {
+  readonly valueType: "string" | "number";
   readonly resolve: (value: string | number | undefined) => void;
 }
 
@@ -20,7 +28,10 @@ export class WebviewReferenceBridge implements ReferenceEditorActions {
   ): Promise<string | number | undefined> {
     const requestId = crypto.randomUUID();
     this.api.postMessage({ type: "pickReference", requestId, definition, value: currentValue });
-    return new Promise((resolve) => this.pending.set(requestId, { resolve }));
+    return new Promise((resolve) => this.pending.set(requestId, {
+      valueType: typeof currentValue === "string" ? "string" : "number",
+      resolve,
+    }));
   }
 
   public reveal(definition: ReferenceDefinition, currentValue: string | number): void {
@@ -37,9 +48,14 @@ export class WebviewReferenceBridge implements ReferenceEditorActions {
       return true;
     }
     this.pending.delete(value.requestId);
-    request.resolve(value.type === "referenceSelected" && (typeof value.value === "string" || typeof value.value === "number")
-      ? value.value
-      : undefined);
+    const selectedValue = value.value;
+    request.resolve(
+      value.type === "referenceSelected"
+        && (typeof selectedValue === "string" || typeof selectedValue === "number")
+        && typeof selectedValue === request.valueType
+        ? selectedValue
+        : undefined,
+    );
     return true;
   }
 

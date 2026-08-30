@@ -117,11 +117,11 @@ function createServer(): McpServer {
         };
       }
       const declared = await workspace.listDeclaredDocuments(project);
-      const normalizedQuery = query.toLocaleLowerCase();
+      const normalizedQuery = query.toLowerCase();
       const results = declared
         .filter((entry) => editor === undefined || entry.documentType.editor === editor)
         .filter((entry) => documentTypeId === undefined || entry.documentType.id === documentTypeId)
-        .filter((entry) => normalizedQuery.length === 0 || entry.path.toLocaleLowerCase().includes(normalizedQuery))
+        .filter((entry) => normalizedQuery.length === 0 || entry.path.toLowerCase().includes(normalizedQuery))
         .map((entry) => ({
           projectFile: entry.project.projectFile,
           documentTypeId: entry.documentType.id,

@@ -6,7 +6,7 @@ import {
   ProjectTransactionFailure,
   withProjectTransaction,
 } from "@visualbridge/node-host";
-import { referenceValuesEqual } from "@visualbridge/core";
+import { compareUtf16CodeUnits, referenceValuesEqual } from "@visualbridge/core";
 import {
   containsLifecycleGuardedRemoval,
   lifecycleDeleteTarget,
@@ -465,7 +465,7 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       .filter((document) => document.match.project.markerUri.toString() === project.markerUri.toString())
       .flatMap((document) => document.sources)
       .map((source) => [source.uri.toString(), source.uri])).values()]
-      .sort((left, right) => left.toString().localeCompare(right.toString()));
+      .sort((left, right) => compareUtf16CodeUnits(left.toString(), right.toString()));
   }
 
   public pauseNextRevealForTest(uri: vscode.Uri): boolean {
@@ -1098,10 +1098,10 @@ async function findCsvFamilyUris(
     return [activeUri];
   }
   const directory = activeUri.with({ path: nodePath.posix.dirname(activeUri.path) });
-  const extension = nodePath.extname(activeUri.path).toLocaleLowerCase();
+  const extension = nodePath.extname(activeUri.path).toLowerCase();
   const entries = await vscode.workspace.fs.readDirectory(directory);
   const candidates = entries.flatMap(([name, type]) => {
-    if (type !== vscode.FileType.File || nodePath.extname(name).toLocaleLowerCase() !== extension) {
+    if (type !== vscode.FileType.File || nodePath.extname(name).toLowerCase() !== extension) {
       return [];
     }
     const candidate = vscode.Uri.joinPath(directory, name);
@@ -1118,7 +1118,7 @@ async function findCsvFamilyUris(
   if (!candidates.some((candidate) => candidate.toString() === activeUri.toString())) {
     candidates.push(activeUri);
   }
-  return candidates.sort((left, right) => left.path.localeCompare(right.path));
+  return candidates.sort((left, right) => compareUtf16CodeUnits(left.path, right.path));
 }
 
 async function renderAllSources(document: TableCustomDocument): Promise<ReadonlyMap<string, Uint8Array>> {

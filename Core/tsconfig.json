@@ -13,6 +13,7 @@
     "Catalog/**/*.ts",
     "Document/**/*.ts",
     "Form/**/*.ts",
+    "Ordering/**/*.ts",
     "Project/**/*.ts",
     "Provider/**/*.ts",
     "Reference/**/*.ts",

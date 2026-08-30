@@ -52,18 +52,23 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
     },
+    "nonEmptyString": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "identifierArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/identifier" }
+    },
     "port": {
       "type": "object",
       "required": ["id", "title", "kind", "direction"],
       "properties": {
         "id": { "$ref": "#/$defs/identifier" },
-        "aliases": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/identifier" },
-          "default": []
-        },
-        "title": { "type": "string" },
-        "description": { "type": "string" },
+        "aliases": { "$ref": "#/$defs/identifierArray", "default": [] },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "description": { "$ref": "#/$defs/nonEmptyString" },
         "kind": { "enum": ["flow", "data"] },
         "direction": { "enum": ["input", "output"] },
         "dataTypeId": { "$ref": "#/$defs/identifier" },
@@ -78,44 +83,61 @@
       ],
       "additionalProperties": false
     },
-    "property": {
+    "field": {
       "type": "object",
-      "required": ["id", "title", "valueType"],
+      "required": ["id", "title", "valueType", "defaultValue"],
       "properties": {
         "id": { "$ref": "#/$defs/identifier" },
-        "aliases": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/identifier" },
-          "default": []
-        },
-        "title": { "type": "string" },
-        "description": { "type": "string" },
-        "valueType": { "enum": ["string", "number", "boolean", "json"] },
+        "aliases": { "$ref": "#/$defs/identifierArray", "default": [] },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "description": { "$ref": "#/$defs/nonEmptyString" },
+        "valueType": { "$ref": "#/$defs/valueType" },
         "dataTypeId": { "$ref": "#/$defs/identifier" },
-        "required": { "type": "boolean", "default": false },
-        "defaultValue": { "$ref": "visualbridge-primitives.schema.json#/$defs/jsonValue" },
-        "editor": { "$ref": "#/$defs/propertyEditor" },
-        "reference": { "$ref": "#/$defs/reference" }
+        "defaultValue": true,
+        "editor": { "$ref": "#/$defs/editor" },
+        "reference": { "$ref": "#/$defs/reference" },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/field" }
+        },
+        "item": { "$ref": "#/$defs/valueDefinition" }
       },
       "allOf": [
-        {
-          "if": { "properties": { "valueType": { "const": "string" } }, "required": ["valueType"] },
-          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["text", "multiline", "reference", "select"] } } } } }
-        },
-        {
-          "if": { "properties": { "valueType": { "const": "number" } }, "required": ["valueType"] },
-          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["number", "reference", "select"] } } } } }
-        },
-        {
-          "if": { "properties": { "valueType": { "const": "boolean" } }, "required": ["valueType"] },
-          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["checkbox", "select"] } } } } }
-        },
-        {
-          "if": { "properties": { "valueType": { "const": "json" } }, "required": ["valueType"] },
-          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["json", "select"] } } } } }
-        }
+        { "$ref": "#/$defs/valueShape" }
       ],
       "additionalProperties": false
+    },
+    "valueType": {
+      "enum": ["string", "number", "boolean", "object", "array", "json"]
+    },
+    "valueShape": {
+      "type": "object",
+      "if": {
+        "type": "object",
+        "properties": { "valueType": { "const": "object" } },
+        "required": ["valueType"]
+      },
+      "then": {
+        "type": "object",
+        "required": ["fields"],
+        "properties": { "fields": true, "item": false }
+      },
+      "else": {
+        "if": {
+          "type": "object",
+          "properties": { "valueType": { "const": "array" } },
+          "required": ["valueType"]
+        },
+        "then": {
+          "type": "object",
+          "required": ["item"],
+          "properties": { "item": true, "fields": false }
+        },
+        "else": {
+          "type": "object",
+          "properties": { "fields": false, "item": false }
+        }
+      }
     },
     "reference": {
       "type": "object",
@@ -127,45 +149,36 @@
       },
       "additionalProperties": false
     },
-    "propertyEditorOption": {
+    "editorOption": {
       "type": "object",
       "required": ["title", "value"],
       "properties": {
-        "title": { "type": "string" },
-        "value": { "$ref": "visualbridge-primitives.schema.json#/$defs/jsonValue" }
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "value": true
       },
       "additionalProperties": false
     },
-    "propertyEditor": {
+    "editor": {
       "type": "object",
       "required": ["kind"],
       "properties": {
-        "kind": { "enum": ["text", "multiline", "number", "checkbox", "select", "json", "reference"] },
+        "kind": { "enum": ["text", "multiline", "number", "checkbox", "select", "color", "reference", "json"] },
         "readOnly": { "type": "boolean", "default": false },
+        "integer": { "type": "boolean", "default": false },
         "min": { "type": "number" },
         "max": { "type": "number" },
+        "step": { "type": "number", "exclusiveMinimum": 0 },
         "options": {
           "type": "array",
-          "items": { "$ref": "#/$defs/propertyEditorOption" },
-          "default": []
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/editorOption" }
         }
       },
       "allOf": [
         {
           "if": { "properties": { "kind": { "const": "select" } }, "required": ["kind"] },
-          "then": { "required": ["options"], "properties": { "options": { "minItems": 1 } } },
-          "else": { "properties": { "options": { "maxItems": 0 } } }
-        },
-        {
-          "if": { "properties": { "kind": { "const": "number" } }, "required": ["kind"] },
-          "else": {
-            "not": {
-              "anyOf": [
-                { "required": ["min"] },
-                { "required": ["max"] }
-              ]
-            }
-          }
+          "then": { "required": ["options"], "properties": { "options": true } },
+          "else": { "properties": { "options": false } }
         }
       ],
       "additionalProperties": false
@@ -188,33 +201,23 @@
       ],
       "additionalProperties": false
     },
-    "dynamicPortItem": {
+    "valueDefinition": {
       "type": "object",
       "required": ["valueType", "defaultValue"],
       "properties": {
-        "valueType": { "enum": ["string", "number", "boolean", "json"] },
+        "valueType": { "$ref": "#/$defs/valueType" },
         "dataTypeId": { "$ref": "#/$defs/identifier" },
-        "defaultValue": { "$ref": "visualbridge-primitives.schema.json#/$defs/jsonValue" },
-        "editor": { "$ref": "#/$defs/propertyEditor" },
-        "reference": { "$ref": "#/$defs/reference" }
+        "defaultValue": true,
+        "editor": { "$ref": "#/$defs/editor" },
+        "reference": { "$ref": "#/$defs/reference" },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/field" }
+        },
+        "item": { "$ref": "#/$defs/valueDefinition" }
       },
       "allOf": [
-        {
-          "if": { "properties": { "valueType": { "const": "string" } }, "required": ["valueType"] },
-          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["text", "multiline", "reference", "select"] } } } } }
-        },
-        {
-          "if": { "properties": { "valueType": { "const": "number" } }, "required": ["valueType"] },
-          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["number", "reference", "select"] } } } } }
-        },
-        {
-          "if": { "properties": { "valueType": { "const": "boolean" } }, "required": ["valueType"] },
-          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["checkbox", "select"] } } } } }
-        },
-        {
-          "if": { "properties": { "valueType": { "const": "json" } }, "required": ["valueType"] },
-          "then": { "properties": { "editor": { "properties": { "kind": { "enum": ["json", "select"] } } } } }
-        }
+        { "$ref": "#/$defs/valueShape" }
       ],
       "additionalProperties": false
     },
@@ -232,7 +235,7 @@
         "description": { "type": "string" },
         "listPortMode": { "enum": ["list", "element"] },
         "port": { "$ref": "#/$defs/dynamicPortTemplate" },
-        "item": { "$ref": "#/$defs/dynamicPortItem" },
+        "item": { "$ref": "#/$defs/valueDefinition" },
         "maxItems": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false
@@ -325,7 +328,7 @@
         },
         "properties": {
           "type": "array",
-          "items": { "$ref": "#/$defs/property" }
+          "items": { "$ref": "#/$defs/field" }
         },
         "nodeConstraints": {
           "type": "array",
@@ -411,7 +414,7 @@
         },
         "properties": {
           "type": "array",
-          "items": { "$ref": "#/$defs/property" }
+          "items": { "$ref": "#/$defs/field" }
         }
       },
       "additionalProperties": false

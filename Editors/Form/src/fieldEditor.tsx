@@ -6,6 +6,15 @@ import { DragDropProvider } from "@dnd-kit/react";
 import { isSortable, useSortable } from "@dnd-kit/react/sortable";
 import { HexAlphaColorPicker, HexColorPicker } from "react-colorful";
 import { CommonIcon, IconButton, ListItemActions } from "./commonIcons";
+import {
+  acceptReferenceSelection,
+  jsonValuesEqual,
+  parseJsonDraft,
+  parseNumberDraft,
+  resolveFieldEditorControl,
+  resolveFieldEditorValue,
+} from "./fieldEditorLogic";
+import type { ReferenceEditorActions } from "./referenceBridge";
 import type {
   FieldDefinition,
   FieldValueDefinition,
@@ -21,14 +30,6 @@ export interface FieldsEditorProps {
   readonly disabled?: boolean | undefined;
   readonly referenceActions?: ReferenceEditorActions | undefined;
   readonly onCommit: (fieldId: string, value: JsonValue) => void;
-}
-
-export interface ReferenceEditorActions {
-  readonly pick: (
-    definition: ReferenceDefinition,
-    currentValue: string | number,
-  ) => Promise<string | number | undefined>;
-  readonly reveal: (definition: ReferenceDefinition, currentValue: string | number) => void;
 }
 
 export interface FieldValueEditorProps {
@@ -70,10 +71,57 @@ export function FieldsEditor(props: FieldsEditorProps): ReactElement {
 }
 
 export function FieldValueEditor(props: FieldValueEditorProps): ReactElement {
-  const value = props.value ?? cloneJsonValue(props.definition.defaultValue);
+  const value = resolveFieldEditorValue(props.value, props.definition.defaultValue);
   const disabled = props.disabled === true || props.definition.editor?.readOnly === true;
+  const control = resolveFieldEditorControl(props.definition, value);
 
-  if (props.definition.valueType === "object") {
+  if (control === "select") {
+    const options = props.definition.editor?.options ?? [];
+    const selectedIndex = options.findIndex((option) => jsonValuesEqual(option.value, value));
+    return (
+      <select
+        aria-label={props.ariaLabel}
+        value={selectedIndex < 0 ? "" : String(selectedIndex)}
+        disabled={disabled}
+        onChange={(event) => {
+          const option = options[Number(event.target.value)];
+          if (option !== undefined) {
+            props.onCommit(cloneJsonValue(option.value));
+          }
+        }}
+      >
+        {selectedIndex < 0 && <option value="">未配置</option>}
+        {options.map((option, index) => <option key={`${index}:${option.title}`} value={index}>{option.title}</option>)}
+      </select>
+    );
+  }
+
+  if (control === "reference" && props.definition.reference !== undefined
+    && (typeof value === "string" || typeof value === "number")) {
+    return (
+      <ReferenceEditor
+        definition={props.definition.reference}
+        value={value}
+        disabled={disabled}
+        ariaLabel={props.ariaLabel}
+        actions={props.referenceActions}
+        onCommit={props.onCommit}
+      />
+    );
+  }
+
+  if (control === "json") {
+    return (
+      <JsonEditor
+        value={value}
+        disabled={disabled}
+        ariaLabel={props.ariaLabel}
+        onCommit={props.onCommit}
+      />
+    );
+  }
+
+  if (control === "object") {
     const objectValue = isRecord(value) ? value as Readonly<Record<string, JsonValue>> : {};
     return (
       <div className="vb-object-editor">
@@ -98,7 +146,7 @@ export function FieldValueEditor(props: FieldValueEditorProps): ReactElement {
     );
   }
 
-  if (props.definition.valueType === "array") {
+  if (control === "array") {
     const values = Array.isArray(value) ? value : [];
     const item = props.definition.item;
     if (item === undefined) {
@@ -107,28 +155,7 @@ export function FieldValueEditor(props: FieldValueEditorProps): ReactElement {
     return <ListEditor {...props} values={values} item={item} disabled={disabled} />;
   }
 
-  if (props.definition.editor?.kind === "select") {
-    const options = props.definition.editor.options;
-    const selectedIndex = options.findIndex((option) => jsonEqual(option.value, value));
-    return (
-      <select
-        aria-label={props.ariaLabel}
-        value={selectedIndex < 0 ? "" : String(selectedIndex)}
-        disabled={disabled}
-        onChange={(event) => {
-          const option = options[Number(event.target.value)];
-          if (option !== undefined) {
-            props.onCommit(cloneJsonValue(option.value));
-          }
-        }}
-      >
-        {selectedIndex < 0 && <option value="">未配置</option>}
-        {options.map((option, index) => <option key={`${index}:${option.title}`} value={index}>{option.title}</option>)}
-      </select>
-    );
-  }
-
-  if (props.definition.valueType === "boolean" || props.definition.editor?.kind === "checkbox") {
+  if (control === "boolean") {
     return (
       <Checkbox.Root
         className="vb-checkbox"
@@ -142,7 +169,7 @@ export function FieldValueEditor(props: FieldValueEditorProps): ReactElement {
     );
   }
 
-  if (props.definition.valueType === "number") {
+  if (control === "number") {
     return (
       <NumberEditor
         definition={props.definition}
@@ -154,36 +181,11 @@ export function FieldValueEditor(props: FieldValueEditorProps): ReactElement {
     );
   }
 
-  if (props.definition.editor?.kind === "color") {
+  if (control === "color") {
     const colorValue = typeof value === "string" ? value : String(props.definition.defaultValue);
     return (
       <ColorEditor
         value={colorValue}
-        disabled={disabled}
-        ariaLabel={props.ariaLabel}
-        onCommit={props.onCommit}
-      />
-    );
-  }
-
-  if (props.definition.editor?.kind === "reference" && props.definition.reference !== undefined
-    && (typeof value === "string" || typeof value === "number")) {
-    return (
-      <ReferenceEditor
-        definition={props.definition.reference}
-        value={value}
-        disabled={disabled}
-        ariaLabel={props.ariaLabel}
-        actions={props.referenceActions}
-        onCommit={props.onCommit}
-      />
-    );
-  }
-
-  if (props.definition.valueType === "json" || props.definition.editor?.kind === "json") {
-    return (
-      <JsonEditor
-        value={value}
         disabled={disabled}
         ariaLabel={props.ariaLabel}
         onCommit={props.onCommit}
@@ -336,8 +338,9 @@ function ReferenceEditor(props: {
           disabled={props.disabled || !available}
           onClick={() => {
             void props.actions?.pick(props.definition, props.value).then((value) => {
-              if (value !== undefined && !referenceValueEqual(value, props.value)) {
-                props.onCommit(value);
+              const accepted = acceptReferenceSelection(props.value, value);
+              if (accepted !== undefined) {
+                props.onCommit(accepted);
               }
             });
           }}
@@ -414,8 +417,8 @@ function NumberEditor(props: {
       step={props.definition.editor?.step ?? (props.definition.editor?.integer === true ? 1 : "any")}
       onChange={(event) => setDraft(event.target.value)}
       onBlur={() => {
-        const value = Number(draft);
-        if (Number.isFinite(value) && value !== props.value) {
+        const value = parseNumberDraft(draft, props.value);
+        if (value !== undefined) {
           props.onCommit(value);
         } else {
           setDraft(String(props.value));
@@ -577,13 +580,13 @@ function JsonEditor(props: {
       disabled={props.disabled}
       onChange={(event) => setDraft(event.target.value)}
       onBlur={() => {
-        try {
-          const value = JSON.parse(draft) as JsonValue;
+        const result = parseJsonDraft(draft);
+        if (result.success) {
           setInvalid(false);
-          if (!jsonEqual(value, props.value)) {
-            props.onCommit(value);
+          if (!jsonValuesEqual(result.value, props.value)) {
+            props.onCommit(result.value);
           }
-        } catch {
+        } else {
           setInvalid(true);
         }
       }}
@@ -633,14 +636,6 @@ function moveArrayItem(values: readonly JsonValue[], from: number, to: number): 
     result.splice(to, 0, entry);
   }
   return result;
-}
-
-function jsonEqual(left: JsonValue, right: JsonValue): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function referenceValueEqual(left: string | number, right: string | number): boolean {
-  return typeof left === typeof right && left === right;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

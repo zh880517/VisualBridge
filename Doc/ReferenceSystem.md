@@ -10,7 +10,7 @@ Reference System 为 Graph、Entity、Structured 和 Table Document 提供同一
 
 Reference 是共享 Field Definition 的可选语义，不是独立 JSON 对象包装。文档中继续只保存 C# 字段对应的字符串或数值稳定键：
 
-```json
+```json visualbridge-schema=visualbridge-entity-catalog.schema.json#/$defs/field
 {
   "id": "primarySkillId",
   "title": "Primary Skill",
@@ -63,7 +63,7 @@ Graph 元素 Location 显式保存 `elementKind`、`elementId`、`graphId`、`no
 
 `table.row` 的 `target` 为：
 
-```json
+```json visualbridge-schema=visualbridge-primitives.schema.json#/$defs/jsonObject
 {
   "tableTypeId": "sample.table.skills",
   "sheetId": "skills",
@@ -108,6 +108,26 @@ Safe Delete 先由领域 Adapter 建立删除闭包。闭包内互相引用随�
 
 ## 5. VS Code 编辑闭环
 
+```mermaid
+sequenceDiagram
+  participant Field as Shared Field Editor
+  participant Host as VS Code Host
+  participant Ref as Reference Service
+  participant Provider as Built-in / Project Provider
+  participant Editor as Target Editor
+  Field->>Host: search or reveal definition + stable value
+  Host->>Ref: capture current Project semantic snapshot
+  Ref->>Provider: validate target, search or resolve
+  Provider-->>Ref: stable candidates + exact Location
+  Ref-->>Host: result bound to snapshot
+  alt user selects a candidate
+    Host-->>Field: commit only stable string/number value
+  else user reveals a resolved target
+    Host->>Editor: open owner and send scoped reveal request
+    Editor-->>Host: acknowledgement for current webview epoch
+  end
+```
+
 共享 Form Editor 用只读稳定值加通用搜索、跳转图标呈现引用，不允许绕过 Provider 手输不受约束的值。Graph 自有属性布局复用同一 Webview Reference Bridge，Entity、Structured 和 Table 直接复用共享字段控件。
 
 选择按钮向 Extension Host 发送结构化 definition 和当前值，由原生 Quick Pick 展示候选；Webview 只接收最终稳定值。跳转按钮先解析引用，歧义时要求选择具体目标。Table 目标由 Table Editor 定位物理 Sheet/Row；Document 目标打开其声明的 Authoring Document；Graph Element 目标会切换到指定 Graph，选择并居中 Node，或居中并临时高亮 Port；Entity Component 目标会打开所属 Entity、展开对应卡片、滚动聚焦并临时高亮。Graph 与 Entity Webview 未就绪或隐藏重建时，Host 会保留带请求 ID 的最新定位请求，直到 Webview 返回处理结果；完整作用域失效时明确失败，不按同名元素猜测。
@@ -116,9 +136,9 @@ Safe Delete 先由领域 Adapter 建立删除闭包。闭包内互相引用随�
 
 Reference Cursor 绑定 kind、规范 target、规范查询、稳定排序所需的候选边界和 Project Snapshot 依赖键。MCP 内置 Provider 的依赖键同时包含物理来源 Manifest 与本次实际解析得到的精确语义快照，Provider 直接消费这组已捕获只读对象，不在生成候选时二次读取磁盘；因此并发写入即使把物理 Hash 改回旧值，也不能让另一组候选冒用旧 Snapshot。Project Provider 的 Core 外层 Cursor 还安全封装 Provider ID、Host 实例、入口代码 Hash、进程 generation、Provider 不透明 continuation 与 Provider `snapshotHash`；内置 Provider 不携带这段状态。每一页必须按同一 comparator 确定性排序并严格大于上一页边界。Snapshot、Provider 实例/进程/入口或候选依赖变化时旧 Cursor 返回 `cursor.snapshotChanged`，调用方必须从第一页重新搜索；损坏状态与跨查询复用分别返回 `cursor.invalid`、`cursor.queryMismatch`，不得把旧位置应用到新候选集合。完整性能、取消和分页契约见 [`WorkspaceIndexPerformance.md`](WorkspaceIndexPerformance.md)。
 
-Document Browser 使用同一 Reference Service 的解析候选展示每个文档的出站引用，并按候选 Location 的 Project、Document Type 与物理路径派生 `Referenced By` 关系。反向关系仅是工作区索引视图，不写回任何 Authoring Document；缺失或歧义引用继续使用本文件定义的诊断和解析状态。完整 Browser 契约见 `DocumentBrowser.md`。
+Document Browser 使用同一 Reference Service 的解析候选展示每个文档的出站引用，并按候选 Location 的 Project、Document Type 与物理路径派生 `Referenced By` 关系。反向关系仅是工作区索引视图，不写回任何 Authoring Document；缺失或歧义引用继续使用本文件定义的诊断和解析状态。完整 Browser 契约见 [`DocumentBrowser.md`](DocumentBrowser.md)。
 
-Project Refactoring 使用解析候选的完整 Location，而不是仅按引用值，批量重命名 `document`、`entity.component`、`graph.element` 或 `table.row` 目标及所有唯一解析到该位置的入站 occurrence。Entity Component 通过 `entity.renameComponent` 修改实例身份；Graph 元素通过 `graph.renameElement` 原子更新结构身份、连线端点和子图调用映射；CSV 分表和 XLSX 与文本 Document 参与同一个带哈希检查与回滚的 Host 事务。完整契约见 `ProjectRefactoring.md`。
+Project Refactoring 使用解析候选的完整 Location，而不是仅按引用值，批量重命名 `document`、`entity.component`、`graph.element` 或 `table.row` 目标及所有唯一解析到该位置的入站 occurrence。Entity Component 通过 `entity.renameComponent` 修改实例身份；Graph 元素通过 `graph.renameElement` 原子更新结构身份、连线端点和子图调用映射；CSV 分表和 XLSX 与文本 Document 参与同一个带哈希检查与回滚的 Host 事务。完整契约见 [`ProjectRefactoring.md`](ProjectRefactoring.md)。
 
 Document Lifecycle 复用相同 Provider、Location 和 occurrence，不维护第二套引用扫描器。Stable ID Rename 进入 Project Refactoring；物理 Path Move 保持 Reference value 不变；Copy 与 Safe Delete 使用上面的 closure/coverage 规则。
 

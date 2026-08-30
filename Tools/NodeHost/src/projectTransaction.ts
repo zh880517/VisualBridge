@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { link, lstat, mkdir, open, readFile, readdir, realpath, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
+import { compareUtf16CodeUnits } from "@visualbridge/core";
 
 const LOCK_FILE_NAME = ".visualbridge-transaction.lock";
 const JOURNAL_FILE_NAME = ".visualbridge-transaction.json";
@@ -176,7 +177,7 @@ async function commitMutations(
       await ensurePhysicalTarget(projectRoot, precondition.absolutePath, precondition.path);
     }
     await verifyPreconditions(preconditions);
-    for (const mutation of [...mutations].sort((left, right) => compareOrdinal(left.path, right.path))) {
+    for (const mutation of [...mutations].sort((left, right) => compareUtf16CodeUnits(left.path, right.path))) {
       ensureInside(projectRoot, mutation.absolutePath, mutation.path);
       ensureTargetMatchesLogicalPath(projectRoot, mutation.path, mutation.absolutePath);
       await ensurePhysicalTarget(projectRoot, mutation.absolutePath, mutation.path);
@@ -315,7 +316,7 @@ async function commitMutations(
 }
 
 async function verifyPreconditions(preconditions: readonly ProjectTransactionPrecondition[]): Promise<void> {
-  for (const precondition of [...preconditions].sort((left, right) => compareOrdinal(left.path, right.path))) {
+  for (const precondition of [...preconditions].sort((left, right) => compareUtf16CodeUnits(left.path, right.path))) {
     const actualHash = await readOptionalHash(precondition.absolutePath);
     const expectedHash = precondition.expectedAbsent === true ? undefined : precondition.hash;
     if (actualHash !== expectedHash) {
@@ -576,7 +577,7 @@ async function acquireRecoveryGuard(projectRoot: string): Promise<{ readonly pat
     const entries = (await readdir(directory))
       .map((name) => ({ name, match: recoveryGuardNamePattern.exec(name) }))
       .filter((entry): entry is { readonly name: string; readonly match: RegExpExecArray } => entry.match !== null)
-      .sort((left, right) => compareOrdinal(left.name, right.name));
+      .sort((left, right) => compareUtf16CodeUnits(left.name, right.name));
     const latest = entries.at(-1);
     if (latest !== undefined) {
       const latestPath = path.join(directory, latest.name);
@@ -743,10 +744,6 @@ async function ensurePhysicalTarget(projectRoot: string, absolutePath: string, l
 function pathIdentity(filePath: string): string {
   const resolved = path.resolve(filePath);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-}
-
-function compareOrdinal(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function displayHash(value: string | undefined): string {

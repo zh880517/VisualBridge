@@ -20,7 +20,7 @@
 - Project 自定义 Document Type、任意扩展名识别、Catalog Registry 和确定性序列化。
 - `document`、`entity.component`、`graph.element`、`table.row` Reference Provider、精确跳转及项目级重构。
 - Document Browser、全工程诊断、引用与反向引用入口。
-- Graph、Structured、Table MCP 读取、校验和原子 Operation；真实 stdio MCP 自动化测试。
+- Graph、Entity、Structured、Table MCP 读取、校验和原子 Operation；真实 stdio MCP 自动化测试。
 - VSIX 构建与打包。
 
 ## 3. 执行顺序
@@ -149,7 +149,7 @@
 - 从空缓存安装依赖、构建、测试和打包可重复执行。
 - Authoring 源文档与 Catalog 的交接契约不存在仍待决定的结构性字段；Project Discovery、WebSocket、Unity Import/Compile、Runtime 和 Debug 协议留到后续 Unity 路线图，不在本阶段伪冻结。
 
-### VB-PU-08 最终文档审计与使用手册 — `in_progress`
+### VB-PU-08 最终文档审计与使用手册 — `complete`
 
 范围：
 
@@ -183,8 +183,8 @@
 6. 源码变化后执行 `codegraph sync .`，复核状态和影响测试。
 7. 删除 `Doc/Temp` 中该任务的临时计划，只保留正式契约与本清单状态。
 8. 查看最终 diff，确认没有 Unity 实现、生成缓存、用户文件或无关改动。
-9. 在清单中将当前任务标记为 `complete`、下一项标记为 `in_progress`，把状态变化包含在本任务最终 diff 中。
-10. 使用单一关注点的祈使句提交，推送 `main`，确认本地 HEAD 与 `origin/main` 一致，然后直接继续下一项。
+9. 在清单中将当前任务标记为 `complete`；只有当前路线图仍有下一项时，才把该项标记为 `in_progress`，并将状态变化包含在本任务最终 diff 中。
+10. 使用单一关注点的祈使句提交，推送 `main`，确认本地 HEAD 与 `origin/main` 一致；只有当前路线图仍有下一项时才直接继续。VB-PU-08 完成后本路线图结束，Unity 工作必须先另立路线图，不在此处自动续接。
 
 ## 5. Unity 正式接入门槛
 

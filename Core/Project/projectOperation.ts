@@ -6,6 +6,7 @@ import type {
   VisualBridgeProjectDefinition,
 } from "./projectFile";
 import { parseProjectFile, serializeProjectFile } from "./projectFile";
+import { compareUtf16CodeUnits } from "../Ordering/ordinal";
 
 export type ProjectOperation =
   | { readonly type: "project.setProjectId"; readonly projectId: string }
@@ -374,7 +375,7 @@ function checkKeys(
   issues: ProjectFileIssue[],
 ): void {
   const allowedKeys = new Set(allowed);
-  Object.keys(value).filter((key) => !allowedKeys.has(key)).sort().forEach((key) => {
+  Object.keys(value).filter((key) => !allowedKeys.has(key)).sort(compareUtf16CodeUnits).forEach((key) => {
     issues.push({ path: `${path}.${key}`, message: `Unknown property '${key}'.` });
   });
 }

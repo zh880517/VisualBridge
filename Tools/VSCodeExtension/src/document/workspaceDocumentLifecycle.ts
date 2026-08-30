@@ -5,6 +5,7 @@ import {
   DocumentLifecycleService,
   buildCanonicalDocumentLifecycleDependencies,
   buildOwnedStableIdentityCollisionIndex,
+  compareUtf16CodeUnits,
   referenceLocationKey,
   remapOwnedStableIdentityCollisionTargets,
   validateCompleteStableIdentityRemap,
@@ -676,7 +677,7 @@ export class WorkspaceDocumentLifecycle {
     const projectPath = relativeProjectPath(project, project.markerUri);
     preconditions.set(projectPath, physicalPrecondition(project, projectPath, hashBytes(projectBytes)));
     const catalogEntries: { path: string; hash: string }[] = [];
-    const catalogPaths = [...new Set(project.definition.documentTypes.flatMap((documentType) => documentType.catalogs))].sort();
+    const catalogPaths = [...new Set(project.definition.documentTypes.flatMap((documentType) => documentType.catalogs))].sort(compareUtf16CodeUnits);
     for (const path of catalogPaths) {
       try {
         const hash = hashBytes(await vscode.workspace.fs.readFile(projectUri(project, path)));
@@ -689,7 +690,7 @@ export class WorkspaceDocumentLifecycle {
     }
     const indexed = this.documents.documents.filter((document) => document.projectId === project.definition.projectId);
     const physicalDocumentHashes = new Map<string, string>();
-    for (const path of [...new Set(indexed.flatMap((document) => document.sourcePaths))].sort()) {
+    for (const path of [...new Set(indexed.flatMap((document) => document.sourcePaths))].sort(compareUtf16CodeUnits)) {
       try {
         const hash = hashBytes(await vscode.workspace.fs.readFile(projectUri(project, path)));
         physicalDocumentHashes.set(path, hash);
@@ -709,7 +710,7 @@ export class WorkspaceDocumentLifecycle {
     }, hashText);
     return {
       dependencies,
-      preconditions: [...preconditions.values()].sort((left, right) => left.path.localeCompare(right.path)),
+      preconditions: [...preconditions.values()].sort((left, right) => compareUtf16CodeUnits(left.path, right.path)),
     };
   }
 

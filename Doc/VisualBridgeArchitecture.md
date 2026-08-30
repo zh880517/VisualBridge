@@ -4,16 +4,16 @@
 
 本文描述 VisualBridge，一个基于 VS Code 的游戏语义内容创作平台。平台用于承载游戏逻辑、游戏流程、结构化属性、数据引用和运行时调试等不依赖模型与实时渲染的编辑工作，并通过 Unity Bridge 与 Unity Editor 和 Player 协作。
 
-本文是新工程的架构基线，主要确定：
+本文是当前 VisualBridge 单仓库的架构基线，主要确定：
 
-- Authoring Project、Document、Extension 和 Runtime 的边界。
+- Authoring Project、Document、当前扩展入口和未来 Runtime 的边界。
 - VS Code 基础插件、项目扩展、Unity Bridge 和 MCP 的职责。
 - 编辑数据、描述文件、生成数据和运行时数据的所有权。
-- 本地与远程通信、实例发现和多客户端调试模型。
-- 新平台仓库和游戏工程的建议目录结构。
+- Unity/Player 通信、实例发现和多客户端调试尚待设计时必须遵守的边界。
+- 平台仓库的现状和游戏工程的建议目录结构。
 - 分阶段开发路径。
 
-本文不依赖任何现有工程，也不约束具体游戏项目。具体 JSON Schema、接口字段、UI 视觉、协议消息、构建脚本和发布流程在对应模块开始实施时单独设计。
+本文不约束具体游戏项目。当前已实现的 JSON Schema、协议、编辑器和 Host 行为以 `Protocol/Schema`、源码及对应正式文档为准；Unity Bridge、Runtime、Debug 等尚未落地的边界继续在实施阶段单独设计，不能用本文的概念图臆造字段。
 
 ## 产品定位
 
@@ -28,7 +28,7 @@
 - 表格型配置。
 - 跨文档和游戏数据引用。
 - 批量查找、校验、重构和格式迁移。
-- 节点、状态和流程级调试。
+- 节点、状态和流程级调试（未来 Unity/Debug 阶段）。
 - AI 读取、生成和修改游戏内容。
 
 继续保留在 Unity 的工作：
@@ -51,18 +51,18 @@
 - C#、游戏配置或外部数据能够生成编辑器所需的 Catalog 和引用描述。
 - 项目业务扩展不需要修改基础插件。
 - VS Code 和 MCP 使用同一套核心编辑与校验能力。
-- Unity Editor 和 Player 使用统一的上层调试协议。
-- 多个 VS Code 窗口、AI Agent 和 Unity 实例能够明确路由和协调。
+- 未来 Unity Editor 和 Player 接入时使用同一份经过独立设计的上层调试契约。
+- 未来多个 VS Code 窗口、AI Agent 和 Unity 实例接入时能够明确路由和协调。
 - 平台先通过少量垂直切片验证，再逐步扩展文档类型。
 
 ### 非目标
 
-- 第一阶段不实现多人实时协同编辑。
-- 第一阶段不支持 VS Code Web、Codespaces 和 Remote SSH。
-- 第一阶段不提供任意业务代码的安全沙箱。
-- 第一阶段不替代 Unity 的场景和资源编辑器。
-- 第一阶段不建立中心化云服务。
-- 本文不确定全部文档格式和兼容策略。
+- 当前 Authoring 基线不实现多人实时协同编辑。
+- 当前 Authoring 基线不支持 VS Code Web、Codespaces 和 Remote SSH。
+- 当前 Authoring 基线不提供任意业务代码的安全沙箱。
+- 当前 Authoring 基线不替代 Unity 的场景和资源编辑器。
+- 当前 Authoring 基线不建立中心化云服务。
+- 本文不重复各领域正式文档已经冻结的字段，也不预先冻结尚未实现的 Unity/Debug 格式和兼容策略。
 
 ## 核心原则
 
@@ -95,11 +95,11 @@ Catalog 可以由 Unity C#、外部配置或项目扩展生成。Document 不复
 
 ### 稳定身份与显示信息分离
 
-Project、Document、Document Type、Element、Reference、Runtime Instance 和连接都使用稳定 ID。文件名、路径、显示名称和 C# 类型名允许变化，不能直接承担永久身份。
+当前 Project、Document、Document Type、Element、Reference 和 Graph 连接都使用稳定 ID。文件名、路径、显示名称和 C# 类型名允许变化，不能直接承担永久身份。未来 Runtime Instance 若需要跨进程寻址，必须另行定义稳定身份及其与 Authoring ID 的映射；当前协议没有 Runtime Instance ID。
 
 ### 平台机制与业务语义分离
 
-基础插件提供工程、文档、编辑、引用、诊断、通信和调试机制。技能、道具、战斗节点、任务规则等业务语义由 Catalog 和项目扩展提供。
+当前基础插件提供工程发现、文档编辑、Catalog、引用、诊断、事务和 MCP Authoring 机制。技能、道具、战斗节点、任务规则等业务语义由 Catalog 和已授权 Project Provider 提供；Unity 通信和调试机制尚未实现。
 
 ### 声明优先，代码扩展兜底
 
@@ -111,32 +111,36 @@ VS Code 和 MCP 都依赖 VisualBridgeCore 与 Built-in 语义包，不分别实
 
 ## 总体架构
 
-```text
-┌──────────────────────── Authoring Project ────────────────────────┐
-│                                                                  │
-│  Source Documents       Catalog / Schema       Project Extension │
-│  ├─ Logic Graph         ├─ Types               ├─ Manifest        │
-│  ├─ Game Flow           ├─ Nodes               ├─ TS Provider     │
-│  ├─ Properties          ├─ References          └─ Optional UI     │
-│  └─ Tables              └─ Connection Rules                        │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-             ↑                     ↑                     ↑
-             └─────────────────────┼─────────────────────┘
-                                   │
-                         VisualBridgeCore / Service
-                                   │
-                         ┌─────────┴─────────┐
-                         │                   │
-                  VS Code Extension       MCP Server
-                  人工可视化编辑           AI 交互
-                         │                   │
-                         └─────────┬─────────┘
-                                   │
-                              Unity Bridge
-                                   │
-                     Unity Editor / Runtime Player
+```mermaid
+flowchart TB
+    subgraph Project[Authoring Project]
+        Sources["Graph / Entity / Structured / Table\nsource documents"]
+        Catalogs["Project file / Catalog / Schema"]
+        Provider["optional Project Provider V2"]
+    end
+    Protocol["Protocol/Schema\nfrozen public transport contracts"]
+    Core["Core + BuiltInExtensions\nparse · operation · validate · reference"]
+    Form["Editors/Form and editor UIs"]
+    NodeHost["Tools/NodeHost\nProject Transaction"]
+    VSCode["Tools/VSCodeExtension\nhuman authoring"]
+    MCP["Tools/VisualBridgeMcp\nAI authoring"]
+    Future["Future Unity Bridge\nUnity Editor / Runtime Player"]
+
+    Sources --> Core
+    Catalogs --> Core
+    Provider --> Core
+    Protocol --> MCP
+    Protocol -. future generated C# contracts .-> Future
+    Core --> Form
+    Core --> VSCode
+    Core --> MCP
+    VSCode --> NodeHost
+    MCP --> NodeHost
+    NodeHost --> Sources
+    Core -. future import / debug .-> Future
 ```
+
+当前实线部分已经在单仓库中落地。指向 Unity 的虚线是未来边界：当前没有 C# 协议生成器、Unity 协议消费者、Importer 或 Runtime/Debug Bridge。
 
 ## Authoring Project
 
@@ -144,89 +148,86 @@ VS Code 和 MCP 都依赖 VisualBridgeCore 与 Built-in 语义包，不分别实
 
 Authoring Project 是平台自己的工程边界，与 Unity Project 和 VS Code Workspace 是不同概念：
 
-- 一个 Unity Project 通常对应一个 Authoring Project。
+- 一个 Unity Project 未来可以关联一个或多个 Authoring Project；当前 Registry 只根据工作区中的 Project File 建立边界，不读取 Unity 工程状态。
 - 一个 VS Code 窗口可以加载多个 Authoring Project。
-- 一个 Authoring Project 可以声明多个文档根目录和 Profile。
-- Authoring Project 的可编辑根目录是 Unity 工程根目录的直接子目录，与 `Assets` 平级。
-- 可编辑根目录的文件夹名由具体游戏工程自定义，不作为平台识别工程的依据。
+- 一个 Authoring Project 可以声明多个 Project 相对文档根目录。
+- Project File 可以位于本地工作区内任意工程目录；当前 Schema 不要求它与 `Assets` 平级，也没有 Profile 字段。
 
 可编辑根目录由固定的 `VisualBridge.project.vbjson` 标识。该文件使用 VisualBridge 专属文件名和 `.vbjson` 后缀，内容为 JSON。VS Code 插件只有在工作区中发现并成功解析该文件后，才启用 VisualBridge 工程功能。
 
-### 游戏工程建议结构
+### 当前可运行工程结构
 
 ```text
-GameProject/
-├─ Assets/
-├─ <EditableRoot>/
-│  ├─ VisualBridge.project.vbjson
-│  ├─ .visualbridge/
-│  │  ├─ generated/
-│  │  │  ├─ types.catalog.json
-│  │  │  ├─ assets.catalog.json
-│  │  │  ├─ nodes.catalog.json
-│  │  │  └─ references.catalog.json
-│  │  └─ cache/
-│  ├─ Logic/
-│  ├─ Flow/
-│  ├─ Config/
-│  ├─ Tables/
-│  ├─ Dialogue/
-│  ├─ Extensions/
-│  │  ├─ GameData/
-│  │  └─ ProjectRules/
-│  └─ Tools/
-│     └─ VisualBridgeMcp/
-├─ Packages/
-└─ Library/
-   └─ VisualBridge/
-      └─ Discovery/
+AuthoringRoot/
+├─ VisualBridge.project.vbjson
+├─ Catalog/
+│  ├─ Gameplay.vbgraphcatalog
+│  ├─ Gameplay.vbentitycatalog
+│  ├─ Gameplay.vbstructuredcatalog
+│  └─ Gameplay.vbtablecatalog
+├─ Logic/
+├─ Entities/
+├─ Config/
+├─ Tables/
+└─ Providers/
+   └─ optional-provider.mjs
 ```
 
 目录职责：
 
-- `<EditableRoot>`：与 `Assets` 平级的 VisualBridge 可编辑根目录，文件夹名由游戏工程自定义。
-- `VisualBridge.project.vbjson`：工程边界与插件启用标识，同时声明版本、文档根目录、各 Document Type 使用的 Catalog 列表和扩展。
-- `.visualbridge/generated`：由 Unity 或其他生成器输出并可供离线工具使用的描述数据。
-- `.visualbridge/cache`：本地索引和临时数据，不进入 Git。
-- `Logic`、`Flow`、`Config`、`Tables` 和 `Dialogue`：真正需要编辑、评审和提交的游戏内容；目录名和启用范围可由 Project File 声明。
-- `Extensions`：项目业务扩展的 Manifest、源码和必要 UI 产物。
-- `Tools`：项目内 MCP 和开发辅助入口。
-- `Library/VisualBridge`：Unity 实例发现和运行中临时状态，不进入 Git。
+- `VisualBridge.project.vbjson`：当前唯一的工程边界与插件启用标识。
+- `Catalog`：Project File 显式引用的四类外部描述文件；目录名可以自定义。
+- `Logic`、`Entities`、`Config` 和 `Tables`：示例中的 Authoring 源目录；实际名称和后缀完全由 `documentRoots` 与 `include` / `exclude` 决定。
+- `Providers`：可选的已构建 Project Provider V2 `.mjs` 入口；只有 Project 声明且宿主授权后运行。
+
+维护中的真实结构见 [`Samples/PreUnityAuthoring`](../Samples/PreUnityAuthoring/README.md)。当前实现不创建 `.visualbridge/generated`、`.visualbridge/cache` 或 `Library/VisualBridge/Discovery`，也未决定 Unity 实例发现文件应放在哪里。
 
 ### VisualBridge Project File 职责
 
-VisualBridge Project File 概念上声明：
+VisualBridge Project File 当前声明：
 
-- ProjectId 和工程格式版本。
-- 文档根目录和包含/排除规则。
-- 启用的 Document Type。
-- Catalog 和 Schema 位置。
-- 项目扩展 Manifest。
-- Unity Profile 和生成范围。
-- 工具与协议版本要求。
+- `projectId` 和 `formatVersion`。
+- `documentRoots` 与每个 Document Type 的 `include` / `exclude`。
+- Document Type 的稳定 `id`、可扩展稳定 `editor` Adapter ID 和 Catalog 路径。
+- 全 Project 的 Table 行布局。
+- 可选 Project Provider V2 的入口、参数和能力上限。
+
+当前 Schema 不包含项目 Webview Manifest、Unity Profile、生成范围或工具版本字段。未来需要这些能力时必须先扩展正式 Schema、Core Parser、Project Settings 和 Host 验证，不能把未登记键写进 Project File。
 
 VisualBridge Project File 不保存编辑器窗口状态、连接端口、当前调试会话和其他临时信息。
 
-首个落地版本包含 `formatVersion`、`projectId`、`documentRoots` 和 `documentTypes`。每个 Document Type 至少声明稳定 `id`、编辑器大类 `editor`、包含规则 `include`，并可声明排除规则 `exclude` 和工程相对 `catalogs` 数组。`editor` 选择 `graph`、`entity` 等少量稳定大类，`id` 表示项目在该大类下扩展的业务子类；文件扩展名完全由 `include` / `exclude` 决定，不参与编辑器大类判断。同一个实际文件必须只匹配一个 Document Type，业务子类不得依赖声明顺序解决 Glob 重叠。路径和 Glob 统一使用 `/` 分隔，所有文档根目录和 Catalog 必须位于 Project File 所在目录内。
+当前路由核心由 `formatVersion`、`projectId`、`documentRoots` 和 `documentTypes` 构成，并可带 `tableLayout` 与 `providers`。每个 Document Type 至少声明稳定 `id`、可扩展稳定 Adapter ID `editor`、包含规则 `include`，并可声明排除规则 `exclude` 和工程相对 `catalogs` 数组。Schema 与 Core 接受任意合法稳定 `editor` ID；当前注册并提供完整语义的值为 `graph`、`entity`、`structured` 和 `table`。未注册 ID 仍可被 Project Registry 唯一匹配，VS Code 只为其打开显示元数据和当前源码的通用只读 Document Shell，不建立领域编辑、Catalog 语义、语义索引、Reference 或 Lifecycle；MCP Project 读取/清单保留该声明并报告 `adapterAvailable: false`，其他依赖领域 Adapter 的语义操作不可用。`id` 表示项目在该 Adapter 下扩展的业务子类；文件扩展名完全由 `include` / `exclude` 决定，不参与 Adapter 判断。同一个实际文件必须只匹配一个 Document Type，业务子类不得依赖声明顺序解决 Glob 重叠。路径和 Glob 统一使用 `/` 分隔，所有文档根目录和 Catalog 必须位于 Project File 所在目录内。
 
 ### 工程发现和索引
 
 插件首先在当前 VS Code Workspace 中发现 VisualBridge Project File。只有发现并成功解析该文件的工程才创建 ProjectContext。打开 Authoring 文件时，再从当前文件目录向上寻找最近的 VisualBridge Project File，以确定文件归属。
 
-```text
-发现 VisualBridge Project File
-  -> 校验 JSON 和工程边界
-  -> 创建 ProjectContext
-  -> 打开文档并确定所属 ProjectContext
-  -> 加载 Document Type、Catalog 和扩展
-  -> 建立文档概要索引
-  -> 完整加载当前文档
-  -> 监听文件变化
+```mermaid
+flowchart TD
+    Workspace[VS Code Workspace] --> Find["发现 VisualBridge.project.vbjson"]
+    Find --> Validate["解析并校验 Project、根目录和 canonical path"]
+    Validate --> Registry["Project Registry\n最近的有效 Project 优先"]
+    File[打开或变化的文件] --> Normalize["规范化 Project 相对路径"]
+    Registry --> Normalize
+    Normalize --> Match{"唯一匹配 include/exclude?"}
+    Match -->|否| Diagnostic[Project / workspace diagnostic]
+    Match -->|是| Route{"documentTypes[].editor"}
+    Route -->|graph| Graph[Graph]
+    Route -->|entity| Entity[Entity]
+    Route -->|structured| Structured[Structured]
+    Route -->|table| Table[Table]
+    Route -->|未注册稳定 ID| Unknown["通用只读 Document Shell\n元数据 + 当前源码"]
+    Graph --> Index["Workspace Document Index\n增量语义快照"]
+    Entity --> Index
+    Structured --> Index
+    Table --> Index
+    Index --> Reference[Reference Service]
+    Unknown --> Unavailable["无领域编辑 / 语义索引\nReference / Lifecycle / MCP Adapter"]
 ```
 
-工程索引使用各 Document Type 既有 Parser、Catalog Registry、Validator 和 Reference Collector，不建立简化语义。当前 VS Code Host 在激活时建立四类文档基线，随后按 Project、Document Type、Catalog 依赖和逻辑物理来源增量复用不可变语义单元；Reference Service 消费同一 Project Snapshot。刷新支持事件合并、取消、进度与陈旧 generation 丢弃，增量与强制完整重建必须产生相同稳定排序、诊断和引用结果。完整契约见 [`WorkspaceIndexPerformance.md`](WorkspaceIndexPerformance.md)。
+工程索引只使用已注册 Adapter 的既有 Parser、Catalog Registry、Validator 和 Reference Collector，不为未注册稳定 ID 建立简化或猜测语义。当前 VS Code Host 在激活时建立四个内置 Adapter 的文档基线，随后按 Project、Document Type、Catalog 依赖和逻辑物理来源增量复用不可变语义单元；Reference Service 消费同一 Project Snapshot。刷新支持事件合并、取消、进度与陈旧 generation 丢弃，增量与强制完整重建必须产生相同稳定排序、诊断和引用结果。完整契约见 [`WorkspaceIndexPerformance.md`](WorkspaceIndexPerformance.md)。
 
-项目级重构同样建立在语义索引和 Reference Provider 之上。当前支持唯一解析的 `document`、`entity.component`、`graph.element` 和 `table.row`：Core 生成按完整目标位置匹配的确定性影响计划，各 Document Type 通过正式语义变换、Validator 和 Serializer 生成修改，VS Code 与 MCP Host 使用源哈希、临时载体和 rollback 副本提交多文件事务。不得退化为跨工程文本替换。完整约束见 `ProjectRefactoring.md`。
+项目级重构同样建立在语义索引和 Reference Provider 之上。当前支持唯一解析的 `document`、`entity.component`、`graph.element` 和 `table.row`：Core 生成按完整目标位置匹配的确定性影响计划，各 Document Type 通过正式语义变换、Validator 和 Serializer 生成修改，VS Code 与 MCP Host 使用源哈希、临时载体和 rollback 副本提交多文件事务。不得退化为跨工程文本替换。完整约束见 [`ProjectRefactoring.md`](ProjectRefactoring.md)。
 
 Document Lifecycle 负责创建、复制、物理路径移动和安全删除。它与稳定 ID 重构共享索引、Reference Provider 和 Project Transaction，但路径不承担身份：Path Move 保持字节与稳定 ID 不变，Stable ID Rename 继续走 Project Refactoring。V1 只允许一个宿主无关 Lifecycle Service，并要求 strict preview/apply、调用方完整提交 `stableIdRemap`、Delete closure 和 Reference coverage；VS Code、Browser 与 MCP 不分别实现文件操作规则。完整契约见 [`DocumentLifecycle.md`](DocumentLifecycle.md)。
 
@@ -234,7 +235,7 @@ Document Lifecycle 负责创建、复制、物理路径移动和安全删除。�
 
 ### Document Type
 
-平台以 Document Type 作为核心扩展点。每种文档类型概念上提供：
+平台以 Document Type 作为核心扩展点。当前每种内置文档类型提供：
 
 ```text
 DocumentType
@@ -245,12 +246,12 @@ DocumentType
 ├─ Edit Operations
 ├─ Validators
 ├─ Reference Rules
-├─ Lifecycle Adapter / Stable ID Remap / Delete Closure
-├─ Compiler / Exporter
-└─ Debug Mapping
+└─ Lifecycle Adapter / Stable ID Remap / Delete Closure
 ```
 
-平台初期重点支持：
+未来 Unity Compiler/Exporter 和 Debug Mapping 不属于当前 Document Type 注册契约；它们必须在 Unity 垂直切片中依据冻结的 Catalog/Document 输入另行设计。
+
+当前平台支持：
 
 - Graph Document：逻辑图、状态机、游戏流程。
 - Entity Document：Entity 根配置与可组合 Component 列表。
@@ -279,7 +280,7 @@ DocumentType
 - Parser 拒绝未知结构，Serializer 对 Graph、节点、连线和属性键进行确定性排序；接口数组保留用户拖动后的声明顺序。找不到 Catalog 节点类型时仍保留全部原始节点数据。
 - Core Operation 覆盖 Graph、节点、内嵌子图、公开接口、连线、安全节点类型替换和稳定元素 ID 重命名；`graph.renameElement` 会同步修正所有结构与连接端点。
 
-节点标题与 Catalog 字段直接在画布节点上编辑，节点类型只展示不可直接改写。用户通过节点右键菜单请求替换，Core 仅接受不会丢失属性或连线的候选，并以一个 Operation 完成替换。完整落地契约见 `GraphSemanticModel.md`。当前实现范围仍只包含离线编辑，不连接 Unity。
+节点标题与 Catalog 字段直接在画布节点上编辑，节点类型只展示不可直接改写。用户通过节点右键菜单请求替换，Core 仅接受不会丢失属性或连线的候选，并以一个 Operation 完成替换。完整落地契约见 [`GraphSemanticModel.md`](GraphSemanticModel.md)。当前实现范围仍只包含离线编辑，不连接 Unity。
 
 ### Entity Document V1 与共享字段模型
 
@@ -289,7 +290,7 @@ Entity 的组织方式借鉴旧配置编辑器的 Entity、分组和 Component �
 
 字段能力位于 Core 与共享 Form Editor，而不是 Entity 私有实现。数值、颜色、选择项、引用、List 和非框架普通自定义结构体都通过递归字段定义表达；`valueType` 描述 JSON 形态，`dataTypeId` 保留 `int`、`float` 和游戏结构等运行时语义。Graph、Structured、Table 与后续编辑器应复用这套字段解析、校验和 UI 原语。字段 List 的布局与交互同样属于共享 Form Editor：元素操作区统一放置 dnd-kit 拖拽手柄、在后添加和删除图标，排序结束后以一次字段提交进入宿主 Document Operation。Entity Component、Table Record 与 Graph 稳定端口列表也必须沿用“拖拽、在后添加、删除”的图标顺序和紧邻操作组；它们仍分别提交自己的 Operation，不把领域身份或连接规则下沉到 Form Editor。
 
-Entity Document 的默认便利后缀是 `.vbentity`，但业务文件可以使用 Project File 声明的任意扩展名。完整格式、Operation、编辑器行为和未来 Unity 生成约束见 `EntityComponentModel.md`。
+Entity Document 的默认便利后缀是 `.vbentity`，但业务文件可以使用 Project File 声明的任意扩展名。完整格式、Operation、编辑器行为和未来 Unity 生成约束见 [`EntityComponentModel.md`](EntityComponentModel.md)。
 
 ### Structured Config V1
 
@@ -297,7 +298,7 @@ Entity Document 的默认便利后缀是 `.vbentity`，但业务文件可以使�
 
 Structured Catalog V1 声明 Config Type、来源追踪和共享 Field Definition。文件只包含 `formatVersion`、稳定 `documentId` 和完整 `properties`，不保存标题、路径或 C# 类型名。创建时递归物化全部默认字段；编辑器复用共享 Form/Reference 原语，修改以 `structured.setField` 批次进入 Core；MCP 复用同一语义，并与 Graph、Entity、Table 和 Refactor 共用 `baseHash` 检查与可恢复 Project Transaction。
 
-当前不提供旧格式兼容或迁移层，也不实现 Unity Catalog Exporter、Importer、Runtime、Debug 或 `ScriptableObject` 工作流。完整契约见 `StructuredConfigModel.md`。
+当前不提供旧格式兼容或迁移层，也不实现 Unity Catalog Exporter、Importer、Runtime、Debug 或 `ScriptableObject` 工作流。完整契约见 [`StructuredConfigModel.md`](StructuredConfigModel.md)。
 
 ### Table 与 Excel
 
@@ -324,13 +325,13 @@ Table Document
 
 AI 不直接读取或改写 `.xlsx` 和 `.csv` 载体。即使 `.csv` 在物理上是文本，对 AI 也视为 Table Document 载体；AI 必须通过 MCP 提供的表格查询、搜索和修改能力访问 Semantic Table Model。MCP 内部统一使用 Table Codec 和 Table Operations，避免 AI 绕过 Schema、引用和校验规则。
 
-第一阶段只承诺受约束的游戏数据工作簿。宏、图表、透视表、外部链接、复杂公式和完整样式往返保真是否支持，由具体 Excel Codec 的能力范围决定，不作为通用 Table Editor 的默认承诺。
+当前 Table V1 只承诺受约束的游戏数据工作簿。宏、图表、透视表、外部链接、复杂公式和完整样式往返保真不在通用 Table Editor 的承诺范围内。
 
-当前 Table V1 已落地 Table Catalog、CSV/XLSX Codec、Table Operation、记录式主从编辑器与固定样例。Project File 统一配置一基的 `nameKeyRow` 和 `dataStartRow`；C# 导出的 Catalog 负责列稳定 ID、类型、共享字段编辑器、单元格编码，以及由稳定 Column ID 占位符组成的 `rowDisplayNamePattern`（例如 `{id}_{name}`）。一个逻辑 Sheet 可以通过 `{part}` 命名模板映射到多个同结构 CSV 文件或 XLSX Worksheet，并按稳定列 ID 执行 `error`、`keepFirst` 或 `keepLast` 去重策略。物理源不因去重而丢失，编译和查询使用策略解析后的有效行。完整契约见 `TableSemanticModel.md`。
+当前 Table V1 已落地 Table Catalog、CSV/XLSX Codec、Table Operation、记录式主从编辑器与固定样例。Project File 统一配置一基的 `nameKeyRow` 和 `dataStartRow`；C# 导出的 Catalog 负责列稳定 ID、类型、共享字段编辑器、单元格编码，以及由稳定 Column ID 占位符组成的 `rowDisplayNamePattern`（例如 `{id}_{name}`）。一个逻辑 Sheet 可以通过 `{part}` 命名模板映射到多个同结构 CSV 文件或 XLSX Worksheet，并按稳定列 ID 执行 `error`、`keepFirst` 或 `keepLast` 去重策略。物理源不因去重而丢失，编译和查询使用策略解析后的有效行。完整契约见 [`TableSemanticModel.md`](TableSemanticModel.md)。
 
 ### 编辑器原语
 
-基础插件提供有限但高复用的编辑器原语：
+当前基础插件提供有限但高复用的编辑器原语：
 
 - Graph Canvas。
 - 可折叠 Graph Inspector，以及节点内联字段编辑。
@@ -339,9 +340,10 @@ AI 不直接读取或改写 `.xlsx` 和 `.csv` 载体。即使 `.csv` 在物理�
 - Structured Config Editor。
 - Table Editor。
 - Reference Picker。
-- Object、Collection 和 Dictionary Editor。
+- 递归 Object 和 List Editor。
 - Search、Command Palette 和 Problems。
-- Diff Preview 和 Runtime Trace Overlay。
+
+Dictionary 专用编辑器、通用 Diff Preview 和 Runtime Trace Overlay 尚未实现；未来若需要，必须先明确可复用语义和真实用例，不能把普通 object/list 控件描述成已经具备这些能力。
 
 业务 Document Type 应优先组合原语，而不是为每种配置重新实现完整 Webview。
 
@@ -349,13 +351,24 @@ AI 不直接读取或改写 `.xlsx` 和 `.csv` 载体。即使 `.csv` 在物理�
 
 所有编辑通过领域操作完成：
 
-```text
-用户或 AI 意图
-  -> Document Operation
-  -> Edit Transaction
-  -> 完整校验
-  -> 确定性序列化
-  -> 宿主持久化适配写入
+```mermaid
+sequenceDiagram
+    participant Caller as User / AI
+    participant Editor as Form / Domain Editor
+    participant Core as Core Operation
+    participant Host as VS Code / MCP Host
+    participant Tx as Project Transaction or WorkspaceEdit
+    Caller->>Editor: intent
+    Editor->>Core: typed Document Operation
+    Core->>Core: atomic apply, validate, serialize
+    Core-->>Host: next bytes and diagnostics
+    Host->>Host: recheck token/version/baseHash/dependencies
+    alt precondition accepted
+        Host->>Tx: persist
+        Tx-->>Caller: committed result
+    else stale or conflict
+        Host-->>Caller: structured rejection, do not replay
+    end
 ```
 
 编辑事务至少具备：
@@ -376,6 +389,8 @@ DocumentSession 保存当前编辑基线的 Hash。VS Code 在实际写入前再
 
 VS Code 的文本 Document 通过 `WorkspaceEdit` 保留 Undo/Redo。`.xlsx` 等二进制 Document 通过 Custom Document 的编辑事件、保存和备份机制与 VS Code 协作。MCP 采用原子文件写入。两者使用同一 Operation 模型，但按文件载体使用不同的宿主持久化适配。
 
+共享字段的 UI 提交粒度见 [`FormFieldEditor.md`](FormFieldEditor.md)，VS Code 的 TextDocument、Table CustomDocument、Webview token/epoch 和诊断所有权见 [`VSCodeHost.md`](VSCodeHost.md)。
+
 ### Document Lifecycle V1
 
 Lifecycle 不属于普通 Document Operation：它会改变物理 source manifest、创建新身份或删除可被 Reference Provider 寻址的目标，因此必须先 preview、后 apply。调用方在 preview operation 中完整提供 Copy `stableIdRemap` 或 Create `parameters`；preview 返回 `previewHash`、`planPayload` 和包含 dependencies/baseHashes/mutations 的规范 plan。Apply 原样带回 operation、hash、payload、bases 和 dependencies，并在 Project 锁内重建相同计划。任何变化都以 conflict 结束，不自动套用旧计划。
@@ -384,7 +399,7 @@ V1 只允许同一 Project、同一 Project Document Type 内操作。Graph/Enti
 
 所有公开写入口都受 Safe Delete guard 约束。直接移除 Component、Graph Node/Interface/Dynamic Port 或 Table Row 的普通 Operation 在 Lifecycle apply 上下文外返回 `lifecycle.required`；领域编辑器、Document Browser 与目标 MCP 入口必须调用同一 Lifecycle Service。目标 Project Transaction 将 physical mutation 表达为 `replace`、`create`、`delete` 或 `move`，同时校验 `baseHash` 与 mutation 的 `targetMustBeAbsent`。
 
-Lifecycle preview/apply 要求没有未保存的 VisualBridge TextDocument，并关闭相关 Table Custom Editor。Explorer、Git 和外部脚本不是协作写者，只能依靠文件监听、Hash/absence 复核和重新索引检测；本地文件系统事务不承诺 Remote Workspace、突然断电或最后一次原子文件系统调用处的数据库级隔离。
+Lifecycle preview/apply 要求 Project 中没有未保存的 VisualBridge TextDocument 或 Table CustomDocument；干净的已打开 Table Editor 不会单独阻止 Lifecycle。Explorer、Git 和外部脚本不是协作写者，只能依靠文件监听、Hash/absence 复核和重新索引检测；本地文件系统事务不承诺 Remote Workspace、突然断电或最后一次原子文件系统调用处的数据库级隔离。
 
 ### 数据所有权
 
@@ -439,7 +454,7 @@ Reference Provider 提供：
 
 编辑器、MCP 和 AI 都使用相同 Reference Service，不直接理解各业务数据库。
 
-当前 Reference System 已在 Core、Graph、Entity、Structured、Table、VS Code 与 stdio MCP 中落地。共享 Field Definition 使用 `reference.kind`、结构化 `target` 和 `allowMissing` 声明引用，文档只保存字符串或数值稳定键。内置 `document`、`entity.component`、`graph.element` 与 `table.row` Provider 分别按 Document Type、Entity Component 实例、完整 Graph 元素作用域和 Table Catalog 有效分表行解析稳定目标；VS Code 提供原生选择、诊断和精确跳转，其中 Entity Location 会展开并高亮 Component 卡片，Graph Location 会切换 Graph、选择/居中 Node 并高亮 Port；MCP 提供相同的结构化 search/resolve 与带预览基线的项目重构。完整契约见 `ReferenceSystem.md`。
+当前 Reference System 已在 Core、Graph、Entity、Structured、Table、VS Code 与 stdio MCP 中落地。共享 Field Definition 使用 `reference.kind`、结构化 `target` 和 `allowMissing` 声明引用，文档只保存字符串或数值稳定键。内置 `document`、`entity.component`、`graph.element` 与 `table.row` Provider 分别按 Document Type、Entity Component 实例、完整 Graph 元素作用域和 Table Catalog 有效分表行解析稳定目标；VS Code 提供原生选择、诊断和精确跳转，其中 Entity Location 会展开并高亮 Component 卡片，Graph Location 会切换 Graph、选择/居中 Node 并高亮 Port；MCP 提供相同的结构化 search/resolve 与带预览基线的项目重构。完整契约见 [`ReferenceSystem.md`](ReferenceSystem.md)。
 
 ## VS Code 基础插件
 
@@ -452,25 +467,25 @@ Reference Provider 提供：
 - Custom Text Editor 和通用 Webview 生命周期。
 - 文档索引、引用索引和诊断。
 - Edit Transaction 与 `WorkspaceEdit` 协调。
-- Unity 实例发现、连接和重连。
 - Tree View、状态栏、命令和管理页面。
-- Debug Adapter 与 VS Code DAP 映射。
+
+Unity 实例发现/连接和 Debug Adapter/DAP 属于后续 Unity/Debug 阶段，不是当前基础插件组成。
 
 基础插件不包含项目业务节点、游戏配置语义和项目专用引用查询。
 
 ### 插件生命周期
 
-- 基础插件是一个 N 合一 VS Code 扩展，Document Browser、Graph、Entity、Table/Excel、Structured Config、Debug 和 Unity Connection 是其内部功能模块。
+- 基础插件是一个 N 合一 VS Code 扩展，当前内部功能模块包括 Document Browser、Graph、Entity、Table/Excel、Structured Config、Project Settings 和 Catalog Browser；Debug 与 Unity Connection 尚未实现。
 - 插件实例按 VS Code Extension Host/窗口创建。
-- 一个插件实例只有一个项目注册表和连接管理器。
-- 一个窗口可以持有多个 ProjectContext 和多个 UnityConnection。
+- 一个插件实例只有一个 Project Registry、Workspace Index、Reference Service 和 Provider Service。
+- 一个窗口可以持有多个 ProjectContext；未来 UnityConnection 的数量和所有权尚未设计。
 - 每个打开文档创建独立 EditorSession/WebviewPanel。
-- 关闭 Webview 不终止其他文档和调试连接。
+- 关闭 Webview 不终止其他文档或 Project 服务。
 - 不使用全局 `currentProject`、`currentUnity` 或 `currentDocument`。
 
-插件 Shell 保持轻量，只完成 Document Type 匹配和 Provider 注册。Graph、Entity、Excel 等重模块在对应文件第一次打开时延迟加载。每个文件拥有独立 DocumentSession、脏状态、Undo/Redo 和 Webview；多个文件共享当前窗口的 Extension Host，不为每个文件启动一份扩展进程。
+当前 VSIX 把 Core、Built-in Host Adapter 和各编辑器 Provider 静态打包；激活时建立 Project Registry、Workspace Index、Reference/Provider Service 并注册命令、视图和 Custom Editor。打开具体文件时才建立该文件的 DocumentSession 并加载对应 Webview UI bundle。每个文件拥有独立会话、脏状态和 Undo/Redo；多个文件共享当前窗口的 Extension Host，不为每个文件启动一份扩展进程。
 
-VS Code 扩展一旦在某个窗口内激活，通常持续到该窗口关闭或重新加载。关闭某类文件的最后一个编辑会话时，插件应主动释放该模块的 Workbook、索引、文件监听、Worker、子进程和运行时订阅；Extension Shell 可以继续驻留。不同 VS Code 窗口拥有独立的 Extension Host、模块状态和文档会话。
+VS Code 扩展一旦在某个窗口内激活，通常持续到该窗口关闭或重新加载。关闭编辑器时释放该面板的会话、监听和 Webview 资源；Project Registry、Workspace Index 与共享服务继续随 ExtensionContext 存活，Table Document 按 VS Code Custom Document 生命周期释放。Project Provider 子进程按 Project/Host 生命周期管理，不由某类 Webview 的最后一个面板决定。当前没有编辑器 Worker 或运行时订阅。不同 VS Code 窗口拥有独立的 Extension Host、共享服务和文档会话。
 
 ### 原生 Explorer 与文件编辑器关联
 
@@ -482,8 +497,8 @@ VS Code 原生 Explorer
   -> 启用 Extension Shell 并创建 ProjectContext
   -> 打开工程声明的指定类型文件
   -> Custom Editor 匹配并校验文件归属
-  -> 按需加载 Document Type 模块
-  -> 创建 DocumentSession 和 Webview
+  -> 已注册 Adapter 创建领域 DocumentSession 并加载 Webview bundle
+  -> 未注册稳定 ID 创建只读 Document Shell
 
 VisualBridge Document Browser
   -> 共享索引按 Project / Document Type 聚合
@@ -501,8 +516,9 @@ VisualBridge Document Browser
 - VisualBridge Project File 负责声明该工程启用的 Document Type、文件匹配规则和功能模块；Custom Editor 打开后仍需验证文件属于有效 ProjectContext。
 - 插件不得用扩展名直接推断 `graph`、`entity` 等编辑器大类；必须由 Project Registry 先解析匹配的 Document Type，再读取其 `editor` 和稳定 `id`。
 - VS Code 扩展清单中的 Custom Editor selector 是静态的。`.vbgraph`、`.vbentity` 等只提供默认便利关联；Project 自定义扩展名通过 Document Browser、可选的通配 Custom Editor、`VisualBridge: Open Document` 或工程级 `workbench.editorAssociations` 进入相同路由。
+- Project Registry 匹配到未注册稳定 `editor` ID 时，文本 Custom Editor 显示通用只读 Shell 的 Project、Document Type、Adapter ID、路径和当前源码；它不创建领域 DocumentSession，也不参加语义索引、Reference、Lifecycle 或领域诊断。
 - 未发现有效 VisualBridge Project File 时不启用工程功能；不属于有效 ProjectContext 的通用文件不创建业务 DocumentSession，并使用默认编辑器打开。
-- Custom Editor 的静态声明即使存在，也只表示编辑器可用；没有打开对应文件时不加载 Excel、Graph 等重模块。
+- Custom Editor 的静态声明只表示编辑器可用；没有打开对应文件时不创建该文件的会话或 Webview，不能据此推断内部 TypeScript 模块采用动态 import。
 
 对于 `.xlsx` 等二进制文件使用 Custom Editor Provider 和 Workbook Codec；对于平台文本格式可以使用 Custom Text Editor Provider。两者最终都进入统一的 Document Operation、校验、引用和保存流程。
 
@@ -515,7 +531,7 @@ Webview
   -> 用户意图
 Extension Host
   -> VisualBridgeCore
-  -> Host Persistence / Provider / UnityConnection
+  -> Host Persistence / Provider
 ```
 
 Custom Editor resolver 只负责建立 DocumentSession、设置 HTML 与注册消息监听，然后必须返回给 VS Code；不得在 resolver 返回前等待发送初始状态。Webview 脚本加载后发送 `ready`，Extension Host 再解析当前权威 Document、Catalog、Reference 与诊断并发送首个状态。此握手避免 resolver 与尚未完成加载的 Webview 相互等待，之后的每次消息仍携带文档版本或 revision 以拒绝陈旧编辑。
@@ -524,56 +540,58 @@ Custom Editor resolver 只负责建立 DocumentSession、设置 HTML 与注册�
 
 多编辑器场景中的定位请求只归属一个面板，并以逻辑文档级 generation 保证“最新请求获胜”；新请求必须取消同一文档所有面板和文档队列中的旧请求。承载当前 generation 的面板在确认前关闭时，请求必须立即交给同一文档的其他已就绪面板，或回到文档级等待队列；任一面板 ACK 释放 mailbox 后还要重试等待中的接管。
 
-## Unity Bridge
+## 后续 Unity Bridge 边界
 
 ### 定位
 
-Unity Bridge 是通用 Unity Package，负责 Unity 和 VisualBridge 之间的适配：
+Unity Bridge 当前尚未实现。未来垂直切片需要在单独设计中决定哪些能力属于 Unity Package、工程生成器或 Host；可能涉及：
 
 - 扫描 C# 类型和 Attribute。
 - 生成类型、节点、资产和引用 Catalog。
 - 导入和编译 Authoring Document。
 - 保存稳定 DocumentId、ElementId 与运行时结构的映射。
-- 启动 Editor 本地通信服务。
-- 提供 Player 远程通信。
-- 发送调试事件和运行时变量。
-- 根据请求打开 VS Code 中的 Authoring Document。
+- 是否以及如何建立 Editor/Player 通信。
+- 是否发送调试事件和运行时变量。
+- 是否支持从 Unity 请求打开 Authoring Document。
 
-当前不实现上述 Unity 代码。后续 Catalog Exporter 必须输出 Graph Catalog V4，把稳定 `catalogId`/显示根 `title`、Graph/Node Type 的显式全局无歧义 ID、节点 Catalog 归属、Graph 用途、`supportedCatalogIds`、`portConnectionRules`、允许节点 selector、实例数量约束、初始节点以及 typed subgraph 目标类型写入确定性 Catalog；C# 全名只作为 `source` 追踪信息，不能充当持久身份。Entity Catalog Exporter 只扫描正式项目中运行时使用的普通 class / struct，不引入 `ScriptableObject` 包装层，并将数值、颜色、List 和普通自定义结构递归映射到全项目共享字段模型。Exporter 不执行业务初始化方法获取默认值，也不得用旧格式覆盖更高版本 Catalog。当前 Unity Package 尚未实现这些功能。
+后续 Catalog Exporter 必须输出 Graph Catalog V4，把稳定 `catalogId`/显示根 `title`、Graph/Node Type 的显式全局无歧义 ID、节点 Catalog 归属、Graph 用途、`supportedCatalogIds`、`portConnectionRules`、允许节点 selector、实例数量约束、初始节点以及 typed subgraph 目标类型写入确定性 Catalog；C# 全名只作为 `source` 追踪信息，不能充当持久身份。Entity Catalog Exporter 只扫描正式项目中运行时使用的普通 class / struct，不引入 `ScriptableObject` 包装层，并将数值、颜色、List 和普通自定义结构递归映射到全项目共享字段模型。Exporter 不执行业务初始化方法获取默认值，也不得输出旧 Catalog 版本。当前 Unity Package 尚未实现这些功能。
 
-不同业务模块通过 Unity Adapter 注册具体 Catalog Generator、Importer、Compiler 和 Debug Mapping。
+是否采用 Unity Adapter 注册 Catalog Generator、Importer、Compiler 或 Debug Mapping 仍待真实 Unity 垂直切片决定；当前 Authoring 协议只冻结 Catalog/Document 输入输出和稳定身份约束，不冻结 Unity 内部注册 API。
 
 ### 编译边界
 
-VisualBridge 不直接加载 Unity 程序集，Unity 也不加载 VS Code 插件代码。两边只通过文本契约和通信协议协作。
+VisualBridge Authoring Host 不直接加载 Unity 程序集，未来 Unity Package 也不得加载 VS Code 插件代码。当前双方唯一已冻结的交接面是 Catalog、Authoring Document、Schema 与稳定 ID；通信协议尚未设计。
 
 ```text
-Authoring Extension
-  -> 运行于 Node/VS Code/MCP
+Current Authoring Host
+  -> Node / VS Code / MCP
 
-Unity Adapter
-  -> 运行于 Unity C# 环境
+Future Unity Package
+  -> Unity C# environment
 
-共享
-  -> Catalog、Schema、ID 和 Protocol
+Frozen handoff today
+  -> Catalog / Document / Schema / stable IDs
+
+Not frozen today
+  -> discovery / transport / runtime / debug protocol
 ```
 
 ## Extension System
 
-### 扩展层级
+### 当前扩展层级与未来候选
 
-平台支持四类扩展：
+当前平台只支持声明式 Catalog/Project 配置和 Project Provider V2。项目 Webview Module 与 VS Code 伴生扩展 API 是未来候选，不是可用入口：
 
 | 类型 | 运行代码 | 主要用途 |
 | --- | --- | --- |
 | 声明式扩展 | 否 | Schema、类型、属性、节点、菜单、连接规则 |
-| 项目 Provider | 是 | V1 的引用查询与复杂校验；领域操作和数据转换属于后续候选能力 |
-| 项目 Webview Module | 是 | 无法用通用控件表达的自定义 UI |
-| VS Code 伴生扩展 | 是 | 深度 VS Code API、跨项目通用能力 |
+| 项目 Provider | 是 | V2 的引用查询与复杂校验；领域操作和数据转换属于后续候选能力 |
+| 项目 Webview Module（未实现） | 是 | 未来无法用通用控件表达的自定义 UI 候选 |
+| VS Code 伴生扩展 API（未实现） | 是 | 未来深度 VS Code API、跨项目通用能力候选 |
 
 ### 声明式扩展
 
-声明式扩展应覆盖大部分项目需求，可在不执行工程代码的情况下加载。常见属性编辑使用内置 Form、Reference Picker 和 Collection Editor。
+声明式扩展应覆盖大部分项目需求，可在不执行工程代码的情况下加载。常见属性编辑使用内置 Form、Reference Picker 和 Object/List Editor。
 
 ### 项目 Provider
 
@@ -582,9 +600,9 @@ Unity Adapter
 - Reference Provider。
 - 自定义 Validator。
 
-V1 协议不提供 Document Operation、导入、转换或辅助命令。只有出现第二个真实修改用例并证明可复用边界后，才设计返回既有领域 Operation 的后续能力。
+Provider V2 不提供 Document Operation、导入、转换或辅助命令。只有出现第二个真实修改用例并证明可复用边界后，才设计返回既有领域 Operation 的后续能力。
 
-Provider 不直接访问 VS Code API，V1 协议也不提供文件写入接口；但独立进程仍以当前用户权限运行，不是操作系统沙箱，因此它在技术上能够绕过协议直接访问文件。Provider 必须被视为受信任工程代码，宿主通过源文件 Hash、外部变更检测和写入冲突拒绝防止静默覆盖。
+Provider 不直接访问 VS Code API，V2 协议也不提供文件写入接口；但独立进程仍以当前用户权限运行，不是操作系统沙箱，因此它在技术上能够绕过协议直接访问文件。Provider 必须被视为受信任工程代码，宿主通过源文件 Hash、外部变更检测和写入冲突拒绝防止静默覆盖。
 
 ### Project Provider 运行策略
 
@@ -592,24 +610,24 @@ Project File 声明构建后的规范化 `.mjs` 入口和逐项字符串参数�
 
 ### 自定义 UI
 
-浏览器/Webview 不能直接运行 TypeScript/TSX。自定义 React 属性编辑器需要构建为 JavaScript/CSS。为了降低构建需求，项目应优先使用：
+当前 Host 不加载 Project 自定义 Webview Module；所有 Webview 都是随私有 VSIX 构建和审核的内置编辑器。未来若增加该能力，浏览器/Webview 仍不能直接运行 TypeScript/TSX，自定义 React 属性编辑器必须构建为 JavaScript/CSS，并遵守 Workspace Trust、CSP、依赖和版本边界。扩展优先级应保持：
 
 ```text
 声明式 UI
-  -> 内置 UI + TS Provider
+  -> 内置 UI + 已构建 Project Provider
   -> 最后才使用自定义 Webview Module
 ```
 
 ### VS Code 伴生扩展
 
-需要 VS Code 原生 API、跨项目复用或独立发布的功能做成正式伴生扩展，通过基础插件导出的版本化 API 注册能力。项目目录中的代码不能自动成为 VS Code Extension。
+当前基础插件没有可供伴生扩展注册能力的公开版本化 API。未来若真实用例需要 VS Code 原生 API、跨项目复用或独立发布，应先设计该 API，再以正式独立扩展实现；项目目录中的代码不能自动成为 VS Code Extension。
 
 ### 安全边界
 
 - 未信任工程只加载源文档、Catalog 和声明式扩展。
-- VS Code 只在 Workspace Trust 允许时启动 Provider 或项目 Webview 代码。
+- VS Code 只在 Workspace Trust 允许时启动当前 Project Provider；未来若引入项目 Webview 代码，必须应用独立的 Trust、CSP 和依赖审查。
 - 独立 MCP 没有 VS Code Workspace Trust，默认不执行 Project Provider；只有宿主显式授权、Project 声明且规范化入口位于允许列表时才启动，单次 Tool 请求不能提升权限。
-- VisualBridge Project File 显式声明扩展，不自动扫描并执行全部脚本。
+- VisualBridge Project File 只显式声明当前 Provider，不自动扫描并执行其他脚本。
 - Provider 使用可验证的可执行入口和参数，不拼接 Shell 命令。
 - Provider 是当前用户权限下的受信任工程代码，独立进程只提供故障隔离而不构成 OS 沙箱。
 - 扩展能力以 ProjectContext 为作用域，项目关闭时全部释放。
@@ -621,8 +639,8 @@ Project File 声明构建后的规范化 `.mjs` 入口和逐项字符串参数�
 
 在本平台中：
 
-- MCP 是 AI 的交互 API。
-- AI 可以直接读取普通文本源文件、Catalog 和 Schema，但 `.xlsx` 和 `.csv` 类 Table Document 必须通过 MCP 访问。
+- MCP 是 AI 进行受校验语义查询、修改、Lifecycle 和 Refactor 的正式 API。
+- AI 可以把普通文本源文件、Catalog 和 Schema 作为只读上下文，但受支持的语义写入仍必须通过 MCP；`.xlsx` 和 `.csv` Table Document 的读取与写入都必须通过 MCP Semantic Table Model。
 - VS Code 是人工可视化入口。
 
 ```text
@@ -635,7 +653,7 @@ MCP 不自行重复实现文档规则。VisualBridgeCore 提供 Project、Docume
 
 ### MCP Server 生命周期
 
-第一阶段使用项目级 stdio MCP Server，由当前 AI Host 启动：
+当前使用项目级 stdio MCP Server，由 AI Host 按会话启动：
 
 ```text
 AI Host
@@ -644,11 +662,11 @@ AI Host
   -> AI 会话结束后关闭子进程
 ```
 
-当前 MCP Server 独立加载 Authoring Project，不要求 VS Code 正在运行，也不连接 Unity。多个 AI Agent 启动各自的 MCP Server，通过 `baseHash`、Project 锁、依赖 Hash 和原子文件事务协调。Unity 连接与调试 Lease 属于后续 Unity/Debug 阶段。
+当前 MCP Server 独立加载 Authoring Project，不要求 VS Code 正在运行，也不连接 Unity。多个 AI Agent 启动各自的 MCP Server，通过 `baseHash`、Project 锁、依赖 Hash 和原子文件事务协调。Unity 连接与调试并发模型属于后续 Unity/Debug 阶段。
 
-当前已落地的 `Tools/VisualBridgeMcp` V2 是仅面向本地 Authoring Project 的 stdio 入口。它从进程工作目录或 `VISUALBRIDGE_WORKSPACE` 环境变量确定发现根目录，只保留 Project、Catalog、Document、Apply Operations、Document Lifecycle、Reference 和 Refactor 七个稳定工具；旧的 Graph、Entity、Structured、Table 专用工具不保留兼容别名。除 Project 发现外，请求必须显式带回 `projectFile`、`documentTypeId` 与 `editor`，但最终 Adapter 仍由 Project Registry 解析出的 `DocumentType.editor` 决定，调用方不能借 `editor` 绕过文件归属或自定义扩展名规则。
+当前已落地的 `Tools/VisualBridgeMcp` V2 是仅面向本地 Authoring Project 的 stdio 入口。它从进程工作目录或 `VISUALBRIDGE_WORKSPACE` 环境变量确定发现根目录，只保留 Project、Catalog、Document、Apply Operations、Document Lifecycle、Reference 和 Refactor 七个稳定工具；旧的 Graph、Entity、Structured、Table 专用工具不保留兼容别名。Project read/listDocuments 会保留所有合法稳定 `editor` ID，并以 `adapterAvailable` 明确当前 MCP 是否注册对应 Adapter。除 Project discover 外，所有工具都按各自 strict Schema 显式携带 `projectFile`；Catalog、Document 与 Apply Operations 还必须携带 `documentTypeId` 和 `editor`，Reference、Refactor 与 Lifecycle 则使用各自的 kind/target 或 source/target 结构。最终领域 Adapter 仍由 Project Registry 解析出的 `DocumentType.editor` 决定；未注册 ID 的语义操作返回不支持，调用方也不能借请求字段绕过文件归属或自定义扩展名规则。
 
-Core 定义宿主无关的 `SemanticDocumentAdapter`、`DocumentCodec` 与 `CatalogAdapter` 契约，四个 Built-in 包只组合各自既有 Parser、Catalog Registry、Validator、Operation、Reference Collector 和 Serializer。MCP Host 的 Document Adapter Registry 负责路由，文件系统、安全路径、锁、Hash 和持久化仍留在 Host；Table 的 CSV family 与 XLSX 保持多来源/二进制 Codec，不伪装成单文本文件。MCP 支持按来源 `baseHash` 原子执行普通 Operation，并按完整依赖清单预览和提交 Document Lifecycle 与项目级引用重构。Project Provider V2 可在启动时授权后提供自定义 Reference 和 Validator，但不提供写能力。当前不提供独立 CLI，不连接 Unity，也不包含 Runtime 或 Debug 能力。具体工具、结果信封与写入流程见 `VisualBridgeMcp.md`。
+Core 定义宿主无关的 `SemanticDocumentAdapter`、`DocumentCodec` 与 `CatalogAdapter` 契约，四个 Built-in 包只组合各自既有 Parser、Catalog Registry、Validator、Operation、Reference Collector 和 Serializer。MCP Host 的 Document Adapter Registry 负责路由；没有注册项时只在 Project 能力清单中报告 `adapterAvailable: false`，不会提供 Catalog、Document、Operation、Reference、Refactor 或 Lifecycle 语义。文件系统、安全路径、锁、Hash 和持久化仍留在 Host；Table 的 CSV family 与 XLSX 保持多来源/二进制 Codec，不伪装成单文本文件。MCP 支持按来源 `baseHash` 原子执行普通 Operation，并按完整依赖清单预览和提交 Document Lifecycle 与项目级引用重构。Project Provider V2 可在启动时授权后提供自定义 Reference 和 Validator，但不提供写能力。当前不提供独立 CLI，不连接 Unity，也不包含 Runtime 或 Debug 能力。具体工具、结果信封与写入流程见 [`VisualBridgeMcp.md`](VisualBridgeMcp.md)。
 
 ### MCP 能力边界
 
@@ -668,118 +686,33 @@ MCP 提供少量稳定的项目级能力：
 
 当前统一 V2 工具面固定为 `visualbridge_project`、`visualbridge_catalog`、`visualbridge_document`、`visualbridge_apply_operations`、`visualbridge_document_lifecycle`、`visualbridge_references` 和 `visualbridge_refactor_reference`。Graph、Entity、Structured 与 Table 共用同一 Project selector 和 Adapter 路由。写入必须携带读取时得到的 SHA-256 `baseHash`；所有 MCP 写入共用 Project Transaction 锁、阶段化临时来源、持久化复验与可恢复事务日志。冲突、无效事务和不确定故障使用不同的结构化状态，冲突不会自动重试或覆盖。外部非 VisualBridge 写入不参与协作锁，因此提交仍会在替换前和替换后检查 Hash；若恢复时发现未知外部字节，会保留这些字节并升级为 Tool Error。
 
-## 实例发现与通信
+## 后续 Unity 连接与 Debug 设计入口
 
-### Editor 发现
+当前仓库没有 Unity 实例发现、连接、Runtime Attach、Debug Session、DAP 或 MCP Debug Tool；本节只记录进入后续设计时必须回答的问题，不定义路径、字段、传输或状态机。
 
-Unity Editor 在 Authoring Project 的临时目录登记实例：
+### 实例发现与通信待决项
 
-```text
-Library/VisualBridge/Discovery/<UnitySessionId>.json
-```
+- Project、Unity Editor 与 Player 实例如何建立可信关联，以及发现信息保存在哪里；
+- 本机与远程场景分别使用何种传输、认证、配对、版本协商和重连策略；
+- Domain Reload、进程重启和多窗口/多 AI Client 下如何区分实例代际与陈旧消息；
+- 多 Project、多 Runtime 的路由是否需要显式会话选择，以及如何避免全局“当前 Unity”；
+- 安全边界、端点暴露、凭据生命周期、审计和错误恢复如何验证。
 
-注册信息概念上包含：
+Project Discovery File、Loopback/network WebSocket 只是可能的技术选项，不是本架构基线的已定协议。选型必须由单独设计、威胁模型和真实 Unity 垂直切片验证后，才能进入 Protocol Schema。
 
-- 协议版本。
-- ProjectId、ProfileId 和 UnitySessionId。
-- 进程、Unity 版本和启动时间。
-- 本机通信端点。
-- 临时认证信息。
-- 心跳时间。
+### Debug 待决项
 
-发现和通信分离：注册文件只提供候选实例，最终身份通过连接握手验证。
+- Source Document 元素如何与特定运行版本和 Runtime Instance 建立稳定、可校验的映射；
+- VS Code DAP、AI/MCP 与 Unity Bridge 是否共享调试服务，以及各自的权限和生命周期；
+- 多客户端读写权限采用单控制者、租约或其他模型时，如何处理抢占、断线和恢复；
+- 断点、调用栈、变量、事件等待、分页和 Trace 需要哪些最小消息与上限；
+- Source/Catalog 漂移如何显示并阻止把新 Authoring 身份错误映射到旧 Runtime。
 
-### 通信方式
+无论后续选择什么方案，会话状态都不能写回 Authoring 源文档，文件名、数组索引或对象地址也不能在没有正式身份契约时被当作稳定跨进程标识。具体 ID、Hash、sequence、cursor、Controller/Observer 和重新加载流程均尚未冻结。
 
-Unity Editor 与同机工具使用 Loopback WebSocket。Player 使用网络 WebSocket。两者复用上层消息协议：
+## 平台仓库结构
 
-```text
-Unity Editor
-  -> Project Discovery File
-  -> ws://127.0.0.1:<dynamic-port>
-
-Runtime Player
-  -> 设备发现或手动地址
-  -> ws://<device-address>:<port>
-```
-
-Editor 只绑定 Loopback 地址并使用动态端口。Player 的设备发现、配对和安全策略独立设计。
-
-### 多客户端
-
-客户端身份按 VS Code Extension Host 或 AI MCP Session 创建，不使用 VS Code 操作系统进程 PID。
-
-- 一个 VS Code 窗口可以连接多个 UnitySession。
-- 一个 Authoring Document 同时选择一个活动 Runtime。
-- 一个 Runtime 可以连接多个 VS Code 和 AI Client。
-- 命令路由从 Document/DebugSession 映射到 UnitySession，不能依赖全局当前 Unity。
-
-## Debug System
-
-### 通用调试身份
-
-调试协议使用：
-
-- ProjectId。
-- DocumentId。
-- ElementId。
-- RuntimeInstanceId。
-- UnitySessionId。
-- SourceHash 和 CatalogHash。
-
-不使用文件名、Unity 数组索引或对象地址作为跨工具身份。
-
-### 调试核心
-
-```text
-Unity Debug Protocol
-        ↑
-DebugSessionService
-   ↑             ↑
-DAP Adapter     MCP Debug Tools
-VS Code         AI
-```
-
-VS Code 通过 DAP 获得断点、暂停、调用栈和变量 UI。AI 通过 MCP 获得结构化调试工具。两者共享调试语义，但不互相调用。
-
-### Controller 与 Observer
-
-一个 Unity Runtime 同时最多有一个 Controller，可以有多个 Observer：
-
-- Controller 可以暂停、继续、单步和修改有效断点。
-- Observer 可以读取状态、事件、调用栈和变量。
-- AI 不自动抢占 VS Code 控制权。
-- 控制权通过显式请求和 Lease 管理。
-- Controller 失联后由超时策略回收。
-
-### AI 调试
-
-AI MCP Server 自己发现并连接 Unity，在 AI 会话期间保持 DebugSession。典型流程：
-
-```text
-发现 Runtime
-  -> Attach Observer/Controller
-  -> 检查 SourceHash
-  -> 设置 Element 断点
-  -> Continue / Step
-  -> 等待 Stop Event
-  -> 查询 Stack / Scope / Variables
-  -> 修改 Authoring Document
-  -> 校验并请求 Unity 重载
-  -> 再次验证
-```
-
-异步调试事件通过带递增 Sequence 的等待/查询机制提供，避免 AI 高频轮询或遗漏事件。变量查询支持分页和路径过滤，避免一次返回大量运行时状态。
-
-断点、调用栈、Controller、Trace 和当前执行位置属于会话状态，不写入 Authoring 源文件。
-
-### 运行版本一致性
-
-Unity 调试事件携带 SourceHash/CatalogHash。工具检测到磁盘文件与运行版本不一致时显示明确的 Outdated 状态，不把新文件 Element 强行映射到旧 Runtime。
-
-## 新平台仓库结构
-
-建议使用单仓库管理平台核心、VS Code、Unity Bridge 和协议：
+VisualBridge 当前使用单仓库管理平台核心、VS Code Host、MCP、Node Host、Protocol 和 Unity Package：
 
 ```text
 VisualBridge/
@@ -790,26 +723,38 @@ VisualBridge/
 ├─ Protocol/
 │  ├─ Schema/
 │  ├─ Messages/
-│  └─ Generated/
+│  ├─ Generated/
+│  └─ contract-manifest.json
 ├─ Core/
-│  ├─ Project/
+│  ├─ Catalog/
+│  ├─ Debug/
+│  ├─ Diagnostics/
 │  ├─ Document/
 │  ├─ Edit/
-│  ├─ Reference/
-│  ├─ Diagnostics/
 │  ├─ Extension/
-│  └─ Debug/
+│  ├─ Form/
+│  ├─ Project/
+│  ├─ Provider/
+│  └─ Reference/
 ├─ Editors/
 │  ├─ Shared/
 │  ├─ Graph/
 │  ├─ Entity/
 │  ├─ Form/
+│  ├─ Structured/
 │  └─ Table/
 ├─ BuiltInExtensions/
 │  ├─ Graph/
 │  ├─ Entity/
-│  └─ StructuredConfig/
+│  ├─ StructuredConfig/
+│  └─ Table/
 ├─ Tools/
+│  ├─ DependencyPolicy/
+│  ├─ Documentation/
+│  ├─ LargeCorpus/
+│  ├─ NodeHost/
+│  ├─ ProtocolContract/
+│  ├─ SampleValidation/
 │  ├─ VSCodeExtension/
 │  └─ VisualBridgeMcp/
 ├─ Packages/
@@ -857,28 +802,25 @@ VS Code 宿主边界使用官方 `@vscode/test-electron` 在最低支持版本 `
 - 完成 Unity 接入前的 Authoring / Catalog 交接契约、Catalog Registry、过期状态和只读 Catalog Browser；此阶段使用已提交固定 Catalog，不实现 Unity 生成器。
 - 已落地 Reference Service、通用 Reference Picker、反向关系、项目重构和 Project Provider V2。
 - 已落地 Project Provider 的独立 `.mjs` 进程、重启、诊断、Workspace Trust 与 MCP allowlist 边界。
-- Project Settings、只读 Catalog Browser 和 Catalog 来源 Hash/过期状态契约已经完成；下一步处理大工程增量索引。
+- VB-PU-01 至 VB-PU-08 共同构成 Unity 接入前的 Authoring 基线；Project Settings、Catalog 状态、增量索引、Provider 缓存/取消、Table 虚拟化、共享 Form 与 VS Code Host 均属于该基线，Unity Catalog Exporter、Importer、Discovery 和连接协议属于其后的独立阶段。
 
 Project Settings 的 Project Operation、文件归属校验、外部修改冲突和 Catalog Browser 行为见 [`ProjectCatalogManagement.md`](ProjectCatalogManagement.md)。Catalog 顶层 `source` 明确区分 `unknown`、`current` 与 `stale`；Host 从当前字节计算只读 `contentHash`，不在 Browser 中回写外部维护的 Catalog。
 
 阶段目标是让项目业务能力在不修改基础插件的情况下接入。
 
-阶段三的当前执行范围与完成门槛以 `Doc/PreUnityDevelopmentRoadmap.md` 为准。Unity Catalog Exporter、Importer、Project Discovery File、WebSocket、Runtime 和 Debug 均在该清单完成后另行设计，不能由本阶段文档提前承诺其协议字段。
+Unity 接入前基线的范围与完成门槛见 [`PreUnityDevelopmentRoadmap.md`](PreUnityDevelopmentRoadmap.md)。Unity Catalog Exporter、Importer、Project Discovery File、WebSocket、Runtime 和 Debug 均在后续阶段另行设计，不能由本阶段文档提前承诺其协议字段。
 
 ### 阶段四：Unity Editor 连接
 
-- 实现 Project Discovery File。
-- 实现 Loopback WebSocket、握手、重连和多客户端。
-- 实现 Unity 请求打开文档。
-- 实现 Authoring 文档导入与最小运行时编译。
+- 先以独立设计确定 Unity Project/实例发现、传输、认证、版本协商和重连边界；本阶段不预选 Discovery File 或 WebSocket。
+- 实现普通 C# class/struct 到冻结 Catalog 的确定性 Exporter，以及 Authoring 文档的最小 Import/Compile 垂直切片。
+- 在已证明的传输与权限边界上接入 Unity 请求打开 Authoring 文档。
 
 ### 阶段五：Debug 与 MCP
 
-- 实现通用 DebugSessionService 和运行时身份映射。
-- 接入 VS Code DAP。
-- 为已有项目级 stdio MCP Server 增加 Runtime Attach 和调试能力。
-- 向 AI 提供引用和调试能力。
-- 实现 Controller/Observer Lease 和 SourceHash 检查。
+- 以真实调试用例重新设计 Debug Session、运行时身份、Source 对齐和多客户端权限，不继承 Authoring MCP 的字段或传输假设。
+- 决定是否以及如何接入 VS Code DAP、MCP Runtime Attach 和 AI 调试能力；这些都不是当前 stdio MCP V2 的兼容扩展承诺。
+- 用自动化和实际 Unity/Player 垂直切片验证选定的会话、断线和并发模型。
 
 ### 阶段六：更多 Document Type
 
@@ -888,8 +830,8 @@ Project Settings 的 Project Operation、文件归属校验、外部修改冲突
 
 ### 阶段七：Player 与生态
 
-- 复用 WebSocket 协议连接 Player。
-- 增加设备发现、配对和安全策略。
+- 基于已验证的 Unity Bridge 协议决定 Player 是否复用传输和上层消息，而不是预设 WebSocket。
+- 设计并实现设备发现、配对和安全策略。
 - 增加更多 Document Type、伴生扩展和语言服务。
 - 完善版本迁移、CI、发布和项目模板。
 
@@ -905,11 +847,11 @@ Project Settings 的 Project Operation、文件归属校验、外部修改冲突
 
 ### 扩展代码安全
 
-项目 Provider 和 Webview Module 都是工程代码。必须显式声明、受 Workspace Trust 控制，并隔离于基础 Extension Host。
+当前 Project Provider 是可执行工程代码，必须显式声明、受 Workspace Trust/MCP allowlist 控制，并隔离于基础 Extension Host。未来若增加 Project Webview Module，也必须先设计等价的 Trust、CSP、依赖和隔离边界；当前不能通过 Project File 加载它。
 
 ### 多客户端并发
 
-文档修改通过 `baseHash` 和原子事务协调；调试通过 Controller/Observer Lease 协调。第一阶段不提供实时协同编辑。
+当前文档修改通过 `baseHash` 和原子事务协调，且不提供实时协同编辑。未来调试是否采用 Controller/Observer、租约或其他并发模型，必须在 Unity/Debug 阶段依据真实用例另行决定。
 
 ### Node 版本一致性
 
@@ -917,7 +859,7 @@ Provider 运行构建后的 `.mjs`，使用 Host 当前 Node 可执行文件；�
 
 ### Unity Domain Reload
 
-Domain Reload 会中断连接。Unity Bridge 重新登记实例，VS Code 和 MCP 使用退避策略重连并重新握手。
+Domain Reload 会使未来 Unity 连接和运行时身份失效，因此后续协议必须显式处理断开、实例代际与状态重建；具体重连、退避和重新握手策略尚未冻结。
 
 ### 大型工程性能
 
@@ -927,52 +869,49 @@ Domain Reload 会中断连接。Unity Bridge 重新登记实例，VS Code 和 MC
 
 - 平台定位为游戏语义内容创作工具，不替代 Unity 场景和渲染编辑。
 - Authoring Project 是独立于 Unity Project 和 VS Code Workspace 的工程概念。
-- Authoring Project 的可编辑根目录与 Unity `Assets` 平级，文件夹名可由游戏工程自定义。
+- Authoring Project 由本地工作区中的 Project File 和其 Project 相对 `documentRoots` 定界；当前不要求它与 Unity `Assets` 平级。
 - VisualBridge Project File 固定命名为 `VisualBridge.project.vbjson`，内容为 JSON；只有发现有效 Project File 才启用插件工程功能。
 - 源文档是唯一权威数据，Unity 数据是导入或编译结果。
 - Catalog/Schema 描述能力，Document 保存实例。
 - Document Type 是核心扩展点。
 - 基础插件提供 Graph、Form、Table、Reference 等通用原语。
-- 基础插件采用 N 合一扩展形式，各 Document Type 模块按文件打开事件延迟加载。
+- 基础插件采用 N 合一扩展形式，Host 模块静态打包并在激活时注册；具体文件的 DocumentSession 和 Webview bundle 只在打开时建立。
 - 用户使用 VS Code 原生 Explorer 处理普通文件，并可使用补充性的 Document Browser 浏览语义文档、诊断和引用。默认 VisualBridge 后缀可以直接进入对应 Custom Editor；Project 自定义后缀由 Document Browser、`VisualBridge: Open Document` 或工程级编辑器关联进入通配 Custom Editor，随后统一由 Project Registry 按 Document Type 路由。
 - 插件实例按 VS Code 窗口隔离，每个文件创建独立 DocumentSession，多个文件共享当前窗口的 Extension Host。
 - 平台专属格式可以默认关联自定义编辑器，`.xlsx` 等通用格式只通过 Authoring Project 的工作区级关联在当前工程窗口接管。
 - Table Document 提供统一语义模型，Excel 是可选权威载体或导入导出 Codec；AI 不直接读写 `.xlsx` 和 `.csv`，必须通过 MCP 的搜索、查询和修改能力访问。
 - 物理路径不承担语义身份。Document Lifecycle 以一个共享 Service 承担 Create、Copy、Path Move 和 Safe Delete；稳定 ID Rename 继续使用 Project Refactoring。
 - Document Lifecycle V1 使用 strict preview/apply、调用方完整提交 `stableIdRemap`、Safe Delete closure、Reference coverage 和 `replace`/`create`/`delete`/`move` Project Transaction 状态；目标不存在性与来源 Hash 都是并发前置条件。
-- VS Code 写入前检测目标文件是否已被外部修改；发生冲突时必须由用户选择覆盖，或放弃本地变更并重新读取刷新。
+- VS Code 写入前检测目标文件是否已被外部修改；Graph、Entity、Structured 文本编辑器在脏状态下要求用户选择覆盖、放弃并刷新或取消，Table 与多来源事务始终拒绝静默覆盖并要求重新加载。
 - VS Code 和 MCP 共享 VisualBridgeCore。
-- MCP 是 AI 的唯一交互 API。
+- MCP 是 AI 进行受校验语义查询与写入的正式 API；普通文本可作为只读上下文，但直接改写不属于受支持流程，Table 载体必须始终经 MCP。
 - stdio MCP Server 由 AI Host 按会话启动。
-- Project Provider V2 固定运行 Project 声明的构建后 `.mjs` 入口，不直接执行 `.ts`；当前 MCP V2 使用 Node.js `>=20` 运行已构建的 `Tools/VisualBridgeMcp/dist/server.js`。
+- Project Provider V2 固定运行 Project 声明的构建后 `.mjs` 入口，不直接执行 `.ts`；当前仓库、Provider 和 MCP V2 固定使用 Node.js `22.22.1`，MCP 运行已构建的 `Tools/VisualBridgeMcp/dist/server.js`。
 - 项目 `.ts` 不直接加载到 VS Code Extension Host。
 - 自定义 Webview TypeScript/TSX 仍需要构建为 JavaScript/CSS。
 - 内置 Graph Canvas 使用 React 与 React Flow；React Flow 的节点和连线数据由 Graph Document 派生，用户交互必须转换为 Graph Operation 后才能写入源文档。
 - 内置 Entity Editor 使用 Entity Catalog V1 组织 Entity、Component Group 与 Component Type；Entity JSON 是权威数据且不依赖 `ScriptableObject`。Entity Operation 批量应用具有原子性，Serializer 确定性输出。
 - Core Form Field 与共享 Form Editor 是跨 Graph、Entity、Structured 和 Table 的公共字段基础，保留 JSON 形态与运行时 `dataTypeId` 的区别，并递归支持普通自定义结构和 List。
-- Graph Catalog V4 支持多 Catalog Registry、节点 Catalog 归属、显示根名、Graph Type 支持 Catalog、允许节点精筛、输入/输出连接数量规则、直接节点数量约束和 typed subgraph 调用契约；节点的 `menuPath` 是相对所属 Catalog 显示根名的扩展路径。旧 Catalog V1-V3 可读取，缺省支持声明自身 Catalog 且输入/输出均为 `multiple`；序列化升级为 V4。Graph Document 继续保持 V3，并为根图和每个内嵌图保存独立 `graphTypeId`。
+- Graph Catalog V4 支持多 Catalog Registry、节点 Catalog 归属、显示根名、Graph Type 支持 Catalog、允许节点精筛、输入/输出连接数量规则、直接节点数量约束和 typed subgraph 调用契约；节点的 `menuPath` 是相对所属 Catalog 显示根名的扩展路径。当前 Parser 只接受 V4，并与其他领域共用 `Core/Form` 字段契约，不读取旧 Catalog V1-V3 或旧 `required` 字段方言。Graph Document 继续保持 V3，并为根图和每个内嵌图保存独立 `graphTypeId`。
 - Graph Type 一经设置暂不允许任意修改；节点和子图创建、删除及安全替换必须保持数量约束，子图调用节点的静态数据端口与子图公开接口共同形成父图端口契约。
 - 声明式扩展优先，项目 Provider 处理复杂逻辑。
-- Unity Editor 与本机工具使用 Project Discovery File 和 Loopback WebSocket。
-- Player 使用网络 WebSocket并复用上层协议。
-- 多调试客户端使用单 Controller、多 Observer 模型。
-- 调试使用 ProjectId、DocumentId、ElementId、RuntimeInstanceId 和 SourceHash。
+- Unity/Player 的发现、传输、认证、多客户端调试模型和运行时身份字段均留待 Unity/Debug 阶段以真实垂直切片决定；当前 Authoring 协议不冻结 Project Discovery File、WebSocket、Controller/Observer 或 Debug ID 组合。
 - VisualBridge 使用单仓库管理 Core、VS Code、MCP、Unity Package 和 Protocol，Unity Package 目录名为 `com.kyl.visualbridge`。
 - 正式文档保存在 `Doc`；开发中的临时设计和任务文档保存在 `Doc/Temp`，完成后删除。
 
 ## 留待实施阶段确定
 
-Graph V3、Graph Catalog V4、Entity/Structured/Table V1、Project V1、Project Provider V2 和 MCP V2 已由各自正式文档定义当前 Authoring 契约。以下条目指跨语言 Protocol 冻结、Unity/发布集成或尚未落地的扩展，不表示现有格式与工具字段未定义：
+Graph V3、Graph Catalog V4、Entity/Structured/Table V1、Project V1、Project Provider V2 和 MCP V2 已由各自正式文档定义当前 Authoring 契约。`Protocol/Schema` 当前冻结 13 份正式 JSON Schema，并生成 `Protocol/Generated/contracts.d.ts` 和 `schema-index.json`；它们是当前 TypeScript/进程间传输契约。未来 C# 生成器必须读取同一 Schema/manifest 并加入 deterministic generation/drift gate，当前阶段尚未生成 C#，Unity 也没有协议消费者。以下条目是 Unity/发布集成或尚未落地的扩展，不表示现有格式与工具字段未定义：
 
-- 已落地 Document、Catalog、Project、Operation、Diagnostic、Reference 和 MCP Schema 的跨语言 Protocol 表达及最终版本联动。
+- 未来 C# 生成物与 Unity Package 的版本联动；当前 TypeScript 声明和 Schema Hash drift 已由 Protocol gate 固定。
 - 新类型的稳定 ID 生成、alias 迁移与旧数据导入策略；当前内置类型的稳定 ID/alias 规则保持由各领域文档定义。
 - Structured Config 和 Table 载体进入 Unity Import/Compile 后的跨语言冻结；当前 JSON/CSV/XLSX Authoring 格式保持有效。
 - 未来 Unity/DAP 协议的错误码、诊断位置和生成契约；当前 Provider JSON-RPC V2、MCP V2 Operation 与错误信封已经固定。
-- 可选 Provider SDK 的发布形态；当前 Provider 直接面向 `ProjectProvider.md` 与 JSON Schema，入口/Node/依赖策略已经固定。
+- 可选 Provider SDK 的发布形态；当前 Provider 直接面向 [`ProjectProvider.md`](ProjectProvider.md) 与 JSON Schema，入口/Node/依赖策略已经固定。
 - Entity / Form 之外的 Webview UI SDK、组件模型、隔离和热重载方式。
 - Unity Catalog Generator、Importer 和 Compiler API。
 - WebSocket 消息、认证、配对和安全策略。
-- Controller Lease、断线恢复和调试事件缓存策略。
+- 多客户端控制、断线恢复和调试事件缓存策略。
 - Player 设备发现方式。
 - VS Code、UPM Package、MCP 和 Protocol 的版本联动。
 - 旧数据导入、迁移和兼容周期。

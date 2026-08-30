@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { compareUtf16CodeUnits } from "@visualbridge/core";
 
 export interface ReferenceSemanticSnapshot {
   readonly project: unknown;
@@ -37,13 +38,9 @@ function canonicalJson(value: unknown): string {
     const record = value as Readonly<Record<string, unknown>>;
     const entries = Object.keys(record)
       .filter((key) => record[key] !== undefined)
-      .sort(compareOrdinal)
+      .sort(compareUtf16CodeUnits)
       .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`);
     return `{${entries.join(",")}}`;
   }
   throw new TypeError("Reference semantic snapshots must be JSON-compatible values.");
-}
-
-function compareOrdinal(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }

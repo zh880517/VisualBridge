@@ -2,6 +2,7 @@ import type { DocumentDiagnostic } from "../Document/document";
 import type { JsonValue } from "../Form/field";
 import type { ProjectProviderCapabilities } from "../Project/projectFile";
 import type { ReferenceCandidate, ReferenceLocation } from "../Reference/reference";
+import { compareUtf16CodeUnits } from "../Ordering/ordinal";
 
 export const PROJECT_PROVIDER_PROTOCOL_VERSION = 2;
 export const PROJECT_PROVIDER_JSON_RPC_VERSION = "2.0" as const;
@@ -1038,7 +1039,7 @@ function rejectUnknownKeys(
   issues: ProjectProviderIssue[],
 ): void {
   const allowedKeys = new Set(allowed);
-  for (const key of Object.keys(value).sort(compareText)) {
+  for (const key of Object.keys(value).sort(compareUtf16CodeUnits)) {
     if (!allowedKeys.has(key)) issues.push({ path: path === "$" ? key : `${path}.${key}`, message: `Unknown property '${key}'.` });
   }
 }
@@ -1057,9 +1058,5 @@ function finish<T>(
 }
 
 function stableIssues(issues: readonly ProjectProviderIssue[]): readonly ProjectProviderIssue[] {
-  return [...issues].sort((left, right) => compareText(left.path, right.path) || compareText(left.message, right.message));
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+  return [...issues].sort((left, right) => compareUtf16CodeUnits(left.path, right.path) || compareUtf16CodeUnits(left.message, right.message));
 }

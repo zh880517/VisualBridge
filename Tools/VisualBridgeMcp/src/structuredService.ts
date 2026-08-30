@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { buildCatalogBundle, type DocumentDiagnostic, type JsonValue } from "@visualbridge/core";
+import { buildCatalogBundle, compareUtf16CodeUnits, type DocumentDiagnostic, type JsonValue } from "@visualbridge/core";
 import {
   resolveStructuredConfigType,
   structuredCatalogAdapter,
@@ -61,10 +61,10 @@ export class StructuredService {
     if (kind !== "configTypes") {
       throw new VisualBridgeMcpError("catalog.kindUnsupported", `Structured Catalog kind '${kind}' is not searchable.`);
     }
-    const query = request.query.trim().toLocaleLowerCase();
+    const query = request.query.trim().toLowerCase();
     const definitions = catalog.registry.configTypes
-      .filter((definition) => query.length === 0 || JSON.stringify(definition).toLocaleLowerCase().includes(query))
-      .sort((left, right) => left.title.localeCompare(right.title) || left.id.localeCompare(right.id));
+      .filter((definition) => query.length === 0 || JSON.stringify(definition).toLowerCase().includes(query))
+      .sort((left, right) => compareUtf16CodeUnits(left.title, right.title) || compareUtf16CodeUnits(left.id, right.id));
     const page = pageItems(definitions, request.cursor, request.limit, catalogCursorScope(request, kind));
     return { ...base, kind, query: request.query, results: page.items, nextCursor: page.nextCursor };
   }
@@ -97,7 +97,7 @@ export class StructuredService {
         diagnostics: loaded.diagnostics,
       };
     }
-    const query = request.query.trim().toLocaleLowerCase();
+    const query = request.query.trim().toLowerCase();
     const entries: (Record<string, unknown> & { searchText: string })[] = [];
     if (loaded.document !== undefined) {
       collectStructuredSearchValues(loaded.document.properties, "properties", entries);
@@ -349,7 +349,7 @@ function collectStructuredSearchValues(
     return;
   }
   if (typeof value === "object" && value !== null) {
-    Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).forEach(([key, entry]) =>
+    Object.entries(value).sort(([left], [right]) => compareUtf16CodeUnits(left, right)).forEach(([key, entry]) =>
       collectStructuredSearchValues(entry, `${path}.${key}`, entries));
     return;
   }
@@ -357,6 +357,6 @@ function collectStructuredSearchValues(
     kind: "field",
     path,
     value,
-    searchText: `${path} ${String(value)}`.toLocaleLowerCase(),
+    searchText: `${path} ${String(value)}`.toLowerCase(),
   });
 }

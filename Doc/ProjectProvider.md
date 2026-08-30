@@ -36,24 +36,22 @@ flowchart LR
 
 固定样例位于 [`TestData/ProviderSemanticProject`](../TestData/ProviderSemanticProject)。声明的最小结构为：
 
-```json
-{
-  "providers": [
-    {
-      "id": "sample.provider",
-      "entry": "Providers/sample-provider.mjs",
-      "args": ["--mode", "healthy"],
-      "capabilities": {
-        "reference": {
-          "kinds": ["sample.asset"]
-        },
-        "validator": {
-          "documentTypes": ["sample.provider.settings"]
-        }
+```json visualbridge-schema=visualbridge-project.schema.json#/properties/providers
+[
+  {
+    "id": "sample.provider",
+    "entry": "Providers/sample-provider.mjs",
+    "args": ["--mode", "healthy"],
+    "capabilities": {
+      "reference": {
+        "kinds": ["sample.asset"]
+      },
+      "validator": {
+        "documentTypes": ["sample.provider.settings"]
       }
     }
-  ]
-}
+  }
+]
 ```
 
 该片段放入完整 `VisualBridge.project.vbjson` 的顶层。约束如下：

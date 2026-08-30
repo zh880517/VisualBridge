@@ -1,4 +1,5 @@
 import { documentIndexKey, type IndexedDocument, type IndexedDocumentReference } from "../Document/documentIndex";
+import { compareUtf16CodeUnits } from "../Ordering/ordinal";
 import {
   referenceValuesEqual,
   type ReferenceCandidate,
@@ -66,10 +67,10 @@ export function createReferenceValueRenamePlan(
           occurrencePath: reference.occurrence.path,
         }]
       : []
-  ))).sort((left, right) => [
+  ))).sort((left, right) => compareUtf16CodeUnits([
     documentIndexKey(left),
     left.occurrencePath,
-  ].join("\u0000").localeCompare([
+  ].join("\u0000"), [
     documentIndexKey(right),
     right.occurrencePath,
   ].join("\u0000")));

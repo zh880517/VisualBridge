@@ -1,12 +1,106 @@
 # VisualBridge VS Code Extension
 
-This package contains the VS Code host adapter for VisualBridge. The extension activates project features only when it discovers and validates a `VisualBridge.project.vbjson` file in the current workspace.
+本包是 VisualBridge 的 VS Code Host Adapter。扩展只在本地工作区发现并验证 `VisualBridge.project.vbjson` 后建立 Project 功能；Graph、Entity、Structured 和 Table 的 Parser、Catalog、Operation、Validator、Reference 与 Serializer 来自共享 Core/Built-in 包，不在 Extension Host 中复制领域规则。
 
-Use **VisualBridge: Open Project Settings** to edit roots, Document Types, arbitrary include/exclude patterns, Catalog bindings, Table layout and Project Providers through validated structured Operations. The **Catalogs** Activity Bar view is read-only and shows Registry types, aliases, source/content Hashes, stale state, conflicts and diagnostics. See [`ProjectCatalogManagement.md`](../../Doc/ProjectCatalogManagement.md).
+当前 VSIX 是私有 `UNLICENSED` 产物，不通过 Marketplace 分发。Unity Catalog Exporter、Importer、Compiler、Editor Bridge、Runtime 和 Debug 尚未实现。
+
+## 安装与首次使用
+
+完整流程见 [安装与快速开始](../../Doc/GettingStarted.md)。从仓库根目录构建并执行隔离包验证：
+
+```powershell
+nvm use 22.22.1
+npm ci
+npm run package:vscode
+npm run test:vscode:cli
+```
+
+`test:vscode:cli` 使用临时 User Data 和 Extensions 目录，不修改用户现有 VS Code 配置。实际安装到当前配置可运行 **Extensions: Install from VSIX...**，或：
+
+```powershell
+code --install-extension .\Tools\VSCodeExtension\artifacts\visualbridge.vsix --force
+```
+
+安装后打开 [`Samples/PreUnityAuthoring`](../../Samples/PreUnityAuthoring/README.md)。`workspaceContains:**/VisualBridge.project.vbjson` 在工作区出现固定文件名时触发扩展激活；只有 Project File 严格解析和工作区校验成功后，才创建可用 ProjectContext 并在 **VisualBridge / Documents** 与 **VisualBridge / Catalogs** 中显示内容。
+
+## Project 与文件路由
+
+Project File 的 `documentTypes[].editor` 是可扩展的稳定 Adapter ID，Project Schema 与 Core 接受任意合法值。当前 VSIX 为 `graph`、`entity`、`structured` 和 `table` 注册领域 Adapter；匹配其他稳定 ID 的文本文件仍可进入通用只读 Document Shell，显示 Project、Document Type、Adapter ID、路径和当前源码，但没有领域编辑、Catalog 语义、语义索引、Reference 或 Lifecycle。MCP Project API 会把这类声明保留为 `adapterAvailable: false`，需要领域 Adapter 的 MCP 操作不可用。稳定 `id` 表示项目业务子类，`include` / `exclude` 拥有文件归属；扩展名不是类型判别器。
+
+Manifest 的默认 `visualbridge.documentEditor` selector 包含 `.vbgraph`、`.vbentity` 和 `.vbconfig`，但这些只是静态便利入口，文件仍必须被 Project Registry 唯一匹配到一个声明的稳定 `editor` ID。项目自定义后缀使用 **VisualBridge: Open Document**、Documents 视图或工作区级 `workbench.editorAssociations`；已注册 ID 进入对应领域编辑器，未注册 ID 进入通用只读 Shell。`.csv`、`.xlsx` 等通用格式不会通过用户级关联被 VisualBridge 全局强制接管；Table 使用可选的通配 Custom Editor，并在打开后验证 Project 归属。
+
+## 公开生产 Command ID
+
+下表与 `package.json` 的 `contributes.commands` 一一对应。`visualbridge.test.*` 只在非 Production Extension Host 注册，不属于 manifest 或公开用户接口。
+
+| Command ID | Manifest 标题 | 入口与用途 |
+| --- | --- | --- |
+| `visualbridge.refreshProjects` | VisualBridge: Refresh Projects | 重新发现并验证工作区 Project。 |
+| `visualbridge.openDocument` | VisualBridge: Open Document | 按 Project Registry 打开 Explorer/URI 指向的语义文档。 |
+| `visualbridge.openProjectSettings` | VisualBridge: Open Project Settings | 打开有效 Project File 的结构化 Settings Editor。 |
+| `visualbridge.createGraphDocument` | VisualBridge: Create Graph Document | 创建 Graph 文档。 |
+| `visualbridge.createEntityDocument` | VisualBridge: Create Entity Document | 创建 Entity 文档。 |
+| `visualbridge.createStructuredDocument` | VisualBridge: Create Structured Config | 创建 Structured Config。 |
+| `visualbridge.createTableDocument` | VisualBridge: Create Table Document | 创建 CSV-compatible 或 XLSX Table。 |
+| `visualbridge.createDocument` | VisualBridge: Create Document | 从 Project Document Type 统一选择并创建。 |
+| `visualbridge.safeDeleteElement` | VisualBridge: Safe Delete Element | 由领域编辑器携带结构化目标发起元素 Safe Delete；不接受无目标的手工删除。 |
+| `visualbridge.documentBrowser.refresh` | Refresh Documents | 刷新 Documents 语义索引。 |
+| `visualbridge.documentBrowser.search` | Search Documents | 搜索标题、ID、路径、诊断和引用。 |
+| `visualbridge.documentBrowser.validateAll` | Validate All Documents | 完整校验并发布 Problems。 |
+| `visualbridge.documentBrowser.open` | Open Document | 打开 Document Browser 当前节点。 |
+| `visualbridge.documentBrowser.create` | Create Document | 在当前 Document Type 下创建。 |
+| `visualbridge.documentBrowser.copy` | Copy Document (Remap Stable IDs) | 预览并复制完整 Document，同时 remap 稳定身份。 |
+| `visualbridge.documentBrowser.renamePath` | Rename Path (Keep Stable IDs) | 只改变物理路径，保留稳定身份与引用值。 |
+| `visualbridge.documentBrowser.move` | Move Document (Keep Stable IDs) | 移动完整物理 source manifest。 |
+| `visualbridge.documentBrowser.safeDelete` | Safe Delete Document | 拒绝存在闭包外入站引用的文档删除。 |
+| `visualbridge.documentBrowser.revealReference` | Reveal Reference | 跳转唯一解析的 Reference 目标。 |
+| `visualbridge.documentBrowser.renameReferenceTarget` | Rename Reference Target | 预览并原子重命名目标稳定值及全部入站引用。 |
+| `visualbridge.catalogBrowser.refresh` | Refresh Catalogs | 重新加载 Catalog Registry 与来源状态。 |
+| `visualbridge.catalogBrowser.open` | Open Catalog | 以只读检查用途打开物理 Catalog 文本。 |
+
+## View ID 与 Custom Editor viewType
+
+### Activity Bar View
+
+| View ID | 显示名 | 作用 |
+| --- | --- | --- |
+| `visualbridge.documents` | Documents | 文档、物理来源、诊断、Outgoing/Incoming Reference 和 Lifecycle 入口。 |
+| `visualbridge.catalogs` | Catalogs | 只读 Registry、类型、alias、Hash、stale 状态和诊断。 |
+
+两个 View 都位于 `visualbridge` Activity Bar container。
+
+### Custom Editor
+
+| viewType | Manifest priority | selector / 用途 |
+| --- | --- | --- |
+| `visualbridge.projectSettingsEditor` | `default` | `VisualBridge.project.vbjson` 的 Project Settings。 |
+| `visualbridge.documentEditor` | `default` | `.vbgraph`、`.vbentity`、`.vbconfig` 的便利入口；已注册文本 Adapter 进入领域会话，未注册稳定 ID 进入通用只读 Shell。 |
+| `visualbridge.documentEditor.option` | `option` | 任意扩展名的可选文本 Document 入口，沿用同一 Adapter/Shell 路由。 |
+| `visualbridge.tableEditor` | `option` | 任意扩展名的可选 Table Custom Editor，实际要求 Project Registry 匹配 `editor: "table"`。 |
+
+## 当前编辑能力
+
+- Graph V3 / Graph Catalog V4：React Flow 受控画布、Graph Type、数量与连接限制、typed subgraph、动态端口、公开接口、节点安全替换、内联字段、多选、Copy/Paste/Duplicate、MiniMap、Reference 定位与外部修改冲突提示。
+- Entity V1 / Entity Catalog V1：根字段、有序 Component 卡片、搜索添加、启用、拖动、复制、Safe Delete、共享递归 Form/Reference 和外部修改冲突提示。
+- Structured Config V1：Project 唯一类型绑定、完整递归字段、Reference、确定性 JSON、Undo/Redo 和外部修改冲突提示。
+- Table V1 / Table Catalog V1：CSV family、XLSX、稳定记录列表虚拟化、搜索、共享 Form、行操作、Reference、完整 physical manifest Hash 和阶段化保存。
+- 未注册稳定 Adapter ID：通用只读 Document Shell，只显示匹配元数据与当前源码，不建立领域会话、语义索引或 Lifecycle 能力。
+- Project Settings：Document Root/Type、glob、Catalog、Table Layout、Provider 的结构化 Operation 与 WorkspaceEdit。
+- Document Browser / Catalog Browser：统一索引、Problems、Reference、Refactor、Lifecycle 和 Catalog 来源状态。
+
+实际操作步骤、Table 限制和冲突恢复见 [Authoring 使用手册](../../Doc/AuthoringUserGuide.md)。领域和宿主正式设计从 [文档目录](../../Doc/README.md) 进入。
+
+## Trust、诊断与日志
+
+扩展声明 `untrustedWorkspaces.supported=true` 和 `virtualWorkspaces.supported=false`。Restricted Mode 可以加载源文档、Catalog 和声明式内置能力，但绝不启动 Project Provider。Provider 是当前用户权限下的受信任 `.mjs` 工程代码，只在 Workspace Trust 允许时以独立子进程运行；它只能通过 V2 协议增加 Reference/Validator，不能增加写 Operation。
+
+- Project、Catalog、Document、Reference 和 Provider 诊断发布到 VS Code **Problems**。
+- Project/Index 刷新、Provider stderr/结构化生命周期、Lifecycle、Refactor 和事务摘要写入 **Output / VisualBridge**。
+- Provider 声明、Trust、日志和故障处理见 [Project Provider V2](../../Doc/ProjectProvider.md)。
 
 ## Development
 
-Use the repository's pinned Node.js 22.22.1 and npm 10.9.4 toolchain. Switch to the version in `.nvmrc` before installing; `engine-strict=true` intentionally rejects installs made with a different Node release. From the repository root:
+使用仓库固定的 Node.js `22.22.1` 和 npm `10.9.4`。从根目录执行：
 
 ```powershell
 nvm use 22.22.1
@@ -15,40 +109,22 @@ npm run check
 npm run build
 ```
 
-Open the repository root in VS Code and press `F5` after running `npm run build` to start an Extension Development Host. Use `VisualBridge: Refresh Projects` after changing a project file.
+构建后在 VS Code 打开仓库根目录并按 `F5` 启动 Extension Development Host。修改 Project File 后可运行 **VisualBridge: Refresh Projects**。
 
 ## Automated host and package tests
 
-Run the real Extension Host suite from the repository root:
+真实 Extension Host 套件：
 
 ```powershell
 npm run test:vscode:host
 ```
 
-The runner uses the official `@vscode/test-electron` package and pins the declared minimum VS Code version, 1.105.1. It copies `TestData` into a unique temporary workspace, uses isolated User Data and Extensions directories, and verifies automatic workspace activation, command registration, the default Graph editor association, project-defined Entity, Structured, and Table routing, hidden Webview re-handshakes, queued Table row reveals, and split Table custom-editor panels without changing the tracked fixtures or the user's VS Code profile. The downloaded VS Code runtime is cached under the ignored `.utmp/vscode-test` directory. A failed run preserves its temporary directory and prints the path so that Extension Host logs remain available; set `VISUALBRIDGE_CLEAN_FAILED_TEST=1` to remove failed runs automatically.
+Runner 使用官方 `@vscode/test-electron` 和固定 VS Code `1.105.1`，把 `TestData` 复制到唯一临时工作区，并隔离 User Data/Extensions。它验证自动激活、Project 发现、22 个 manifest 命令、默认 Graph 和项目自定义 Entity/Structured/Table 路由、Project Settings、Catalog/Document Browser、Trusted/Restricted Provider、隐藏 Webview 重新握手、定位请求、Lifecycle、Refactor 和 Table 多 panel，不修改跟踪样例或用户 VS Code 配置。失败默认保留临时目录并输出路径；`VISUALBRIDGE_CLEAN_FAILED_TEST=1` 可要求失败后清理。
 
-Validate the packaged artifact separately:
+打包后的 VSIX 单独验证：
 
 ```powershell
 npm run test:vscode:cli
 ```
 
-This command builds the VSIX, resolves the installed VS Code CLI, installs the package into unique temporary User Data and Extensions directories, verifies the exact `kyl.visualbridge` identity/version, and checks the packaged extension entry point, every Manifest-declared JSON Schema, icon, and all four Webview JavaScript/CSS bundles. It also rejects leaked test files, packaging scripts, and source maps. Finally it launches the pinned VS Code runtime, proves the installed extension activates from `workspaceContains`, invokes a registered command, and opens a Graph through the packaged custom editor. Interactive Webview behavior remains covered by domain tests and targeted real-page checks rather than being inferred from package installation alone.
-
-The extension currently includes the Graph Document V3 editor with Graph Catalog V4, the Entity Document V1 editor with Entity Catalog V1, the Structured Config V1 editor with Structured Catalog V1, the Table Document V1 editor with Table Catalog V1, the unified Document Browser, and Project Provider V2 references/validators. A Project File's document type selects the broad editor category through `"editor": "graph"`, `"editor": "entity"`, `"editor": "structured"` or `"editor": "table"`; its stable `id` is the project-defined subtype, while `include` and `exclude` own the file association. File extensions are not hardcoded type discriminators.
-
-The VSIX is private, distributed as `UNLICENSED`, and intended for local file-system workspaces. VS Code virtual workspaces are explicitly unsupported because project discovery, Catalog loading, atomic document writes, and Provider processes require local file access.
-
-Project Providers run only in a trusted workspace as isolated `.mjs` child processes; Restricted Mode never starts them. They can add declared Reference kinds and Validator diagnostics but cannot add write operations. Provider stderr and structured lifecycle events are written to the `VisualBridge` Output Channel. See `Doc/ProjectProvider.md` for the declaration, protocol, trust and troubleshooting contract.
-
-`.vbgraph`, `.vbentity` and `.vbconfig` have default convenience associations. Project-defined extensions such as `.herojson` or `.gamesettings` use `VisualBridge: Open Document` from the Explorer context menu or Command Palette, a workspace-level `workbench.editorAssociations` entry, or the Document Browser. In all cases the Project Registry must match the file before the editor is created. The unified create command selects a project subtype, derives the suggested extension from its first usable `include` pattern, and rejects a target outside that exact document type. Table creation emits a real XLSX workbook for `.xlsx` targets and a configured UTF-8 CSV-compatible carrier for other project extensions.
-
-The VisualBridge Activity Bar contains the `Documents` view. It groups the four editor categories by Project Document Type, searches titles/stable IDs/paths/diagnostics/references, creates documents, validates the workspace, publishes Problems, reveals outgoing references, lists incoming references, and expands physical CSV partition sources without replacing the native Explorer. Resolved `document`, `entity.component`, `graph.element`, and `table.row` reference items can preview and atomically rename the target key plus every incoming Graph, Entity, Structured, or Table occurrence. Graph element navigation enters the owning Graph, selects and centers nodes, and temporarily highlights interface or dynamic ports; Entity Component navigation expands, focuses, and highlights the exact Component card. See `Doc/DocumentBrowser.md` and `Doc/ProjectRefactoring.md`.
-
-Graph V3 uses a React Flow Webview and a registry of multiple Catalogs. Graph Types use `supportedCatalogIds` as a coarse node filter and optional selectors as a refinement; cross-Catalog data connections use the same global Data Type compatibility rules. The editor also supports node-count constraints, directional connection limits, initial nodes, typed embedded subgraphs, flow/data ports, optional node icons, public graph interfaces, safe context-menu node replacement, inline properties, multi-select, Copy/Paste/Duplicate, hierarchical creation menus, connection-created nodes, MiniMap navigation, VS Code Undo/Redo through `WorkspaceEdit`, diagnostics, and external-file conflict prompts. React Flow remains a view layer; every persistent change is applied through a Graph Operation. Unity integration remains outside the current editor version. See `Doc/VSCodeGraphEditor.md` and `Doc/GraphSemanticModel.md` for the format and semantic contract.
-
-Entity V1 edits root properties and ordered Component cards, including add/search, enable, reorder, duplicate, remove, shared numeric/color/object/list fields, diagnostics, Undo/Redo, and external-file conflict prompts. It uses authoritative JSON rather than `ScriptableObject` assets. See `Doc/EntityComponentModel.md` for the Catalog, document, shared field, operation, custom-extension, and deferred Unity contracts.
-
-Structured Config V1 edits one ordinary C# runtime-shaped object without `ScriptableObject`. The Project Document Type ID is the sole Config Type binding; the file stores only its document ID and complete properties. It reuses the shared Field and Reference editors, supports arbitrary project extensions, strict Catalog validation, deterministic JSON, Undo/Redo and external-file conflict prompts. See `Doc/StructuredConfigModel.md`.
-
-Table V1 edits UTF-8 CSV-compatible files and XLSX workbooks through one semantic model. The Project config owns the one-based name-key and data-start rows; C#-exported Table Catalog JSON owns types, field editors, name keys, row display-name patterns and cell encodings. Matching CSV siblings or XLSX worksheets can form one logical partitioned table with a naming template and `error`, `keepFirst` or `keepLast` de-duplication policy. The editor uses a searchable record list and a selected-record form, reusing the shared Field editor for color, List and ordinary nested structures. Table Operation batches are atomic, all physical sources use base-hash conflict rejection, and writes use staged replacement. See `Doc/TableSemanticModel.md`.
+该命令检查精确 `kyl.visualbridge` 身份/版本、Extension entry、全部 manifest JSON Schema、icon、五个 UI JS/CSS bundle（四类文档编辑器与 Project Settings），拒绝测试文件、打包脚本和 source map 泄漏，然后通过固定 VS Code runtime 证明安装包能够从 `workspaceContains` 激活、调用注册命令并打开 Graph Custom Editor。CLI 安装成功不等同于所有交互通过；领域 Operation 和页面行为仍由 Core/Editor/Host 自动化分别验证。

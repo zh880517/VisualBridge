@@ -20,7 +20,7 @@ Labels may be renamed freely. A node implementation must retain its existing `no
 
 A `.vbgraph` contains one root graph and zero or more embedded graphs:
 
-```json
+```json visualbridge-schema=visualbridge-graph.schema.json visualbridge-parser=graph-document
 {
   "formatVersion": 3,
   "documentId": "combat_logic",
@@ -68,7 +68,7 @@ Editable C# `List<T>` fields use data dynamic-port groups with `listPortMode: "l
 
 A Graph document type declares one or more project-relative `.vbgraphcatalog` files:
 
-```json
+```json visualbridge-schema=visualbridge-project.schema.json#/properties/documentTypes/items
 {
   "id": "logicGraph",
   "editor": "graph",
@@ -84,7 +84,7 @@ Each node type belongs to the Catalog file that declares it. The registry combin
 
 Every Graph Catalog V4 also declares the common top-level `source` state. It may be explicitly `unknown` before Unity integration, or carry current/stale external source SHA-256 metadata. The Host computes the Catalog `contentHash` from actual bytes and exposes both through the read-only Catalog Browser; see [`ProjectCatalogManagement.md`](ProjectCatalogManagement.md).
 
-VS Code and the current MCP V2 adapter use the same parser, registry, operations, validators and serializer. Catalog files are text contracts and should be committed when editing must work without Unity. Legacy Catalog V1-V3 files remain readable. V1/V2 use `catalogId` as a fallback display title. A legacy Graph Type defaults `supportedCatalogIds` to its declaring Catalog and defaults both connection directions to `multiple`; serialization upgrades it to V4.
+VS Code and the current MCP V2 adapter use the same parser, registry, operations, validators and serializer. Catalog files are text contracts and should be committed when editing must work without Unity. The current parser accepts Graph Catalog V4 only; V1-V3 and the former property-level `required` dialect are rejected instead of being silently upgraded. This development baseline intentionally removes incompatible legacy interpretation rather than carrying two field models.
 
 Catalog serialization is deterministic: unordered type collections and identity aliases are sorted, JSON object keys in defaults are normalized, and the output ends with a newline. Port, dynamic-group, and property arrays preserve declaration order because that order controls the editor layout. This lets a future Unity exporter regenerate the same file without noisy diffs while retaining C# field and branch order.
 
@@ -106,7 +106,7 @@ Static typed-subgraph flow ports are forbidden. Flow crosses the child boundary 
 
 A node type may declare `dynamicPortGroups`. Each group defines the connection contract, item value contract, default value, editor hint, aliases, and optional item limit. A node instance stores its items in `dynamicPorts`:
 
-```json
+```json visualbridge-schema=visualbridge-graph.schema.json#/$defs/dynamicPort
 {
   "id": "choice_a",
   "groupId": "branches",
@@ -122,7 +122,7 @@ The item `id` is the actual endpoint `portId` and never changes when items are r
 Node type is display-only on the canvas. Replacement is available from the node context menu and lists only lossless candidates. A candidate is safe when:
 
 - every current property ID exists with a compatible value type;
-- every required target property already exists or has a default;
+- every additional target property has its declared deterministic default;
 - every connected port ID remains present with the same kind and direction;
 - every dynamic port group, item value, item limit, and instance port contract remains compatible;
 - existing data types, cardinality, and all other connection rules remain valid.

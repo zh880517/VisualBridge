@@ -2,6 +2,7 @@ import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { minimatch } from "minimatch";
 import {
+  compareUtf16CodeUnits,
   PROJECT_FILE_NAME,
   findMatchingDocumentTypes,
   parseProjectFile,
@@ -79,7 +80,7 @@ export class VisualBridgeWorkspace {
   public async discoverProjects(): Promise<ProjectDiscoveryResult> {
     const markerPaths: string[] = [];
     await collectProjectFiles(this.root, markerPaths);
-    markerPaths.sort((left, right) => left.localeCompare(right));
+    markerPaths.sort(compareUtf16CodeUnits);
 
     const projects: ProjectContext[] = [];
     const issues: WorkspaceIssue[] = [];
@@ -269,7 +270,7 @@ export class VisualBridgeWorkspace {
       ensureInside(project.projectRoot, absoluteRoot, root);
       await collectDocumentFiles(project.projectRoot, absoluteRoot, paths);
     }
-    const uniquePaths = [...new Set(paths)].sort((left, right) => left.localeCompare(right));
+    const uniquePaths = [...new Set(paths)].sort(compareUtf16CodeUnits);
     const result: DeclaredDocumentContext[] = [];
     for (const absolutePath of uniquePaths) {
       const relativePath = path.relative(project.projectRoot, absolutePath).replaceAll("\\", "/");
@@ -306,7 +307,7 @@ export class VisualBridgeWorkspace {
         paths.add(relativePath);
       }
     }
-    return [...paths].sort(compareOrdinal);
+    return [...paths].sort(compareUtf16CodeUnits);
   }
 }
 
@@ -353,7 +354,7 @@ export async function resolveAbsentProjectPath(project: ProjectContext, relative
 
 async function collectProjectFiles(directory: string, result: string[]): Promise<void> {
   const entries = await readdir(directory, { withFileTypes: true });
-  entries.sort((left, right) => left.name.localeCompare(right.name));
+  entries.sort((left, right) => compareUtf16CodeUnits(left.name, right.name));
   for (const entry of entries) {
     const entryPath = path.join(directory, entry.name);
     if (entry.isFile() && entry.name === PROJECT_FILE_NAME) {
@@ -376,7 +377,7 @@ async function collectDocumentFiles(projectRoot: string, directory: string, resu
     return;
   }
   const entries = await readdir(resolvedDirectory, { withFileTypes: true });
-  entries.sort((left, right) => left.name.localeCompare(right.name));
+  entries.sort((left, right) => compareUtf16CodeUnits(left.name, right.name));
   for (const entry of entries) {
     if (entry.isSymbolicLink()) {
       continue;
@@ -406,7 +407,7 @@ async function collectPotentialAuthoringFiles(
     return;
   }
   const entries = await readdir(resolvedDirectory, { withFileTypes: true });
-  entries.sort((left, right) => compareOrdinal(left.name, right.name));
+  entries.sort((left, right) => compareUtf16CodeUnits(left.name, right.name));
   for (const entry of entries) {
     const entryPath = path.join(resolvedDirectory, entry.name);
     if ((entry.isFile() || entry.isSymbolicLink()) && !isVisualBridgeTransactionArtifact(entry.name)) {
@@ -451,10 +452,6 @@ function ensureInside(root: string, candidate: string, relativePath: string): vo
 
 function matches(pattern: string, relativePath: string): boolean {
   return minimatch(relativePath, pattern, { dot: true, nocase: process.platform === "win32" });
-}
-
-function compareOrdinal(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function toWorkspacePath(workspaceRoot: string, absolutePath: string): string {

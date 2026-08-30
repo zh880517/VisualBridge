@@ -1,3 +1,5 @@
+import { compareUtf16CodeUnits } from "../Ordering/ordinal";
+
 export interface SemanticSnapshotSource<TValue> {
   readonly key: string;
   readonly dependencyKey: string;
@@ -70,7 +72,7 @@ export class IncrementalSemanticSnapshotStore<TValue> {
     this.activeController = controller;
     const removeAbortListener = forwardAbort(options.signal, controller);
     try {
-      const ordered = [...sources].sort((left, right) => compareOrdinal(left.key, right.key));
+      const ordered = [...sources].sort((left, right) => compareUtf16CodeUnits(left.key, right.key));
       assertUniqueKeys(ordered);
       const nextCache = new Map<string, CachedSemanticValue<TValue>>();
       const values: TValue[] = [];
@@ -151,8 +153,4 @@ function assertUniqueKeys<TValue>(sources: readonly SemanticSnapshotSource<TValu
       throw new Error(`Semantic snapshot source '${sources[index]!.key}' is duplicated.`);
     }
   }
-}
-
-function compareOrdinal(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }

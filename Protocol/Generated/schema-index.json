@@ -67,11 +67,12 @@
     {
       "file": "Schema/visualbridge-entity-catalog.schema.json",
       "id": "https://visualbridge.dev/schema/visualbridge-entity-catalog.schema.json",
-      "sha256": "47f3cc428c2d0cbfb511ae12745d3c4aa9033cd52ef2dde8125de81bc2f5c039",
+      "sha256": "9d9501dca2b2e62946a42368b3406f8ae8b9f8154b94f5311b429d3160bec593",
       "definitions": [
         "componentGroup",
         "componentType",
         "editor",
+        "editorOption",
         "entityType",
         "field",
         "identifier",
@@ -97,26 +98,30 @@
     {
       "file": "Schema/visualbridge-graph-catalog.schema.json",
       "id": "https://visualbridge.dev/schema/visualbridge-graph-catalog.schema.json",
-      "sha256": "ca3dd1e07802dc895a23f9677432a0085d49673a9ac3d0709ab99b639a456c43",
+      "sha256": "b7fb04d60a986b1ba4c1cf95ec3d9655341af0ff24d8ab215052ae172709d0d2",
       "definitions": [
         "catalogSource",
         "dynamicPortGroup",
-        "dynamicPortItem",
         "dynamicPortTemplate",
+        "editor",
+        "editorOption",
+        "field",
         "graphType",
         "identifier",
+        "identifierArray",
         "initialNode",
         "nodeConstraint",
         "nodeSelector",
         "nodeSource",
         "nodeType",
+        "nonEmptyString",
         "port",
         "portConnectionRules",
-        "property",
-        "propertyEditor",
-        "propertyEditorOption",
         "reference",
-        "subgraphNodeContract"
+        "subgraphNodeContract",
+        "valueDefinition",
+        "valueShape",
+        "valueType"
       ]
     },
     {
@@ -245,17 +250,20 @@
     {
       "file": "Schema/visualbridge-structured-catalog.schema.json",
       "id": "https://visualbridge.dev/schema/visualbridge-structured-catalog.schema.json",
-      "sha256": "b1e4b23512fd2fe934175359680ada7aa2548280d049d9df4446be1879d933ba",
+      "sha256": "0cae8ab7b7a9aa1159669f0939f7178e5e310056366fe0713165cd87687942fe",
       "definitions": [
         "configType",
         "editor",
         "editorOption",
         "field",
         "identifier",
+        "identifierArray",
         "nonEmptyString",
         "reference",
         "source",
-        "valueDefinition"
+        "valueDefinition",
+        "valueShape",
+        "valueType"
       ]
     },
     {
@@ -269,12 +277,13 @@
     {
       "file": "Schema/visualbridge-table-catalog.schema.json",
       "id": "https://visualbridge.dev/schema/visualbridge-table-catalog.schema.json",
-      "sha256": "6917f8175c0e48382450f7ec88528c7c8acee0d2dda493a497363252b38e8e2b",
+      "sha256": "05e0fea3c73f1290cab52ef4ecbacd79d96ad074232794453fa3ac3f90680f7c",
       "definitions": [
         "cellEncoding",
         "column",
         "csv",
         "editor",
+        "editorOption",
         "field",
         "identifier",
         "identifierArray",

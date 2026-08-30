@@ -1,5 +1,6 @@
 import type {
   VisualBridgeEntityCatalog,
+  VisualBridgeGraphCatalog,
   VisualBridgeTableCatalog,
 } from "../../../Protocol/Generated/contracts";
 
@@ -47,6 +48,48 @@ const entityFieldWithoutRequiredProperty: VisualBridgeEntityCatalog.Field = {
   title: "Health",
   defaultValue: 0,
 };
+
+const graphObjectField: VisualBridgeGraphCatalog.Field = {
+  id: "settings",
+  title: "Settings",
+  valueType: "object",
+  defaultValue: { tint: "#336699FF" },
+  fields: [{
+    id: "tint",
+    title: "Tint",
+    valueType: "string",
+    defaultValue: "#336699FF",
+    editor: { kind: "color" },
+  }],
+};
+
+const graphArrayField: VisualBridgeGraphCatalog.Field = {
+  id: "targets",
+  title: "Targets",
+  valueType: "array",
+  defaultValue: [],
+  item: {
+    valueType: "number",
+    defaultValue: 0,
+    editor: { kind: "reference", integer: true },
+    reference: { kind: "table.row", target: { tableTypeId: "skills", sheetId: "skills" } },
+  },
+};
+
+const graphDynamicObjectItem: VisualBridgeGraphCatalog.ValueDefinition = {
+  valueType: "object",
+  defaultValue: { x: 0 },
+  fields: [{ id: "x", title: "X", valueType: "number", defaultValue: 0 }],
+};
+
+// @ts-expect-error Graph object fields require fields.
+const graphObjectWithoutFields: VisualBridgeGraphCatalog.Field = { id: "settings", title: "Settings", valueType: "object", defaultValue: {} };
+
+// @ts-expect-error Graph array fields require an item definition.
+const graphArrayWithoutItem: VisualBridgeGraphCatalog.Field = { id: "targets", title: "Targets", valueType: "array", defaultValue: [] };
+
+// @ts-expect-error Graph fields no longer support the legacy required flag.
+const graphLegacyRequiredField: VisualBridgeGraphCatalog.Field = { id: "label", title: "Label", valueType: "string", defaultValue: "", required: true };
 
 const tableColumnWithoutOptionalProperties: VisualBridgeTableCatalog.Column = {
   id: "power",
@@ -105,6 +148,12 @@ void entityFieldWithoutOptionalProperties;
 void entityObjectField;
 void entityArrayField;
 void entityFieldWithoutRequiredProperty;
+void graphObjectField;
+void graphArrayField;
+void graphDynamicObjectItem;
+void graphObjectWithoutFields;
+void graphArrayWithoutItem;
+void graphLegacyRequiredField;
 void tableColumnWithoutOptionalProperties;
 void tableObjectColumn;
 void tableArrayColumn;

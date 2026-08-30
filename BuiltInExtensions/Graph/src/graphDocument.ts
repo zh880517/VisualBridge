@@ -2,7 +2,17 @@ import type {
   DocumentDiagnostic,
   DocumentOperationResult,
   DocumentParseResult,
+  FieldDefinition,
   ReferenceOccurrence,
+} from "@visualbridge/core";
+import { compareUtf16CodeUnits } from "@visualbridge/core";
+import {
+  collectFieldReferences,
+  collectFieldValueReferences,
+  createDefaultProperties,
+  replaceFieldReferenceValues,
+  replaceFieldValueReferences,
+  validateFieldValue,
 } from "@visualbridge/core";
 import {
   isDataTypeAssignable,
@@ -19,7 +29,6 @@ import {
   type GraphNodeTypeDefinition,
   type GraphPortDirection,
   type GraphPortKind,
-  type GraphPropertyDefinition,
   type GraphTypeDefinition,
 } from "./graphCatalog";
 
@@ -260,15 +269,9 @@ export function createGraphDefinition(
 }
 
 export function createDefaultPropertyValues(
-  definitions: readonly GraphPropertyDefinition[],
+  definitions: readonly FieldDefinition[],
 ): Readonly<Record<string, JsonValue>> {
-  const properties: Record<string, JsonValue> = {};
-  definitions.forEach((property) => {
-    if (property.defaultValue !== undefined) {
-      properties[property.id] = cloneJsonValue(property.defaultValue);
-    }
-  });
-  return properties;
+  return createDefaultProperties(definitions) as Readonly<Record<string, JsonValue>>;
 }
 
 export function parseGraphDocument(text: string): DocumentParseResult<GraphDocument> {
@@ -287,7 +290,7 @@ export function serializeGraphDocument(document: GraphDocument): string {
     documentId: document.documentId,
     rootGraphId: document.rootGraphId,
     graphs: [...document.graphs]
-      .sort((left, right) => left.id.localeCompare(right.id))
+      .sort((left, right) => compareUtf16CodeUnits(left.id, right.id))
       .map((graph) => ({
         id: graph.id,
         ...(graph.graphTypeId === undefined ? {} : { graphTypeId: graph.graphTypeId }),
@@ -303,7 +306,7 @@ export function serializeGraphDocument(document: GraphDocument): string {
           ...(port.dynamic === true ? { dynamic: true } : {}),
         })),
         nodes: [...graph.nodes]
-          .sort((left, right) => left.id.localeCompare(right.id))
+          .sort((left, right) => compareUtf16CodeUnits(left.id, right.id))
           .map((node) => node.kind === "node"
             ? {
                 kind: node.kind,
@@ -335,7 +338,7 @@ export function serializeGraphDocument(document: GraphDocument): string {
                 })),
               }),
         edges: [...graph.edges]
-          .sort((left, right) => left.id.localeCompare(right.id))
+          .sort((left, right) => compareUtf16CodeUnits(left.id, right.id))
           .map((edge) => ({
             id: edge.id,
             kind: edge.kind,
@@ -505,7 +508,7 @@ export function collectGraphReferences(
     const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphType(catalog, graph.graphTypeId);
     const occurrences: ReferenceOccurrence[] = graphType === undefined
       ? []
-      : collectPropertyReferences(graph.properties, graphType.properties, `graphs[${graphIndex}].properties`);
+      : [...collectFieldReferences(graph.properties, graphType.properties, `graphs[${graphIndex}].properties`)];
     graph.nodes.forEach((node, nodeIndex) => {
       if (node.nodeTypeId === undefined) {
         return;
@@ -514,19 +517,19 @@ export function collectGraphReferences(
       if (nodeType === undefined) {
         return;
       }
-      occurrences.push(...collectPropertyReferences(
+      occurrences.push(...collectFieldReferences(
         node.properties,
         nodeType.properties,
         `graphs[${graphIndex}].nodes[${nodeIndex}].properties`,
       ));
       node.dynamicPorts.forEach((port, portIndex) => {
         const group = resolveDynamicPortGroup(nodeType, port.groupId);
-        if (group?.item.reference !== undefined && (typeof port.value === "string" || typeof port.value === "number")) {
-          occurrences.push({
-            definition: group.item.reference,
-            value: port.value,
-            path: `graphs[${graphIndex}].nodes[${nodeIndex}].dynamicPorts[${portIndex}].value`,
-          });
+        if (group !== undefined) {
+          occurrences.push(...collectFieldValueReferences(
+            port.value,
+            group.item,
+            `graphs[${graphIndex}].nodes[${nodeIndex}].dynamicPorts[${portIndex}].value`,
+          ));
         }
       });
     });
@@ -544,15 +547,20 @@ export function replaceGraphReferenceValues(
   document.graphs.forEach((graph, graphIndex) => {
     const graphType = graph.graphTypeId === undefined ? undefined : resolveGraphType(catalog, graph.graphTypeId);
     if (graphType !== undefined) {
-      const properties = replaceGraphPropertyReferences(
+      const replacementResult = replaceFieldReferenceValues(
         graph.properties,
         graphType.properties,
         `graphs[${graphIndex}].properties`,
-        occurrencePaths,
+        (occurrence) => occurrencePaths.has(occurrence.path),
         replacement,
       );
-      if (properties !== graph.properties) {
-        operations.push({ type: "graph.updateGraph", graphId: graph.id, title: graph.title, properties });
+      if (replacementResult.changedPaths.length > 0) {
+        operations.push({
+          type: "graph.updateGraph",
+          graphId: graph.id,
+          title: graph.title,
+          properties: replacementResult.properties as Readonly<Record<string, JsonValue>>,
+        });
       }
     }
     graph.nodes.forEach((node, nodeIndex) => {
@@ -563,26 +571,43 @@ export function replaceGraphReferenceValues(
       if (nodeType === undefined) {
         return;
       }
-      const properties = replaceGraphPropertyReferences(
+      const replacementResult = replaceFieldReferenceValues(
         node.properties,
         nodeType.properties,
         `graphs[${graphIndex}].nodes[${nodeIndex}].properties`,
-        occurrencePaths,
+        (occurrence) => occurrencePaths.has(occurrence.path),
         replacement,
       );
-      if (properties !== node.properties) {
-        operations.push({ type: "graph.updateNode", graphId: graph.id, nodeId: node.id, title: node.title, properties });
+      if (replacementResult.changedPaths.length > 0) {
+        operations.push({
+          type: "graph.updateNode",
+          graphId: graph.id,
+          nodeId: node.id,
+          title: node.title,
+          properties: replacementResult.properties as Readonly<Record<string, JsonValue>>,
+        });
       }
       node.dynamicPorts.forEach((port, portIndex) => {
         const path = `graphs[${graphIndex}].nodes[${nodeIndex}].dynamicPorts[${portIndex}].value`;
-        if (occurrencePaths.has(path)) {
+        const group = resolveDynamicPortGroup(nodeType, port.groupId);
+        if (group === undefined) {
+          return;
+        }
+        const dynamicReplacement = replaceFieldValueReferences(
+          port.value,
+          group.item,
+          path,
+          (occurrence) => occurrencePaths.has(occurrence.path),
+          replacement,
+        );
+        if (dynamicReplacement.changed) {
           operations.push({
             type: "graph.updateDynamicPort",
             graphId: graph.id,
             nodeId: node.id,
             portId: port.id,
             title: port.title,
-            value: replacement,
+            value: dynamicReplacement.value as JsonValue,
           });
         }
       });
@@ -1118,8 +1143,8 @@ function applyOperation(
       node.nodeTypeId = targetType.id;
       const nextProperties = cloneJsonObject(node.properties);
       targetType.properties.forEach((property) => {
-        if (!hasPropertyValue(nextProperties, property) && property.defaultValue !== undefined) {
-          nextProperties[property.id] = cloneJsonValue(property.defaultValue);
+        if (!hasPropertyValue(nextProperties, property)) {
+          nextProperties[property.id] = cloneJsonValue(property.defaultValue as JsonValue);
         }
       });
       node.properties = nextProperties;
@@ -1259,8 +1284,8 @@ function applyOperation(
       }
       graph.graphTypeId = graphType.id;
       graphType.properties.forEach((property) => {
-        if (!hasPropertyValue(graph.properties, property) && property.defaultValue !== undefined) {
-          graph.properties[property.id] = cloneJsonValue(property.defaultValue);
+        if (!hasPropertyValue(graph.properties, property)) {
+          graph.properties[property.id] = cloneJsonValue(property.defaultValue as JsonValue);
         }
       });
       return undefined;
@@ -1636,14 +1661,12 @@ function validateAtomicNode(
           `Property '${propertyId}' is an alias of '${definition.id}'.`,
         ));
       }
-      if (!matchesPropertyType(value, definition)) {
-        diagnostics.push(error("graph.propertyTypeMismatch", `${path}.properties.${propertyId}`, `Property '${propertyId}' must be ${definition.valueType}.`));
-      }
-    }
-  });
-  nodeType.properties.forEach((property) => {
-    if (property.required && !hasPropertyValue(node.properties, property) && property.defaultValue === undefined) {
-      diagnostics.push(error("graph.missingRequiredProperty", `${path}.properties.${property.id}`, `Required property '${property.id}' is missing.`));
+      validateFieldValue(
+        value as import("@visualbridge/core").JsonValue,
+        definition,
+        `${path}.properties.${propertyId}`,
+        diagnostics,
+      );
     }
   });
   const groupCounts = new Map<string, number>();
@@ -1680,13 +1703,12 @@ function validateAtomicNode(
       ));
     }
     groupCounts.set(group.id, (groupCounts.get(group.id) ?? 0) + 1);
-    if (!matchesDynamicPortValue(port.value, group)) {
-      diagnostics.push(error(
-        "graph.dynamicPortValueTypeMismatch",
-        `${portPath}.value`,
-        `Dynamic port value must be ${group.item.valueType}.`,
-      ));
-    }
+    validateFieldValue(
+      port.value as import("@visualbridge/core").JsonValue,
+      group.item,
+      `${portPath}.value`,
+      diagnostics,
+    );
   });
   nodeType.dynamicPortGroups.forEach((group) => {
     const count = groupCounts.get(group.id) ?? 0;
@@ -1913,7 +1935,7 @@ function validateNodeConstraints(
 
 function validateDeclaredProperties(
   properties: Readonly<Record<string, JsonValue>>,
-  definitions: readonly GraphPropertyDefinition[],
+  definitions: readonly FieldDefinition[],
   path: string,
   owner: string,
   diagnostics: DocumentDiagnostic[],
@@ -1934,14 +1956,12 @@ function validateDeclaredProperties(
     if (definition.id !== propertyId) {
       diagnostics.push(warning("graph.graphPropertyAlias", `${path}.${propertyId}`, `Property '${propertyId}' is an alias of '${definition.id}'.`));
     }
-    if (!matchesPropertyType(value, definition)) {
-      diagnostics.push(error("graph.graphPropertyTypeMismatch", `${path}.${propertyId}`, `Property '${propertyId}' must be ${definition.valueType}.`));
-    }
-  });
-  definitions.forEach((property) => {
-    if (property.required && !hasPropertyValue(properties, property) && property.defaultValue === undefined) {
-      diagnostics.push(error("graph.missingRequiredGraphProperty", `${path}.${property.id}`, `Required property '${property.id}' is missing.`));
-    }
+    validateFieldValue(
+      value as import("@visualbridge/core").JsonValue,
+      definition,
+      `${path}.${propertyId}`,
+      diagnostics,
+    );
   });
 }
 
@@ -2215,13 +2235,12 @@ function replacementIssue(
       return `Property '${propertyId}' is not supported by '${targetType.title}'.`;
     }
     const value = node.properties[propertyId];
-    if (value !== undefined && !matchesPropertyType(value, property)) {
+    if (
+      value !== undefined
+      && validateFieldValue(value as import("@visualbridge/core").JsonValue, property, propertyId)
+        .some((diagnostic) => diagnostic.severity === "error")
+    ) {
       return `Property '${propertyId}' is incompatible with '${targetType.title}'.`;
-    }
-  }
-  for (const property of targetType.properties) {
-    if (property.required && !hasPropertyValue(node.properties, property) && property.defaultValue === undefined) {
-      return `Required property '${property.id}' has no value or default.`;
     }
   }
   const dynamicGroupCounts = new Map<string, number>();
@@ -2500,62 +2519,16 @@ function serializeEndpoint(endpoint: GraphEndpoint): GraphEndpoint {
     : { kind: endpoint.kind, portId: endpoint.portId };
 }
 
-function matchesPropertyType(value: JsonValue, definition: GraphPropertyDefinition): boolean {
-  return definition.valueType === "json" || typeof value === definition.valueType;
-}
-
 function matchesDynamicPortValue(value: JsonValue, group: GraphDynamicPortGroupDefinition): boolean {
-  return group.item.valueType === "json" || typeof value === group.item.valueType;
+  return !validateFieldValue(value as import("@visualbridge/core").JsonValue, group.item, "value")
+    .some((diagnostic) => diagnostic.severity === "error");
 }
 
 function hasPropertyValue(
   properties: Readonly<Record<string, JsonValue>>,
-  definition: GraphPropertyDefinition,
+  definition: FieldDefinition,
 ): boolean {
   return [definition.id, ...definition.aliases].some((propertyId) => properties[propertyId] !== undefined);
-}
-
-function collectPropertyReferences(
-  properties: Readonly<Record<string, JsonValue>>,
-  definitions: readonly GraphPropertyDefinition[],
-  path: string,
-): ReferenceOccurrence[] {
-  return definitions.flatMap((definition) => {
-    if (definition.reference === undefined) {
-      return [];
-    }
-    const value = properties[definition.id]
-      ?? definition.aliases.map((alias) => properties[alias]).find((entry) => entry !== undefined)
-      ?? definition.defaultValue;
-    return typeof value === "string" || typeof value === "number"
-      ? [{ definition: definition.reference, value, path: `${path}.${definition.id}` }]
-      : [];
-  });
-}
-
-function replaceGraphPropertyReferences(
-  properties: Readonly<Record<string, JsonValue>>,
-  definitions: readonly GraphPropertyDefinition[],
-  path: string,
-  occurrencePaths: ReadonlySet<string>,
-  replacement: string | number,
-): Readonly<Record<string, JsonValue>> {
-  let next: Record<string, JsonValue> | undefined;
-  for (const definition of definitions) {
-    if (!occurrencePaths.has(`${path}.${definition.id}`)) {
-      continue;
-    }
-    const value = properties[definition.id]
-      ?? definition.aliases.map((alias) => properties[alias]).find((entry) => entry !== undefined)
-      ?? definition.defaultValue;
-    if ((typeof value !== "string" && typeof value !== "number") || typeof value !== typeof replacement) {
-      continue;
-    }
-    next ??= { ...properties };
-    definition.aliases.forEach((alias) => delete next![alias]);
-    next[definition.id] = replacement;
-  }
-  return next ?? properties;
 }
 
 function diagnosticCounts(diagnostics: readonly DocumentDiagnostic[]): Map<string, number> {
@@ -2697,7 +2670,7 @@ function cloneJsonValue(value: JsonValue): JsonValue {
 }
 
 function sortJsonObject(value: Readonly<Record<string, JsonValue>>): Record<string, JsonValue> {
-  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortJsonValue(value[key] as JsonValue)]));
+  return Object.fromEntries(Object.keys(value).sort(compareUtf16CodeUnits).map((key) => [key, sortJsonValue(value[key] as JsonValue)]));
 }
 
 function sortJsonValue(value: JsonValue): JsonValue {

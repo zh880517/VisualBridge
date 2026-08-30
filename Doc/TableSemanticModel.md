@@ -22,18 +22,16 @@ The future C# exporter is the source of truth for:
 
 The exported result is a `.vbtablecatalog` JSON file. Authoring data does not depend on `ScriptableObject`, Unity sub-assets or editor-only wrapper types. The future exporter may inspect only the ordinary C# types used by the game; it must not execute gameplay initialization methods to obtain defaults.
 
-Table columns reuse the project-wide Core Field model and shared Form Editor. Numeric, boolean, text, color, select, List and recursively nested ordinary structures therefore behave the same in Entity, Table and later Structured editors.
+Table columns reuse the project-wide Core Field model and shared Form Editor. Numeric, boolean, text, color, select, List and recursively nested ordinary structures therefore behave the same in Entity, Structured, Table and Graph editors.
 
 ## 3. Project-level row layout
 
 `VisualBridge.project.vbjson` declares the physical header layout once for the whole project. Row numbers are one-based:
 
-```json
+```json visualbridge-schema=visualbridge-project.schema.json#/properties/tableLayout
 {
-  "tableLayout": {
-    "nameKeyRow": 2,
-    "dataStartRow": 3
-  }
+  "nameKeyRow": 2,
+  "dataStartRow": 3
 }
 ```
 
@@ -49,11 +47,12 @@ Rows before `dataStartRow` are header rows and are preserved by the codecs. A co
 
 A Document Type selects the broad editor with `"editor": "table"`; its stable Document Type ID resolves a Table Type ID or alias. File extensions remain project-defined by `include` and `exclude` patterns.
 
-```json
+```json visualbridge-schema=visualbridge-table-catalog.schema.json visualbridge-parser=table-catalog
 {
   "formatVersion": 1,
   "catalogId": "game.tables",
   "title": "Game Tables",
+  "source": { "status": "unknown" },
   "tableTypes": [
     {
       "id": "game.table.skills",
@@ -64,7 +63,27 @@ A Document Type selects the broad editor with `"editor": "table"`; its stable Do
         "typeName": "Game.SkillConfig"
       },
       "csv": { "delimiter": "\t" },
-      "sheets": []
+      "sheets": [
+        {
+          "id": "skills",
+          "title": "Skills",
+          "name": "Skills",
+          "rowDisplayNamePattern": "{id}",
+          "keyColumnId": "id",
+          "columns": [
+            {
+              "id": "id",
+              "title": "ID",
+              "valueType": "number",
+              "dataTypeId": "int",
+              "defaultValue": 1,
+              "editor": { "kind": "number", "integer": true },
+              "nameKey": "Id",
+              "cellEncoding": { "kind": "scalar" }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
@@ -74,12 +93,8 @@ Catalog IDs, Table Type IDs, Sheet IDs and Column IDs are persistent identities.
 
 Each Sheet definition also declares how a row is named in the editor:
 
-```json
-{
-  "id": "skills",
-  "aliases": ["legacy.skills"],
-  "rowDisplayNamePattern": "{id}_{name}"
-}
+```json visualbridge-schema=visualbridge-table-catalog.schema.json#/$defs/sheet/properties/rowDisplayNamePattern
+"{id}_{name}"
 ```
 
 Placeholders must use exact, stable Column IDs. Physical `nameKey` values and aliases are rejected so exported column renames cannot silently change the authoring identity shown to users. The formatted value is presentation only: it drives the record list, selected-record title and search text, while row identity and duplicate detection continue to use their explicit semantic IDs and key columns.
@@ -100,17 +115,11 @@ The codec preserves unknown physical columns. Simple XLSX cell edits patch known
 
 One logical Sheet definition may be split into multiple physical CSV files or XLSX worksheets. All partitions necessarily share the same columns because they resolve to the same Sheet definition.
 
-```json
+```json visualbridge-schema=visualbridge-table-catalog.schema.json#/$defs/partition
 {
-  "id": "skills",
-  "name": "Skills",
-  "keyColumnId": "id",
-  "partition": {
-    "namePattern": "Skills_{part}",
-    "deduplicateByColumnId": "id",
-    "duplicatePolicy": "keepFirst"
-  },
-  "columns": []
+  "namePattern": "Skills_{part}",
+  "deduplicateByColumnId": "id",
+  "duplicatePolicy": "keepFirst"
 }
 ```
 
@@ -162,13 +171,40 @@ The editor follows a record-oriented master-detail layout suitable for game conf
 
 The record list uses `@tanstack/react-virtual` with a fixed 48 px row estimate, stable `row.id` keys and bounded overscan. Only the visible window is mounted, so 1,000 and 50,000 row inputs have the same DOM-node upper bound for the same viewport. Search text and source indexes are prepared once per semantic revision; rendering does not call `indexOf` for every row. Virtual positioning is outside the dnd-kit sortable row, preserving drag, selection, Reveal, add-after and delete semantics. The detailed contract and automated upper-bound check are documented in [`WorkspaceIndexPerformance.md`](WorkspaceIndexPerformance.md).
 
-`VisualBridge: Create Document`, the dedicated Table create command and the Document Browser type action can create an empty carrier from the resolved Table Type. `.xlsx` targets receive a real workbook; other project-defined extensions receive UTF-8 CSV-compatible bytes using the exported delimiter. The configured name-key row is filled with Column `nameKey` values, the first available description row is filled with Column titles, and a partitioned Sheet initially replaces `{part}` with `Main`. The new path is accepted only when Project Registry resolves it back to the selected Table Document Type.
+`VisualBridge: Create Document`, the dedicated Table create command and the Document Browser type action can create an empty carrier from the resolved Table Type. The create parameters explicitly select `format: "xlsx"` for a real workbook or `format: "csv"` for UTF-8 CSV-compatible bytes using the exported delimiter; the target extension never selects that format implicitly. The configured name-key row is filled with Column `nameKey` values, the first available description row is filled with Column titles, and a partitioned Sheet initially replaces `{part}` with `Main`. The new path is accepted only when Project Registry resolves it back to the selected Table Document Type.
 
 Colors, Lists and nested ordinary structures therefore behave the same as Entity fields instead of becoming special table controls. Shared Lists use one dnd-kit sortable layout across Document Types, with drag, add-after and delete controls grouped beside each element. Accessible buttons use Base UI, functional controls use the shared Lucide icon set, and colors use the shared `react-colorful` popover. XLSX handling uses `exceljs`.
 
 Columns may also declare the shared `reference` contract. Table cells therefore use the same Reference Picker, diagnostics and target navigation as Entity and Graph properties. The first Provider, `table.row`, indexes Catalog key columns over effective partition rows. Open Table editors publish their current unsaved semantic snapshot to the workspace reference index, so cross-document selection and validation do not lag behind the visible Table state. See `ReferenceSystem.md` for the complete contract.
 
 Every opened source records a SHA-256 base hash. Table Operations and save both recheck those hashes. Save stages bytes to a sibling temporary file and replaces the target only after serialization succeeds. A detected external change is never overwritten implicitly.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Editor as Table Editor
+    participant Core as Table Core
+    participant Tx as Project Transaction
+    participant Sources as CSV Family / XLSX
+    User->>Editor: edit cell or row list
+    Editor->>Core: submit TableOperation batch
+    Core->>Core: clone, apply, and validate typed rows
+    alt invalid batch
+        Core-->>Editor: reject all operations
+    else valid batch
+        Core-->>Editor: next semantic snapshot
+        User->>Editor: Save
+        Editor->>Tx: source manifest plus every base hash
+        Tx->>Sources: recheck all members and stage bytes
+        alt any conflict or persistence failure
+            Tx-->>Editor: reject or conditionally roll back
+        else all members persisted and verified
+            Tx-->>Editor: committed hashes
+        end
+    end
+```
+
+CSV family and XLSX editing steps, partition switching, filtered reorder constraints, diagnostics, and conflict recovery are covered in [`AuthoringUserGuide.md`](AuthoringUserGuide.md).
 
 ## 9. XLSX boundary
 
@@ -190,7 +226,7 @@ Table lifecycle uses the shared [`DocumentLifecycle.md`](DocumentLifecycle.md) a
 
 Row Safe Delete uses `{ "kind": "table.row", "sheetId": "...", "rowId": "..." }`, taking both IDs unchanged from the current semantic read; it does not accept a business key in place of `rowId`. Whole logical Table Delete instead uses `{ "kind": "document" }` and removes every CSV family member or the complete XLSX Workbook.
 
-Lifecycle preview/apply requires the related Table Custom Editor to be closed so the physical workbook/family manifest and the workspace reference index share one disk baseline. External Excel, Explorer or script writes are detected through member hashes and manifest/absence checks; they are not prevented by the cooperative Project lock.
+Lifecycle preview/apply requires every related Table Custom Editor to be clean; an opened but saved editor is allowed. The physical workbook/family manifest and workspace reference index must therefore share the same disk baseline. External Excel, Explorer or script writes are detected through member hashes and manifest/absence checks; they are not prevented by the cooperative Project lock.
 
 ## 11. MCP and deferred Unity work
 

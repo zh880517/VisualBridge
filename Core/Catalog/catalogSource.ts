@@ -1,3 +1,5 @@
+import { compareUtf16CodeUnits } from "../Ordering/ordinal";
+
 export const CATALOG_SOURCE_HASH_PATTERN = /^[0-9a-f]{64}$/;
 
 export type CatalogSourceDefinition =
@@ -126,7 +128,7 @@ function unknownKeys(
   const allowedKeys = new Set(allowed);
   return Object.keys(value)
     .filter((key) => !allowedKeys.has(key))
-    .sort()
+    .sort(compareUtf16CodeUnits)
     .map((key) => ({ path: `${path}.${key}`, message: `Unknown property '${key}'.` }));
 }
 

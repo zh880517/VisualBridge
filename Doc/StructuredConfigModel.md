@@ -12,7 +12,7 @@ Structured Catalog 顶层使用全平台 Catalog `source` 契约声明来源未�
 
 Structured 是 Project File 中的编辑器大类，业务子类由 Document Type 的稳定 `id` 定义。文件后缀不是类型身份，可以由 `include` / `exclude` 使用任意工程约定：
 
-```json
+```json visualbridge-schema=visualbridge-project.schema.json#/properties/documentTypes/items
 {
   "id": "sample.game.settings",
   "editor": "structured",
@@ -30,11 +30,12 @@ Structured 是 Project File 中的编辑器大类，业务子类由 Document Typ
 
 Catalog 保存从普通 C# 运行时结构导出的编辑契约：
 
-```json
+```json visualbridge-schema=visualbridge-structured-catalog.schema.json visualbridge-parser=structured-catalog
 {
   "formatVersion": 1,
   "catalogId": "sample.structured.catalog",
   "title": "Game Settings",
+  "source": { "status": "unknown" },
   "configTypes": [
     {
       "id": "sample.game.settings",
@@ -62,7 +63,7 @@ Catalog 保存从普通 C# 运行时结构导出的编辑契约：
 
 文件只保存文档身份和运行时结构值：
 
-```json
+```json visualbridge-schema=visualbridge-structured.schema.json visualbridge-parser=structured-document
 {
   "formatVersion": 1,
   "documentId": "sample.game.settings.default",
@@ -88,7 +89,7 @@ Parser 只验证 V1 结构和 JSON 值；字段完整性、范围、颜色、对
 
 V1 只暴露一个聚焦操作：
 
-```json
+```json visualbridge-schema=visualbridge-authoring-contracts.schema.json#/$defs/structuredOperation
 {
   "type": "structured.setField",
   "fieldId": "spawn",
@@ -102,9 +103,31 @@ V1 只暴露一个聚焦操作：
 
 VS Code 通过 `WorkspaceEdit` 保留 Undo/Redo，并在外部文件 Hash 改变时要求覆盖或刷新。MCP 必须携带读取/校验返回的 SHA-256 `baseHash`；它与 Graph、Entity、Table 和 Refactor 共用 Project Transaction 锁、写前 Hash 复核、同目录阶段文件、prepared/committed journal、持久化验证和条件回滚。冲突或无效批次不修改源文件；恢复发现未知外部字节时保留现场并返回 Tool Error。
 
+```mermaid
+sequenceDiagram
+    actor User
+    participant Form as Shared Form Editor
+    participant Host as VS Code Host
+    participant Core as Structured Core
+    participant File as Source File
+    User->>Form: edit scalar, color, object, list, or reference
+    Form->>Host: structured.setField batch
+    Host->>Core: apply to clone and validate
+    alt invalid batch
+        Core-->>Form: reject without partial mutation
+    else valid batch
+        Core-->>Host: deterministic JSON
+        Host->>File: WorkspaceEdit (dirty)
+        User->>File: Save
+        Host->>Core: verify current source hash
+    end
+```
+
 ## 6. VS Code 编辑器
 
 Structured Editor 复用 `Editors/Form` 的 `FieldsEditor` 与 Reference Bridge。数值、颜色、嵌套普通结构、List 拖动排序、增加、删除、引用选择和跳转与 Entity/Table 保持同一交互语义，不在字段下方重复显示类型文本。
+
+共享字段控件的类型、视觉、List 操作顺序、颜色弹层和引用桥接由 [`FormFieldEditor.md`](FormFieldEditor.md) 统一约束；这里不定义第二套 Structured 专用控件。
 
 编辑区只显示 Config Type 标题、可选描述和字段；文件路径、Document Type 小写 ID、C# 完整类型名等不在主编辑内容中重复堆叠。诊断进入 VS Code Problems，保存状态和错误摘要位于通用状态区。
 
@@ -126,7 +149,7 @@ Structured 使用 MCP V2 的统一工具，不再暴露类型专用工具：
 - `visualbridge_document` 以 `read`、`search` 或 `validate` 访问语义实例；
 - `visualbridge_apply_operations` 用读取返回的 `baseHash` 原子应用非空 `structured.setField` 批次。
 
-请求必须显式带回 Project 发现结果中的 `projectFile`、`documentTypeId` 和 `editor`。最终类型绑定仍由 Project Registry 和 Structured Adapter 决定；MCP 只负责 Project/路径解析、结构化工具 Schema、并发控制和持久化，不复制 Catalog、Field、Operation 或 Reference 规则。完整 V2 信封与使用方式见 `VisualBridgeMcp.md`。
+请求必须显式带回 Project 发现结果中的 `projectFile`、`documentTypeId` 和 `editor`。最终类型绑定仍由 Project Registry 和 Structured Adapter 决定；MCP 只负责 Project/路径解析、结构化工具 Schema、并发控制和持久化，不复制 Catalog、Field、Operation 或 Reference 规则。完整 V2 信封与使用方式见 [`VisualBridgeMcp.md`](VisualBridgeMcp.md)，编辑器操作见 [`AuthoringUserGuide.md`](AuthoringUserGuide.md)。
 
 ## 9. 固定样例与后续 Unity 约束
 

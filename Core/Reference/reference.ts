@@ -1,5 +1,6 @@
 import type { DocumentDiagnostic } from "../Document/document";
 import type { JsonValue } from "../Form/field";
+import { compareUtf16CodeUnits } from "../Ordering/ordinal";
 
 export interface ReferenceDefinition {
   readonly kind: string;
@@ -423,16 +424,16 @@ function candidateKey(candidate: ReferenceCandidate): string {
 }
 
 function compareCandidates(left: ReferenceCandidate, right: ReferenceCandidate): number {
-  return compareOrdinal(left.title, right.title)
+  return compareUtf16CodeUnits(left.title, right.title)
     || valueTypeRank(left.value) - valueTypeRank(right.value)
     || compareReferenceValues(left.value, right.value)
-    || compareOrdinal(candidateKey(left), candidateKey(right));
+    || compareUtf16CodeUnits(candidateKey(left), candidateKey(right));
 }
 
 function compareReferenceValues(left: string | number, right: string | number): number {
   if (typeof left !== typeof right) return valueTypeRank(left) - valueTypeRank(right);
   if (typeof left === "number" && typeof right === "number") return left - right;
-  return compareOrdinal(String(left), String(right));
+  return compareUtf16CodeUnits(String(left), String(right));
 }
 
 function valueTypeRank(value: string | number): number {
@@ -588,10 +589,10 @@ function validateProviderPage(
 }
 
 function compareCandidateToCursor(candidate: ReferenceCandidate, cursor: ReferenceSearchCursorPosition): number {
-  return compareOrdinal(candidate.title, cursor.title)
+  return compareUtf16CodeUnits(candidate.title, cursor.title)
     || valueTypeRank(candidate.value) - (cursor.valueType === "number" ? 0 : 1)
     || compareReferenceValues(candidate.value, cursor.value)
-    || compareOrdinal(candidateKey(candidate), cursor.candidateKey);
+    || compareUtf16CodeUnits(candidateKey(candidate), cursor.candidateKey);
 }
 
 function cursorPositionMatches(position: ReferenceSearchCursorPosition, candidate: ReferenceCandidate): boolean {
@@ -608,16 +609,13 @@ function canonicalJson(value: JsonValue): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value !== null && typeof value === "object") {
     const record = value as Readonly<Record<string, JsonValue>>;
-    return `{${Object.keys(record).sort(compareOrdinal).map((key) => (
+    return `{${Object.keys(record).sort(compareUtf16CodeUnits).map((key) => (
       `${JSON.stringify(key)}:${canonicalJson(record[key]!)}`
     )).join(",")}}`;
   }
   return JSON.stringify(value);
 }
 
-function compareOrdinal(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
 
 function error(code: string, path: string, message: string): DocumentDiagnostic {
   return { severity: "error", code, path, message };

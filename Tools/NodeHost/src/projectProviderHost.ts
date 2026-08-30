@@ -1,4 +1,5 @@
 import {
+  compareUtf16CodeUnits,
   createReferenceSearchCursor,
   type JsonValue,
   type ProjectProviderDiagnostic,
@@ -251,7 +252,7 @@ export class ProjectProviderHost implements AsyncDisposable {
     }
     return {
       diagnostics: diagnostics.sort(compareDiagnostics),
-      unavailableProviderIds: [...new Set(unavailableProviderIds)].sort(compareOrdinal),
+      unavailableProviderIds: [...new Set(unavailableProviderIds)].sort(compareUtf16CodeUnits),
       ...(externalModification === undefined ? {} : { externalModification }),
     };
   }
@@ -439,7 +440,7 @@ function canonicalJson(value: JsonValue | Readonly<Record<string, JsonValue>>): 
   if (Array.isArray(value)) return `[${value.map((entry) => canonicalJson(entry)).join(",")}]`;
   if (value !== null && typeof value === "object") {
     const record = value as Readonly<Record<string, JsonValue>>;
-    return `{${Object.keys(record).sort(compareOrdinal).map((key) => (
+    return `{${Object.keys(record).sort(compareUtf16CodeUnits).map((key) => (
       `${JSON.stringify(key)}:${canonicalJson(record[key]!)}`
     )).join(",")}}`;
   }
@@ -447,14 +448,10 @@ function canonicalJson(value: JsonValue | Readonly<Record<string, JsonValue>>): 
 }
 
 function compareDiagnostics(left: ProjectProviderDiagnostic, right: ProjectProviderDiagnostic): number {
-  return compareOrdinal(
+  return compareUtf16CodeUnits(
     `${left.documentTypeId}\u0000${left.documentPath}\u0000${left.path}\u0000${left.code}\u0000${left.message}`,
     `${right.documentTypeId}\u0000${right.documentPath}\u0000${right.path}\u0000${right.code}\u0000${right.message}`,
   );
-}
-
-function compareOrdinal(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function formatError(errorValue: unknown): string {

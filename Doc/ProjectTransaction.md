@@ -163,6 +163,8 @@ When a failure reports `rollbackFailed`, `recoveryFailed`, `committedStateChange
 
 Deleting the journal or lock without examining retained bytes is not a supported recovery procedure. The reserved files are deliberately human-inspectable JSON and colocated rollback material so an uncertain state is visible rather than silently overwritten.
 
+Host/MCP 接入方应把结构化 conflict 与不确定 failure 分开处理，完整调用顺序和验收清单见 [`IntegrationGuide.md`](IntegrationGuide.md)。终端用户不应手工删除保留文件；编辑器内的保存、刷新与恢复操作见 [`AuthoringUserGuide.md`](AuthoringUserGuide.md)。
+
 ## 9. Verification
 
 The repeatable Node Host tests cover replace/create/delete/move, target absence, dependency changes, duplicate targets, path traversal/alias rejection, simultaneous writers, dead-owner takeover, prepared rollback, committed cleanup, malformed journals, and preservation of unknown external bytes. MCP stdio and real Extension Host tests cover service-level mapping, CSV/XLSX multi-source behavior, lifecycle/refactor integration, and post-commit refresh.
@@ -173,4 +175,5 @@ Run the relevant gates from the repository root:
 npm test --workspace @visualbridge/node-host
 npm test --workspace @visualbridge/mcp
 npm run test:vscode:host
+npm run check:docs
 ```

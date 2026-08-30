@@ -1,5 +1,6 @@
 import type { DocumentDiagnostic } from "../Document/document";
 import type { ReferenceDefinition, ReferenceOccurrence } from "../Reference/reference";
+import { compareUtf16CodeUnits } from "../Ordering/ordinal";
 
 export type JsonPrimitive = null | boolean | number | string;
 export type JsonValue = JsonPrimitive | readonly JsonValue[] | { readonly [key: string]: JsonValue };
@@ -158,13 +159,39 @@ export function collectFieldReferences(
 ): readonly ReferenceOccurrence[] {
   return definitions.flatMap((definition) => {
     const value = resolvePropertyValue(properties, definition);
-    return collectValueReferences(value, definition, `${path}.${definition.id}`);
+    return collectFieldValueReferences(value, definition, `${path}.${definition.id}`);
   });
+}
+
+export function collectFieldValueReferences(
+  value: JsonValue,
+  definition: FieldValueDefinition,
+  path: string,
+): readonly ReferenceOccurrence[] {
+  return collectValueReferences(value, definition, path);
 }
 
 export interface FieldReferenceReplacementResult {
   readonly properties: Readonly<Record<string, JsonValue>>;
   readonly changedPaths: readonly string[];
+}
+
+export interface FieldValueReferenceReplacementResult {
+  readonly value: JsonValue;
+  readonly changed: boolean;
+  readonly changedPaths: readonly string[];
+}
+
+export function replaceFieldValueReferences(
+  value: JsonValue,
+  definition: FieldValueDefinition,
+  path: string,
+  shouldReplace: (occurrence: ReferenceOccurrence) => boolean,
+  replacement: string | number,
+): FieldValueReferenceReplacementResult {
+  const changedPaths: string[] = [];
+  const result = replaceValueReferences(value, definition, path, shouldReplace, replacement, changedPaths);
+  return { ...result, changedPaths };
 }
 
 export function replaceFieldReferenceValues(
@@ -206,7 +233,7 @@ export function normalizeJsonValue(value: JsonValue): JsonValue {
   if (isRecord(value)) {
     return Object.fromEntries(
       Object.entries(value)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareUtf16CodeUnits(left, right))
         .map(([key, entry]) => [key, normalizeJsonValue(entry as JsonValue)]),
     );
   }
@@ -217,7 +244,7 @@ export function serializeFieldDefinition(definition: FieldDefinition): Readonly<
   return {
     id: definition.id,
     title: definition.title,
-    aliases: [...definition.aliases].sort(),
+    aliases: [...definition.aliases].sort(compareUtf16CodeUnits),
     ...(definition.description === undefined ? {} : { description: definition.description }),
     ...serializeFieldValueDefinition(definition),
   };

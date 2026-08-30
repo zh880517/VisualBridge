@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  compareUtf16CodeUnits,
   createReferenceValueRenamePlan,
   documentIndexKey,
   referenceValuesEqual,
@@ -221,7 +222,7 @@ export class ReferenceRefactorService {
       planned.plan,
       documentIndexKey(document) === documentIndexKey(targetDocument),
     )))).flat().filter((write) => !write.before.equals(write.after))
-      .sort((left, right) => left.path.localeCompare(right.path));
+      .sort((left, right) => compareUtf16CodeUnits(left.path, right.path));
     if (writes.length === 0) throw new VisualBridgeMcpError("refactor.noChanges", "The refactor did not produce source changes.");
     const dependencies = await loadDependencyHashes(project);
     const previewHash = hashStable({
@@ -286,7 +287,7 @@ export class ReferenceRefactorService {
       });
     }
     for (const table of await this.tables.loadReferenceDocuments(project.projectFile, true)) {
-      const sourcePaths = [...new Set([table.path, ...Object.values(table.sheetPaths ?? {})])].sort();
+      const sourcePaths = [...new Set([table.path, ...Object.values(table.sheetPaths ?? {})])].sort(compareUtf16CodeUnits);
       documents.push({
         projectId: table.projectId,
         documentTypeId: table.documentTypeId,
@@ -301,7 +302,7 @@ export class ReferenceRefactorService {
         ),
       });
     }
-    return documents.sort((left, right) => documentIndexKey(left).localeCompare(documentIndexKey(right)));
+    return documents.sort((left, right) => compareUtf16CodeUnits(documentIndexKey(left), documentIndexKey(right)));
   }
 
   private async resolveOccurrences(references: ReferenceService, occurrences: readonly ReferenceOccurrence[]) {
@@ -484,7 +485,7 @@ function previewResult(prepared: PreparedRefactor): Record<string, unknown> {
 async function loadDependencyHashes(
   project: ProjectContext,
 ): Promise<readonly { readonly path: string; readonly baseHash: string }[]> {
-  const paths = [...new Set(project.definition.documentTypes.flatMap((documentType) => documentType.catalogs))].sort();
+  const paths = [...new Set(project.definition.documentTypes.flatMap((documentType) => documentType.catalogs))].sort(compareUtf16CodeUnits);
   const catalogs = await Promise.all(paths.map(async (catalogPath) => ({
     path: catalogPath,
     baseHash: hashBytes(await readFile(await resolveExistingProjectPath(project, catalogPath))),
@@ -536,7 +537,7 @@ async function cachedRegistry<T>(
 
 function uniqueDocuments(documents: readonly IndexedDocument[]): readonly IndexedDocument[] {
   return [...new Map(documents.map((document) => [documentIndexKey(document), document])).values()]
-    .sort((left, right) => documentIndexKey(left).localeCompare(documentIndexKey(right)));
+    .sort((left, right) => compareUtf16CodeUnits(documentIndexKey(left), documentIndexKey(right)));
 }
 
 function assertOccurrenceValues(
@@ -599,14 +600,14 @@ function hashStable(value: unknown): string {
 function sortJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortJson);
   if (typeof value === "object" && value !== null) {
-    return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, entry]) => [key, sortJson(entry)]));
+    return Object.fromEntries(Object.entries(value).sort(([left], [right]) => compareUtf16CodeUnits(left, right)).map(([key, entry]) => [key, sortJson(entry)]));
   }
   return value;
 }
 
 function sameHashManifest(left: Readonly<Record<string, string>>, right: Readonly<Record<string, string>>): boolean {
-  const leftEntries = Object.entries(left).sort(([a], [b]) => a.localeCompare(b));
-  const rightEntries = Object.entries(right).sort(([a], [b]) => a.localeCompare(b));
+  const leftEntries = Object.entries(left).sort(([a], [b]) => compareUtf16CodeUnits(a, b));
+  const rightEntries = Object.entries(right).sort(([a], [b]) => compareUtf16CodeUnits(a, b));
   return JSON.stringify(leftEntries) === JSON.stringify(rightEntries);
 }
 

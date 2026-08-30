@@ -16,7 +16,7 @@
       "portConnectionRules": { "input": "single", "output": "multiple" },
       "allowedNodeSelectors": [{ "tags": ["allowed"] }],
       "properties": [
-        { "id": "priority", "aliases": [], "title": "Priority", "valueType": "number", "dataTypeId": "int", "required": true, "defaultValue": 0 }
+        { "id": "priority", "aliases": [], "title": "Priority", "valueType": "number", "dataTypeId": "int", "defaultValue": 0 }
       ],
       "nodeConstraints": [
         { "id": "entry", "selector": { "traits": ["flow.entry"] }, "minInstances": 1, "maxInstances": 1 }

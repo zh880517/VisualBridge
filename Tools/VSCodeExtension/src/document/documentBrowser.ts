@@ -8,6 +8,7 @@ import type {
   IndexedDocumentReference,
   StableIdentityRemap,
 } from "@visualbridge/core";
+import { compareUtf16CodeUnits } from "@visualbridge/core";
 import { createDocument } from "../commands/createDocument";
 import type { CreateDocumentSelection } from "../commands/createDocumentSupport";
 import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
@@ -290,7 +291,7 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
       }
       return this.projects.projects
         .slice()
-        .sort((left, right) => left.definition.projectId.localeCompare(right.definition.projectId))
+        .sort((left, right) => compareUtf16CodeUnits(left.definition.projectId, right.definition.projectId))
         .map((project) => ({ kind: "project", project }));
     }
     if (node.kind === "project") {
@@ -301,7 +302,7 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
       const types: DocumentTypeNode[] = node.project.definition.documentTypes
         .filter((documentType) => ["graph", "entity", "structured", "table"].includes(documentType.editor))
         .slice()
-        .sort((left, right) => `${left.editor}\u0000${left.id}`.localeCompare(`${right.editor}\u0000${right.id}`))
+        .sort((left, right) => compareUtf16CodeUnits(`${left.editor}\u0000${left.id}`, `${right.editor}\u0000${right.id}`))
         .map((documentType) => ({ kind: "documentType", project: node.project, documentType }));
       return [
         ...(problemDocuments.length === 0 ? [] : [{ kind: "problems" as const, project: node.project, documents: problemDocuments }]),

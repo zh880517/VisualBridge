@@ -6,7 +6,7 @@ Graph Document V3 and Graph Catalog V4 add multi-Catalog registration, Catalog-d
 
 The `VisualBridge.project.vbjson` marker enables the editor and declares its Graph Catalogs:
 
-```json
+```json visualbridge-schema=visualbridge-project.schema.json visualbridge-parser=project
 {
   "formatVersion": 1,
   "projectId": "ExampleGame",
@@ -32,11 +32,12 @@ Catalog paths are relative to the marker. The host loads them into one registry.
 
 ## Catalog example
 
-```json
+```json visualbridge-schema=visualbridge-graph-catalog.schema.json visualbridge-parser=graph-catalog
 {
   "formatVersion": 4,
   "catalogId": "example.logic",
   "title": "通用",
+  "source": { "status": "unknown" },
   "dataTypes": [
     { "id": "int", "title": "Integer", "color": "#4DA3FF", "accepts": [] },
     { "id": "float", "title": "Float", "color": "#4FC3F7", "accepts": ["int"] },
@@ -89,7 +90,7 @@ Catalog paths are relative to the marker. The host loads them into one registry.
           "item": {
             "valueType": "number",
             "defaultValue": 0,
-            "editor": { "kind": "number", "readOnly": false, "min": 0, "max": 100, "options": [] }
+            "editor": { "kind": "number", "readOnly": false, "min": 0, "max": 100 }
           },
           "maxItems": 8
         }
@@ -102,9 +103,8 @@ Catalog paths are relative to the marker. The host loads them into one registry.
           "description": "Value consumed by the step.",
           "valueType": "number",
           "dataTypeId": "int",
-          "required": true,
           "defaultValue": 0,
-          "editor": { "kind": "number", "readOnly": false, "min": 0, "max": 100, "options": [] }
+          "editor": { "kind": "number", "readOnly": false, "min": 0, "max": 100 }
         }
       ]
     }
@@ -118,7 +118,7 @@ Catalog paths are relative to the marker. The host loads them into one registry.
 
 A data `dynamicPortGroup` represents an editable `List<T>` when it declares `listPortMode`. Its ordered instance elements remain in `node.dynamicPorts` so every element has a stable ID across reorder, Undo/Redo, and serialization. The legacy field name is retained for Graph Document V3 compatibility; in `list` mode those item IDs are not connection endpoints.
 
-```json
+```json visualbridge-schema=visualbridge-graph-catalog.schema.json#/$defs/dynamicPortGroup
 {
   "id": "values",
   "aliases": [],
@@ -129,7 +129,7 @@ A data `dynamicPortGroup` represents an editable `List<T>` when it declares `lis
     "valueType": "number",
     "dataTypeId": "int",
     "defaultValue": 0,
-    "editor": { "kind": "number", "readOnly": false, "options": [] }
+    "editor": { "kind": "number", "readOnly": false }
   }
 }
 ```
@@ -138,8 +138,8 @@ A data `dynamicPortGroup` represents an editable `List<T>` when it declares `lis
 
 ## Editing behavior
 
-- New documents select a root-compatible Graph Type; a single candidate is selected automatically. Initial node templates make required entries available immediately.
-- Add nodes from the current Graph Type's searchable registered types. A node belongs to its declaring Catalog. `supportedCatalogIds` first restricts the available Catalogs, then `allowedNodeSelectors` optionally refines their nodes. Each declaring Catalog's `title` is the node's root path and `menuPath` is relative to that root, so Catalog `通用`, path `操作 / 整数`, and node `加法` appear as `通用 / 操作 / 整数 / 加法`. Search spans the Catalog title, names, IDs, categories, paths, tags, and traits. Types at a count maximum, typed-subgraph call types, and types whose required fields lack deterministic defaults are excluded from the atomic-node picker.
+- New documents select a root-compatible Graph Type; a single candidate is selected automatically. Initial node templates can materialize nodes needed to satisfy Graph Type minimum-instance constraints immediately.
+- Add nodes from the current Graph Type's searchable registered types. A node belongs to its declaring Catalog. `supportedCatalogIds` first restricts the available Catalogs, then `allowedNodeSelectors` optionally refines their nodes. Each declaring Catalog's `title` is the node's root path and `menuPath` is relative to that root, so Catalog `通用`, path `操作 / 整数`, and node `加法` appear as `通用 / 操作 / 整数 / 加法`. Search spans the Catalog title, names, IDs, categories, paths, tags, and traits. Types at a count maximum and typed-subgraph call types are excluded from the atomic-node picker. Every shared field definition already carries a deterministic `defaultValue`.
 - Drop an unfinished connection on empty canvas space to open a filtered list of compatible node ports. Choosing one atomically creates the node and edge at the drop position; kind, direction, registry-wide Data Type assignability, connection limits, supported Catalogs, allowed selectors, and count constraints are respected. `portConnectionRules` supplies the Graph Type's input/output limit and a port's `maxConnections` may only make that limit stricter.
 - Add typed embedded subgraphs by selecting a compatible call-node type and target Graph Type. The call node renders its static fields/data ports together with the child graph's public interfaces.
 - Render declared flow and data ports; flow edges are solid and data edges are dashed.
@@ -151,13 +151,13 @@ A data `dynamicPortGroup` represents an editable `List<T>` when it declares `lis
 - Configure an optional text glyph with a node type's `icon` field. Every node reserves a fixed icon slot before its title, keeping titles aligned even when some types omit the icon. Toolbar checkboxes independently control the node type subtitle and stable node instance ID; the type is visible by default and the ID is hidden by default. Both are transient view state and are not serialized.
 - Render static flow inputs and outputs immediately after the node type, before property editors and data ports. Property-bound data inputs stay beside their editor, while remaining static data ports follow the property area. Dynamic handles are rendered on their own element row instead of in the static port section.
 - Edit a node title by double-clicking its header. Catalog-defined fields are edited directly on each node using text, multiline, number/range, checkbox, select, JSON, reference, and read-only presentations. A field and its matching data-input handle share one row; while connected, the literal editor is hidden and the fallback value is retained. Disconnecting restores that value and editor.
-- Keep required-field semantics in the Catalog and validator without adding an asterisk to field labels in the canvas or Graph Inspector.
+- Reuse the shared Form field definition, recursive validator, Reference traversal and `FieldValueEditor` for Graph properties. Graph Catalog V4 has no separate `required` dialect; newly materialized fields use their declared deterministic `defaultValue`.
 - Add, select, edit, drag-reorder, and remove instance-level dynamic elements directly on a node. A row edits only the element value and places its dynamic handle at the row edge; there is no separate port-name editor. Each row keeps the shared grip, add-after and delete controls together. Deleting removes that element and its related edges in one operation. Dropping a row commits one reorder operation while preserving endpoint IDs, and `Alt+↑/↓` on the grip provides keyboard reordering.
 - Edit `List<T>` elements with the same stable-element controls. Whole-List port mode renders one group input and hides all element editors while connected; element-port mode renders a handle after every element and hides only the connected element's literal editor.
 - Edit only the current Graph's title and Graph Type-defined fields in a Graph-only Inspector that can collapse to the right edge. Assigned Graph Type is read-only.
 - Keep node type display-only; it is never edited as a text field.
 - Drag the left mouse button on empty canvas space to box-select every partially intersected node; drag the middle mouse button to pan. The canvas uses the default arrow cursor and switches to the grabbing cursor only while middle-button panning. Multi-selected nodes and edges are deleted as one Graph Operation batch. When a mixed selection contains Graph Type minimum-required nodes, deletion removes the other selected items and retains only the nodes needed to satisfy those constraints; an all-required selection remains unavailable.
-- Copy, Paste, and Duplicate selected atomic nodes together with edges whose endpoints are both selected. Pasted instances receive fresh node and edge IDs. Singleton required nodes and embedded subgraphs are intentionally excluded from the V1 clipboard payload.
+- Copy, Paste, and Duplicate selected atomic nodes together with edges whose endpoints are both selected. Pasted instances receive fresh node and edge IDs. Singleton nodes required by a Graph Type minimum-instance constraint and embedded subgraphs are intentionally excluded from the V1 clipboard payload.
 - Right-click an atomic or typed-subgraph node to select every node of the same canonical type, replace its type, Copy, Duplicate, or Delete. Right-click an edge or selection to access the applicable selection actions. Only same-kind, lossless replacement candidates that preserve Graph Type constraints are offered; unavailable actions remain visible in a disabled state with a reason tooltip.
 - Right-click empty canvas space for Graph-level Add Node, Add Subgraph, and Paste actions. Newly added nodes and subgraphs use the clicked canvas position. Persistent editing actions live in context menus rather than the top toolbar. Context menus use an opaque editor-widget surface so the graph remains visually separated from menu text.
 - Show the VS Code text document's saved/unsaved state in the top toolbar. Graph Operations make the document dirty through `WorkspaceEdit`; normal VS Code Save clears the indicator after the host observes the save event.
@@ -166,5 +166,28 @@ A data `dynamicPortGroup` represents an editable `List<T>` when it declares `lis
 - Show structural and semantic diagnostics in the Webview and VS Code Problems.
 
 Every persistent action is a Graph Operation applied through `WorkspaceEdit`, retaining VS Code dirty state and Undo/Redo. Each document operation stores its before/after Graph and node selection snapshots, so Undo and Redo restore the matching selection. Clicking or box-selecting only updates the current snapshot and never creates an Undo entry. Node drag emits one operation when the drag ends. External disk changes still require overwrite or discard-and-refresh confirmation.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant View as Graph Webview
+    participant Host as VS Code Host
+    participant Core as Graph Core
+    participant Doc as TextDocument
+    User->>View: edit node, edge, field, or list
+    View->>Host: submit GraphOperation batch
+    Host->>Core: parse, apply, and validate a clone
+    alt invalid or newly introduces diagnostics
+        Core-->>Host: reject the complete batch
+        Host-->>View: structured error and unchanged state
+    else valid
+        Core-->>Host: deterministic next document
+        Host->>Doc: WorkspaceEdit
+        Doc-->>View: dirty document and updated snapshot
+        User->>Doc: Save / Undo / Redo
+    end
+```
+
+The complete end-user workflow, including opening, navigation, diagnostics, external-change handling, and keyboard-accessible alternatives, is in [`AuthoringUserGuide.md`](AuthoringUserGuide.md).
 
 React Flow remains a controlled view layer. Selection, viewport, and transient drag positions do not enter `.vbgraph`; the Graph document and Catalog remain authoritative. See `GraphSemanticModel.md` for the complete semantic contract.
