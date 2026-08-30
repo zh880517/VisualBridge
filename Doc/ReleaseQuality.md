@@ -63,7 +63,7 @@ The workflow pins third-party GitHub Actions by full commit SHA. `setup-node` ma
 
 The ordinary Extension Host suite uses the fixed official VS Code runtime and covers trusted and Restricted Mode activation against copied fixtures. The packaged test then installs the produced VSIX into an isolated extensions directory, checks its exact `kyl.visualbridge` identity and required packaged files, launches the fixed VS Code runtime, waits for `workspaceContains` activation, invokes a registered command, and opens a Graph through the installed custom editor. A successful CLI install alone is not treated as activation proof.
 
-The extension manifest is `private: true` and `license: "UNLICENSED"`. No license text is inferred or generated. `virtualWorkspaces.supported` is explicitly `false`: Project discovery, local Catalog/source access, atomic writes, and Project Provider child processes require a local file-system workspace. Restricted Mode remains supported, but Provider processes are not started there.
+The extension manifest is `private: true` and `license: "UNLICENSED"`. `Tools/VSCodeExtension/LICENSE` is an explicit proprietary notice included in the VSIX; it does not grant a public-use license. `virtualWorkspaces.supported` is explicitly `false`: Project discovery, local Catalog/source access, atomic writes, and Project Provider child processes require a local file-system workspace. Restricted Mode remains supported, but Provider processes are not started there.
 
 ## Maintained sample project
 
