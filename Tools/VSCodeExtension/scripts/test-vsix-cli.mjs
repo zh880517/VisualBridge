@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { runTests } from "@vscode/test-electron";
+import {
+  downloadAndUnzipVSCode,
+  resolveCliPathFromVSCodeExecutablePath,
+  runTests,
+} from "@vscode/test-electron";
 import { removeIsolatedDirectory } from "../test/support/removeIsolatedDirectory.mjs";
 
 const TEST_DIRECTORY_PREFIX = "visualbridge-vsix-cli-";
@@ -15,14 +19,21 @@ const extensionId = `${manifest.publisher}.${manifest.name}`;
 const expectedIdentity = `${extensionId}@${manifest.version}`;
 const requestedVsixPath = process.argv[2] ?? path.join(extensionPath, "artifacts", "visualbridge.vsix");
 const vsixPath = path.resolve(process.cwd(), requestedVsixPath);
-const codeCommand = process.env.VISUALBRIDGE_VSCODE_CLI ?? "code";
+const repositoryPath = path.resolve(extensionPath, "..", "..");
+const cachePath = path.join(repositoryPath, ".utmp", "vscode-test");
+const testVersion = process.env.VISUALBRIDGE_VSCODE_TEST_VERSION ?? "1.105.1";
+const vscodeExecutablePath = await downloadAndUnzipVSCode({
+  version: testVersion,
+  cachePath,
+  extensionDevelopmentPath: extensionPath,
+});
+const codeCommand = process.env.VISUALBRIDGE_VSCODE_CLI
+  ?? resolveCliPathFromVSCodeExecutablePath(vscodeExecutablePath);
 const codeInvocation = await resolveCodeInvocation(codeCommand);
 const temporaryPath = await mkdtemp(path.join(tmpdir(), TEST_DIRECTORY_PREFIX));
 const userDataPath = path.join(temporaryPath, "user-data");
 const extensionsPath = path.join(temporaryPath, "extensions");
 const workspacePath = path.join(temporaryPath, "workspace");
-const repositoryPath = path.resolve(extensionPath, "..", "..");
-const cachePath = path.join(repositoryPath, ".utmp", "vscode-test");
 
 try {
   await access(vsixPath, constants.R_OK);
@@ -45,7 +56,7 @@ try {
   }
 
   const installedPath = await verifyInstalledFiles(extensionsPath, manifest);
-  await runPackagedActivation(installedPath);
+  await runPackagedActivation(installedPath, vscodeExecutablePath);
   console.log(`[vscode-cli] PASS installed, inspected, and activated ${expectedIdentity}`);
 } finally {
   await removeIsolatedDirectory(temporaryPath, TEST_DIRECTORY_PREFIX);
@@ -83,7 +94,7 @@ async function resolveCodeInvocation(command) {
   }
 
   const launcherText = await readFile(commandPath, "utf8");
-  const match = launcherText.match(/"%~dp0\.\.\\Code\.exe"\s+"%~dp0\.\.\\([^"\r\n]+\\resources\\app\\out\\cli\.js)"/iu);
+  const match = launcherText.match(/"%~dp0\.\.\\Code\.exe"\s+"%~dp0\.\.\\([^"\r\n]*resources\\app\\out\\cli\.js)"/iu);
   if (match === null) {
     throw new Error(`Cannot resolve Code.exe and cli.js from '${commandPath}'.`);
   }
@@ -188,15 +199,14 @@ async function verifyInstalledFiles(extensionsDirectory, expectedManifest) {
   return installedPath;
 }
 
-async function runPackagedActivation(installedPath) {
+async function runPackagedActivation(installedPath, executablePath) {
   await Promise.all([
     cp(path.join(repositoryPath, "TestData"), workspacePath, { recursive: true }),
     mkdir(cachePath, { recursive: true }),
   ]);
-  const testVersion = process.env.VISUALBRIDGE_VSCODE_TEST_VERSION ?? "1.105.1";
   console.log(`[vscode-cli] Activating packaged extension with VS Code ${testVersion}`);
   await runTests({
-    version: testVersion,
+    vscodeExecutablePath: executablePath,
     cachePath,
     extensionDevelopmentPath: path.join(extensionPath, "test", "vsix-runner"),
     extensionTestsPath: path.join(extensionPath, "test", "suite", "packagedActivation.cjs"),
