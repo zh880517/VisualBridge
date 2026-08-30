@@ -96,7 +96,7 @@
 - 测试覆盖 MCP 默认禁用、显式授权启用、非法入口拒绝，以及 Provider 直接改写源文件时的外部变更检测与冲突拒绝。
 - VS Code Workspace Trust 与独立 MCP 的 Provider 授权分别验证；MCP 请求参数不能绕过宿主授权。
 
-### VB-PU-05 Project Settings 与 Catalog Browser — `in_progress`
+### VB-PU-05 Project Settings 与 Catalog Browser — `complete`
 
 范围：
 
@@ -113,7 +113,7 @@
 - Catalog 冲突与过期状态能在 Browser 和 Problems 中定位。
 - Catalog Browser 不会改写生成或外部维护的 Catalog 文件。
 
-### VB-PU-06 大工程性能与编辑体验 — `pending`
+### VB-PU-06 大工程性能与编辑体验 — `in_progress`
 
 范围：
 

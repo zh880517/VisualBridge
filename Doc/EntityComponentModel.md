@@ -20,6 +20,8 @@
 
 Authoring Document 不保存 Unity 对象实例、子资源关系、Inspector 展开状态或临时菜单状态。Catalog 中可保留 `source.providerId` 和 `source.typeName` 便于追踪来源，但 C# 类型名不承担持久身份。
 
+Catalog 顶层另有全平台共用的 `source` 来源快照状态，用于区分来源未知、当前与过期；它与单个类型的 C# 导航信息不同，详见 [`ProjectCatalogManagement.md`](ProjectCatalogManagement.md)。
+
 ## 编辑器大类、项目子类与文件扩展名
 
 VisualBridge 插件按少量稳定的编辑器大类注册能力。当前大类包括 `graph` 和 `entity`，后续可以增加 `table` 等大类。项目通过 `documentTypes` 声明业务子类：

@@ -2,6 +2,9 @@
   "formatVersion": 1,
   "catalogId": "sample.entity.gameplay",
   "title": "Gameplay",
+  "source": {
+    "status": "unknown"
+  },
   "componentGroups": [],
   "entityTypes": [],
   "componentTypes": [

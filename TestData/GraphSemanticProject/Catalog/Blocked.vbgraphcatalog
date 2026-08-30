@@ -2,6 +2,9 @@
   "formatVersion": 4,
   "catalogId": "sample.blocked",
   "title": "Blocked",
+  "source": {
+    "status": "unknown"
+  },
   "dataTypes": [],
   "graphTypes": [],
   "nodeTypes": [

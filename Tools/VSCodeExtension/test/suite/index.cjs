@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
-const { readFile } = require("node:fs/promises");
+const { mkdtemp, readFile, rm, symlink, unlink, writeFile } = require("node:fs/promises");
+const { tmpdir } = require("node:os");
 const path = require("node:path");
 const vscode = require("vscode");
 
@@ -21,7 +22,10 @@ const EXPECTED_COMMANDS = [
   "visualbridge.documentBrowser.search",
   "visualbridge.documentBrowser.safeDelete",
   "visualbridge.documentBrowser.validateAll",
+  "visualbridge.catalogBrowser.open",
+  "visualbridge.catalogBrowser.refresh",
   "visualbridge.openDocument",
+  "visualbridge.openProjectSettings",
   "visualbridge.refreshProjects",
   "visualbridge.safeDeleteElement",
   "visualbridge.revealReference",
@@ -1109,6 +1113,204 @@ exports.run = async function run() {
       5_000,
       "Closing both split Table panels retained editor state.",
     );
+  });
+
+  await test("browses Catalog provenance, content Hashes, types, aliases, and stale diagnostics read-only", async () => {
+    const catalogUri = vscode.Uri.file(path.join(
+      workspacePath,
+      "ProviderSemanticProject",
+      "Catalog",
+      "Provider.vbstructuredcatalog",
+    ));
+    const before = await vscode.workspace.fs.readFile(catalogUri);
+    const snapshots = await vscode.commands.executeCommand("visualbridge.test.getCatalogBrowserSnapshot");
+    const registry = snapshots.find((entry) => entry.projectId === "visualbridge.provider-semantics"
+      && entry.documentTypeId === "sample.provider.settings");
+    assert.ok(registry);
+    assert.equal(registry.ready, true);
+    assert.ok(registry.definitions.some((entry) => entry.kind === "configType"));
+    assert.equal(registry.sources.length, 1);
+    assert.equal(registry.sources[0].source.status, "stale");
+    assert.match(registry.sources[0].contentHash, /^[0-9a-f]{64}$/u);
+    assert.ok(registry.diagnostics.some((entry) => entry.code === "catalog.sourceStale"));
+    assert.ok(vscode.languages.getDiagnostics(catalogUri).some((entry) => entry.code === "catalog.sourceStale"));
+    assert.deepEqual(await vscode.workspace.fs.readFile(catalogUri), before, "Catalog Browser rewrote a read-only source.");
+  });
+
+  await test("publishes Catalog Registry conflicts to both Catalog Browser and Problems", async () => {
+    const uri = vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "Catalog", "Logic.vbgraphcatalog"));
+    const before = await vscode.workspace.fs.readFile(uri);
+    const document = await vscode.workspace.openTextDocument(uri);
+    try {
+      const catalog = JSON.parse(new TextDecoder().decode(before));
+      catalog.catalogId = "sample.common";
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), `${JSON.stringify(catalog, undefined, 2)}\n`);
+      assert.equal(await vscode.workspace.applyEdit(edit), true);
+      const snapshots = await vscode.commands.executeCommand("visualbridge.test.getCatalogBrowserSnapshot");
+      const registry = snapshots.find((entry) => entry.projectId === "GraphSemanticProject"
+        && entry.documentTypeId === "logicGraph");
+      assert.ok(registry);
+      assert.equal(registry.ready, false);
+      assert.ok(registry.diagnostics.some((entry) => entry.code === "graphCatalogRegistry.duplicateCatalogId"));
+      assert.ok(vscode.languages.getDiagnostics(uri).some((entry) => entry.code === "graphCatalogRegistry.duplicateCatalogId"));
+    } finally {
+      await vscode.window.showTextDocument(document);
+      await vscode.commands.executeCommand("workbench.action.files.revert");
+      await vscode.commands.executeCommand("visualbridge.catalogBrowser.refresh");
+    }
+  });
+
+  await test("edits Project Settings through validated Operations and rejects stale or ambiguous changes", async () => {
+    const uri = vscode.Uri.file(path.join(
+      workspacePath,
+      "StructuredSemanticProject",
+      "VisualBridge.project.vbjson",
+    ));
+    const before = await vscode.workspace.fs.readFile(uri);
+    await vscode.commands.executeCommand("vscode.openWith", uri, "visualbridge.projectSettingsEditor");
+    await waitForAsync(
+      () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", uri),
+      (ready) => ready === true,
+      20_000,
+      "Project Settings editor did not become ready.",
+    );
+    const baseline = await vscode.commands.executeCommand("visualbridge.test.getProjectSettingsState", uri);
+    assert.equal(baseline.projectId, "visualbridge.structured-semantics");
+    await assert.rejects(
+      vscode.commands.executeCommand("visualbridge.test.applyProjectOperations", uri, "0".repeat(64), [{
+        type: "project.setTableLayout",
+        tableLayout: { nameKeyRow: 1, dataStartRow: 3 },
+      }]),
+      /sourceHash conflict/u,
+    );
+    await assert.rejects(
+      vscode.commands.executeCommand("visualbridge.test.applyProjectOperations", uri, baseline.sourceHash, [{
+        type: "project.upsertDocumentType",
+        documentType: {
+          id: "ambiguous.settings",
+          editor: "structured",
+          include: ["Config/**/*.gamesettings"],
+          exclude: [],
+          catalogs: ["Catalog/Game.vbstructuredcatalog"],
+        },
+      }]),
+      /overlaps the identical include/u,
+    );
+    await assert.rejects(
+      vscode.commands.executeCommand("visualbridge.test.applyProjectOperations", uri, baseline.sourceHash, [{
+        type: "project.upsertDocumentType",
+        documentType: {
+          id: "ambiguous.future-file",
+          editor: "structured",
+          include: ["Config/Heroes/**/*.gamesettings"],
+          exclude: [],
+          catalogs: ["Catalog/Game.vbstructuredcatalog"],
+        },
+      }]),
+      /overlaps Document Type 'sample\.game\.settings'/u,
+    );
+    await assert.rejects(
+      vscode.commands.executeCommand("visualbridge.test.applyProjectOperations", uri, baseline.sourceHash, [{
+        type: "project.upsertDocumentType",
+        documentType: {
+          id: "sample.game.settings",
+          editor: "structured",
+          include: ["Config/A*.gamesettings"],
+          exclude: [],
+          catalogs: ["Catalog/Game.vbstructuredcatalog"],
+        },
+      }, {
+        type: "project.upsertDocumentType",
+        documentType: {
+          id: "sample.entity.overlap",
+          editor: "entity",
+          include: ["Config/*B.gamesettings"],
+          exclude: [],
+          catalogs: [],
+        },
+      }]),
+      /overlaps Document Type 'sample\.game\.settings'.*Config\/AxB\.gamesettings/u,
+    );
+    await assert.rejects(
+      vscode.commands.executeCommand("visualbridge.test.applyProjectOperations", uri, baseline.sourceHash, [{
+        type: "project.upsertDocumentType",
+        documentType: {
+          id: "ambiguous.actual-file",
+          editor: "structured",
+          include: ["Config/Game.*"],
+          exclude: [],
+          catalogs: ["Catalog/Game.vbstructuredcatalog"],
+        },
+      }]),
+      /ambiguous ownership/u,
+    );
+    await assert.rejects(
+      vscode.commands.executeCommand("visualbridge.test.applyProjectOperations", uri, baseline.sourceHash, [{
+        type: "project.renameDocumentType",
+        documentTypeId: "sample.game.settings",
+        newId: "sample.missing.settings",
+      }]),
+      /does not resolve to a Config Type ID or alias/u,
+    );
+    await assert.rejects(
+      vscode.commands.executeCommand("visualbridge.test.applyProjectOperations", uri, baseline.sourceHash, [{
+        type: "project.renameDocumentType",
+        documentTypeId: "sample.table.skills",
+        newId: "sample.table.missing",
+      }]),
+      /does not resolve to a Table Type ID or alias/u,
+    );
+    assert.deepEqual(await vscode.workspace.fs.readFile(uri), before);
+
+    const concurrent = await Promise.allSettled([3, 4].map((dataStartRow) => (
+      vscode.commands.executeCommand("visualbridge.test.applyProjectOperations", uri, baseline.sourceHash, [{
+        type: "project.setTableLayout",
+        tableLayout: { nameKeyRow: 1, dataStartRow },
+      }])
+    )));
+    assert.equal(concurrent.filter((entry) => entry.status === "fulfilled").length, 1);
+    assert.equal(concurrent.filter((entry) => (
+      entry.status === "rejected" && /sourceHash conflict/u.test(String(entry.reason))
+    )).length, 1);
+    await waitForAsync(
+      () => vscode.commands.executeCommand("visualbridge.test.getProjectSettingsState", uri),
+      (state) => state.sourceHash !== baseline.sourceHash,
+      10_000,
+      "Project Settings Operation was not applied.",
+    );
+    const changed = JSON.parse((await vscode.workspace.openTextDocument(uri)).getText());
+    assert.equal(changed.tableLayout.nameKeyRow, 1);
+    assert.ok(changed.tableLayout.dataStartRow === 3 || changed.tableLayout.dataStartRow === 4);
+    await vscode.commands.executeCommand("undo");
+    await waitForAsync(
+      () => vscode.commands.executeCommand("visualbridge.test.getProjectSettingsState", uri),
+      (state) => state.sourceHash === baseline.sourceHash,
+      10_000,
+      "Project Settings undo did not restore the original semantic source.",
+    );
+    await vscode.commands.executeCommand("workbench.action.files.revert");
+    assert.deepEqual(await vscode.workspace.fs.readFile(uri), before);
+  });
+
+  await test("rejects Authoring files that resolve outside the Project through a directory link", async () => {
+    const externalRoot = await mkdtemp(path.join(tmpdir(), "visualbridge-outside-authoring-"));
+    const linkedRoot = path.join(workspacePath, "StructuredSemanticProject", "Config", "OutsideLink");
+    const externalDocument = path.join(externalRoot, "Outside.gamesettings");
+    await writeFile(externalDocument, "{}\n", "utf8");
+    let linkCreated = false;
+    try {
+      await symlink(externalRoot, linkedRoot, process.platform === "win32" ? "junction" : "dir");
+      linkCreated = true;
+      const match = await vscode.commands.executeCommand(
+        "visualbridge.test.resolveDocument",
+        vscode.Uri.file(path.join(linkedRoot, "Outside.gamesettings")),
+      );
+      assert.equal(match, undefined);
+    } finally {
+      if (linkCreated) await unlink(linkedRoot);
+      await rm(externalRoot, { recursive: true, force: true });
+    }
   });
 };
 

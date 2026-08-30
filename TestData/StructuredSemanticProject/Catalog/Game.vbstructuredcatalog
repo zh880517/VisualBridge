@@ -2,6 +2,9 @@
   "formatVersion": 1,
   "catalogId": "sample.structured.catalog",
   "title": "Game Settings",
+  "source": {
+    "status": "unknown"
+  },
   "configTypes": [
     {
       "id": "sample.game.settings",

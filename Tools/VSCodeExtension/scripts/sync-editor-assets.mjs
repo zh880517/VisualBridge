@@ -4,6 +4,7 @@ import path from "node:path";
 
 const extensionRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const graphEditorDist = path.resolve(extensionRoot, "..", "..", "Editors", "Graph", "dist");
+const projectEditorDist = path.resolve(extensionRoot, "..", "..", "Editors", "Project", "dist");
 const entityEditorDist = path.resolve(extensionRoot, "..", "..", "Editors", "Entity", "dist");
 const structuredEditorDist = path.resolve(extensionRoot, "..", "..", "Editors", "Structured", "dist");
 const tableEditorDist = path.resolve(extensionRoot, "..", "..", "Editors", "Table", "dist");
@@ -13,6 +14,8 @@ await mkdir(webviewDist, { recursive: true });
 await Promise.all([
   copyFile(path.join(graphEditorDist, "graphEditor.js"), path.join(webviewDist, "graphEditor.js")),
   copyFile(path.join(graphEditorDist, "graphEditor.css"), path.join(webviewDist, "graphEditor.css")),
+  copyFile(path.join(projectEditorDist, "projectEditor.js"), path.join(webviewDist, "projectEditor.js")),
+  copyFile(path.join(projectEditorDist, "projectEditor.css"), path.join(webviewDist, "projectEditor.css")),
   copyFile(path.join(entityEditorDist, "entityEditor.js"), path.join(webviewDist, "entityEditor.js")),
   copyFile(path.join(entityEditorDist, "entityEditor.css"), path.join(webviewDist, "entityEditor.css")),
   copyFile(path.join(structuredEditorDist, "structuredEditor.js"), path.join(webviewDist, "structuredEditor.js")),

@@ -70,6 +70,12 @@ export function parseProjectFile(text: string): ProjectFileParseResult {
   }
 
   const issues: ProjectFileIssue[] = [];
+  rejectUnknownKeys(
+    value,
+    ["formatVersion", "projectId", "documentRoots", "documentTypes", "tableLayout", "providers"],
+    "$",
+    issues,
+  );
   if (value.formatVersion !== PROJECT_FORMAT_VERSION) {
     issues.push({
       path: "formatVersion",
@@ -108,6 +114,42 @@ export function parseProjectFile(text: string): ProjectFileParseResult {
       providers,
     },
   };
+}
+
+export function serializeProjectFile(project: VisualBridgeProjectDefinition): string {
+  return `${JSON.stringify({
+    formatVersion: PROJECT_FORMAT_VERSION,
+    projectId: project.projectId,
+    documentRoots: [...project.documentRoots],
+    documentTypes: project.documentTypes.map((documentType) => ({
+      id: documentType.id,
+      editor: documentType.editor,
+      include: [...documentType.include],
+      exclude: [...documentType.exclude],
+      catalogs: [...documentType.catalogs],
+    })),
+    ...(project.tableLayout === undefined ? {} : {
+      tableLayout: {
+        nameKeyRow: project.tableLayout.nameKeyRow,
+        dataStartRow: project.tableLayout.dataStartRow,
+      },
+    }),
+    ...(project.providers.length === 0 ? {} : {
+      providers: project.providers.map((provider) => ({
+        id: provider.id,
+        entry: provider.entry,
+        args: [...provider.args],
+        capabilities: {
+          ...(provider.capabilities.reference === undefined ? {} : {
+            reference: { kinds: [...provider.capabilities.reference.kinds] },
+          }),
+          ...(provider.capabilities.validator === undefined ? {} : {
+            validator: { documentTypes: [...provider.capabilities.validator.documentTypes] },
+          }),
+        },
+      })),
+    }),
+  }, undefined, 2)}\n`;
 }
 
 function readProviders(
@@ -312,6 +354,7 @@ function readTableLayout(
     issues.push({ path: "tableLayout", message: "Expected an object." });
     return undefined;
   }
+  rejectUnknownKeys(value, ["nameKeyRow", "dataStartRow"], "tableLayout", issues);
   const nameKeyRow = readPositiveInteger(value.nameKeyRow, "tableLayout.nameKeyRow", issues);
   const dataStartRow = readPositiveInteger(value.dataStartRow, "tableLayout.dataStartRow", issues);
   if (nameKeyRow !== undefined && dataStartRow !== undefined && dataStartRow <= nameKeyRow) {
@@ -356,6 +399,8 @@ function readDocumentTypes(
       return;
     }
 
+    rejectUnknownKeys(entry, ["id", "editor", "include", "exclude", "catalogs"], basePath, issues);
+
     const id = readIdentifier(entry.id, `${basePath}.id`, issues);
     const editor = readIdentifier(entry.editor, `${basePath}.editor`, issues);
     const include = readGlobPatterns(entry.include, `${basePath}.include`, issues);
@@ -369,7 +414,7 @@ function readDocumentTypes(
       });
     }
     const catalogs = entry.catalogs !== undefined
-      ? readRelativePaths(entry.catalogs, `${basePath}.catalogs`, issues)
+      ? readRelativePaths(entry.catalogs, `${basePath}.catalogs`, issues, true)
       : [];
 
     if (id !== undefined && seenIds.has(id)) {
@@ -405,9 +450,10 @@ function readRelativePaths(
   value: unknown,
   path: string,
   issues: ProjectFileIssue[],
+  allowEmpty = false,
 ): readonly string[] {
-  if (!Array.isArray(value) || value.length === 0) {
-    issues.push({ path, message: "Expected a non-empty array of relative paths." });
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) {
+    issues.push({ path, message: allowEmpty ? "Expected an array of relative paths." : "Expected a non-empty array of relative paths." });
     return [];
   }
 
@@ -462,19 +508,47 @@ function readGlobPatterns(
   }
 
   const result: string[] = [];
+  const seen = new Set<string>();
   value.forEach((entry, index) => {
-    if (typeof entry !== "string" || entry.trim().length === 0 || entry.includes("\\")) {
+    if (typeof entry !== "string" || !isSafeGlobPattern(entry)) {
       issues.push({
         path: `${path}[${index}]`,
-        message: "Expected a non-empty glob pattern using '/' separators.",
+        message: "Expected a normalized project-relative glob using '/' separators without negation, empty, '.' or '..' segments.",
       });
       return;
     }
 
+    if (seen.has(entry)) {
+      issues.push({ path: `${path}[${index}]`, message: `Duplicate glob pattern '${entry}'.` });
+      return;
+    }
+    seen.add(entry);
     result.push(entry);
   });
 
   return result;
+}
+
+function isSafeGlobPattern(value: string): boolean {
+  if (
+    value.length === 0
+    || value.trim() !== value
+    || value.startsWith("/")
+    || value.startsWith("!")
+    || /^[A-Za-z]:\//u.test(value)
+    || value.includes("\\")
+    || value.includes("\0")
+    || /[?\[\]{}()!]/u.test(value)
+  ) {
+    return false;
+  }
+  return value.split("/").every((segment) => (
+    segment.length > 0
+    && segment !== "."
+    && segment !== ".."
+    && (segment === "**" || !segment.includes("**"))
+    && (segment === "**" || (segment.match(/\*/gu)?.length ?? 0) <= 1)
+  ));
 }
 
 function isSafeRelativePath(value: string): boolean {

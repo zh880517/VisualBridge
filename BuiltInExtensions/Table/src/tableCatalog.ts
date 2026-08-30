@@ -1,11 +1,12 @@
 import type {
+  CatalogSourceDefinition,
   DocumentDiagnostic,
   DocumentParseResult,
   FieldDefinition,
   FieldValueDefinition,
   JsonValue,
 } from "@visualbridge/core";
-import { parseFieldDefinitions } from "@visualbridge/core";
+import { parseCatalogSourceDefinition, parseFieldDefinitions } from "@visualbridge/core";
 
 export const TABLE_EDITOR_ID = "table";
 export const TABLE_CATALOG_FORMAT_VERSION = 1;
@@ -64,6 +65,7 @@ export interface TableCatalog {
   readonly formatVersion: typeof TABLE_CATALOG_FORMAT_VERSION;
   readonly catalogId: string;
   readonly title: string;
+  readonly source: CatalogSourceDefinition;
   readonly tableTypes: readonly TableTypeDefinition[];
 }
 
@@ -93,7 +95,7 @@ export function parseTableCatalog(text: string): DocumentParseResult<TableCatalo
   }
 
   const diagnostics: DocumentDiagnostic[] = [];
-  checkKeys(value, ["formatVersion", "catalogId", "title", "tableTypes"], "$", diagnostics);
+  checkKeys(value, ["formatVersion", "catalogId", "title", "source", "tableTypes"], "$", diagnostics);
   if (value.formatVersion !== TABLE_CATALOG_FORMAT_VERSION) {
     diagnostics.push(error(
       "tableCatalog.unsupportedVersion",
@@ -103,13 +105,27 @@ export function parseTableCatalog(text: string): DocumentParseResult<TableCatalo
   }
   const catalogId = readIdentifier(value.catalogId, "catalogId", diagnostics);
   const title = readNonEmptyString(value.title, "title", diagnostics);
+  const sourceResult = parseCatalogSourceDefinition(value.source);
+  if (!sourceResult.success) {
+    diagnostics.push(...sourceResult.issues.map((issue) => error(
+      "tableCatalog.invalidSource",
+      issue.path,
+      issue.message,
+    )));
+  }
   const tableTypes = readTableTypes(value.tableTypes, diagnostics);
-  if (catalogId === undefined || title === undefined || hasErrors(diagnostics)) {
+  if (catalogId === undefined || title === undefined || !sourceResult.success || hasErrors(diagnostics)) {
     return { success: false, diagnostics };
   }
   return {
     success: true,
-    document: { formatVersion: TABLE_CATALOG_FORMAT_VERSION, catalogId, title, tableTypes },
+    document: {
+      formatVersion: TABLE_CATALOG_FORMAT_VERSION,
+      catalogId,
+      title,
+      source: sourceResult.value,
+      tableTypes,
+    },
     diagnostics,
   };
 }

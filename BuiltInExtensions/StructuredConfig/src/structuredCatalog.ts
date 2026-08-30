@@ -1,5 +1,15 @@
-import type { DocumentDiagnostic, DocumentParseResult, FieldDefinition } from "@visualbridge/core";
-import { parseFieldDefinitions, serializeFieldDefinition } from "@visualbridge/core";
+import type {
+  CatalogSourceDefinition,
+  DocumentDiagnostic,
+  DocumentParseResult,
+  FieldDefinition,
+} from "@visualbridge/core";
+import {
+  parseCatalogSourceDefinition,
+  parseFieldDefinitions,
+  serializeCatalogSourceDefinition,
+  serializeFieldDefinition,
+} from "@visualbridge/core";
 
 export const STRUCTURED_EDITOR_ID = "structured";
 export const STRUCTURED_CATALOG_FORMAT_VERSION = 1;
@@ -22,6 +32,7 @@ export interface StructuredCatalog {
   readonly formatVersion: typeof STRUCTURED_CATALOG_FORMAT_VERSION;
   readonly catalogId: string;
   readonly title: string;
+  readonly source: CatalogSourceDefinition;
   readonly configTypes: readonly StructuredConfigTypeDefinition[];
 }
 
@@ -50,7 +61,7 @@ export function parseStructuredCatalog(text: string): DocumentParseResult<Struct
     return failure("structuredCatalog.invalidRoot", "$", "Structured Catalog must contain a JSON object.");
   }
   const diagnostics: DocumentDiagnostic[] = [];
-  checkKeys(value, ["formatVersion", "catalogId", "title", "configTypes"], "$", diagnostics);
+  checkKeys(value, ["formatVersion", "catalogId", "title", "source", "configTypes"], "$", diagnostics);
   if (value.formatVersion !== STRUCTURED_CATALOG_FORMAT_VERSION) {
     diagnostics.push(error(
       "structuredCatalog.unsupportedVersion",
@@ -60,9 +71,17 @@ export function parseStructuredCatalog(text: string): DocumentParseResult<Struct
   }
   const catalogId = readIdentifier(value.catalogId, "catalogId", diagnostics);
   const title = readNonEmptyString(value.title, "title", diagnostics);
+  const sourceResult = parseCatalogSourceDefinition(value.source);
+  if (!sourceResult.success) {
+    diagnostics.push(...sourceResult.issues.map((issue) => error(
+      "structuredCatalog.invalidSource",
+      issue.path,
+      issue.message,
+    )));
+  }
   const configTypes = readConfigTypes(value.configTypes, diagnostics);
   validateIdentityNamespace(configTypes, "configTypes", diagnostics, "structuredCatalog.duplicateLocalIdentity");
-  if (catalogId === undefined || title === undefined || hasErrors(diagnostics)) {
+  if (catalogId === undefined || title === undefined || !sourceResult.success || hasErrors(diagnostics)) {
     return { success: false, diagnostics };
   }
   return {
@@ -71,6 +90,7 @@ export function parseStructuredCatalog(text: string): DocumentParseResult<Struct
       formatVersion: STRUCTURED_CATALOG_FORMAT_VERSION,
       catalogId,
       title,
+      source: sourceResult.value,
       configTypes,
     },
     diagnostics,
@@ -138,6 +158,7 @@ export function serializeStructuredCatalog(catalog: StructuredCatalog): string {
     formatVersion: STRUCTURED_CATALOG_FORMAT_VERSION,
     catalogId: catalog.catalogId,
     title: catalog.title,
+    source: serializeCatalogSourceDefinition(catalog.source),
     configTypes: [...catalog.configTypes]
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((configType) => ({

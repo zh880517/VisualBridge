@@ -2,6 +2,9 @@
   "formatVersion": 1,
   "catalogId": "sample.table.gameplay",
   "title": "Gameplay Tables",
+  "source": {
+    "status": "unknown"
+  },
   "tableTypes": [
     {
       "id": "game.table.skills",

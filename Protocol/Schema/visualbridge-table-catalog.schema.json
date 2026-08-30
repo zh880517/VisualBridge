@@ -3,11 +3,12 @@
   "$id": "https://visualbridge.dev/schema/visualbridge-table-catalog.schema.json",
   "title": "VisualBridge Table Catalog",
   "type": "object",
-  "required": ["formatVersion", "catalogId", "title", "tableTypes"],
+  "required": ["formatVersion", "catalogId", "title", "source", "tableTypes"],
   "properties": {
     "formatVersion": { "const": 1 },
     "catalogId": { "$ref": "#/$defs/identifier" },
     "title": { "$ref": "#/$defs/nonEmptyString" },
+    "source": { "$ref": "visualbridge-catalog-source.schema.json" },
     "tableTypes": {
       "type": "array",
       "minItems": 1,

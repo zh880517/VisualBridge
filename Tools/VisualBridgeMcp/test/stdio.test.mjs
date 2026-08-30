@@ -1219,7 +1219,7 @@ test("MCP project transactions recover dead-owner journals and preserve unknown 
     const projectPath = path.join(projectRoot, "VisualBridge.project.vbjson");
     const projectDefinition = JSON.parse(await readFile(projectPath, "utf8"));
     projectDefinition.documentRoots = ["."];
-    projectDefinition.documentTypes[0].include.push(".visualbridge-*", "**/*.visualbridge-*");
+    projectDefinition.documentTypes[0].include.push(".visualbridge-*", "**/*.tmp", "**/*.rollback");
     await writeFile(projectPath, `${JSON.stringify(projectDefinition, null, 2)}\n`, "utf8");
     const discovery = await call(client, "visualbridge_project", { action: "discover" });
     const projectFile = discovery.projects[0].projectFile;

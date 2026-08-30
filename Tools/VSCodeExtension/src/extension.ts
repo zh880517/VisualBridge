@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { DocumentLifecycleDeleteTarget, ReferenceLocation } from "@visualbridge/core";
 import { TABLE_EDITOR_ID } from "@visualbridge/table";
+import { CatalogBrowser } from "./catalog/catalogBrowser";
 import { createDocument } from "./commands/createDocument";
 import { createEntityDocument } from "./commands/createEntityDocument";
 import { createGraphDocument } from "./commands/createGraphDocument";
@@ -16,6 +17,10 @@ import {
 } from "./editor/documentEditorProvider";
 import { TABLE_EDITOR_VIEW_TYPE, TableEditorProvider } from "./editor/tableEditorProvider";
 import { ProjectRegistry } from "./project/projectRegistry";
+import {
+  PROJECT_SETTINGS_EDITOR_VIEW_TYPE,
+  ProjectSettingsEditorProvider,
+} from "./project/projectSettingsEditorProvider";
 import { WorkspaceProjectProviderService } from "./provider/workspaceProjectProviderService";
 import {
   REVEAL_REFERENCE_COMMAND,
@@ -35,6 +40,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const projectDiagnostics = vscode.languages.createDiagnosticCollection("visualbridge-project");
   const documentDiagnostics = vscode.languages.createDiagnosticCollection("visualbridge-document");
   const workspaceDiagnostics = vscode.languages.createDiagnosticCollection("visualbridge-workspace");
+  const catalogDiagnostics = vscode.languages.createDiagnosticCollection("visualbridge-catalog");
   const projects = new ProjectRegistry(projectDiagnostics, output);
   const projectProviders = new WorkspaceProjectProviderService(projects, output);
   const references = new WorkspaceReferenceService(projects, output, projectProviders);
@@ -52,6 +58,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     documentDiagnostics,
     output,
   );
+  const projectSettingsEditor = new ProjectSettingsEditorProvider(context.extensionUri, projects, output);
   const tableEditorProvider = new TableEditorProvider(
     context.extensionUri,
     projects,
@@ -75,6 +82,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     output,
   );
   const browser = new DocumentBrowser(projects, documents, references, refactors, lifecycle);
+  const catalogBrowser = new CatalogBrowser(projects, catalogDiagnostics, output);
+  const catalogTree = vscode.window.createTreeView("visualbridge.catalogs", {
+    treeDataProvider: catalogBrowser,
+    showCollapseAll: true,
+  });
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   status.name = "VisualBridge Projects";
   status.command = "visualbridge.refreshProjects";
@@ -134,7 +146,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(
       vscode.commands.registerCommand(
         "visualbridge.test.isEditorReady",
-        (uri: vscode.Uri) => editorProvider.isEditorReady(uri) || tableEditorProvider.isEditorReady(uri),
+        (uri: vscode.Uri) => editorProvider.isEditorReady(uri)
+          || tableEditorProvider.isEditorReady(uri)
+          || projectSettingsEditor.isReady(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.getProjectSettingsState",
+        (uri: vscode.Uri) => projectSettingsEditor.getTestState(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.applyProjectOperations",
+        (uri: vscode.Uri, sourceHash: string, operations: unknown) => (
+          projectSettingsEditor.applyOperationsForTest(uri, sourceHash, operations)
+        ),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.getCatalogBrowserSnapshot",
+        () => catalogBrowser.snapshot(),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.resolveDocument",
+        (uri: vscode.Uri) => {
+          const match = projects.resolveDocument(uri);
+          return match === undefined ? undefined : {
+            projectId: match.project.definition.projectId,
+            documentTypeId: match.documentType.id,
+            relativePath: match.relativePath,
+          };
+        },
       ),
       vscode.commands.registerCommand(
         "visualbridge.test.getTableEditorState",
@@ -330,13 +369,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     projectDiagnostics,
     documentDiagnostics,
     workspaceDiagnostics,
+    catalogDiagnostics,
     projects,
     projectProviders,
     references,
     documents,
     browser,
+    catalogBrowser,
+    catalogTree,
+    projectSettingsEditor,
     status,
     projects.onDidChange(updateStatus),
+    documents.onDidChange(() => void catalogBrowser.refresh()),
     vscode.commands.registerCommand("visualbridge.refreshProjects", async () => {
       await projects.refresh();
       const message = projects.projects.length === 0
@@ -364,6 +408,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         uri,
         match.documentType.editor === TABLE_EDITOR_ID ? TABLE_EDITOR_VIEW_TYPE : OPTIONAL_EDITOR_VIEW_TYPE,
       );
+    }),
+    vscode.commands.registerCommand("visualbridge.openProjectSettings", async (resource?: vscode.Uri) => {
+      let uri = resource;
+      if (uri === undefined) {
+        const selected = await vscode.window.showQuickPick(projects.projects.map((project) => ({
+          label: project.definition.projectId,
+          description: project.markerUri.fsPath,
+          uri: project.markerUri,
+        })), { title: "Open VisualBridge Project Settings" });
+        uri = selected?.uri;
+      }
+      if (uri !== undefined) await vscode.commands.executeCommand("vscode.openWith", uri, PROJECT_SETTINGS_EDITOR_VIEW_TYPE);
+    }),
+    vscode.commands.registerCommand("visualbridge.catalogBrowser.refresh", () => catalogBrowser.refresh()),
+    vscode.commands.registerCommand("visualbridge.catalogBrowser.open", async (uri?: vscode.Uri) => {
+      if (uri !== undefined) await vscode.window.showTextDocument(uri, { preview: true });
     }),
     vscode.commands.registerCommand("visualbridge.createGraphDocument", async () => {
       await createGraphDocument(projects, lifecycle);
@@ -430,6 +490,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       supportsMultipleEditorsPerDocument: true,
       webviewOptions: { retainContextWhenHidden: false },
     }),
+    vscode.window.registerCustomEditorProvider(PROJECT_SETTINGS_EDITOR_VIEW_TYPE, projectSettingsEditor, {
+      supportsMultipleEditorsPerDocument: true,
+      webviewOptions: { retainContextWhenHidden: false },
+    }),
     tableEditorProvider,
     vscode.window.registerCustomEditorProvider(TABLE_EDITOR_VIEW_TYPE, tableEditorProvider, {
       supportsMultipleEditorsPerDocument: true,
@@ -439,6 +503,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   await projects.initialize();
   await documents.initialize();
+  await catalogBrowser.refresh();
   updateStatus();
   output.appendLine("[extension] VisualBridge extension shell activated.");
 }

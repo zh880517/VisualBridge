@@ -2,6 +2,9 @@
   "formatVersion": 4,
   "catalogId": "sample.logic",
   "title": "Logic",
+  "source": {
+    "status": "unknown"
+  },
   "dataTypes": [],
   "graphTypes": [
     {

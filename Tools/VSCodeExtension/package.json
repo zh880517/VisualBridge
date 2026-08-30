@@ -39,6 +39,12 @@
         "enablement": "visualbridge.hasProjects"
       },
       {
+        "command": "visualbridge.openProjectSettings",
+        "title": "VisualBridge: Open Project Settings",
+        "enablement": "visualbridge.hasProjects",
+        "icon": "$(settings-gear)"
+      },
+      {
         "command": "visualbridge.createGraphDocument",
         "title": "VisualBridge: Create Graph Document",
         "enablement": "visualbridge.hasProjects"
@@ -124,6 +130,16 @@
         "command": "visualbridge.documentBrowser.renameReferenceTarget",
         "title": "Rename Reference Target",
         "icon": "$(replace)"
+      },
+      {
+        "command": "visualbridge.catalogBrowser.refresh",
+        "title": "Refresh Catalogs",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "visualbridge.catalogBrowser.open",
+        "title": "Open Catalog",
+        "icon": "$(go-to-file)"
       }
     ],
     "viewsContainers": {
@@ -140,6 +156,10 @@
         {
           "id": "visualbridge.documents",
           "name": "Documents"
+        },
+        {
+          "id": "visualbridge.catalogs",
+          "name": "Catalogs"
         }
       ]
     },
@@ -178,6 +198,16 @@
           "command": "visualbridge.documentBrowser.refresh",
           "when": "view == visualbridge.documents",
           "group": "navigation@4"
+        },
+        {
+          "command": "visualbridge.openProjectSettings",
+          "when": "view == visualbridge.catalogs && visualbridge.hasProjects",
+          "group": "navigation@1"
+        },
+        {
+          "command": "visualbridge.catalogBrowser.refresh",
+          "when": "view == visualbridge.catalogs",
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [
@@ -224,6 +254,16 @@
       ]
     },
     "customEditors": [
+      {
+        "viewType": "visualbridge.projectSettingsEditor",
+        "displayName": "VisualBridge Project Settings",
+        "selector": [
+          {
+            "filenamePattern": "VisualBridge.project.vbjson"
+          }
+        ],
+        "priority": "default"
+      },
       {
         "viewType": "visualbridge.documentEditor",
         "displayName": "VisualBridge Editor",
@@ -307,14 +347,15 @@
     "prepare:package": "node ./scripts/prepare-package.mjs",
     "build:host-dependencies": "npm run build --workspace @visualbridge/core && npm run build --workspace @visualbridge/node-host && npm run build --workspace @visualbridge/entity && npm run build --workspace @visualbridge/graph && npm run build --workspace @visualbridge/structured && npm run build --workspace @visualbridge/table",
     "build:graph-editor": "npm run build --workspace @visualbridge/graph-editor",
+    "build:project-editor": "npm run build --workspace @visualbridge/project-editor",
     "build:entity-editor": "npm run build --workspace @visualbridge/entity-editor",
     "build:structured-editor": "npm run build --workspace @visualbridge/structured-editor",
     "build:table-editor": "npm run build --workspace @visualbridge/table-editor",
     "sync:editor-assets": "node ./scripts/sync-editor-assets.mjs",
     "sync:protocol": "node ./scripts/sync-protocol-assets.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
-    "build": "npm run clean && npm run build:graph-editor && npm run build:entity-editor && npm run build:structured-editor && npm run build:table-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap && npm run check",
-    "watch": "npm run clean && npm run build:graph-editor && npm run build:entity-editor && npm run build:structured-editor && npm run build:table-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap --watch",
+    "build": "npm run clean && npm run build:graph-editor && npm run build:entity-editor && npm run build:project-editor && npm run build:structured-editor && npm run build:table-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap && npm run check",
+    "watch": "npm run clean && npm run build:graph-editor && npm run build:entity-editor && npm run build:project-editor && npm run build:structured-editor && npm run build:table-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap --watch",
     "package:vsix": "npm run build && npm run prepare:package && vsce package --no-dependencies --out artifacts/visualbridge.vsix",
     "test:unit": "node ./test/runUnitTests.mjs",
     "test:host": "npm run build:host-dependencies && npm run build && node ./test/runTest.mjs && node ./test/runRestrictedTest.mjs",
@@ -330,6 +371,7 @@
     "@visualbridge/entity-editor": "*",
     "@visualbridge/graph": "*",
     "@visualbridge/graph-editor": "*",
+    "@visualbridge/project-editor": "*",
     "@visualbridge/node-host": "*",
     "@visualbridge/structured": "*",
     "@visualbridge/structured-editor": "*",

@@ -2,6 +2,8 @@
 
 This package contains the VS Code host adapter for VisualBridge. The extension activates project features only when it discovers and validates a `VisualBridge.project.vbjson` file in the current workspace.
 
+Use **VisualBridge: Open Project Settings** to edit roots, Document Types, arbitrary include/exclude patterns, Catalog bindings, Table layout and Project Providers through validated structured Operations. The **Catalogs** Activity Bar view is read-only and shows Registry types, aliases, source/content Hashes, stale state, conflicts and diagnostics. See [`ProjectCatalogManagement.md`](../../Doc/ProjectCatalogManagement.md).
+
 ## Development
 
 From the repository root:

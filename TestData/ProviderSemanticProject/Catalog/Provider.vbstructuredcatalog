@@ -2,6 +2,12 @@
   "formatVersion": 1,
   "catalogId": "sample.provider.catalog",
   "title": "Provider Settings",
+  "source": {
+    "status": "stale",
+    "providerId": "sample.provider",
+    "sourceHash": "1111111111111111111111111111111111111111111111111111111111111111",
+    "currentSourceHash": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
   "configTypes": [
     {
       "id": "sample.provider.settings",

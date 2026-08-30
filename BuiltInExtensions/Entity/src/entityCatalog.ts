@@ -1,5 +1,16 @@
-import type { DocumentDiagnostic, DocumentParseResult, FieldDefinition } from "@visualbridge/core";
-import { parseFieldDefinitions, serializeFieldDefinition } from "@visualbridge/core";
+import type {
+  CatalogSourceDefinition,
+  DocumentDiagnostic,
+  DocumentParseResult,
+  FieldDefinition,
+} from "@visualbridge/core";
+import {
+  createUnknownCatalogSource,
+  parseCatalogSourceDefinition,
+  parseFieldDefinitions,
+  serializeCatalogSourceDefinition,
+  serializeFieldDefinition,
+} from "@visualbridge/core";
 
 export const ENTITY_EDITOR_ID = "entity";
 export const ENTITY_CATALOG_FORMAT_VERSION = 1;
@@ -39,6 +50,7 @@ export interface EntityCatalog {
   readonly formatVersion: typeof ENTITY_CATALOG_FORMAT_VERSION;
   readonly catalogId: string;
   readonly title: string;
+  readonly source: CatalogSourceDefinition;
   readonly componentGroups: readonly EntityComponentGroupDefinition[];
   readonly entityTypes: readonly EntityTypeDefinition[];
   readonly componentTypes: readonly EntityComponentTypeDefinition[];
@@ -82,6 +94,7 @@ export function createEmptyEntityCatalog(catalogId = "empty"): EntityCatalog {
     formatVersion: ENTITY_CATALOG_FORMAT_VERSION,
     catalogId,
     title: catalogId,
+    source: createUnknownCatalogSource(),
     componentGroups: [],
     entityTypes: [],
     componentTypes: [],
@@ -106,7 +119,7 @@ export function parseEntityCatalog(text: string): DocumentParseResult<EntityCata
   const diagnostics: DocumentDiagnostic[] = [];
   checkKeys(
     value,
-    ["formatVersion", "catalogId", "title", "componentGroups", "entityTypes", "componentTypes"],
+    ["formatVersion", "catalogId", "title", "source", "componentGroups", "entityTypes", "componentTypes"],
     "$",
     diagnostics,
   );
@@ -119,13 +132,26 @@ export function parseEntityCatalog(text: string): DocumentParseResult<EntityCata
   }
   const catalogId = readIdentifier(value.catalogId, "catalogId", diagnostics);
   const title = readNonEmptyString(value.title, "title", diagnostics);
+  const sourceResult = parseCatalogSourceDefinition(value.source);
+  if (!sourceResult.success) {
+    diagnostics.push(...sourceResult.issues.map((issue) => error(
+      "entityCatalog.invalidSource",
+      issue.path,
+      issue.message,
+    )));
+  }
   const componentGroups = readComponentGroups(value.componentGroups, diagnostics);
   const entityTypes = readEntityTypes(value.entityTypes, diagnostics);
   const componentTypes = readComponentTypes(value.componentTypes, diagnostics);
   validateLocalIdentityNamespace(componentGroups, "componentGroups", diagnostics);
   validateLocalIdentityNamespace(entityTypes, "entityTypes", diagnostics);
   validateLocalIdentityNamespace(componentTypes, "componentTypes", diagnostics);
-  if (diagnostics.some((diagnostic) => diagnostic.severity === "error") || catalogId === undefined || title === undefined) {
+  if (
+    diagnostics.some((diagnostic) => diagnostic.severity === "error")
+    || catalogId === undefined
+    || title === undefined
+    || !sourceResult.success
+  ) {
     return { success: false, diagnostics };
   }
   return {
@@ -134,6 +160,7 @@ export function parseEntityCatalog(text: string): DocumentParseResult<EntityCata
       formatVersion: ENTITY_CATALOG_FORMAT_VERSION,
       catalogId,
       title,
+      source: sourceResult.value,
       componentGroups,
       entityTypes,
       componentTypes,
@@ -295,6 +322,7 @@ export function serializeEntityCatalog(catalog: EntityCatalog): string {
     formatVersion: ENTITY_CATALOG_FORMAT_VERSION,
     catalogId: catalog.catalogId,
     title: catalog.title,
+    source: serializeCatalogSourceDefinition(catalog.source),
     componentGroups: [...catalog.componentGroups]
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((group) => ({ id: group.id, title: group.title, aliases: [...group.aliases].sort() })),

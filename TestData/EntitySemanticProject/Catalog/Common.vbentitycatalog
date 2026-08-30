@@ -2,6 +2,11 @@
   "formatVersion": 1,
   "catalogId": "sample.entity.common",
   "title": "Common",
+  "source": {
+    "status": "current",
+    "providerId": "unity",
+    "sourceHash": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
   "componentGroups": [
     {
       "id": "sample.group.combat",

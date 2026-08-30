@@ -149,10 +149,13 @@ async function verifyInstalledFiles(extensionsDirectory, expectedManifest) {
     "dist/webview/entityEditor.css",
     "dist/webview/graphEditor.js",
     "dist/webview/graphEditor.css",
+    "dist/webview/projectEditor.js",
+    "dist/webview/projectEditor.css",
     "dist/webview/structuredEditor.js",
     "dist/webview/structuredEditor.css",
     "dist/webview/tableEditor.js",
     "dist/webview/tableEditor.css",
+    "dist/schemas/visualbridge-catalog-source.schema.json",
   ];
   for (const relativePath of requiredPaths) {
     await access(path.resolve(installedPath, relativePath), constants.R_OK);

@@ -1,5 +1,15 @@
-import type { DocumentDiagnostic, DocumentParseResult, ReferenceDefinition } from "@visualbridge/core";
-import { parseReferenceDefinition } from "@visualbridge/core";
+import type {
+  CatalogSourceDefinition,
+  DocumentDiagnostic,
+  DocumentParseResult,
+  ReferenceDefinition,
+} from "@visualbridge/core";
+import {
+  createUnknownCatalogSource,
+  parseCatalogSourceDefinition,
+  parseReferenceDefinition,
+  serializeCatalogSourceDefinition,
+} from "@visualbridge/core";
 import type { JsonValue } from "./graphDocument";
 
 export const GRAPH_CATALOG_FORMAT_VERSION = 4;
@@ -147,6 +157,7 @@ export interface GraphCatalog {
   readonly formatVersion: typeof GRAPH_CATALOG_FORMAT_VERSION;
   readonly catalogId: string;
   readonly title: string;
+  readonly source: CatalogSourceDefinition;
   readonly dataTypes: readonly GraphDataTypeDefinition[];
   readonly graphTypes: readonly GraphTypeDefinition[];
   readonly nodeTypes: readonly GraphNodeTypeDefinition[];
@@ -193,6 +204,7 @@ export function createEmptyGraphCatalog(catalogId = "empty"): GraphCatalog {
     formatVersion: GRAPH_CATALOG_FORMAT_VERSION,
     catalogId,
     title: catalogId,
+    source: createUnknownCatalogSource(),
     dataTypes: [],
     graphTypes: [],
     nodeTypes: [],
@@ -221,7 +233,7 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
   }
 
   const diagnostics: DocumentDiagnostic[] = [];
-  checkKeys(value, ["formatVersion", "catalogId", "title", "dataTypes", "graphTypes", "nodeTypes"], "$", diagnostics);
+  checkKeys(value, ["formatVersion", "catalogId", "title", "source", "dataTypes", "graphTypes", "nodeTypes"], "$", diagnostics);
   if (
     value.formatVersion !== 1
     && value.formatVersion !== 2
@@ -239,6 +251,16 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
   const title = value.title === undefined && (value.formatVersion === 1 || value.formatVersion === 2)
     ? catalogId
     : readNonEmptyString(value.title, "title", diagnostics);
+  const sourceResult = value.source === undefined && value.formatVersion !== GRAPH_CATALOG_FORMAT_VERSION
+    ? { success: true as const, value: createUnknownCatalogSource() }
+    : parseCatalogSourceDefinition(value.source);
+  if (!sourceResult.success) {
+    diagnostics.push(...sourceResult.issues.map((issue) => error(
+      "graphCatalog.invalidSource",
+      issue.path,
+      issue.message,
+    )));
+  }
   const dataTypes = readDataTypes(value.dataTypes, diagnostics);
   const nodeTypes = readNodeTypes(value.nodeTypes, diagnostics);
   const legacyFormat = value.formatVersion === 1 || value.formatVersion === 2 || value.formatVersion === 3;
@@ -363,7 +385,12 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
     validateUniqueIds(graphType.nodeConstraints, `${basePath}.nodeConstraints`, "graphCatalog.duplicateNodeConstraintId", diagnostics);
   });
 
-  if (catalogId === undefined || title === undefined || diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+  if (
+    catalogId === undefined
+    || title === undefined
+    || !sourceResult.success
+    || diagnostics.some((diagnostic) => diagnostic.severity === "error")
+  ) {
     return { success: false, diagnostics };
   }
 
@@ -373,6 +400,7 @@ export function parseGraphCatalog(text: string): DocumentParseResult<GraphCatalo
       formatVersion: GRAPH_CATALOG_FORMAT_VERSION,
       catalogId,
       title,
+      source: sourceResult.value,
       dataTypes,
       graphTypes,
       nodeTypes,
@@ -386,6 +414,7 @@ export function serializeGraphCatalog(catalog: GraphCatalog): string {
     formatVersion: GRAPH_CATALOG_FORMAT_VERSION,
     catalogId: catalog.catalogId,
     title: catalog.title,
+    source: serializeCatalogSourceDefinition(catalog.source),
     dataTypes: [...catalog.dataTypes]
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((dataType) => ({

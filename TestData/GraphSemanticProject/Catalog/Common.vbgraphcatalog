@@ -2,6 +2,11 @@
   "formatVersion": 4,
   "catalogId": "sample.common",
   "title": "Common",
+  "source": {
+    "status": "current",
+    "providerId": "unity",
+    "sourceHash": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
   "dataTypes": [
     { "id": "int", "title": "Integer", "color": "#4DA3FF", "accepts": [] },
     { "id": "float", "title": "Float", "accepts": ["int"] },

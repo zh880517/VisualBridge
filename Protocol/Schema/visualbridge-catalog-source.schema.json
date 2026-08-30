@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://visualbridge.dev/schema/visualbridge-catalog-source.schema.json",
+  "title": "VisualBridge Catalog Source State",
+  "description": "Source snapshot state embedded in every Catalog. Catalog contentHash is computed from the actual UTF-8 file bytes and is not persisted here.",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "const": "unknown" }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["status", "providerId", "sourceHash"],
+      "properties": {
+        "status": { "const": "current" },
+        "providerId": { "$ref": "#/$defs/identifier" },
+        "sourceHash": { "$ref": "#/$defs/hash" }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["status", "providerId", "sourceHash", "currentSourceHash"],
+      "properties": {
+        "status": { "const": "stale" },
+        "providerId": { "$ref": "#/$defs/identifier" },
+        "sourceHash": { "$ref": "#/$defs/hash" },
+        "currentSourceHash": {
+          "$ref": "#/$defs/hash",
+          "description": "The current external source Hash. It must differ from sourceHash; the runtime Parser enforces this cross-field rule."
+        }
+      },
+      "additionalProperties": false
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

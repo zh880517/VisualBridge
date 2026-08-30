@@ -6,6 +6,8 @@ Structured Config 用于编辑一个普通 C# class 或 struct 对应的单根�
 
 V1 已落地严格的 Catalog/Registry、Project 类型绑定、共享字段校验、`structured.setField` 原子操作、VS Code 编辑器和 stdio MCP。当前不实现 Unity Catalog Exporter、Importer、Runtime、Debug 或 `ScriptableObject` 兼容；未来 C# 侧只从正式游戏运行时结构导出 Catalog JSON。
 
+Structured Catalog 顶层使用全平台 Catalog `source` 契约声明来源未知、当前或过期状态；Host 计算只读内容 Hash，完整规则见 [`ProjectCatalogManagement.md`](ProjectCatalogManagement.md)。
+
 ## 2. 类型身份只由 Project 绑定
 
 Structured 是 Project File 中的编辑器大类，业务子类由 Document Type 的稳定 `id` 定义。文件后缀不是类型身份，可以由 `include` / `exclude` 使用任意工程约定：

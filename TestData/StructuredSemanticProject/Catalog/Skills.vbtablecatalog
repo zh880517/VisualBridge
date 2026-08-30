@@ -2,6 +2,9 @@
   "formatVersion": 1,
   "catalogId": "sample.table.catalog",
   "title": "Sample Tables",
+  "source": {
+    "status": "unknown"
+  },
   "tableTypes": [
     {
       "id": "sample.table.skills",

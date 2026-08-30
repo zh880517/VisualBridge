@@ -857,7 +857,9 @@ VS Code 宿主边界使用官方 `@vscode/test-electron` 在最低支持版本 `
 - 完成 Unity 接入前的 Authoring / Catalog 交接契约、Catalog Registry、过期状态和只读 Catalog Browser；此阶段使用已提交固定 Catalog，不实现 Unity 生成器。
 - 已落地 Reference Service、通用 Reference Picker、反向关系、项目重构和 Project Provider V1。
 - 已落地 Project Provider 的独立 `.mjs` 进程、重启、诊断、Workspace Trust 与 MCP allowlist 边界。
-- 下一步完成 Project Settings、Catalog Browser、Catalog 来源 Hash/过期状态和大工程增量索引。
+- Project Settings、只读 Catalog Browser 和 Catalog 来源 Hash/过期状态契约已经完成；下一步处理大工程增量索引。
+
+Project Settings 的 Project Operation、文件归属校验、外部修改冲突和 Catalog Browser 行为见 [`ProjectCatalogManagement.md`](ProjectCatalogManagement.md)。Catalog 顶层 `source` 明确区分 `unknown`、`current` 与 `stale`；Host 从当前字节计算只读 `contentHash`，不在 Browser 中回写外部维护的 Catalog。
 
 阶段目标是让项目业务能力在不修改基础插件的情况下接入。
 

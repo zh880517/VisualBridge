@@ -7,6 +7,7 @@
     "formatVersion",
     "catalogId",
     "title",
+    "source",
     "componentGroups",
     "entityTypes",
     "componentTypes"
@@ -20,6 +21,9 @@
     },
     "title": {
       "$ref": "#/$defs/nonEmptyString"
+    },
+    "source": {
+      "$ref": "visualbridge-catalog-source.schema.json"
     },
     "componentGroups": {
       "type": "array",

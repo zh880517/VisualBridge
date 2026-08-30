@@ -6,6 +6,8 @@ Table V1 edits constrained game-data tables carried by UTF-8 CSV-compatible text
 
 The current implementation includes Table Catalog V1, CSV and XLSX codecs, atomic Table Operation batches, a record-oriented VS Code table editor, project-defined file associations, partitioned logical tables, fixed semantic fixtures and a stdio MCP adapter for semantic query/search/validation/editing. It does not add Unity code. Unity Catalog export, authoring import, runtime compilation and debugging remain future work.
 
+Every Table Catalog uses the shared top-level `source` contract to declare unknown, current, or stale external definitions. The Host computes its read-only content Hash; see [`ProjectCatalogManagement.md`](ProjectCatalogManagement.md).
+
 ## 2. C# owns the data definition
 
 The future C# exporter is the source of truth for:
