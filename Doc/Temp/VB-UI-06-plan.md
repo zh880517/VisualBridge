@@ -26,4 +26,15 @@
 
 ## 验证记录
 
-（随实施填写）
+### 阶段 1（2026-08-30，已完成）
+
+spike 与威胁模型全部完成，证据与结论见 [VB-UI-06-spike-report.md](VB-UI-06-spike-report.md)，冻结设计已写入 `UnityIntegrationArchitecture.md` §12：
+
+- 独立进程传输矩阵：pipe 往返 6–7ms、TCP 9–15ms，无效 token/非 JSON 拒绝，死端口快速失败、不存在的管道超时。
+- 服务器重启/崩溃：记录替换与重连成功；崩溃残留由心跳陈旧性检测兜底。
+- 真实 Unity 6000.3.10f1 编辑器进程：pipe 往返 2ms、TCP 5ms；发现 C# 裸管道名与 JSON 转义两个实现陷阱。
+- Domain Reload：连接与静态状态不存活、reload 后立即重连成功。
+- 隔离 VS Code 1.105.1 扩展宿主：宿主内管道服务器接受外部进程 open 交换。
+- 多窗口：陈旧心跳/死 pid 过滤正确，显式 windowId 选择路由正确。
+- 选型：named pipe 为主 + TCP 回退、NDJSON 分帧、文件型 discovery + 心跳/pid 陈旧判定、每窗口随机 token、generation 递增、指数退避重连、多候选显式选择；WebSocket 拒绝。
+- 威胁模型：防误路由与最小暴露为目标，不防同用户恶意进程；攻击面/伪造记录/拒绝面/DoS/泄露逐项分析。

@@ -6,7 +6,7 @@
 
 本文在 [`VisualBridgeArchitecture.md`](VisualBridgeArchitecture.md)、[`ProtocolContracts.md`](ProtocolContracts.md)、[`StructuredConfigModel.md`](StructuredConfigModel.md) 和四个领域正式契约之上补充 Unity 侧职责。已有 Project、Catalog、Document、Field、稳定 ID、Hash 和诊断语义继续以 `Protocol/Schema`、`Protocol/contract-manifest.json`、现有 TypeScript Core 及领域正式文档为准。本文不能通过概念描述覆盖或放宽这些已冻结契约。
 
-当前仓库已经完成 C# contract generator、有效 UPM Package、Integration Profile V1、Structured Catalog Exporter 与 offline Import/Compiler；固定 Unity 样例可在没有 VS Code/Bridge 的条件下执行 Generate/Check。UPM Package ID 固定为 `com.kyle.visualbridge`，C# namespace/assembly 使用 `VisualBridge.<Module>`；私有 VSIX 保持 `UNLICENSED` 并携带不授予公共使用权的 proprietary notice。Editor Bridge 已于 2026-08-30 由项目方授权恢复实施，当前处于 discovery/transport spike 与威胁模型阶段；transport、discovery、authentication、消息 Schema 和实现均未冻结，此前的实施前范围复核不作为冻结设计。Runtime、Debug、DAP 与 Player 仍未实现。实施状态、恢复条件与剩余发布门槛见 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)。
+当前仓库已经完成 C# contract generator、有效 UPM Package、Integration Profile V1、Structured Catalog Exporter 与 offline Import/Compiler；固定 Unity 样例可在没有 VS Code/Bridge 的条件下执行 Generate/Check。UPM Package ID 固定为 `com.kyle.visualbridge`，C# namespace/assembly 使用 `VisualBridge.<Module>`；私有 VSIX 保持 `UNLICENSED` 并携带不授予公共使用权的 proprietary notice。Editor Bridge 已于 2026-08-30 由项目方授权恢复实施；discovery/transport spike 与威胁模型已完成，传输、discovery、认证与重连策略已冻结（见第 12 章），正式消息 Schema 尚未进入 Protocol，实现尚未开始。Runtime、Debug、DAP 与 Player 仍未实现。实施状态与剩余发布门槛见 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)。
 
 ## 2. 首期范围
 
@@ -17,7 +17,7 @@
 - 使用固定的 Unity Integration Profile V1，把一个 Unity Project 关联到该 Unity Project 内的一个 Authoring Project。
 - 从显式登记的普通 C# `class` / `struct` 和元数据生成 Structured Catalog V1。
 - 在 Unity Editor 中读取 Project、Structured Catalog 和 Structured Document，生成确定性的 Editor 派生产物与映射清单。
-- 离线垂直切片之后的下一阶段单独设计并实现最小 Editor Bridge，使 Unity Editor 可以请求 VS Code 打开或定位 Authoring Document；该阶段已由项目方授权恢复实施，当前为 `in_progress`，必须先完成 discovery/transport spike 与威胁模型，不能把此前的范围复核结论当作冻结设计。
+- 离线垂直切片之后的下一阶段单独设计并实现最小 Editor Bridge，使 Unity Editor 可以请求 VS Code 打开或定位 Authoring Document；该阶段已由项目方授权恢复实施，当前为 `in_progress`，spike 与威胁模型已完成，设计已冻结（见第 12 章）。
 
 首期明确不包含：
 
@@ -293,20 +293,38 @@ flowchart LR
 - 临时文件、日志、test results、discovery records 和 token 不得落入 Authoring 源或被当成可提交产品数据。
 - 未知目标文件和未知外部 bytes 必须保留并报告，不得为“恢复一致性”而覆盖。
 
-## 12. Editor Bridge 后续切片
+## 12. Editor Bridge
 
-Editor Bridge 不是 Structured offline slice 的前置，也不能成为 Export/Compile 的隐式依赖。完成离线切片后，Bridge 任务先以威胁模型和真实 Unity/VS Code spike 冻结：
+Editor Bridge 不是 Structured offline slice 的前置，也不能成为 Export/Compile 的隐式依赖。2026-08-30 完成的 discovery/transport spike 与威胁模型在真实 Unity 6000.3.10f1 编辑器进程、隔离 VS Code 1.105.1 扩展宿主与本机进程间实测了候选传输，以下设计据此冻结。
 
-- Unity Project、Authoring Project 与具体 VS Code 窗口的可信关联；
-- discovery 信息的保存位置、权限和清理；
-- 本机传输、认证、配对、版本协商和 capability negotiation；
-- Domain Reload、进程重启、实例 generation、陈旧消息和重连退避；
-- 一个 Project 对多个 VS Code 窗口时的显式选择；
-- 日志、审计、错误与不确定故障恢复。
+### 12.1 Spike 证据
 
-在这些决策经过 spike 和文档更新前，不预选 Project Discovery File、WebSocket、named pipe 或其他实现。第一版 Bridge 只允许 Unity Editor 请求 VS Code 打开或定位 Project Registry 能唯一解析的 Authoring Document；消息结构必须进入新的正式 Schema，并由同一 generator 产生 TypeScript/C# contract。
+| 实验 | 结果 |
+| --- | --- |
+| 独立进程传输矩阵（Node ↔ C#） | named pipe connect 0–3ms、往返 6–7ms；loopback TCP connect 9–15ms、往返 9–15ms；无效 token 与非 JSON 均被拒绝；不存在的管道超时（慢失败），死端口立即拒绝（快速失败） |
+| 服务器重启与崩溃 | 正常重启替换记录（新管道名/token/pid/generation）并支持重连；崩溃后记录残留，由心跳陈旧性（实测 10.7s 拒绝）兜底 |
+| 真实 Unity 编辑器进程（batchmode） | pipe connect 1ms、往返 2ms；TCP 4ms/5ms；无效 token 被拒。C# `NamedPipeClientStream` 需要裸管道名（剥除 `\\.\pipe\` 前缀），JSON 转义必须严格——正式实现必须用生成契约解析记录 |
+| Domain Reload（真实编辑器） | reload 时服务器观察到断开、静态连接状态清零、reload 后立即重连成功——Unity 侧连接不能跨 Domain Reload 存活 |
+| 隔离 VS Code 1.105.1 扩展宿主 | 扩展宿主内 named pipe 服务器接受外部本机进程的 `open` 交换并正确响应 |
+| 多窗口 discovery | 陈旧心跳与死 pid 记录被过滤，候选按 `windowId` 显式选择后正确路由 |
 
-Bridge 首版不复用 stdio MCP Tool envelope，不启动 Project Provider，不提供 Authoring Operation、Catalog 写入、Compile、Runtime Attach 或 Debug。连接状态不写回 Authoring Document、Project File 或 Integration Profile。多窗口路由不能依赖全局 `currentUnity` 或“最近连接”猜测。
+WebSocket 被拒绝：扩展宿主需新增 `ws` 依赖、HTTP upgrade 握手开销、无浏览器客户端场景；NDJSON over pipe/TCP 更简单且实测更快。
+
+### 12.2 冻结设计
+
+- **传输与分帧**：Windows named pipe 为主端点（最快、无端口分配与防火墙面）；discovery 记录同时登记 loopback TCP 端点作为非 Windows 回退。消息为 NDJSON 行分帧，不复用 stdio MCP Tool envelope。
+- **Discovery 记录**：文件型，位于 `os.tmpdir()` / `Path.GetTempPath()` 下的 `visualbridge-bridge/<windowId>.json`，每个 VS Code 窗口一份。字段：`formatVersion`、`protocolVersion`、`capabilities`、`windowId`、`projectRoots`（该窗口打开的 Authoring Project 根）、`pipePath`、`tcpPort`、`token`、`pid`、`generation`。心跳为服务器每秒更新 mtime；陈旧判定为心跳年龄超阈值（5s）或 pid 不再存活。
+- **认证**：每窗口 ≥192-bit 随机 token，仅存于 discovery 记录（用户本地临时目录，默认用户级 ACL）；连接建立后首条消息验证 token，失败即断开。token 防偶发误连与跨用户访问，不防同用户恶意进程。
+- **版本与 capability 协商**：记录声明 `protocolVersion` 与 capabilities；客户端不匹配即拒绝，不降级。
+- **实例 generation**：服务器每次 listen 递增 generation 并重写记录；客户端重连时检测 generation 变化并丢弃旧会话状态。Unity 侧每次 Domain Reload/进程重启生成新的客户端实例标识；每个请求携带 `requestId` 供幂等去重。
+- **重连退避**：客户端 1s 起指数递增至 30s 上限；每次尝试前重新枚举 discovery 记录。
+- **多窗口路由**：Unity 按 Integration Profile 的 `authoringProject` 与记录 `projectRoots` 匹配过滤候选；唯一候选直接路由（与 Project Registry 唯一解析语义一致）；多候选必须在 Unity 侧弹出显式选择；禁止"最近连接"或全局 `currentUnity` 猜测。
+- **清理与故障恢复**：服务器正常关闭时删除自身记录；崩溃残留由心跳/pid 检测兜底；连接状态不写回 Authoring Document、Project File 或 Integration Profile。
+- **消息范围**：第一版只允许 Unity Editor 请求 VS Code 打开或定位 Project Registry 能唯一解析的 Authoring Document；不提供 Authoring Operation、Catalog 写入、Compile、Runtime Attach 或 Debug。消息结构进入正式 Protocol Schema，由同一 generator 产生 TypeScript/C# contract。
+
+### 12.3 威胁模型边界
+
+Unity Editor 与 VS Code 扩展宿主都以当前用户权限运行且非沙箱；Bridge 的安全目标是防误路由与最小暴露，不是防御同用户恶意进程。named pipe / loopback TCP 仅限本机；伪造 discovery 记录的后果上限是获知请求中的文档路径并假冒接受（VS Code 端只执行 open/reveal，无写入面）；请求/响应只含稳定 ID 与路径，不含 Authoring 文档内容。无效 token、版本/capability 不匹配、陈旧 generation、死 pid/陈旧心跳记录与 Domain Reload 后的旧请求必须有自动化拒绝覆盖；本地同用户 DoS（占用管道名/端口）不在防御目标内。
 
 Runtime、Debug 和 Player 仍需各自独立架构、身份模型、权限与真实垂直切片。Editor Bridge 的传输即使验证成功，也不自动成为 Player 或远程调试协议。
 

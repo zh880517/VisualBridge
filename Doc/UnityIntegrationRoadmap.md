@@ -6,7 +6,7 @@
 
 本路线图不实现 Runtime、Debug、DAP、Player、远程连接、设备发现、Graph/Entity/Table Unity 编译或 `ScriptableObject` Authoring 包装层。Editor Bridge 不是 Structured offline slice 的前置条件，也不能承载 Export/Compile。
 
-当前进度：VB-UI-01 至 VB-UI-05 已完成首个 Structured offline、Editor-only slice；VB-UI-06 Editor Bridge 已由项目方授权恢复实施，当前为 `in_progress`，处于 discovery/transport spike 与威胁模型阶段，transport、discovery、authentication 或消息 Schema 尚未冻结，也没有正式 Bridge 实现代码；VB-UI-07 仅完成当前 slice 的部分文档与验证基线，完整发布 hardening 仍在进行。这里的 `complete` 只代表各任务冻结范围，不表示 Runtime、Debug、DAP、Player 或其他三个领域已实现。
+当前进度：VB-UI-01 至 VB-UI-05 已完成首个 Structured offline、Editor-only slice；VB-UI-06 Editor Bridge 已由项目方授权恢复实施，当前为 `in_progress`，discovery/transport spike 与威胁模型已完成，传输、discovery、认证与重连策略已冻结（见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 12 章），正式消息 Schema 尚未进入 Protocol；VB-UI-07 仅完成当前 slice 的部分文档与验证基线，完整发布 hardening 仍在进行。这里的 `complete` 只代表各任务冻结范围，不表示 Runtime、Debug、DAP、Player 或其他三个领域已实现。
 
 2026-08-30 暂停检查点：私有 VSIX 已加入 proprietary `LICENSE` notice，同时保持 manifest `private: true` 与 `UNLICENSED`；Unity Package ID 已固定为 `com.kyle.visualbridge`，C# namespace/assembly 统一使用 `VisualBridge.<Module>`，`kyle` 不进入 C# 标识。上述变更已经过 Node、VSIX、Protocol、dotnet、Unity batchmode、Structured Generate/Check、Compile Check 和 EditMode 回归并提交推送（提交 `4b6b66d`）。
 
@@ -155,7 +155,7 @@ Exit criteria：
 
 依赖：VB-UI-05。该依赖用于保证先完成离线切片，不表示 Bridge 调用 Compiler。
 
-实施状态：2026-08-30 项目方授权恢复，并授权新增本任务所需的 Bridge contract/连接状态机 Unity EditMode 测试（见文首恢复决定）。此前只完成了对现有 Project Registry、VS Code open/reveal 命令、Unity Editor-only assembly 边界、生命周期风险和下列验收项的只读复核；该复核结论不作为冻结设计。当前从 discovery/transport spike、威胁模型和真实多窗口/Domain Reload 验证开始。
+实施状态：2026-08-30 项目方授权恢复，并授权新增本任务所需的 Bridge contract/连接状态机 Unity EditMode 测试（见文首恢复决定）。discovery/transport spike 与威胁模型已完成，设计已冻结进 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 12 章；下一步是把正式消息 Schema 纳入 Protocol 并重新生成契约。
 
 范围：
 
