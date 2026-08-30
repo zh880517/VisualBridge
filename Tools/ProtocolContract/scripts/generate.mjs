@@ -185,7 +185,7 @@ async function verifyUnityIntegrationProfileExamples(compiler) {
   const fixturePath = path.join(
     repositoryRoot,
     "Packages",
-    "com.kyl.visualbridge",
+    "com.kyle.visualbridge",
     "Tests",
     "Fixtures",
     "visualbridge-unity-integration-profile-cases.json",

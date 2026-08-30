@@ -11,8 +11,9 @@ using System.Text.RegularExpressions;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
+using VisualBridge.Runtime;
 
-namespace Kyl.VisualBridge.Editor
+namespace VisualBridge.Editor
 {
     public enum VisualBridgeCatalogExportMode
     {

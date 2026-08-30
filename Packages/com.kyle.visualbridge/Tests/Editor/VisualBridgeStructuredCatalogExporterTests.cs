@@ -4,8 +4,8 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
-using Kyl.VisualBridge;
-using Kyl.VisualBridge.Editor;
+using VisualBridge.Runtime;
+using VisualBridge.Editor;
 using NUnit.Framework;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -14,7 +14,7 @@ using UnityEngine;
 
 [assembly: VisualBridgeStructuredCatalog("tests.visualbridge.catalog", "VisualBridge Exporter Tests")]
 
-namespace Kyl.VisualBridge.Editor.Tests
+namespace VisualBridge.Editor.Tests
 {
     public enum ExporterTestMode
     {
@@ -355,7 +355,7 @@ namespace Kyl.VisualBridge.Editor.Tests
         public void ProfileSchemaAndLoaderShareParityFixture()
         {
             var fixtureAsset = AssetDatabase.LoadAssetAtPath<TextAsset>(
-                "Packages/com.kyl.visualbridge/Tests/Fixtures/visualbridge-unity-integration-profile-cases.json");
+                "Packages/com.kyle.visualbridge/Tests/Fixtures/visualbridge-unity-integration-profile-cases.json");
             Assert.That(fixtureAsset, Is.Not.Null);
             var cases = (JArray)JObject.Parse(fixtureAsset.text)["cases"];
             foreach (var testCase in cases.Cast<JObject>())

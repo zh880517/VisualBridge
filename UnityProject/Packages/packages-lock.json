@@ -1,7 +1,7 @@
 {
   "dependencies": {
-    "com.kyl.visualbridge": {
-      "version": "file:../../Packages/com.kyl.visualbridge",
+    "com.kyle.visualbridge": {
+      "version": "file:../../Packages/com.kyle.visualbridge",
       "depth": 0,
       "source": "local",
       "dependencies": {

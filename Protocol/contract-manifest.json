@@ -1,7 +1,7 @@
 {
   "manifestVersion": 1,
   "csharpGeneration": {
-    "namespace": "Kyl.VisualBridge.Protocol.Generated",
+    "namespace": "VisualBridge.Protocol.Generated",
     "schemas": [
       "visualbridge-catalog-source.schema.json",
       "visualbridge-primitives.schema.json",
@@ -11,7 +11,7 @@
       "visualbridge-unity-integration-profile.schema.json"
     ],
     "outputs": [
-      "Packages/com.kyl.visualbridge/Editor/Generated/VisualBridgeProtocolContracts.g.cs",
+      "Packages/com.kyle.visualbridge/Editor/Generated/VisualBridgeProtocolContracts.g.cs",
       "Protocol/Generated/contracts.g.cs"
     ]
   },

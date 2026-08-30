@@ -13,7 +13,7 @@
 首期包含：
 
 - 从现有 JSON Schema 与 contract manifest 确定性生成 Unity 可消费的 C# contract。
-- 建立 `Packages/com.kyl.visualbridge` 的 Editor-only UPM Package 基础。
+- 建立 `Packages/com.kyle.visualbridge` 的 Editor-only UPM Package 基础。
 - 使用固定的 Unity Integration Profile V1，把一个 Unity Project 关联到该 Unity Project 内的一个 Authoring Project。
 - 从显式登记的普通 C# `class` / `struct` 和元数据生成 Structured Catalog V1。
 - 在 Unity Editor 中读取 Project、Structured Catalog 和 Structured Document，生成确定性的 Editor 派生产物与映射清单。
@@ -108,9 +108,11 @@ flowchart TB
 
 ## 5. Unity Package 边界
 
-Unity Package 源只有 `Packages/com.kyl.visualbridge/` 一份，`UnityProject/` 只作为开发宿主。当前 Package 分为：
+Unity Package 源只有 `Packages/com.kyle.visualbridge/` 一份，`UnityProject/` 只作为开发宿主。当前 Package 分为：
 
-- **Runtime metadata marker**：`Kyl.VisualBridge.Runtime` 是 player-visible、`noEngineReferences: true` 的纯 Attribute/enum metadata surface，供游戏程序集声明 Catalog、Config 与 Field；它没有行为、Unity API、loader、执行或 Player integration，程序集名称不表示 Runtime 功能。
+UPM package ID 固定为 `com.kyle.visualbridge`。`kyle` 只属于 Package publisher 标识，不进入 C# namespace 或 assembly 名；C# surface 统一以 `VisualBridge` 为前缀并跟随模块名，例如 `VisualBridge.Runtime`、`VisualBridge.Editor` 和 `VisualBridge.Protocol.Generated`。
+
+- **Runtime metadata marker**：`VisualBridge.Runtime` 是 player-visible、`noEngineReferences: true` 的纯 Attribute/enum metadata surface，供游戏程序集声明 Catalog、Config 与 Field；它没有行为、Unity API、loader、执行或 Player integration，程序集名称不表示 Runtime 功能。
 - **Generated contracts**：C# wire/data bags 位于 Editor assembly，只承载同源协议数据形状与 Schema hash，不引用 VS Code、Node 或 Webview，也不充当严格语义 validator。
 - **Editor Integration**：Integration Profile、C# 元数据读取、Catalog Export、Structured Import/Compile、诊断以及后续最小 Editor Bridge；只在 Unity Editor 中加载。
 - **Editor Tests**：针对 contract、Profile、Exporter、Compiler 和后续 Bridge 状态机的 EditMode 验证。
@@ -123,7 +125,7 @@ Package 不加载 VS Code 扩展源码或 TypeScript Core。Authoring Host 也�
 
 ### 6.1 单一事实来源
 
-C# generator 只读取现有 JSON Schema 与 contract manifest。当前四个生成产物 `Protocol/Generated/schema-index.json`、`contracts.d.ts`、`contracts.g.cs` 和 `Packages/com.kyl.visualbridge/Editor/Generated/VisualBridgeProtocolContracts.g.cs` 都来自同一输入；任何生成物都不得手改。两份 C# 输出 byte-identical。
+C# generator 只读取现有 JSON Schema 与 contract manifest。当前四个生成产物 `Protocol/Generated/schema-index.json`、`contracts.d.ts`、`contracts.g.cs` 和 `Packages/com.kyle.visualbridge/Editor/Generated/VisualBridgeProtocolContracts.g.cs` 都来自同一输入；任何生成物都不得手改。两份 C# 输出 byte-identical。
 
 当前 C# 输出范围由 manifest 的 `csharpGeneration.schemas` 与 `outputs` 机器登记，覆盖 Project、Catalog Source、Structured Catalog、Structured Document、Integration Profile、共享 Field/value shape 和其引用闭包；generator 源码不能临时挑选。加入 Editor Bridge 时再把正式 Bridge Schema 纳入相同登记。未进入 Unity 输出闭包的既有 MCP/Provider contract 仍继续参与全局 Schema drift gate。
 
@@ -323,8 +325,8 @@ Structured 是首个 Unity 切片，因为它能以最小范围验证 Project �
 当前仓库没有独立发布的 VisualBridge CLI。命令行入口是 Protocol npm script 与 Unity batchmode `-executeMethod`，菜单和 batch wrapper 调用相同的 Exporter/Compiler 服务，不建立第二套业务规则：
 
 - `npm run generate:protocol` / `npm run check:protocol`：生成或检查四个 Protocol 产物；
-- `Kyl.VisualBridge.Editor.VisualBridgeStructuredCatalogBatch.Generate` / `.Check`：Catalog Generate/Check；Catalog batch 以 `0` 表示成功、`2` 表示 drift、`1` 表示失败；
-- `Kyl.VisualBridge.Editor.VisualBridgeStructuredCompilerBatch.Generate` / `.Check`：Compiled artifact Generate/Check；Compiler batch 以 `0` 表示成功、`1` 表示 drift、`2` 表示失败；
+- `VisualBridge.Editor.VisualBridgeStructuredCatalogBatch.Generate` / `.Check`：Catalog Generate/Check；Catalog batch 以 `0` 表示成功、`2` 表示 drift、`1` 表示失败；
+- `VisualBridge.Editor.VisualBridgeStructuredCompilerBatch.Generate` / `.Check`：Compiled artifact Generate/Check；Compiler batch 以 `0` 表示成功、`1` 表示 drift、`2` 表示失败；
 - Unity Test Framework `-runTests -testPlatform EditMode`：运行 Package Editor tests。
 
 所有 Unity 调用都必须显式提供 `-projectPath`、独立 `-logFile`，测试还需 `-testResults`；仅检查进程退出码不够，还要审计日志与 XML。根 README 给出固定 Unity `6000.3.10f1` 的可直接运行 PowerShell 命令。
@@ -352,7 +354,7 @@ Structured 是首个 Unity 切片，因为它能以最小范围验证 Project �
 - 普通 C# `class` / `struct` 与显式 metadata 是 Catalog 来源；C# 全名不是稳定身份。
 - Exporter 不执行业务初始化方法获取默认值。
 - Compiler 不修改 Authoring Project/File/Document，失败不破坏上次有效派生物。
-- `Kyl.VisualBridge.Runtime` 只允许 player-visible、无 Unity API/无行为的 metadata marker；当前不建立 Runtime 功能、Unity Adapter public API 或 `ScriptableObject` Authoring 工作流。
+- `VisualBridge.Runtime` 只允许 player-visible、无 Unity API/无行为的 metadata marker；当前不建立 Runtime 功能、Unity Adapter public API 或 `ScriptableObject` Authoring 工作流。
 - dotnet 只是快速编译；真实 Unity batchmode import、EditMode 和垂直切片执行是独立发布门槛。
 
 ## 16. 已关闭与仍待关闭的决策

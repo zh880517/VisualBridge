@@ -4,11 +4,11 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
-using Kyl.VisualBridge.Protocol.Generated.VisualBridgeUnityIntegrationProfile;
+using VisualBridge.Protocol.Generated.VisualBridgeUnityIntegrationProfile;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
-namespace Kyl.VisualBridge.Editor
+namespace VisualBridge.Editor
 {
     public sealed class VisualBridgeIntegrationException : Exception
     {

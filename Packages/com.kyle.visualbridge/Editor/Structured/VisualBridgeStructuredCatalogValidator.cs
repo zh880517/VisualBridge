@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json.Linq;
 
-namespace Kyl.VisualBridge.Editor
+namespace VisualBridge.Editor
 {
     internal static class VisualBridgeStructuredCatalogValidator
     {

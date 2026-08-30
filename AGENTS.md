@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-VisualBridge is a monorepo for the platform implementation. `Core/` contains host-independent TypeScript domain logic; it must not reference VS Code, Webview DOM, or Unity APIs. `Protocol/` owns schemas, messages, and generated cross-language contracts. Reusable Webview UI belongs in `Editors/`, while built-in document types live in `BuiltInExtensions/`. Host integrations are under `Tools/VSCodeExtension/` and `Tools/VisualBridgeMcp/`. The Unity Package source is `Packages/com.kyl.visualbridge/`; `UnityProject/` is only its development host, with Unity assets under `UnityProject/Assets/`.
+VisualBridge is a monorepo for the platform implementation. `Core/` contains host-independent TypeScript domain logic; it must not reference VS Code, Webview DOM, or Unity APIs. `Protocol/` owns schemas, messages, and generated cross-language contracts. Reusable Webview UI belongs in `Editors/`, while built-in document types live in `BuiltInExtensions/`. Host integrations are under `Tools/VSCodeExtension/` and `Tools/VisualBridgeMcp/`. The Unity Package source is `Packages/com.kyle.visualbridge/`; `UnityProject/` is only its development host, with Unity assets under `UnityProject/Assets/`.
 
 Keep durable documentation in `Doc/`. Put task plans and temporary design notes in `Doc/Temp/`, then delete them when the task is complete. Read `Doc/VisualBridgeArchitecture.md` before changing module boundaries.
 

@@ -1,9 +1,9 @@
 {
-  "name": "Kyl.VisualBridge.Editor.Tests",
-  "rootNamespace": "Kyl.VisualBridge.Editor.Tests",
+  "name": "VisualBridge.Editor.Tests",
+  "rootNamespace": "VisualBridge.Editor.Tests",
   "references": [
-    "Kyl.VisualBridge.Runtime",
-    "Kyl.VisualBridge.Editor"
+    "VisualBridge.Runtime",
+    "VisualBridge.Editor"
   ],
   "includePlatforms": [
     "Editor"

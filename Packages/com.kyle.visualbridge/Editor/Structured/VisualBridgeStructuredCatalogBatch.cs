@@ -3,7 +3,7 @@ using System.IO;
 using UnityEditor;
 using UnityEngine;
 
-namespace Kyl.VisualBridge.Editor
+namespace VisualBridge.Editor
 {
     public static class VisualBridgeStructuredCatalogBatch
     {

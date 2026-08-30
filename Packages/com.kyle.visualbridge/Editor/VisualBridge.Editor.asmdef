@@ -1,8 +1,12 @@
 {
-  "name": "Kyl.VisualBridge.Runtime",
-  "rootNamespace": "Kyl.VisualBridge",
-  "references": [],
-  "includePlatforms": [],
+  "name": "VisualBridge.Editor",
+  "rootNamespace": "VisualBridge.Editor",
+  "references": [
+    "VisualBridge.Runtime"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
   "excludePlatforms": [],
   "allowUnsafeCode": false,
   "overrideReferences": false,
@@ -10,5 +14,5 @@
   "autoReferenced": true,
   "defineConstraints": [],
   "versionDefines": [],
-  "noEngineReferences": true
+  "noEngineReferences": false
 }

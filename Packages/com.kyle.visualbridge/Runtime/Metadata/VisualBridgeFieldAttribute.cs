@@ -1,6 +1,6 @@
 using System;
 
-namespace Kyl.VisualBridge
+namespace VisualBridge.Runtime
 {
     [AttributeUsage(AttributeTargets.Field, Inherited = false)]
     public sealed class VisualBridgeFieldAttribute : Attribute

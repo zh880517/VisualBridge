@@ -1,5 +1,5 @@
 using System.Collections.Generic;
-using Kyl.VisualBridge;
+using VisualBridge.Runtime;
 
 [assembly: VisualBridgeStructuredCatalog("sample.unity.gameplay", "Unity Gameplay Settings")]
 

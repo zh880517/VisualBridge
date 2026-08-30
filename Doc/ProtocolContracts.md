@@ -17,7 +17,7 @@ Protocol/Schema/*.schema.json
         ├── Protocol/Generated/schema-index.json
         ├── Protocol/Generated/contracts.d.ts
         ├── Protocol/Generated/contracts.g.cs
-        ├── Packages/com.kyl.visualbridge/Editor/Generated/
+        ├── Packages/com.kyle.visualbridge/Editor/Generated/
         │   └── VisualBridgeProtocolContracts.g.cs
         └── MCP tools/list 递归一致性检查
 

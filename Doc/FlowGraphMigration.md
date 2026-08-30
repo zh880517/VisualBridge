@@ -91,7 +91,7 @@ Catalog 属性的 `valueType: "number"` 只表示 JSON 数值和数值编辑器�
 4. 已完成连接覆盖状态、批量选择、复制粘贴与 Duplicate；持久修改继续通过 Graph Operation 批量提交。
 5. 已完成分层创建菜单、悬空连线创建、同类型选择和 MiniMap。
 6. 已完成 Graph Catalog V4 多 Catalog Registry、Graph Type 支持 Catalog 和方向连接数量规则；Graph Document 继续保持 V3。
-7. Graph 作者功能验证完成后，再在 `Packages/com.kyl.visualbridge` 中实现 C# Catalog Exporter 与旧 FlowGraph 导入诊断；此前不得加入 Unity 实现。
+7. Graph 作者功能验证完成后，再在 `Packages/com.kyle.visualbridge` 中实现 C# Catalog Exporter 与旧 FlowGraph 导入诊断；此前不得加入 Unity 实现。
 8. 最后设计 Runtime Compiler、执行协议和 Debug Overlay。
 
 Unity 导出器必须只依赖 Protocol/Catalog 契约，输出确定性 JSON；VS Code、MCP 与未来 Unity 编译器继续共享同一套稳定 ID、连接和属性规则。

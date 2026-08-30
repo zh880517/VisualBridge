@@ -65,11 +65,11 @@ Exit criteria：
 
 范围：
 
-- 建立 `Packages/com.kyl.visualbridge` 的有效 UPM `package.json`、程序集定义、生成 contract 目录和 Editor Tests 边界。
+- 建立 `Packages/com.kyle.visualbridge` 的有效 UPM `package.json`、程序集定义、生成 contract 目录和 Editor Tests 边界。
 - 让 `UnityProject` 以本地 Package 依赖加载唯一 Package 源，不复制 Package 代码到 `Assets`。
 - 冻结并实现经过 Unity 6000.3.10f1 验证的严格 JSON serializer/validator 组合。
 - 建立 Package、Protocol 和 generator compatibility 检查以及结构化诊断基础。
-- `Kyl.VisualBridge.Runtime` 只提供 player-visible、`noEngineReferences`、无行为/无 Unity API 的 metadata marker Attribute/enum；不建立 Runtime 功能，Contracts 也不得被描述为 Player/Runtime API。
+- `VisualBridge.Runtime` 只提供 player-visible、`noEngineReferences`、无行为/无 Unity API 的 metadata marker Attribute/enum；不建立 Runtime 功能，Contracts 也不得被描述为 Player/Runtime API。
 
 Exit criteria：
 
@@ -231,7 +231,7 @@ Unity 生成的 `.csproj` 不能手工修改。dotnet 只验证 C# 编译，不�
 
 每个 Unity Package 源码任务都要用 `UnityProject/ProjectSettings/ProjectVersion.txt` 固定的 Editor 版本真实打开开发宿主。batchmode 调用必须使用显式 `-projectPath`、独立日志文件和非交互退出，并验证：
 
-- Package Manager 解析本地 `com.kyl.visualbridge`；
+- Package Manager 解析本地 `com.kyle.visualbridge`；
 - AssetDatabase refresh/import 完成；
 - Unity 脚本编译无 error；
 - Editor log 没有未处理异常、程序集加载或 serializer/validator 初始化失败；

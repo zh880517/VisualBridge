@@ -1,6 +1,6 @@
 using System;
 
-namespace Kyl.VisualBridge
+namespace VisualBridge.Runtime
 {
     [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct, Inherited = false)]
     public sealed class VisualBridgeStructuredConfigAttribute : Attribute

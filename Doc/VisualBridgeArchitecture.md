@@ -759,7 +759,7 @@ VisualBridge/
 │  ├─ VSCodeExtension/
 │  └─ VisualBridgeMcp/
 ├─ Packages/
-│  └─ com.kyl.visualbridge/
+│  └─ com.kyle.visualbridge/
 └─ UnityProject/
 ```
 
@@ -897,7 +897,7 @@ Domain Reload 会使未来 Unity 连接和运行时身份失效，因此后续�
 - Graph Type 一经设置暂不允许任意修改；节点和子图创建、删除及安全替换必须保持数量约束，子图调用节点的静态数据端口与子图公开接口共同形成父图端口契约。
 - 声明式扩展优先，项目 Provider 处理复杂逻辑。
 - Unity/Player 的发现、传输、认证、多客户端调试模型和运行时身份字段均留待 Unity/Debug 阶段以真实垂直切片决定；当前 Authoring 协议不冻结 Project Discovery File、WebSocket、Controller/Observer 或 Debug ID 组合。
-- VisualBridge 使用单仓库管理 Core、VS Code、MCP、Unity Package 和 Protocol，Unity Package 目录名为 `com.kyl.visualbridge`。
+- VisualBridge 使用单仓库管理 Core、VS Code、MCP、Unity Package 和 Protocol，Unity Package 目录名为 `com.kyle.visualbridge`。
 - 正式文档保存在 `Doc`；开发中的临时设计和任务文档保存在 `Doc/Temp`，完成后删除。
 
 ## 留待实施阶段确定

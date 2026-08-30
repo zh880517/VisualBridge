@@ -7,7 +7,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.Serialization;
 
-namespace Kyl.VisualBridge.Protocol.Generated
+namespace VisualBridge.Protocol.Generated
 {
     public readonly struct VisualBridgeSchemaContract
     {
@@ -45,7 +45,7 @@ namespace Kyl.VisualBridge.Protocol.Generated
     }
 }
 
-namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeCatalogSource
+namespace VisualBridge.Protocol.Generated.VisualBridgeCatalogSource
 {
     // JSON Schema: https://visualbridge.dev/schema/visualbridge-catalog-source.schema.json
     [DataContract]
@@ -65,7 +65,7 @@ namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeCatalogSource
     }
 }
 
-namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgePrimitives
+namespace VisualBridge.Protocol.Generated.VisualBridgePrimitives
 {
     // JSON Schema: https://visualbridge.dev/schema/visualbridge-primitives.schema.json
     [DataContract]
@@ -130,7 +130,7 @@ namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgePrimitives
     }
 }
 
-namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeProject
+namespace VisualBridge.Protocol.Generated.VisualBridgeProject
 {
     // JSON Schema: https://visualbridge.dev/schema/visualbridge-project.schema.json
     [DataContract]
@@ -140,7 +140,7 @@ namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeProject
         public IReadOnlyList<string> DocumentRoots { get; set; } = Array.Empty<string>();
 
         [DataMember(Name = "documentTypes", IsRequired = true, EmitDefaultValue = true, Order = 1)]
-        public IReadOnlyList<Kyl.VisualBridge.Protocol.Generated.VisualBridgeProject.RootDocumentTypesItem> DocumentTypes { get; set; } = Array.Empty<Kyl.VisualBridge.Protocol.Generated.VisualBridgeProject.RootDocumentTypesItem>();
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeProject.RootDocumentTypesItem> DocumentTypes { get; set; } = Array.Empty<VisualBridge.Protocol.Generated.VisualBridgeProject.RootDocumentTypesItem>();
 
         [DataMember(Name = "formatVersion", IsRequired = true, EmitDefaultValue = true, Order = 2)]
         public int FormatVersion { get; set; }
@@ -149,10 +149,10 @@ namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeProject
         public string ProjectId { get; set; } = null!;
 
         [DataMember(Name = "providers", IsRequired = false, EmitDefaultValue = false, Order = 4)]
-        public IReadOnlyList<Kyl.VisualBridge.Protocol.Generated.VisualBridgeProject.Provider>? Providers { get; set; }
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeProject.Provider>? Providers { get; set; }
 
         [DataMember(Name = "tableLayout", IsRequired = false, EmitDefaultValue = false, Order = 5)]
-        public Kyl.VisualBridge.Protocol.Generated.VisualBridgeProject.RootTableLayout? TableLayout { get; set; }
+        public VisualBridge.Protocol.Generated.VisualBridgeProject.RootTableLayout? TableLayout { get; set; }
     }
 
     [DataContract]
@@ -162,7 +162,7 @@ namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeProject
         public IReadOnlyList<string> Args { get; set; } = Array.Empty<string>();
 
         [DataMember(Name = "capabilities", IsRequired = true, EmitDefaultValue = true, Order = 1)]
-        public Kyl.VisualBridge.Protocol.Generated.VisualBridgeProject.ProviderCapabilities Capabilities { get; set; } = null!;
+        public VisualBridge.Protocol.Generated.VisualBridgeProject.ProviderCapabilities Capabilities { get; set; } = null!;
 
         [DataMember(Name = "entry", IsRequired = true, EmitDefaultValue = true, Order = 2)]
         public string Entry { get; set; } = null!;
@@ -175,10 +175,10 @@ namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeProject
     public sealed class ProviderCapabilities
     {
         [DataMember(Name = "reference", IsRequired = false, EmitDefaultValue = false, Order = 0)]
-        public Kyl.VisualBridge.Protocol.Generated.VisualBridgeProject.ProviderCapabilitiesReference? Reference { get; set; }
+        public VisualBridge.Protocol.Generated.VisualBridgeProject.ProviderCapabilitiesReference? Reference { get; set; }
 
         [DataMember(Name = "validator", IsRequired = false, EmitDefaultValue = false, Order = 1)]
-        public Kyl.VisualBridge.Protocol.Generated.VisualBridgeProject.ProviderCapabilitiesValidator? Validator { get; set; }
+        public VisualBridge.Protocol.Generated.VisualBridgeProject.ProviderCapabilitiesValidator? Validator { get; set; }
     }
 
     [DataContract]
@@ -225,7 +225,7 @@ namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeProject
     }
 }
 
-namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog
+namespace VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog
 {
     // JSON Schema: https://visualbridge.dev/schema/visualbridge-structured-catalog.schema.json
     [DataContract]
@@ -235,13 +235,13 @@ namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog
         public string CatalogId { get; set; } = null!;
 
         [DataMember(Name = "configTypes", IsRequired = true, EmitDefaultValue = true, Order = 1)]
-        public IReadOnlyList<Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.ConfigType> ConfigTypes { get; set; } = Array.Empty<Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.ConfigType>();
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.ConfigType> ConfigTypes { get; set; } = Array.Empty<VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.ConfigType>();
 
         [DataMember(Name = "formatVersion", IsRequired = true, EmitDefaultValue = true, Order = 2)]
         public int FormatVersion { get; set; }
 
         [DataMember(Name = "source", IsRequired = true, EmitDefaultValue = true, Order = 3)]
-        public Kyl.VisualBridge.Protocol.Generated.VisualBridgeCatalogSource.Root Source { get; set; } = null!;
+        public VisualBridge.Protocol.Generated.VisualBridgeCatalogSource.Root Source { get; set; } = null!;
 
         [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 4)]
         public string Title { get; set; } = null!;
@@ -260,10 +260,10 @@ namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog
         public string Id { get; set; } = null!;
 
         [DataMember(Name = "properties", IsRequired = true, EmitDefaultValue = true, Order = 3)]
-        public IReadOnlyList<Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Field> Properties { get; set; } = Array.Empty<Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Field>();
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Field> Properties { get; set; } = Array.Empty<VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Field>();
 
         [DataMember(Name = "source", IsRequired = false, EmitDefaultValue = false, Order = 4)]
-        public Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Source? Source { get; set; }
+        public VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Source? Source { get; set; }
 
         [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 5)]
         public string Title { get; set; } = null!;
@@ -285,7 +285,7 @@ namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog
         public double? Min { get; set; }
 
         [DataMember(Name = "options", IsRequired = false, EmitDefaultValue = false, Order = 4)]
-        public IReadOnlyList<Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.EditorOption>? Options { get; set; }
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.EditorOption>? Options { get; set; }
 
         [DataMember(Name = "readOnly", IsRequired = false, EmitDefaultValue = false, Order = 5)]
         public bool? ReadOnly { get; set; }
@@ -320,19 +320,19 @@ namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog
         public string? Description { get; set; }
 
         [DataMember(Name = "editor", IsRequired = false, EmitDefaultValue = false, Order = 4)]
-        public Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Editor? Editor { get; set; }
+        public VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Editor? Editor { get; set; }
 
         [DataMember(Name = "fields", IsRequired = false, EmitDefaultValue = false, Order = 5)]
-        public IReadOnlyList<Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Field>? Fields { get; set; }
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Field>? Fields { get; set; }
 
         [DataMember(Name = "id", IsRequired = true, EmitDefaultValue = true, Order = 6)]
         public string Id { get; set; } = null!;
 
         [DataMember(Name = "item", IsRequired = false, EmitDefaultValue = false, Order = 7)]
-        public Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.ValueDefinition? Item { get; set; }
+        public VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.ValueDefinition? Item { get; set; }
 
         [DataMember(Name = "reference", IsRequired = false, EmitDefaultValue = false, Order = 8)]
-        public Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Reference? Reference { get; set; }
+        public VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Reference? Reference { get; set; }
 
         [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 9)]
         public string Title { get; set; } = null!;
@@ -374,16 +374,16 @@ namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog
         public object? DefaultValue { get; set; }
 
         [DataMember(Name = "editor", IsRequired = false, EmitDefaultValue = false, Order = 2)]
-        public Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Editor? Editor { get; set; }
+        public VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Editor? Editor { get; set; }
 
         [DataMember(Name = "fields", IsRequired = false, EmitDefaultValue = false, Order = 3)]
-        public IReadOnlyList<Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Field>? Fields { get; set; }
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Field>? Fields { get; set; }
 
         [DataMember(Name = "item", IsRequired = false, EmitDefaultValue = false, Order = 4)]
-        public Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.ValueDefinition? Item { get; set; }
+        public VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.ValueDefinition? Item { get; set; }
 
         [DataMember(Name = "reference", IsRequired = false, EmitDefaultValue = false, Order = 5)]
-        public Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Reference? Reference { get; set; }
+        public VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog.Reference? Reference { get; set; }
 
         [DataMember(Name = "valueType", IsRequired = true, EmitDefaultValue = true, Order = 6)]
         public string ValueType { get; set; } = null!;
@@ -395,7 +395,7 @@ namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructuredCatalog
     }
 }
 
-namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructured
+namespace VisualBridge.Protocol.Generated.VisualBridgeStructured
 {
     // JSON Schema: https://visualbridge.dev/schema/visualbridge-structured.schema.json
     [DataContract]
@@ -412,7 +412,7 @@ namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeStructured
     }
 }
 
-namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeUnityIntegrationProfile
+namespace VisualBridge.Protocol.Generated.VisualBridgeUnityIntegrationProfile
 {
     // JSON Schema: https://visualbridge.dev/schema/visualbridge-unity-integration-profile.schema.json
     [DataContract]
@@ -422,7 +422,7 @@ namespace Kyl.VisualBridge.Protocol.Generated.VisualBridgeUnityIntegrationProfil
         public string AuthoringProject { get; set; } = null!;
 
         [DataMember(Name = "catalogExports", IsRequired = true, EmitDefaultValue = true, Order = 1)]
-        public IReadOnlyList<Kyl.VisualBridge.Protocol.Generated.VisualBridgeUnityIntegrationProfile.CatalogExport> CatalogExports { get; set; } = Array.Empty<Kyl.VisualBridge.Protocol.Generated.VisualBridgeUnityIntegrationProfile.CatalogExport>();
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeUnityIntegrationProfile.CatalogExport> CatalogExports { get; set; } = Array.Empty<VisualBridge.Protocol.Generated.VisualBridgeUnityIntegrationProfile.CatalogExport>();
 
         [DataMember(Name = "compileOutputRoot", IsRequired = true, EmitDefaultValue = true, Order = 2)]
         public string CompileOutputRoot { get; set; } = null!;

@@ -1,6 +1,6 @@
 using System;
 
-namespace Kyl.VisualBridge
+namespace VisualBridge.Runtime
 {
     [AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true)]
     public sealed class VisualBridgeStructuredCatalogAttribute : Attribute

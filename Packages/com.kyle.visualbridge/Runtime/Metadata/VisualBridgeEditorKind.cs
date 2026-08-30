@@ -1,4 +1,4 @@
-namespace Kyl.VisualBridge
+namespace VisualBridge.Runtime
 {
     public enum VisualBridgeEditorKind
     {

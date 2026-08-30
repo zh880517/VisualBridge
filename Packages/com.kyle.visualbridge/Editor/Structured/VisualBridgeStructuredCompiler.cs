@@ -9,11 +9,11 @@ using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
 using System.Security.Cryptography;
 using System.Text;
-using Kyl.VisualBridge;
+using VisualBridge.Runtime;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
-namespace Kyl.VisualBridge.Editor
+namespace VisualBridge.Editor
 {
     public enum VisualBridgeStructuredCompileMode
     {

@@ -5,13 +5,13 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
-using Kyl.VisualBridge;
+using VisualBridge.Runtime;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 
 [assembly: VisualBridgeStructuredCatalog("tests.visualbridge.compiler.catalog", "VisualBridge Compiler Tests")]
 
-namespace Kyl.VisualBridge.Editor.Tests
+namespace VisualBridge.Editor.Tests
 {
     public enum CompilerTestMode
     {
