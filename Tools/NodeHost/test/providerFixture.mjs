@@ -46,7 +46,7 @@ export const providerExternalRewriteText = `${JSON.stringify({
 }, undefined, 2)}\n`;
 
 export async function createProviderFixture(options = {}) {
-  const temporaryRoot = await mkdtemp(path.join(tmpdir(), TEST_DIRECTORY_PREFIX));
+  const temporaryRoot = await mkdtemp(path.join(options.temporaryDirectory ?? tmpdir(), TEST_DIRECTORY_PREFIX));
   const projectRoot = path.join(temporaryRoot, "ProviderSemanticProject");
   const stateDirectory = path.join(temporaryRoot, "provider-state");
   await Promise.all([
@@ -174,9 +174,19 @@ export async function waitForProviderEvent(stateDirectory, predicate, options = 
 
 async function removeProviderFixture(temporaryRoot) {
   const resolvedTemporaryDirectory = await realpath(tmpdir());
-  const resolvedTarget = path.resolve(temporaryRoot);
+  let resolvedTarget;
+  try {
+    resolvedTarget = await realpath(temporaryRoot);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  const relativeTarget = path.relative(resolvedTemporaryDirectory, resolvedTarget);
   if (
-    !resolvedTarget.startsWith(`${resolvedTemporaryDirectory}${path.sep}`)
+    relativeTarget.length === 0
+    || relativeTarget === ".."
+    || relativeTarget.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relativeTarget)
     || !path.basename(resolvedTarget).startsWith(TEST_DIRECTORY_PREFIX)
   ) {
     throw new Error(`Refusing to remove non-Provider-test directory '${resolvedTarget}'.`);

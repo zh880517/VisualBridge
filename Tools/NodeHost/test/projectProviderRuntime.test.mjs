@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, readdir, symlink } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, symlink, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { compareUtf16CodeUnits } from "@visualbridge/core";
@@ -305,7 +306,7 @@ test("authorizes declared and canonical Provider entries through a trusted proje
   const definition = project.providers[0];
   const declaredEntryPath = path.join(projectRoot, ...providerFixtureEntry.split("/"));
 
-  for (const allowedEntryPath of [declaredEntryPath, fixture.entryPath]) {
+  for (const allowedEntryPath of [declaredEntryPath, await realpath(fixture.entryPath)]) {
     const runtime = await ProjectProviderRuntime.create({
       ...baseOptions(fixture, definition),
       projectRoot,
@@ -313,6 +314,33 @@ test("authorizes declared and canonical Provider entries through a trusted proje
     });
     runtimes.push(runtime);
     assert.equal(await runtime.captureEntryHash(), sha256(await readFile(fixture.entryPath)));
+  }
+});
+
+test("Provider fixtures clean up through a trusted temporary-directory ancestor alias", async (t) => {
+  const canonicalTemporaryDirectory = await realpath(tmpdir());
+  const canonicalParent = await mkdtemp(path.join(canonicalTemporaryDirectory, "visualbridge-provider-parent-"));
+  const aliasParent = path.join(path.dirname(canonicalTemporaryDirectory), `${path.basename(canonicalParent)}-alias`);
+  let fixture;
+  let disposed = false;
+
+  try {
+    if (!await createDirectoryAlias(t, canonicalParent, aliasParent)) return;
+    fixture = await createProviderFixture({ temporaryDirectory: aliasParent });
+    const canonicalFixtureRoot = await realpath(fixture.temporaryRoot);
+
+    await fixture.dispose();
+    disposed = true;
+    await assert.rejects(
+      realpath(canonicalFixtureRoot),
+      (error) => error?.code === "ENOENT",
+    );
+  } finally {
+    if (fixture !== undefined && !disposed) await fixture.dispose().catch(() => undefined);
+    await unlink(aliasParent).catch((error) => {
+      if (error?.code !== "ENOENT") throw error;
+    });
+    await rm(canonicalParent, { recursive: true, force: true });
   }
 });
 
@@ -386,7 +414,10 @@ test("rejects traversal, non-allowlisted entries and symlink aliases before spaw
     (error) => isRuntimeError(error, "provider.invalidPath"),
   );
   await assert.rejects(
-    ProjectProviderRuntime.create({ ...baseOptions(fixture, definition), allowedEntryPaths: [fixture.projectFile] }),
+    ProjectProviderRuntime.create({
+      ...baseOptions(fixture, definition),
+      allowedEntryPaths: [await realpath(fixture.projectFile)],
+    }),
     (error) => isRuntimeError(error, "provider.entryNotAllowed"),
   );
 
