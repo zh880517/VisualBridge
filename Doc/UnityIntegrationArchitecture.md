@@ -307,12 +307,13 @@ Editor Bridge 不是 Structured offline slice 的前置，也不能成为 Export
 | Domain Reload（真实编辑器） | reload 时服务器观察到断开、静态连接状态清零、reload 后立即重连成功——Unity 侧连接不能跨 Domain Reload 存活 |
 | 隔离 VS Code 1.105.1 扩展宿主 | 扩展宿主内 named pipe 服务器接受外部本机进程的 `open` 交换并正确响应 |
 | 多窗口 discovery | 陈旧心跳与死 pid 记录被过滤，候选按 `windowId` 显式选择后正确路由 |
+| Mono 进程内管道互锁（实施期发现） | Unity Mono 运行时中同进程 Mono↔Mono named pipe 的双端 `Write` 均永久阻塞（最小复现确认）；Mono 客户端对 Node 服务器的管道写入在真实编辑器内正常（见上表）。因此 Unity 客户端优先使用 TCP 端点，EditMode 协议测试使用 TCP 对端，管道路径由真实 Node 服务器的 E2E 覆盖 |
 
 WebSocket 被拒绝：扩展宿主需新增 `ws` 依赖、HTTP upgrade 握手开销、无浏览器客户端场景；NDJSON over pipe/TCP 更简单且实测更快。
 
 ### 12.2 冻结设计
 
-- **传输与分帧**：Windows named pipe 为主端点（最快、无端口分配与防火墙面）；discovery 记录同时登记 loopback TCP 端点作为非 Windows 回退。消息为 NDJSON 行分帧，不复用 stdio MCP Tool envelope。
+- **传输与分帧**：discovery 记录同时登记 named pipe 与 loopback TCP 端点。Unity 客户端优先连接 TCP 端点：`NetworkStream` 支持读写超时，真实编辑器内实测往返 4–5ms，且可避开 Unity Mono 运行时进程内 NamedPipe 流的互锁缺陷；named pipe 端点保留为 TCP 不可用时的回退，并供未来支持 overlapped IO 的客户端使用。消息为 NDJSON 行分帧，不复用 stdio MCP Tool envelope。
 - **Discovery 记录**：文件型，位于 `os.tmpdir()` / `Path.GetTempPath()` 下的 `visualbridge-bridge/<windowId>.json`，每个 VS Code 窗口一份。字段：`formatVersion`、`protocolVersion`、`capabilities`、`windowId`、`projectRoots`（该窗口打开的 Authoring Project 根）、`pipePath`、`tcpPort`、`token`、`pid`、`generation`。心跳为服务器每秒更新 mtime；陈旧判定为心跳年龄超阈值（5s）或 pid 不再存活。
 - **认证**：每窗口 ≥192-bit 随机 token，仅存于 discovery 记录（用户本地临时目录，默认用户级 ACL）；连接建立后首条消息验证 token，失败即断开。token 防偶发误连与跨用户访问，不防同用户恶意进程。
 - **版本与 capability 协商**：记录声明 `protocolVersion` 与 capabilities；客户端不匹配即拒绝，不降级。

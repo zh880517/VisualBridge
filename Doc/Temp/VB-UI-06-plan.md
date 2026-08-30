@@ -46,3 +46,10 @@ spike 与威胁模型全部完成，证据与结论见 [VB-UI-06-spike-report.md
 - parity 正反例：`visualbridge-editor-bridge-cases.json`（23 例，覆盖消息与 discovery 记录）接入 `generate.mjs` 的 `verifyEditorBridgeExamples`（AJV 侧）；Unity EditMode 侧 parity 在阶段 5 补齐。
 - `npm test --workspace @visualbridge/protocol-contract` 通过（含 7 个 MCP 工具 live check）；`check:docs` 仅余 Doc/Temp 任务文件提示（任务收尾时消除）。
 - `ProtocolContracts.md`、`Doc/README.md`、`VisualBridgeArchitecture.md` 已同步 15 份 Schema 与 Bridge 契约范围。
+
+### 阶段 3（2026-08-30，已完成）
+
+- `Packages/com.kyle.visualbridge/Editor/Bridge/`：严格校验器（消息 + discovery 记录，错误码与 parity fixture 一致）、discovery 枚举器（心跳/pid 陈旧过滤）、客户端（hello/welcome 握手、generation 校验、请求/响应关联、能力检查）、服务门面（Profile 匹配、多窗口显式选择、指数退避重试）、`Tools/VisualBridge/Editor Bridge` 菜单 + EditorWindow。
+- 实施期关键发现：Unity Mono 运行时进程内 Mono↔Mono named pipe 双端 `Write` 死锁（最小复现确认）；客户端改为 TCP 优先 + 管道回退的单线程同步请求/响应模型，架构文档 §12 已同步修正。
+- EditMode 测试 `VisualBridgeEditorBridgeTests`（20 例）：parity fixture（AJV/C# 双端一致）、序列化往返、握手/open 请求、无效 token、版本不匹配、陈旧 generation、能力缺失、非法 JSON、未知 requestId、服务器断开、discovery 过滤、服务匹配与多窗口显式选择——全部通过。
+- Unity batchmode 编译与 `dotnet build VisualBridge.Editor.csproj` 通过。
