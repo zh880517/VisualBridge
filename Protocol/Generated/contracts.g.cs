@@ -26,6 +26,7 @@ namespace VisualBridge.Protocol.Generated
     public static class VisualBridgeSchemaRegistry
     {
         public const string VisualBridgeCatalogSourceSha256 = "56f5fb5cdbbc911c178eb8500e8f2279bdf8ded0c652f2db5da23d1d37a179c4";
+        public const string VisualBridgeEditorBridgeSha256 = "2d887360a985ffc953c238a6a6f22fab3d810e1146ef52858f453d6724b500d5";
         public const string VisualBridgePrimitivesSha256 = "23c83a69a9d557916a9e2a0a120c0664fb09fbc86dc96703aa7bc036030dc639";
         public const string VisualBridgeProjectSha256 = "dde9d43f3fdc09ca0978fe0e8650a731726f6490ad1fda2e62023db69b01c3e9";
         public const string VisualBridgeStructuredCatalogSha256 = "0cae8ab7b7a9aa1159669f0939f7178e5e310056366fe0713165cd87687942fe";
@@ -36,6 +37,7 @@ namespace VisualBridge.Protocol.Generated
             new VisualBridgeSchemaContract[]
             {
                 new VisualBridgeSchemaContract("Schema/visualbridge-catalog-source.schema.json", "https://visualbridge.dev/schema/visualbridge-catalog-source.schema.json", VisualBridgeCatalogSourceSha256),
+                new VisualBridgeSchemaContract("Schema/visualbridge-editor-bridge.schema.json", "https://visualbridge.dev/schema/visualbridge-editor-bridge.schema.json", VisualBridgeEditorBridgeSha256),
                 new VisualBridgeSchemaContract("Schema/visualbridge-primitives.schema.json", "https://visualbridge.dev/schema/visualbridge-primitives.schema.json", VisualBridgePrimitivesSha256),
                 new VisualBridgeSchemaContract("Schema/visualbridge-project.schema.json", "https://visualbridge.dev/schema/visualbridge-project.schema.json", VisualBridgeProjectSha256),
                 new VisualBridgeSchemaContract("Schema/visualbridge-structured-catalog.schema.json", "https://visualbridge.dev/schema/visualbridge-structured-catalog.schema.json", VisualBridgeStructuredCatalogSha256),
@@ -62,6 +64,186 @@ namespace VisualBridge.Protocol.Generated.VisualBridgeCatalogSource
 
         [DataMember(Name = "status", IsRequired = true, EmitDefaultValue = true, Order = 3)]
         public string Status { get; set; } = null!;
+    }
+}
+
+namespace VisualBridge.Protocol.Generated.VisualBridgeEditorBridge
+{
+    // JSON Schema: https://visualbridge.dev/schema/visualbridge-editor-bridge.schema.json
+    [DataContract]
+    public sealed class Root
+    {
+        [DataMember(Name = "capabilities", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public IReadOnlyList<string>? Capabilities { get; set; }
+
+        [DataMember(Name = "clientInstanceId", IsRequired = false, EmitDefaultValue = false, Order = 1)]
+        public string? ClientInstanceId { get; set; }
+
+        [DataMember(Name = "code", IsRequired = false, EmitDefaultValue = false, Order = 2)]
+        public string? Code { get; set; }
+
+        [DataMember(Name = "detail", IsRequired = false, EmitDefaultValue = false, Order = 3)]
+        public string? Detail { get; set; }
+
+        [DataMember(Name = "documentPath", IsRequired = false, EmitDefaultValue = false, Order = 4)]
+        public string? DocumentPath { get; set; }
+
+        [DataMember(Name = "error", IsRequired = false, EmitDefaultValue = false, Order = 5)]
+        public string? Error { get; set; }
+
+        [DataMember(Name = "protocolVersion", IsRequired = false, EmitDefaultValue = false, Order = 6)]
+        public int? ProtocolVersion { get; set; }
+
+        [DataMember(Name = "reference", IsRequired = false, EmitDefaultValue = false, Order = 7)]
+        public object? Reference { get; set; }
+
+        [DataMember(Name = "requestId", IsRequired = false, EmitDefaultValue = false, Order = 8)]
+        public string? RequestId { get; set; }
+
+        [DataMember(Name = "serverGeneration", IsRequired = false, EmitDefaultValue = false, Order = 9)]
+        public int? ServerGeneration { get; set; }
+
+        [DataMember(Name = "status", IsRequired = false, EmitDefaultValue = false, Order = 10)]
+        public string? Status { get; set; }
+
+        [DataMember(Name = "token", IsRequired = false, EmitDefaultValue = false, Order = 11)]
+        public string? Token { get; set; }
+
+        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 12)]
+        public string Type { get; set; } = null!;
+
+        [DataMember(Name = "windowId", IsRequired = false, EmitDefaultValue = false, Order = 13)]
+        public string? WindowId { get; set; }
+    }
+
+    [DataContract]
+    public sealed class DiscoveryRecord
+    {
+        [DataMember(Name = "capabilities", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public IReadOnlyList<string> Capabilities { get; set; } = Array.Empty<string>();
+
+        [DataMember(Name = "formatVersion", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public int FormatVersion { get; set; }
+
+        [DataMember(Name = "generation", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public int Generation { get; set; }
+
+        [DataMember(Name = "pid", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        public int Pid { get; set; }
+
+        [DataMember(Name = "pipePath", IsRequired = true, EmitDefaultValue = true, Order = 4)]
+        public string PipePath { get; set; } = null!;
+
+        [DataMember(Name = "projectRoots", IsRequired = true, EmitDefaultValue = true, Order = 5)]
+        public IReadOnlyList<string> ProjectRoots { get; set; } = Array.Empty<string>();
+
+        [DataMember(Name = "protocolVersion", IsRequired = true, EmitDefaultValue = true, Order = 6)]
+        public int ProtocolVersion { get; set; }
+
+        [DataMember(Name = "startedAt", IsRequired = true, EmitDefaultValue = true, Order = 7)]
+        public string StartedAt { get; set; } = null!;
+
+        [DataMember(Name = "tcpPort", IsRequired = true, EmitDefaultValue = true, Order = 8)]
+        public int TcpPort { get; set; }
+
+        [DataMember(Name = "token", IsRequired = true, EmitDefaultValue = true, Order = 9)]
+        public string Token { get; set; } = null!;
+
+        [DataMember(Name = "windowId", IsRequired = true, EmitDefaultValue = true, Order = 10)]
+        public string WindowId { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class ErrorMessage
+    {
+        [DataMember(Name = "code", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public string Code { get; set; } = null!;
+
+        [DataMember(Name = "detail", IsRequired = false, EmitDefaultValue = false, Order = 1)]
+        public string? Detail { get; set; }
+
+        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public string Type { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class HelloMessage
+    {
+        [DataMember(Name = "capabilities", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public IReadOnlyList<string> Capabilities { get; set; } = Array.Empty<string>();
+
+        [DataMember(Name = "clientInstanceId", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string ClientInstanceId { get; set; } = null!;
+
+        [DataMember(Name = "protocolVersion", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public int ProtocolVersion { get; set; }
+
+        [DataMember(Name = "token", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        public string Token { get; set; } = null!;
+
+        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 4)]
+        public string Type { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class OpenRequest
+    {
+        [DataMember(Name = "documentPath", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public string DocumentPath { get; set; } = null!;
+
+        [DataMember(Name = "requestId", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string RequestId { get; set; } = null!;
+
+        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public string Type { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class ResponseMessage
+    {
+        [DataMember(Name = "error", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public string? Error { get; set; }
+
+        [DataMember(Name = "requestId", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string RequestId { get; set; } = null!;
+
+        [DataMember(Name = "status", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public string Status { get; set; } = null!;
+
+        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        public string Type { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class RevealRequest
+    {
+        [DataMember(Name = "reference", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public object? Reference { get; set; }
+
+        [DataMember(Name = "requestId", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string RequestId { get; set; } = null!;
+
+        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public string Type { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class WelcomeMessage
+    {
+        [DataMember(Name = "capabilities", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public IReadOnlyList<string> Capabilities { get; set; } = Array.Empty<string>();
+
+        [DataMember(Name = "protocolVersion", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public int ProtocolVersion { get; set; }
+
+        [DataMember(Name = "serverGeneration", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public int ServerGeneration { get; set; }
+
+        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        public string Type { get; set; } = null!;
+
+        [DataMember(Name = "windowId", IsRequired = true, EmitDefaultValue = true, Order = 4)]
+        public string WindowId { get; set; } = null!;
     }
 }
 

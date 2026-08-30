@@ -1,0 +1,316 @@
+{
+  "cases": [
+    {
+      "label": "valid hello message",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "hello",
+        "protocolVersion": 1,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "capabilities": ["open", "reveal"]
+      }
+    },
+    {
+      "label": "valid welcome message",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "welcome",
+        "protocolVersion": 1,
+        "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
+        "serverGeneration": 3,
+        "capabilities": ["open"]
+      }
+    },
+    {
+      "label": "valid open request",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "open",
+        "requestId": "req-001",
+        "documentPath": "Config/Game.gamesettings"
+      }
+    },
+    {
+      "label": "valid reveal request",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "reveal",
+        "requestId": "req-002",
+        "reference": "game.item:ion-blaster"
+      }
+    },
+    {
+      "label": "valid ok response",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "response",
+        "requestId": "req-001",
+        "status": "ok"
+      }
+    },
+    {
+      "label": "valid error response",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "response",
+        "requestId": "req-002",
+        "status": "error",
+        "error": "bridge.documentUnresolved"
+      }
+    },
+    {
+      "label": "valid error message with detail",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "error",
+        "code": "bridge.invalidToken",
+        "detail": "token rejected"
+      }
+    },
+    {
+      "label": "valid discovery record",
+      "target": "discoveryRecord",
+      "valid": true,
+      "value": {
+        "formatVersion": 1,
+        "protocolVersion": 1,
+        "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
+        "capabilities": ["open", "reveal"],
+        "projectRoots": ["D:/GitHub/VisualBridge/UnityProject/VisualBridgeAuthoring"],
+        "pipePath": "\\\\.\\pipe\\visualbridge-bridge-6f9619ff",
+        "tcpPort": 8226,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "pid": 41648,
+        "generation": 3,
+        "startedAt": "2026-08-30T12:41:06.879Z"
+      }
+    },
+    {
+      "label": "unknown message type",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "bridge.unknownMessageType",
+      "value": {
+        "type": "compile",
+        "requestId": "req-003"
+      }
+    },
+    {
+      "label": "hello with unknown property",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "bridge.unknownProperty",
+      "value": {
+        "type": "hello",
+        "protocolVersion": 1,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "capabilities": ["open"],
+        "currentUnity": true
+      }
+    },
+    {
+      "label": "hello missing token",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "bridge.missingProperty",
+      "value": {
+        "type": "hello",
+        "protocolVersion": 1,
+        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "capabilities": ["open"]
+      }
+    },
+    {
+      "label": "hello with unsupported protocol version",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "bridge.unsupportedProtocolVersion",
+      "value": {
+        "type": "hello",
+        "protocolVersion": 2,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "capabilities": ["open"]
+      }
+    },
+    {
+      "label": "hello with malformed token",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "bridge.invalidToken",
+      "value": {
+        "type": "hello",
+        "protocolVersion": 1,
+        "token": "not-hex!",
+        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "capabilities": ["open"]
+      }
+    },
+    {
+      "label": "open request with backslash document path",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "type": "open",
+        "requestId": "req-004",
+        "documentPath": "Config\\Game.gamesettings"
+      }
+    },
+    {
+      "label": "reveal request missing reference",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "bridge.missingProperty",
+      "value": {
+        "type": "reveal",
+        "requestId": "req-005"
+      }
+    },
+    {
+      "label": "error response missing error code",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "type": "response",
+        "requestId": "req-006",
+        "status": "error"
+      }
+    },
+    {
+      "label": "error message with unknown code",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "type": "error",
+        "code": "bridge.runtimeAttach"
+      }
+    },
+    {
+      "label": "discovery record with unknown property",
+      "target": "discoveryRecord",
+      "valid": false,
+      "loaderCode": "bridge.unknownProperty",
+      "value": {
+        "formatVersion": 1,
+        "protocolVersion": 1,
+        "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
+        "capabilities": ["open"],
+        "projectRoots": ["D:/Authoring"],
+        "pipePath": "\\\\.\\pipe\\visualbridge-bridge-1",
+        "tcpPort": 8226,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "pid": 41648,
+        "generation": 1,
+        "startedAt": "2026-08-30T12:41:06.879Z",
+        "currentUnity": true
+      }
+    },
+    {
+      "label": "discovery record with unsupported format version",
+      "target": "discoveryRecord",
+      "valid": false,
+      "loaderCode": "bridge.unsupportedFormatVersion",
+      "value": {
+        "formatVersion": 2,
+        "protocolVersion": 1,
+        "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
+        "capabilities": ["open"],
+        "projectRoots": ["D:/Authoring"],
+        "pipePath": "\\\\.\\pipe\\visualbridge-bridge-1",
+        "tcpPort": 8226,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "pid": 41648,
+        "generation": 1,
+        "startedAt": "2026-08-30T12:41:06.879Z"
+      }
+    },
+    {
+      "label": "discovery record with malformed pipe path",
+      "target": "discoveryRecord",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "formatVersion": 1,
+        "protocolVersion": 1,
+        "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
+        "capabilities": ["open"],
+        "projectRoots": ["D:/Authoring"],
+        "pipePath": "localhost:1234",
+        "tcpPort": 8226,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "pid": 41648,
+        "generation": 1,
+        "startedAt": "2026-08-30T12:41:06.879Z"
+      }
+    },
+    {
+      "label": "discovery record with port zero",
+      "target": "discoveryRecord",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "formatVersion": 1,
+        "protocolVersion": 1,
+        "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
+        "capabilities": ["open"],
+        "projectRoots": ["D:/Authoring"],
+        "pipePath": "\\\\.\\pipe\\visualbridge-bridge-1",
+        "tcpPort": 0,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "pid": 41648,
+        "generation": 1,
+        "startedAt": "2026-08-30T12:41:06.879Z"
+      }
+    },
+    {
+      "label": "discovery record with empty project roots",
+      "target": "discoveryRecord",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "formatVersion": 1,
+        "protocolVersion": 1,
+        "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
+        "capabilities": ["open"],
+        "projectRoots": [],
+        "pipePath": "\\\\.\\pipe\\visualbridge-bridge-1",
+        "tcpPort": 8226,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "pid": 41648,
+        "generation": 1,
+        "startedAt": "2026-08-30T12:41:06.879Z"
+      }
+    },
+    {
+      "label": "discovery record with malformed started timestamp",
+      "target": "discoveryRecord",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "formatVersion": 1,
+        "protocolVersion": 1,
+        "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
+        "capabilities": ["open"],
+        "projectRoots": ["D:/Authoring"],
+        "pipePath": "\\\\.\\pipe\\visualbridge-bridge-1",
+        "tcpPort": 8226,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "pid": 41648,
+        "generation": 1,
+        "startedAt": "yesterday"
+      }
+    }
+  ]
+}

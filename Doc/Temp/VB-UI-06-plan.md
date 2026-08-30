@@ -38,3 +38,11 @@ spike 与威胁模型全部完成，证据与结论见 [VB-UI-06-spike-report.md
 - 多窗口：陈旧心跳/死 pid 过滤正确，显式 windowId 选择路由正确。
 - 选型：named pipe 为主 + TCP 回退、NDJSON 分帧、文件型 discovery + 心跳/pid 陈旧判定、每窗口随机 token、generation 递增、指数退避重连、多候选显式选择；WebSocket 拒绝。
 - 威胁模型：防误路由与最小暴露为目标，不防同用户恶意进程；攻击面/伪造记录/拒绝面/DoS/泄露逐项分析。
+
+### 阶段 2（2026-08-30，已完成）
+
+- 新增 `Protocol/Schema/visualbridge-editor-bridge.schema.json`（Editor Bridge V1：hello/welcome、open/reveal、response/error 消息与 discovery 记录），登记进 `contract-manifest.json`（`versions.editorBridge: 1`、C# 生成闭包）。
+- `npm run generate`：15 个 Schema、4 个产物确定性生成；`--check` drift gate 通过；两份 C# 输出 byte-identical；`dotnet build VisualBridge.Editor.csproj` 通过。
+- parity 正反例：`visualbridge-editor-bridge-cases.json`（23 例，覆盖消息与 discovery 记录）接入 `generate.mjs` 的 `verifyEditorBridgeExamples`（AJV 侧）；Unity EditMode 侧 parity 在阶段 5 补齐。
+- `npm test --workspace @visualbridge/protocol-contract` 通过（含 7 个 MCP 工具 live check）；`check:docs` 仅余 Doc/Temp 任务文件提示（任务收尾时消除）。
+- `ProtocolContracts.md`、`Doc/README.md`、`VisualBridgeArchitecture.md` 已同步 15 份 Schema 与 Bridge 契约范围。

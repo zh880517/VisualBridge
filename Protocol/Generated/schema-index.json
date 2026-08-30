@@ -65,6 +65,32 @@
       ]
     },
     {
+      "file": "Schema/visualbridge-editor-bridge.schema.json",
+      "id": "https://visualbridge.dev/schema/visualbridge-editor-bridge.schema.json",
+      "sha256": "2d887360a985ffc953c238a6a6f22fab3d810e1146ef52858f453d6724b500d5",
+      "definitions": [
+        "absolutePath",
+        "capability",
+        "capabilityList",
+        "discoveryRecord",
+        "errorCode",
+        "errorMessage",
+        "helloMessage",
+        "instanceId",
+        "openRequest",
+        "pipePath",
+        "processId",
+        "protocolVersion",
+        "requestId",
+        "responseMessage",
+        "revealRequest",
+        "serverGeneration",
+        "tcpPort",
+        "token",
+        "welcomeMessage"
+      ]
+    },
+    {
       "file": "Schema/visualbridge-entity-catalog.schema.json",
       "id": "https://visualbridge.dev/schema/visualbridge-entity-catalog.schema.json",
       "sha256": "9d9501dca2b2e62946a42368b3406f8ae8b9f8154b94f5311b429d3160bec593",

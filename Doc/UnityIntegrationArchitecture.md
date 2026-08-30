@@ -6,7 +6,7 @@
 
 本文在 [`VisualBridgeArchitecture.md`](VisualBridgeArchitecture.md)、[`ProtocolContracts.md`](ProtocolContracts.md)、[`StructuredConfigModel.md`](StructuredConfigModel.md) 和四个领域正式契约之上补充 Unity 侧职责。已有 Project、Catalog、Document、Field、稳定 ID、Hash 和诊断语义继续以 `Protocol/Schema`、`Protocol/contract-manifest.json`、现有 TypeScript Core 及领域正式文档为准。本文不能通过概念描述覆盖或放宽这些已冻结契约。
 
-当前仓库已经完成 C# contract generator、有效 UPM Package、Integration Profile V1、Structured Catalog Exporter 与 offline Import/Compiler；固定 Unity 样例可在没有 VS Code/Bridge 的条件下执行 Generate/Check。UPM Package ID 固定为 `com.kyle.visualbridge`，C# namespace/assembly 使用 `VisualBridge.<Module>`；私有 VSIX 保持 `UNLICENSED` 并携带不授予公共使用权的 proprietary notice。Editor Bridge 已于 2026-08-30 由项目方授权恢复实施；discovery/transport spike 与威胁模型已完成，传输、discovery、认证与重连策略已冻结（见第 12 章），正式消息 Schema 尚未进入 Protocol，实现尚未开始。Runtime、Debug、DAP 与 Player 仍未实现。实施状态与剩余发布门槛见 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)。
+当前仓库已经完成 C# contract generator、有效 UPM Package、Integration Profile V1、Structured Catalog Exporter 与 offline Import/Compiler；固定 Unity 样例可在没有 VS Code/Bridge 的条件下执行 Generate/Check。UPM Package ID 固定为 `com.kyle.visualbridge`，C# namespace/assembly 使用 `VisualBridge.<Module>`；私有 VSIX 保持 `UNLICENSED` 并携带不授予公共使用权的 proprietary notice。Editor Bridge 已于 2026-08-30 由项目方授权恢复实施；discovery/transport spike 与威胁模型已完成，传输、discovery、认证与重连策略已冻结（见第 12 章），正式消息 Schema（`visualbridge-editor-bridge.schema.json`）已进入 Protocol 与 C# 生成闭包，双端实现尚未开始。Runtime、Debug、DAP 与 Player 仍未实现。实施状态与剩余发布门槛见 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)。
 
 ## 2. 首期范围
 

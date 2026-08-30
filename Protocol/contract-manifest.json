@@ -4,6 +4,7 @@
     "namespace": "VisualBridge.Protocol.Generated",
     "schemas": [
       "visualbridge-catalog-source.schema.json",
+      "visualbridge-editor-bridge.schema.json",
       "visualbridge-primitives.schema.json",
       "visualbridge-project.schema.json",
       "visualbridge-structured-catalog.schema.json",
@@ -29,6 +30,7 @@
     "structuredDocument": 1,
     "structuredCatalog": 1,
     "unityIntegrationProfile": 1,
+    "editorBridge": 1,
     "tableCatalog": 1,
     "documentLifecyclePlan": 1,
     "referenceCursor": 2,

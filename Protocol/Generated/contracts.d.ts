@@ -61,6 +61,31 @@ export namespace VisualBridgeCatalogSource {
   export type Identifier = string;
 }
 
+// Source: Protocol/Schema/visualbridge-editor-bridge.schema.json
+// $id: https://visualbridge.dev/schema/visualbridge-editor-bridge.schema.json
+export namespace VisualBridgeEditorBridge {
+  export type Root = (HelloMessage) | (WelcomeMessage) | (OpenRequest) | (RevealRequest) | (ResponseMessage) | (ErrorMessage);
+  export type AbsolutePath = string;
+  export type Capability = "open" | "reveal";
+  export type CapabilityList = readonly Capability[];
+  export type DiscoveryRecord = { readonly "capabilities": CapabilityList; readonly "formatVersion": 1; readonly "generation": ServerGeneration; readonly "pid": ProcessId; readonly "pipePath": PipePath; readonly "projectRoots": readonly AbsolutePath[]; readonly "protocolVersion": ProtocolVersion; readonly "startedAt": string; readonly "tcpPort": TcpPort; readonly "token": Token; readonly "windowId": InstanceId };
+  export type ErrorCode = "bridge.capabilityMissing" | "bridge.documentAmbiguous" | "bridge.documentUnresolved" | "bridge.internalError" | "bridge.invalidJson" | "bridge.invalidToken" | "bridge.protocolVersionMismatch" | "bridge.unknownMessageType";
+  export type ErrorMessage = { readonly "code": ErrorCode; readonly "detail"?: string; readonly "type": "error" };
+  export type HelloMessage = { readonly "capabilities": CapabilityList; readonly "clientInstanceId": InstanceId; readonly "protocolVersion": ProtocolVersion; readonly "token": Token; readonly "type": "hello" };
+  export type InstanceId = string;
+  export type OpenRequest = { readonly "documentPath": VisualBridgePrimitives.NormalizedPath; readonly "requestId": RequestId; readonly "type": "open" };
+  export type PipePath = string;
+  export type ProcessId = number;
+  export type ProtocolVersion = 1;
+  export type RequestId = string;
+  export type ResponseMessage = ({ readonly "requestId": RequestId; readonly "status": "ok"; readonly "type": "response" }) | ({ readonly "error": ErrorCode; readonly "requestId": RequestId; readonly "status": "error"; readonly "type": "response" });
+  export type RevealRequest = { readonly "reference": VisualBridgePrimitives.ReferenceValue; readonly "requestId": RequestId; readonly "type": "reveal" };
+  export type ServerGeneration = number;
+  export type TcpPort = number;
+  export type Token = string;
+  export type WelcomeMessage = { readonly "capabilities": CapabilityList; readonly "protocolVersion": ProtocolVersion; readonly "serverGeneration": ServerGeneration; readonly "type": "welcome"; readonly "windowId": InstanceId };
+}
+
 // Source: Protocol/Schema/visualbridge-entity-catalog.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-entity-catalog.schema.json
 export namespace VisualBridgeEntityCatalog {

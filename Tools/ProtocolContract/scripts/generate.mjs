@@ -46,6 +46,7 @@ schemas.forEach(({ name, schema }) => {
 });
 verifyContractExamples(ajv);
 await verifyUnityIntegrationProfileExamples(ajv);
+await verifyEditorBridgeExamples(ajv);
 verifySharedFormSchemaParity(ajv);
 await verifyImplementationRegistry();
 
@@ -200,6 +201,43 @@ async function verifyUnityIntegrationProfileExamples(compiler) {
       validator(testCase.value),
       testCase.valid,
       `${testCase.label} Schema parity drift: ${JSON.stringify(validator.errors)}`,
+    );
+    if (!testCase.valid) {
+      assert.equal(typeof testCase.loaderCode, "string", `${testCase.label} requires a loaderCode.`);
+    }
+  }
+}
+
+async function verifyEditorBridgeExamples(compiler) {
+  const bridgeId = "https://visualbridge.dev/schema/visualbridge-editor-bridge.schema.json";
+  const messageValidator = requireValidator(compiler, bridgeId);
+  const discoveryValidator = requireValidator(compiler, `${bridgeId}#/$defs/discoveryRecord`);
+  assert.equal(contractManifest.versions.editorBridge, 1, "Editor Bridge version registry drift.");
+  const bridgeSchema = schemas.find((entry) => entry.name === "visualbridge-editor-bridge.schema.json")?.schema;
+  assert.equal(
+    bridgeSchema?.$defs?.discoveryRecord?.properties?.formatVersion?.const,
+    contractManifest.versions.editorBridge,
+    "Editor Bridge discovery record format version drift.",
+  );
+  const fixturePath = path.join(
+    repositoryRoot,
+    "Packages",
+    "com.kyle.visualbridge",
+    "Tests",
+    "Fixtures",
+    "visualbridge-editor-bridge-cases.json",
+  );
+  const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
+  assert.equal(Array.isArray(fixture.cases), true, "Editor Bridge parity fixture must declare cases.");
+  assert.equal(fixture.cases.length > 0, true, "Editor Bridge parity fixture must not be empty.");
+  for (const testCase of fixture.cases) {
+    assert.equal(typeof testCase.label, "string", "Editor Bridge fixture case requires a label.");
+    assert.equal(typeof testCase.valid, "boolean", `${testCase.label} requires a boolean valid flag.`);
+    const target = testCase.target === "discoveryRecord" ? discoveryValidator : messageValidator;
+    assert.equal(
+      target(testCase.value),
+      testCase.valid,
+      `${testCase.label} Schema parity drift: ${JSON.stringify(target.errors)}`,
     );
     if (!testCase.valid) {
       assert.equal(typeof testCase.loaderCode, "string", `${testCase.label} requires a loaderCode.`);

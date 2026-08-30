@@ -902,7 +902,7 @@ Domain Reload 会使未来 Unity 连接和运行时身份失效，因此后续�
 
 ## 留待实施阶段确定
 
-Graph V3、Graph Catalog V4、Entity/Structured/Table V1、Project V1、Project Provider V2、MCP V2 和 Unity Integration Profile V1 已由各自正式文档与 Schema 定义。`Protocol/Schema` 当前冻结 14 份正式 JSON Schema，并确定性生成四个产物：`Protocol/Generated/contracts.d.ts`、`schema-index.json`、`contracts.g.cs`，以及 Package 内的 `VisualBridgeProtocolContracts.g.cs`。两份 C# 输出是 wire/data bags，不是语义 validator；Unity Profile/Project/Catalog/Document consumer 以 strict `JObject` validator 执行 unknown-field、版本、union/value shape、ID/path/hash 与 Registry 约束。以下条目是尚未落地的扩展，不表示现有格式与工具字段未定义：
+Graph V3、Graph Catalog V4、Entity/Structured/Table V1、Project V1、Project Provider V2、MCP V2、Unity Integration Profile V1 和最小 Editor Bridge V1 已由各自正式文档与 Schema 定义。`Protocol/Schema` 当前冻结 15 份正式 JSON Schema，并确定性生成四个产物：`Protocol/Generated/contracts.d.ts`、`schema-index.json`、`contracts.g.cs`，以及 Package 内的 `VisualBridgeProtocolContracts.g.cs`。两份 C# 输出是 wire/data bags，不是语义 validator；Unity Profile/Project/Catalog/Document consumer 以 strict `JObject` validator 执行 unknown-field、版本、union/value shape、ID/path/hash 与 Registry 约束。以下条目是尚未落地的扩展，不表示现有格式与工具字段未定义：
 
 - Protocol、C# 生成物、Unity Package 与 Compiler/Bridge 的完整发布兼容矩阵；当前生成闭包、Schema Hash 与 Package `0.1.0` 基线已由 Protocol gate 固定。
 - 新类型的稳定 ID 生成、alias 迁移与旧数据导入策略；当前内置类型的稳定 ID/alias 规则保持由各领域文档定义。

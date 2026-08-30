@@ -40,7 +40,7 @@
 
 - [Project Provider V2](ProjectProvider.md)：stdio JSON-RPC、Reference/Validator、分页快照、Trust、MCP allowlist、进程生命周期和故障处理。
 - [VisualBridge MCP Server V2](VisualBridgeMcp.md)：七个稳定工具、发现、查询、Operation、Lifecycle、Refactor、并发控制和原子写入。
-- [VisualBridge 协议契约](ProtocolContracts.md)：14 份 Schema/manifest 单一事实源、TypeScript/C# 四个生成产物、版本、Hash、Cursor、状态、错误和生成一致性。
+- [VisualBridge 协议契约](ProtocolContracts.md)：15 份 Schema/manifest 单一事实源、TypeScript/C# 四个生成产物、版本、Hash、Cursor、状态、错误和生成一致性。
 
 ## 验证、发布与路线图
 

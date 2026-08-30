@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://visualbridge.dev/schema/visualbridge-editor-bridge.schema.json",
+  "title": "VisualBridge Editor Bridge V1",
+  "description": "Local NDJSON message contracts between the Unity Editor bridge client and the VS Code extension host bridge server, plus the per-window discovery record. Version 1 carries open/reveal requests only; it does not define Runtime, Debug, or Player messages.",
+  "oneOf": [
+    { "$ref": "#/$defs/helloMessage" },
+    { "$ref": "#/$defs/welcomeMessage" },
+    { "$ref": "#/$defs/openRequest" },
+    { "$ref": "#/$defs/revealRequest" },
+    { "$ref": "#/$defs/responseMessage" },
+    { "$ref": "#/$defs/errorMessage" }
+  ],
+  "$defs": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "token": {
+      "type": "string",
+      "description": "Hex-encoded per-window authentication token of at least 192 bits.",
+      "pattern": "^[0-9a-f]{48,64}$"
+    },
+    "instanceId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "serverGeneration": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "processId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "capability": {
+      "enum": ["open", "reveal"]
+    },
+    "capabilityList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/capability" }
+    },
+    "errorCode": {
+      "enum": [
+        "bridge.capabilityMissing",
+        "bridge.documentAmbiguous",
+        "bridge.documentUnresolved",
+        "bridge.internalError",
+        "bridge.invalidJson",
+        "bridge.invalidToken",
+        "bridge.protocolVersionMismatch",
+        "bridge.unknownMessageType"
+      ]
+    },
+    "helloMessage": {
+      "type": "object",
+      "description": "First message sent by the Unity Editor client after connecting; authenticates the connection and negotiates the protocol version and capabilities.",
+      "required": [
+        "type",
+        "protocolVersion",
+        "token",
+        "clientInstanceId",
+        "capabilities"
+      ],
+      "properties": {
+        "type": { "const": "hello" },
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "token": { "$ref": "#/$defs/token" },
+        "clientInstanceId": { "$ref": "#/$defs/instanceId" },
+        "capabilities": { "$ref": "#/$defs/capabilityList" }
+      },
+      "additionalProperties": false
+    },
+    "welcomeMessage": {
+      "type": "object",
+      "description": "Server reply to a valid hello message; identifies the window and the current server instance generation.",
+      "required": [
+        "type",
+        "protocolVersion",
+        "windowId",
+        "serverGeneration",
+        "capabilities"
+      ],
+      "properties": {
+        "type": { "const": "welcome" },
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "windowId": { "$ref": "#/$defs/instanceId" },
+        "serverGeneration": { "$ref": "#/$defs/serverGeneration" },
+        "capabilities": { "$ref": "#/$defs/capabilityList" }
+      },
+      "additionalProperties": false
+    },
+    "openRequest": {
+      "type": "object",
+      "description": "Requests the VS Code window to open an authoring document by project-root-relative path.",
+      "required": [
+        "type",
+        "requestId",
+        "documentPath"
+      ],
+      "properties": {
+        "type": { "const": "open" },
+        "requestId": { "$ref": "#/$defs/requestId" },
+        "documentPath": {
+          "$ref": "visualbridge-primitives.schema.json#/$defs/normalizedPath"
+        }
+      },
+      "additionalProperties": false
+    },
+    "revealRequest": {
+      "type": "object",
+      "description": "Requests the VS Code window to reveal a stable reference target; the window resolves the document and element via its reference service.",
+      "required": [
+        "type",
+        "requestId",
+        "reference"
+      ],
+      "properties": {
+        "type": { "const": "reveal" },
+        "requestId": { "$ref": "#/$defs/requestId" },
+        "reference": {
+          "$ref": "visualbridge-primitives.schema.json#/$defs/referenceValue"
+        }
+      },
+      "additionalProperties": false
+    },
+    "responseMessage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "requestId",
+            "status"
+          ],
+          "properties": {
+            "type": { "const": "response" },
+            "requestId": { "$ref": "#/$defs/requestId" },
+            "status": { "const": "ok" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "requestId",
+            "status",
+            "error"
+          ],
+          "properties": {
+            "type": { "const": "response" },
+            "requestId": { "$ref": "#/$defs/requestId" },
+            "status": { "const": "error" },
+            "error": { "$ref": "#/$defs/errorCode" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "errorMessage": {
+      "type": "object",
+      "description": "Connection-level failure report sent before the server closes the connection.",
+      "required": [
+        "type",
+        "code"
+      ],
+      "properties": {
+        "type": { "const": "error" },
+        "code": { "$ref": "#/$defs/errorCode" },
+        "detail": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "additionalProperties": false
+    },
+    "absolutePath": {
+      "type": "string",
+      "description": "Absolute forward-slash path with an optional Windows drive prefix; no backslashes, dot segments, duplicate separators or trailing slash.",
+      "pattern": "^(?:[A-Za-z]:)?/(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*\\\\)(?!.*/$)(?:[^/]+/)*[^/]+$"
+    },
+    "pipePath": {
+      "type": "string",
+      "description": "Windows named pipe full path of the bridge server listener.",
+      "pattern": "^\\\\\\\\.\\\\pipe\\\\[A-Za-z0-9][A-Za-z0-9._-]{0,200}$"
+    },
+    "tcpPort": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "discoveryRecord": {
+      "type": "object",
+      "description": "Per-window discovery record published at <temp>/visualbridge-bridge/<windowId>.json; heartbeat is the file modification time.",
+      "required": [
+        "formatVersion",
+        "protocolVersion",
+        "windowId",
+        "capabilities",
+        "projectRoots",
+        "pipePath",
+        "tcpPort",
+        "token",
+        "pid",
+        "generation",
+        "startedAt"
+      ],
+      "properties": {
+        "formatVersion": { "const": 1 },
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "windowId": { "$ref": "#/$defs/instanceId" },
+        "capabilities": { "$ref": "#/$defs/capabilityList" },
+        "projectRoots": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/absolutePath" }
+        },
+        "pipePath": { "$ref": "#/$defs/pipePath" },
+        "tcpPort": { "$ref": "#/$defs/tcpPort" },
+        "token": { "$ref": "#/$defs/token" },
+        "pid": { "$ref": "#/$defs/processId" },
+        "generation": { "$ref": "#/$defs/serverGeneration" },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
