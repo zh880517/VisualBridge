@@ -292,6 +292,90 @@ test("externalModification wins when a Provider writes and also returns an inval
   );
 });
 
+test("authorizes declared and canonical Provider entries through a trusted project-root alias", async (t) => {
+  const fixture = await createProviderFixture({ passPathsInArguments: true });
+  const runtimes = [];
+  t.after(async () => {
+    await Promise.all(runtimes.map(safeDispose));
+    await fixture.dispose();
+  });
+  const projectRoot = path.join(fixture.temporaryRoot, "project-root-alias");
+  if (!await createDirectoryAlias(t, fixture.projectRoot, projectRoot)) return;
+  const project = await readProject(projectRoot);
+  const definition = project.providers[0];
+  const declaredEntryPath = path.join(projectRoot, ...providerFixtureEntry.split("/"));
+
+  for (const allowedEntryPath of [declaredEntryPath, fixture.entryPath]) {
+    const runtime = await ProjectProviderRuntime.create({
+      ...baseOptions(fixture, definition),
+      projectRoot,
+      allowedEntryPaths: [allowedEntryPath],
+    });
+    runtimes.push(runtime);
+    assert.equal(await runtime.captureEntryHash(), sha256(await readFile(fixture.entryPath)));
+  }
+});
+
+test("rejects directory aliases below a trusted Provider project root", async (t) => {
+  const fixture = await createProviderFixture({ passPathsInArguments: true });
+  t.after(() => fixture.dispose());
+  const projectRoot = path.join(fixture.temporaryRoot, "project-root-alias");
+  if (!await createDirectoryAlias(t, fixture.projectRoot, projectRoot)) return;
+  const aliasedProviders = path.join(fixture.projectRoot, "AliasedProviders");
+  if (!await createDirectoryAlias(t, path.join(fixture.projectRoot, "Providers"), aliasedProviders)) return;
+  const project = await readProject(projectRoot);
+  const definition = { ...project.providers[0], entry: "AliasedProviders/sample-provider.mjs" };
+
+  await assert.rejects(
+    ProjectProviderRuntime.create({
+      ...baseOptions(fixture, definition),
+      projectRoot,
+      allowedEntryPaths: [path.join(projectRoot, "AliasedProviders", "sample-provider.mjs")],
+    }),
+    (error) => isRuntimeError(error, "provider.entryAlias"),
+  );
+});
+
+test("rejects an allowlist symlink even when it resolves to the declared Provider entry", async (t) => {
+  const fixture = await createProviderFixture({ passPathsInArguments: true });
+  t.after(() => fixture.dispose());
+  const allowlistAlias = path.join(fixture.temporaryRoot, "allowlisted-provider.mjs");
+  try {
+    await symlink(fixture.entryPath, allowlistAlias, "file");
+  } catch (error) {
+    if (error?.code === "EPERM" || error?.code === "EACCES") {
+      t.diagnostic(`Allowlist symlink assertion skipped on this host: ${error.code}`);
+      return;
+    }
+    throw error;
+  }
+  const project = await readProject(fixture.projectRoot);
+
+  await assert.rejects(
+    ProjectProviderRuntime.create({
+      ...baseOptions(fixture, project.providers[0]),
+      allowedEntryPaths: [allowlistAlias],
+    }),
+    (error) => isRuntimeError(error, "provider.invalidAllowlist"),
+  );
+});
+
+test("rejects an undeclared allowlist directory alias to the Provider entry", async (t) => {
+  const fixture = await createProviderFixture({ passPathsInArguments: true });
+  t.after(() => fixture.dispose());
+  const allowlistDirectory = path.join(fixture.temporaryRoot, "allowlist-directory-alias");
+  if (!await createDirectoryAlias(t, path.join(fixture.projectRoot, "Providers"), allowlistDirectory)) return;
+  const project = await readProject(fixture.projectRoot);
+
+  await assert.rejects(
+    ProjectProviderRuntime.create({
+      ...baseOptions(fixture, project.providers[0]),
+      allowedEntryPaths: [path.join(allowlistDirectory, "sample-provider.mjs")],
+    }),
+    (error) => isRuntimeError(error, "provider.invalidAllowlist"),
+  );
+});
+
 test("rejects traversal, non-allowlisted entries and symlink aliases before spawn", async (t) => {
   const fixture = await createProviderFixture({ passPathsInArguments: true });
   t.after(() => fixture.dispose());
@@ -424,6 +508,17 @@ function registerCleanup(t, fixture, runtime) {
     await safeDispose(runtime);
     await fixture.dispose();
   });
+}
+
+async function createDirectoryAlias(t, targetPath, aliasPath) {
+  try {
+    await symlink(targetPath, aliasPath, process.platform === "win32" ? "junction" : "dir");
+  } catch (error) {
+    if (!["EPERM", "EACCES", "ENOSYS", "ENOTSUP"].includes(error?.code)) throw error;
+    t.diagnostic(`Directory alias assertion skipped on this host: ${error.code}`);
+    return false;
+  }
+  return true;
 }
 
 async function waitFor(predicate, timeoutMs = 2_000) {

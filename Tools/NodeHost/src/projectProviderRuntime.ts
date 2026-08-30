@@ -174,9 +174,11 @@ export class ProjectProviderRuntime implements AsyncDisposable {
   }
 
   public static async create(options: ProjectProviderRuntimeOptions): Promise<ProjectProviderRuntime> {
-    const projectRoot = await resolveProjectRoot(options.projectRoot);
+    const declaredProjectRoot = path.resolve(options.projectRoot);
+    const projectRoot = await resolveProjectRoot(declaredProjectRoot);
     const entryPath = await resolveProviderEntry(projectRoot, options.definition.entry);
-    await assertAllowedEntry(entryPath, options.allowedEntryPaths);
+    const declaredEntryPath = path.resolve(declaredProjectRoot, ...options.definition.entry.split("/"));
+    await assertAllowedEntry(entryPath, declaredEntryPath, options.allowedEntryPaths);
     validatePositiveTimeout(options.initializeTimeoutMs, "initializeTimeoutMs");
     validatePositiveTimeout(options.requestTimeoutMs, "requestTimeoutMs");
     validatePositiveTimeout(options.shutdownTimeoutMs, "shutdownTimeoutMs");
@@ -938,18 +940,36 @@ async function resolveProviderEntry(projectRoot: string, relativeEntry: string):
   return resolved;
 }
 
-async function assertAllowedEntry(entryPath: string, allowedEntryPaths: readonly string[]): Promise<void> {
+async function assertAllowedEntry(
+  entryPath: string,
+  declaredEntryPath: string,
+  allowedEntryPaths: readonly string[],
+): Promise<void> {
   if (allowedEntryPaths.length === 0) {
     throw new ProjectProviderRuntimeError(
       "provider.entryNotAllowed",
       "Project Provider entry is not authorized by the host allowlist.",
     );
   }
+  const entryIdentity = pathIdentity(entryPath);
+  const declaredEntryIdentity = pathIdentity(declaredEntryPath);
   for (const allowedPath of allowedEntryPaths) {
     if (!path.isAbsolute(allowedPath)) {
       throw new ProjectProviderRuntimeError(
         "provider.invalidAllowlist",
         "Project Provider allowlist entries must be exact absolute paths.",
+      );
+    }
+    let allowedEntry: Awaited<ReturnType<typeof lstat>>;
+    try {
+      allowedEntry = await lstat(allowedPath);
+    } catch {
+      continue;
+    }
+    if (allowedEntry.isSymbolicLink() || !allowedEntry.isFile()) {
+      throw new ProjectProviderRuntimeError(
+        "provider.invalidAllowlist",
+        `Project Provider allowlist entry '${allowedPath}' must be a regular physical file.`,
       );
     }
     let resolved: string;
@@ -958,13 +978,16 @@ async function assertAllowedEntry(entryPath: string, allowedEntryPaths: readonly
     } catch {
       continue;
     }
-    if (pathIdentity(path.resolve(allowedPath)) !== pathIdentity(resolved)) {
+    const allowedIdentity = pathIdentity(path.resolve(allowedPath));
+    const resolvedIdentity = pathIdentity(resolved);
+    const isExpectedIdentity = allowedIdentity === declaredEntryIdentity || allowedIdentity === entryIdentity;
+    if (!isExpectedIdentity && allowedIdentity !== resolvedIdentity) {
       throw new ProjectProviderRuntimeError(
         "provider.invalidAllowlist",
         `Project Provider allowlist entry '${allowedPath}' resolves through a path alias.`,
       );
     }
-    if (pathIdentity(resolved) === pathIdentity(entryPath)) return;
+    if (isExpectedIdentity && resolvedIdentity === entryIdentity) return;
   }
   throw new ProjectProviderRuntimeError(
     "provider.entryNotAllowed",
