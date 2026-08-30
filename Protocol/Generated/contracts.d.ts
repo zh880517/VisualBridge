@@ -283,3 +283,13 @@ export namespace VisualBridgeTableCatalog {
   export type ValueShape = ({ readonly "fields": unknown; readonly "item"?: never; readonly "valueType": "object"; readonly [key: string]: unknown }) | ({ readonly "fields"?: never; readonly "item": unknown; readonly "valueType": "array"; readonly [key: string]: unknown }) | ({ readonly "fields"?: never; readonly "item"?: never; readonly "valueType": "boolean" | "json" | "number" | "string"; readonly [key: string]: unknown }) | ({ readonly "fields"?: never; readonly "item"?: never; readonly "valueType"?: never; readonly [key: string]: unknown });
   export type ValueType = "string" | "number" | "boolean" | "object" | "array" | "json";
 }
+
+// Source: Protocol/Schema/visualbridge-unity-integration-profile.schema.json
+// $id: https://visualbridge.dev/schema/visualbridge-unity-integration-profile.schema.json
+export namespace VisualBridgeUnityIntegrationProfile {
+  export type Root = { readonly "authoringProject": ProjectRelativePath; readonly "catalogExports": readonly CatalogExport[]; readonly "compileOutputRoot": ProjectRelativePath; readonly "formatVersion": 1 };
+  export type CatalogExport = { readonly "catalogId": Identifier; readonly "output": (ProjectRelativePath) & (string); readonly "title": NonEmptyString; readonly "types": readonly string[] };
+  export type Identifier = string;
+  export type NonEmptyString = string;
+  export type ProjectRelativePath = string;
+}

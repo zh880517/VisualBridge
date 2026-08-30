@@ -1,0 +1,18 @@
+{
+  "formatVersion": 1,
+  "documentId": "sample.unity.game.settings.default",
+  "properties": {
+    "checkpoints": [
+      0,
+      10
+    ],
+    "difficulty": "Normal",
+    "friendlyFire": false,
+    "maxPlayers": 5,
+    "serverName": "Local Development",
+    "spawn": {
+      "lives": 3,
+      "region": "center"
+    }
+  }
+}

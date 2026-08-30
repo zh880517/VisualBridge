@@ -1,0 +1,14 @@
+{
+  "name": "com.kyl.visualbridge",
+  "version": "0.1.0",
+  "displayName": "VisualBridge",
+  "description": "Unity integration package for VisualBridge authoring contracts and metadata.",
+  "unity": "6000.3",
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.2.2"
+  },
+  "license": "UNLICENSED",
+  "author": {
+    "name": "Kyl"
+  }
+}

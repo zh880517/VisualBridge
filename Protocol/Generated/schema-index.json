@@ -297,6 +297,17 @@
         "valueShape",
         "valueType"
       ]
+    },
+    {
+      "file": "Schema/visualbridge-unity-integration-profile.schema.json",
+      "id": "https://visualbridge.dev/schema/visualbridge-unity-integration-profile.schema.json",
+      "sha256": "c9ad6b5e3364cda15d0ed0e98af7ffac9a2cdad743091dce33f0b004e870578f",
+      "definitions": [
+        "catalogExport",
+        "identifier",
+        "nonEmptyString",
+        "projectRelativePath"
+      ]
     }
   ]
 }

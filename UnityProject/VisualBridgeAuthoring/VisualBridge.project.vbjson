@@ -1,0 +1,20 @@
+{
+  "formatVersion": 1,
+  "projectId": "visualbridge.unity-sample",
+  "documentRoots": [
+    "Config"
+  ],
+  "documentTypes": [
+    {
+      "id": "sample.unity.game.settings",
+      "editor": "structured",
+      "include": [
+        "Config/**/*.gamesettings"
+      ],
+      "exclude": [],
+      "catalogs": [
+        "Catalog/Gameplay.vbstructuredcatalog"
+      ]
+    }
+  ]
+}

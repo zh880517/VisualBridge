@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -45,6 +45,7 @@ schemas.forEach(({ name, schema }) => {
   if (ajv.getSchema(schema.$id) === undefined) throw new Error(`AJV did not compile ${name}.`);
 });
 verifyContractExamples(ajv);
+await verifyUnityIntegrationProfileExamples(ajv);
 verifySharedFormSchemaParity(ajv);
 await verifyImplementationRegistry();
 
@@ -60,11 +61,17 @@ const index = {
 };
 const indexText = `${JSON.stringify(index, undefined, 2)}\n`;
 const declarationText = generateDeclarations(schemas);
+const csharpConfiguration = readCSharpConfiguration(contractManifest);
+const csharpText = generateCSharpContracts(schemas, csharpConfiguration);
 verifyDeclarationFidelity(declarationText);
+verifyCSharpFidelity(csharpText, schemas, csharpConfiguration);
 await emit(path.join(generatedRoot, "schema-index.json"), indexText);
 await emit(path.join(generatedRoot, "contracts.d.ts"), declarationText);
+for (const output of csharpConfiguration.outputs) {
+  await emit(path.join(repositoryRoot, ...output.split("/")), csharpText);
+}
 await compileDeclarations();
-console.log(`${check ? "Checked" : "Generated"} ${schemas.length} compiled schemas and 2 deterministic artifacts.`);
+console.log(`${check ? "Checked" : "Generated"} ${schemas.length} compiled schemas and ${2 + csharpConfiguration.outputs.length} deterministic artifacts.`);
 
 async function emit(target, content) {
   if (check) {
@@ -76,6 +83,7 @@ async function emit(target, content) {
     if (current !== content) throw new Error(`Generated artifact drift: ${path.relative(repositoryRoot, target)}`);
     return;
   }
+  await mkdir(path.dirname(target), { recursive: true });
   await writeFile(target, content, "utf8");
 }
 
@@ -169,6 +177,34 @@ function verifyContractExamples(compiler) {
   assertValid(structuredError, { code: -32001, message: "Unavailable", data: { kind: "providerUnavailable", retryable: true } }, "structured Provider error");
   assertInvalid(structuredError, { code: -32001, message: "Unavailable", data: { kind: "providerUnavailable" } }, "structured Provider error without retryable");
   assertInvalid(structuredError, { code: -32001, message: "Unavailable", data: { kind: "internalError", retryable: true } }, "structured Provider error with mismatched kind");
+}
+
+async function verifyUnityIntegrationProfileExamples(compiler) {
+  const profileId = "https://visualbridge.dev/schema/visualbridge-unity-integration-profile.schema.json";
+  const validator = requireValidator(compiler, profileId);
+  const fixturePath = path.join(
+    repositoryRoot,
+    "Packages",
+    "com.kyl.visualbridge",
+    "Tests",
+    "Fixtures",
+    "visualbridge-unity-integration-profile-cases.json",
+  );
+  const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
+  assert.equal(Array.isArray(fixture.cases), true, "Unity Integration Profile parity fixture must declare cases.");
+  assert.equal(fixture.cases.length > 0, true, "Unity Integration Profile parity fixture must not be empty.");
+  for (const testCase of fixture.cases) {
+    assert.equal(typeof testCase.label, "string", "Unity Integration Profile fixture case requires a label.");
+    assert.equal(typeof testCase.valid, "boolean", `${testCase.label} requires a boolean valid flag.`);
+    assert.equal(
+      validator(testCase.value),
+      testCase.valid,
+      `${testCase.label} Schema parity drift: ${JSON.stringify(validator.errors)}`,
+    );
+    if (!testCase.valid) {
+      assert.equal(typeof testCase.loaderCode, "string", `${testCase.label} requires a loaderCode.`);
+    }
+  }
 }
 
 function verifySharedFormSchemaParity(compiler) {
@@ -1040,6 +1076,347 @@ function typeName(value) {
   return /^[A-Za-z]/.test(normalized) ? normalized : `Type${normalized}`;
 }
 function schemaNamespaceName(fileName) { return typeName(fileName.replace(/\.schema\.json$/, "")).replace(/^Visualbridge/, "VisualBridge"); }
+
+function readCSharpConfiguration(manifest) {
+  const configuration = manifest.csharpGeneration;
+  if (configuration === undefined || configuration === null || typeof configuration !== "object" || Array.isArray(configuration)) {
+    throw new Error("contract-manifest.json must declare csharpGeneration.");
+  }
+  if (typeof configuration.namespace !== "string"
+    || !/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(configuration.namespace)) {
+    throw new Error("csharpGeneration.namespace must be a valid C# namespace.");
+  }
+  for (const [label, values] of [["schemas", configuration.schemas], ["outputs", configuration.outputs]]) {
+    if (!Array.isArray(values) || values.length === 0 || values.some((value) => typeof value !== "string")) {
+      throw new Error(`csharpGeneration.${label} must be a non-empty string array.`);
+    }
+    assertSortedUnique(values, `C# generation ${label}`);
+  }
+  for (const output of configuration.outputs) {
+    if (output.startsWith("/")
+      || output.includes("\\")
+      || output.split("/").some((segment) => segment.length === 0 || segment === "." || segment === "..")
+      || !output.endsWith(".cs")) {
+      throw new Error(`Invalid C# generated output '${output}'.`);
+    }
+  }
+  return {
+    namespace: configuration.namespace,
+    schemas: [...configuration.schemas],
+    outputs: [...configuration.outputs],
+  };
+}
+
+function generateCSharpContracts(schemaEntries, configuration) {
+  const entriesByName = new Map(schemaEntries.map((entry) => [entry.name, entry]));
+  const schemaIdsByFile = new Map(schemaEntries.map((entry) => [entry.name, entry.schema.$id]));
+  const registeredEntries = configuration.schemas.map((name) => {
+    const entry = entriesByName.get(name);
+    if (entry === undefined) throw new Error(`C# generation schema '${name}' does not exist.`);
+    return entry;
+  });
+  const targets = new Map();
+  for (const entry of registeredEntries) {
+    targets.set(entry.schema.$id, { entry, name: "Root", schema: entry.schema });
+    for (const [name, definition] of Object.entries(entry.schema.$defs ?? {})) {
+      targets.set(`${entry.schema.$id}#/$defs/${name}`, { entry, name: typeName(name), schema: definition });
+    }
+  }
+
+  const schemaModels = registeredEntries.map((entry) => buildCSharpSchemaModel(
+    entry,
+    configuration.namespace,
+    targets,
+    schemaIdsByFile,
+  ));
+  const lines = [
+    "// <auto-generated />",
+    "// Generated by Tools/ProtocolContract/scripts/generate.mjs from Protocol/Schema and contract-manifest.json.",
+    "// Do not edit this file directly.",
+    "#nullable enable",
+    "",
+    "using System;",
+    "using System.Collections.Generic;",
+    "using System.Runtime.Serialization;",
+    "",
+    `namespace ${configuration.namespace}`,
+    "{",
+    "    public readonly struct VisualBridgeSchemaContract",
+    "    {",
+    "        public VisualBridgeSchemaContract(string file, string id, string sha256)",
+    "        {",
+    "            File = file;",
+    "            Id = id;",
+    "            Sha256 = sha256;",
+    "        }",
+    "",
+    "        public string File { get; }",
+    "        public string Id { get; }",
+    "        public string Sha256 { get; }",
+    "    }",
+    "",
+    "    public static class VisualBridgeSchemaRegistry",
+    "    {",
+    ...registeredEntries.map((entry) => (
+      `        public const string ${schemaNamespaceName(entry.name)}Sha256 = ${csharpString(sha256(entry.bytes))};`
+    )),
+    "",
+    "        public static readonly IReadOnlyList<VisualBridgeSchemaContract> Contracts =",
+    "            new VisualBridgeSchemaContract[]",
+    "            {",
+    ...registeredEntries.map((entry) => (
+      `                new VisualBridgeSchemaContract(${csharpString(`Schema/${entry.name}`)}, ${csharpString(entry.schema.$id)}, ${schemaNamespaceName(entry.name)}Sha256),`
+    )),
+    "            };",
+    "    }",
+    "}",
+    "",
+  ];
+  for (const model of schemaModels) {
+    if (model.declarations.length === 0) continue;
+    lines.push(
+      `namespace ${configuration.namespace}.${model.namespace}`,
+      "{",
+      `    // JSON Schema: ${model.entry.schema.$id}`,
+      ...model.declarations.flatMap((declaration, index) => [
+        ...(index === 0 ? [] : [""]),
+        ...renderCSharpClass(declaration, model),
+      ]),
+      "}",
+      "",
+    );
+  }
+  return `${lines.join("\n").replace(/\n+$/u, "")}\n`;
+}
+
+function buildCSharpSchemaModel(entry, rootNamespace, targets, schemaIdsByFile) {
+  const namespace = schemaNamespaceName(entry.name);
+  const declarations = [];
+  const declarationNames = new Map();
+  const objectTypeNames = new Map();
+  const model = {
+    entry,
+    namespace,
+    rootNamespace,
+    targets,
+    schemaIdsByFile,
+    declarations,
+    declarationNames,
+    objectTypeNames,
+  };
+  registerCSharpObject(entry.schema, "Root", model);
+  for (const [name, definition] of Object.entries(entry.schema.$defs ?? {}).sort(([left], [right]) => compareOrdinal(left, right))) {
+    registerCSharpObject(definition, typeName(name), model);
+  }
+  declarations.sort((left, right) => left.name === "Root" ? -1 : right.name === "Root" ? 1 : compareOrdinal(left.name, right.name));
+  return model;
+}
+
+function registerCSharpObject(schema, suggestedName, model) {
+  if (schema === undefined || schema === true || schema === false || schema.$ref !== undefined) return;
+  const shape = csharpObjectShape(schema, model);
+  if (shape === undefined || (shape.properties.length === 0 && shape.additionalProperties !== undefined)) return;
+  const existingType = model.objectTypeNames.get(schema);
+  if (existingType !== undefined) return;
+  const className = typeName(suggestedName);
+  const existingDeclaration = model.declarationNames.get(className);
+  if (existingDeclaration !== undefined && existingDeclaration.schema !== schema) {
+    throw new Error(`C# declaration name collision '${model.namespace}.${className}'.`);
+  }
+  const declaration = { name: className, schema, shape };
+  model.declarationNames.set(className, declaration);
+  model.objectTypeNames.set(schema, `${model.rootNamespace}.${model.namespace}.${className}`);
+  model.declarations.push(declaration);
+  for (const [propertyName, propertySchema] of shape.properties) {
+    registerCSharpInlineObject(propertySchema, `${className}${typeName(propertyName)}`, model);
+  }
+}
+
+function registerCSharpInlineObject(schema, suggestedName, model) {
+  if (schema === undefined || schema === true || schema === false || schema.$ref !== undefined) return;
+  if (schema.type === "array") {
+    registerCSharpInlineObject(schema.items, `${suggestedName}Item`, model);
+    return;
+  }
+  registerCSharpObject(schema, suggestedName, model);
+}
+
+function csharpObjectShape(schema, model) {
+  const directProperties = schema.properties === undefined ? [] : Object.entries(schema.properties);
+  if (schema.type === "object" || directProperties.length > 0 || schema.additionalProperties !== undefined) {
+    return {
+      properties: directProperties.sort(([left], [right]) => compareOrdinal(left, right)),
+      required: new Set(schema.required ?? []),
+      additionalProperties: schema.additionalProperties,
+    };
+  }
+  const alternatives = schema.oneOf ?? schema.anyOf;
+  if (!Array.isArray(alternatives) || alternatives.length === 0) return undefined;
+  const shapes = alternatives.map((alternative) => {
+    const resolved = resolveCSharpSchema(alternative, model);
+    return csharpObjectShape(resolved.schema, resolved.model);
+  });
+  if (shapes.some((shape) => shape === undefined)) return undefined;
+  const propertySchemas = new Map();
+  for (const shape of shapes) {
+    for (const [name, propertySchema] of shape.properties) {
+      const values = propertySchemas.get(name) ?? [];
+      values.push(propertySchema);
+      propertySchemas.set(name, values);
+    }
+  }
+  const required = new Set([...shapes[0].required].filter((name) => shapes.every((shape) => shape.required.has(name))));
+  return {
+    properties: [...propertySchemas.entries()]
+      .sort(([left], [right]) => compareOrdinal(left, right))
+      .map(([name, variants]) => [name, variants.length === 1 ? variants[0] : { oneOf: variants }]),
+    required,
+    additionalProperties: undefined,
+  };
+}
+
+function resolveCSharpSchema(schema, model) {
+  if (schema?.$ref === undefined) return { schema, model };
+  const reference = resolveReferenceId(schema.$ref, model.entry.schema.$id, model.schemaIdsByFile);
+  const target = model.targets.get(reference);
+  if (target === undefined) throw new Error(`C# generation cannot resolve '${schema.$ref}' from '${model.entry.name}'.`);
+  return {
+    schema: target.schema,
+    model: target.entry === model.entry ? model : buildCSharpReferenceModel(target.entry, model),
+  };
+}
+
+function buildCSharpReferenceModel(entry, model) {
+  return {
+    ...model,
+    entry,
+    namespace: schemaNamespaceName(entry.name),
+  };
+}
+
+function renderCSharpClass(declaration, model) {
+  const propertyNames = new Set();
+  const lines = [
+    "    [DataContract]",
+    `    public sealed class ${declaration.name}`,
+    "    {",
+  ];
+  declaration.shape.properties.forEach(([jsonName, propertySchema], index) => {
+    const propertyName = typeName(jsonName);
+    if (propertyNames.has(propertyName)) {
+      throw new Error(`C# property name collision '${model.namespace}.${declaration.name}.${propertyName}'.`);
+    }
+    propertyNames.add(propertyName);
+    const required = declaration.shape.required.has(jsonName);
+    const baseType = csharpType(propertySchema, `${declaration.name}${propertyName}`, model);
+    const propertyType = required ? baseType : optionalCSharpType(baseType);
+    const initializer = required ? requiredCSharpInitializer(baseType) : "";
+    lines.push(
+      `        [DataMember(Name = ${csharpString(jsonName)}, IsRequired = ${required ? "true" : "false"}, EmitDefaultValue = ${required ? "true" : "false"}, Order = ${index})]`,
+      `        public ${propertyType} ${propertyName} { get; set; }${initializer}`,
+      "",
+    );
+  });
+  if (lines[lines.length - 1] === "") lines.pop();
+  lines.push("    }");
+  return lines;
+}
+
+function csharpType(schema, suggestedName, model, seen = new Set()) {
+  if (schema === undefined || schema === true || schema === false) return "object?";
+  if (seen.has(schema)) return "object?";
+  const typeNameForObject = model.objectTypeNames.get(schema);
+  if (typeNameForObject !== undefined) return typeNameForObject;
+  if (schema.$ref !== undefined) {
+    const reference = resolveReferenceId(schema.$ref, model.entry.schema.$id, model.schemaIdsByFile);
+    const target = model.targets.get(reference);
+    if (target === undefined) throw new Error(`C# generation cannot resolve '${schema.$ref}' from '${model.entry.name}'.`);
+    const targetNamespace = schemaNamespaceName(target.entry.name);
+    const targetModel = target.entry === model.entry ? model : buildCSharpReferenceModel(target.entry, model);
+    const objectName = model.objectTypeNames.get(target.schema)
+      ?? (target.entry === model.entry ? undefined : `${model.rootNamespace}.${targetNamespace}.${target.name}`);
+    const targetShape = csharpObjectShape(target.schema, targetModel);
+    if (targetShape !== undefined && !(targetShape.properties.length === 0 && targetShape.additionalProperties !== undefined)) {
+      return objectName ?? `${model.rootNamespace}.${targetNamespace}.${target.name}`;
+    }
+    seen.add(schema);
+    return csharpType(target.schema, target.name, targetModel, seen);
+  }
+  if (schema.type === "array") {
+    return `IReadOnlyList<${csharpType(schema.items, `${suggestedName}Item`, model, seen)}>`;
+  }
+  if (schema.type === "object" || schema.additionalProperties !== undefined) {
+    if (schema.additionalProperties !== undefined && schema.additionalProperties !== false) {
+      return `IReadOnlyDictionary<string, ${csharpType(schema.additionalProperties, `${suggestedName}Value`, model, seen)}>`;
+    }
+    return model.objectTypeNames.get(schema) ?? "object?";
+  }
+  if (schema.const !== undefined) return csharpLiteralType(schema.const);
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    const types = [...new Set(schema.enum.map(csharpLiteralType))];
+    return types.length === 1 ? types[0] : "object?";
+  }
+  if (schema.type === "integer") return "int";
+  if (schema.type === "number") return "double";
+  if (schema.type === "boolean") return "bool";
+  if (schema.type === "string") return "string";
+  if (schema.type === "null") return "object?";
+  const alternatives = schema.oneOf ?? schema.anyOf;
+  if (Array.isArray(alternatives)) {
+    const variantTypes = [...new Set(alternatives
+      .filter((alternative) => alternative?.type !== "null")
+      .map((alternative) => csharpType(alternative, suggestedName, model, new Set(seen))))];
+    return variantTypes.length === 1 ? variantTypes[0] : "object?";
+  }
+  if (Array.isArray(schema.allOf) && schema.allOf.length > 0) {
+    const types = [...new Set(schema.allOf.map((entry) => csharpType(entry, suggestedName, model, new Set(seen))))]
+      .filter((entry) => entry !== "object?");
+    return types.length === 1 ? types[0] : "object?";
+  }
+  return "object?";
+}
+
+function csharpLiteralType(value) {
+  return typeof value === "boolean" ? "bool"
+    : typeof value === "number" ? (Number.isInteger(value) ? "int" : "double")
+      : typeof value === "string" ? "string"
+        : "object?";
+}
+
+function optionalCSharpType(type) {
+  return type.endsWith("?") ? type : `${type}?`;
+}
+
+function requiredCSharpInitializer(type) {
+  if (type.endsWith("?")) return "";
+  if (type.startsWith("IReadOnlyList<")) {
+    return ` = Array.Empty<${type.slice("IReadOnlyList<".length, -1)}>();`;
+  }
+  if (type.startsWith("IReadOnlyDictionary<string, ")) {
+    const valueType = type.slice("IReadOnlyDictionary<string, ".length, -1);
+    return ` = new Dictionary<string, ${valueType}>();`;
+  }
+  return type === "string" || type.includes(".") ? " = null!;" : "";
+}
+
+function csharpString(value) {
+  return JSON.stringify(value);
+}
+
+function verifyCSharpFidelity(text, schemaEntries, configuration) {
+  assert.equal(text.includes("\r"), false, "Generated C# contracts must use LF line endings.");
+  assert.equal(text.endsWith("\n"), true, "Generated C# contracts must end with a newline.");
+  assert.equal(text.includes(`namespace ${configuration.namespace}`), true, "Generated C# namespace drift.");
+  const entriesByName = new Map(schemaEntries.map((entry) => [entry.name, entry]));
+  for (const name of configuration.schemas) {
+    const entry = entriesByName.get(name);
+    if (entry === undefined) throw new Error(`C# generation schema '${name}' does not exist.`);
+    assert.equal(text.includes(`Schema/${name}`), true, `Generated C# registry is missing '${name}'.`);
+    assert.equal(text.includes(entry.schema.$id), true, `Generated C# registry is missing '${entry.schema.$id}'.`);
+    assert.equal(text.includes(sha256(entry.bytes)), true, `Generated C# registry is missing the Hash for '${name}'.`);
+  }
+}
+
 function sha256(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
 function compareOrdinal(left, right) { return left < right ? -1 : left > right ? 1 : 0; }
 function compareJsonValues(left, right) { return compareOrdinal(JSON.stringify(left), JSON.stringify(right)); }

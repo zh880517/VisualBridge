@@ -1,0 +1,15 @@
+{
+  "formatVersion": 1,
+  "authoringProject": "VisualBridgeAuthoring/VisualBridge.project.vbjson",
+  "catalogExports": [
+    {
+      "catalogId": "sample.unity.gameplay",
+      "title": "Unity Gameplay Settings",
+      "output": "VisualBridgeAuthoring/Catalog/Gameplay.vbstructuredcatalog",
+      "types": [
+        "VisualBridge.Sample.GameSettings, Assembly-CSharp"
+      ]
+    }
+  ],
+  "compileOutputRoot": "Library/VisualBridge/Compiled"
+}

@@ -2,3 +2,5 @@
 Protocol/Schema/*.json text eol=lf
 Protocol/Generated/*.json text eol=lf
 Protocol/Generated/*.d.ts text eol=lf
+Protocol/Generated/*.cs text eol=lf
+Packages/com.kyl.visualbridge/Editor/Generated/*.cs text eol=lf

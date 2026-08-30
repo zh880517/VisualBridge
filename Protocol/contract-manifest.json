@@ -1,5 +1,20 @@
 {
   "manifestVersion": 1,
+  "csharpGeneration": {
+    "namespace": "Kyl.VisualBridge.Protocol.Generated",
+    "schemas": [
+      "visualbridge-catalog-source.schema.json",
+      "visualbridge-primitives.schema.json",
+      "visualbridge-project.schema.json",
+      "visualbridge-structured-catalog.schema.json",
+      "visualbridge-structured.schema.json",
+      "visualbridge-unity-integration-profile.schema.json"
+    ],
+    "outputs": [
+      "Packages/com.kyl.visualbridge/Editor/Generated/VisualBridgeProtocolContracts.g.cs",
+      "Protocol/Generated/contracts.g.cs"
+    ]
+  },
   "canonicalOrder": "utf16-code-unit-ordinal",
   "canonicalJson": "object-keys-recursively-sorted-by-utf16-code-unit-ordinal",
   "hashAlgorithm": "sha256",
@@ -13,6 +28,7 @@
     "entityCatalog": 1,
     "structuredDocument": 1,
     "structuredCatalog": 1,
+    "unityIntegrationProfile": 1,
     "tableCatalog": 1,
     "documentLifecyclePlan": 1,
     "referenceCursor": 2,

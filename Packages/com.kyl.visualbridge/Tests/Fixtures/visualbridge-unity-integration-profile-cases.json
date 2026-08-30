@@ -1,0 +1,184 @@
+{
+  "cases": [
+    {
+      "label": "valid profile",
+      "valid": true,
+      "value": {
+        "formatVersion": 1,
+        "authoringProject": "Authoring/VisualBridge.project.vbjson",
+        "catalogExports": [
+          {
+            "catalogId": "tests.catalog",
+            "title": "Tests",
+            "output": "Authoring/Catalog/Test.vbstructuredcatalog",
+            "types": [
+              "Tests.Settings, Tests.Assembly"
+            ]
+          }
+        ],
+        "compileOutputRoot": "Library/VisualBridge"
+      }
+    },
+    {
+      "label": "unknown profile property",
+      "valid": false,
+      "loaderCode": "profile.unknownProperty",
+      "value": {
+        "formatVersion": 1,
+        "authoringProject": "Authoring/VisualBridge.project.vbjson",
+        "catalogExports": [
+          {
+            "catalogId": "tests.catalog",
+            "title": "Tests",
+            "output": "Authoring/Catalog/Test.vbstructuredcatalog",
+            "types": [
+              "Tests.Settings, Tests.Assembly"
+            ]
+          }
+        ],
+        "compileOutputRoot": "Library/VisualBridge",
+        "unknown": true
+      }
+    },
+    {
+      "label": "unsupported profile version",
+      "valid": false,
+      "loaderCode": "profile.unsupportedVersion",
+      "value": {
+        "formatVersion": 2,
+        "authoringProject": "Authoring/VisualBridge.project.vbjson",
+        "catalogExports": [
+          {
+            "catalogId": "tests.catalog",
+            "title": "Tests",
+            "output": "Authoring/Catalog/Test.vbstructuredcatalog",
+            "types": [
+              "Tests.Settings, Tests.Assembly"
+            ]
+          }
+        ],
+        "compileOutputRoot": "Library/VisualBridge"
+      }
+    },
+    {
+      "label": "non ASCII catalog identifier",
+      "valid": false,
+      "loaderCode": "profile.invalidIdentifier",
+      "value": {
+        "formatVersion": 1,
+        "authoringProject": "Authoring/VisualBridge.project.vbjson",
+        "catalogExports": [
+          {
+            "catalogId": "tests.配置",
+            "title": "Tests",
+            "output": "Authoring/Catalog/Test.vbstructuredcatalog",
+            "types": [
+              "Tests.Settings, Tests.Assembly"
+            ]
+          }
+        ],
+        "compileOutputRoot": "Library/VisualBridge"
+      }
+    },
+    {
+      "label": "unsafe authoring traversal",
+      "valid": false,
+      "loaderCode": "profile.invalidPath",
+      "value": {
+        "formatVersion": 1,
+        "authoringProject": "../VisualBridge.project.vbjson",
+        "catalogExports": [
+          {
+            "catalogId": "tests.catalog",
+            "title": "Tests",
+            "output": "Authoring/Catalog/Test.vbstructuredcatalog",
+            "types": [
+              "Tests.Settings, Tests.Assembly"
+            ]
+          }
+        ],
+        "compileOutputRoot": "Library/VisualBridge"
+      }
+    },
+    {
+      "label": "unsafe compile ADS path",
+      "valid": false,
+      "loaderCode": "profile.invalidPath",
+      "value": {
+        "formatVersion": 1,
+        "authoringProject": "Authoring/VisualBridge.project.vbjson",
+        "catalogExports": [
+          {
+            "catalogId": "tests.catalog",
+            "title": "Tests",
+            "output": "Authoring/Catalog/Test.vbstructuredcatalog",
+            "types": [
+              "Tests.Settings, Tests.Assembly"
+            ]
+          }
+        ],
+        "compileOutputRoot": "Library/VisualBridge:stream"
+      }
+    },
+    {
+      "label": "catalog output suffix",
+      "valid": false,
+      "loaderCode": "profile.invalidCatalogOutput",
+      "value": {
+        "formatVersion": 1,
+        "authoringProject": "Authoring/VisualBridge.project.vbjson",
+        "catalogExports": [
+          {
+            "catalogId": "tests.catalog",
+            "title": "Tests",
+            "output": "Authoring/Catalog/Test.json",
+            "types": [
+              "Tests.Settings, Tests.Assembly"
+            ]
+          }
+        ],
+        "compileOutputRoot": "Library/VisualBridge"
+      }
+    },
+    {
+      "label": "type control character",
+      "valid": false,
+      "loaderCode": "profile.invalidType",
+      "value": {
+        "formatVersion": 1,
+        "authoringProject": "Authoring/VisualBridge.project.vbjson",
+        "catalogExports": [
+          {
+            "catalogId": "tests.catalog",
+            "title": "Tests",
+            "output": "Authoring/Catalog/Test.vbstructuredcatalog",
+            "types": [
+              "Tests.Settings, Tests.\u0001Assembly"
+            ]
+          }
+        ],
+        "compileOutputRoot": "Library/VisualBridge"
+      }
+    },
+    {
+      "label": "type missing assembly name",
+      "valid": false,
+      "loaderCode": "profile.invalidType",
+      "value": {
+        "formatVersion": 1,
+        "authoringProject": "Authoring/VisualBridge.project.vbjson",
+        "catalogExports": [
+          {
+            "catalogId": "tests.catalog",
+            "title": "Tests",
+            "output": "Authoring/Catalog/Test.vbstructuredcatalog",
+            "types": [
+              "Tests.Settings,   "
+            ]
+          }
+        ],
+        "compileOutputRoot": "Library/VisualBridge"
+      }
+    }
+  ]
+}

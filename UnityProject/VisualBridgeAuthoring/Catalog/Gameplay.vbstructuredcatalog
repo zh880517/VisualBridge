@@ -1,0 +1,161 @@
+{
+  "formatVersion": 1,
+  "catalogId": "sample.unity.gameplay",
+  "title": "Unity Gameplay Settings",
+  "source": {
+    "status": "current",
+    "providerId": "unity.csharp",
+    "sourceHash": "fbb30ff79a693689692bd24d0b9b44570a4cdc8f6501895e157a0e47e0a2c57f"
+  },
+  "configTypes": [
+    {
+      "id": "sample.unity.game.settings",
+      "title": "Game Settings",
+      "aliases": [
+        "legacy.unity.game.settings"
+      ],
+      "description": "Plain CLR settings exported without constructing the config type.",
+      "source": {
+        "providerId": "unity.csharp",
+        "typeName": "VisualBridge.Sample.GameSettings, Assembly-CSharp"
+      },
+      "properties": [
+        {
+          "id": "maxPlayers",
+          "title": "Max Players",
+          "aliases": [
+            "playerLimit"
+          ],
+          "valueType": "number",
+          "dataTypeId": "int",
+          "defaultValue": 5,
+          "editor": {
+            "kind": "number",
+            "readOnly": false,
+            "integer": true,
+            "min": 1,
+            "max": 10,
+            "step": 1
+          }
+        },
+        {
+          "id": "difficulty",
+          "title": "Difficulty",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "VisualBridge.Sample.GameDifficulty",
+          "defaultValue": "Normal",
+          "editor": {
+            "kind": "select",
+            "readOnly": false,
+            "integer": false,
+            "options": [
+              {
+                "title": "Easy",
+                "value": "Easy"
+              },
+              {
+                "title": "Hard",
+                "value": "Hard"
+              },
+              {
+                "title": "Normal",
+                "value": "Normal"
+              }
+            ]
+          }
+        },
+        {
+          "id": "friendlyFire",
+          "title": "Friendly Fire",
+          "aliases": [],
+          "valueType": "boolean",
+          "dataTypeId": "bool",
+          "defaultValue": false,
+          "editor": {
+            "kind": "checkbox",
+            "readOnly": false,
+            "integer": false
+          }
+        },
+        {
+          "id": "serverName",
+          "title": "Server Name",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "string",
+          "defaultValue": "Local Development",
+          "editor": {
+            "kind": "text",
+            "readOnly": false,
+            "integer": false
+          }
+        },
+        {
+          "id": "spawn",
+          "title": "Spawn",
+          "aliases": [],
+          "valueType": "object",
+          "dataTypeId": "VisualBridge.Sample.SpawnSettings",
+          "defaultValue": {
+            "lives": 3,
+            "region": "center"
+          },
+          "fields": [
+            {
+              "id": "lives",
+              "title": "Lives",
+              "aliases": [],
+              "valueType": "number",
+              "dataTypeId": "int",
+              "defaultValue": 3,
+              "editor": {
+                "kind": "number",
+                "readOnly": false,
+                "integer": true,
+                "min": 1,
+                "max": 9
+              }
+            },
+            {
+              "id": "region",
+              "title": "Region",
+              "aliases": [],
+              "valueType": "string",
+              "dataTypeId": "string",
+              "defaultValue": "center",
+              "editor": {
+                "kind": "text",
+                "readOnly": false,
+                "integer": false
+              }
+            }
+          ]
+        },
+        {
+          "id": "checkpoints",
+          "title": "Checkpoints",
+          "aliases": [],
+          "valueType": "array",
+          "dataTypeId": "list.int",
+          "defaultValue": [
+            0,
+            10
+          ],
+          "item": {
+            "valueType": "number",
+            "dataTypeId": "int",
+            "defaultValue": 0,
+            "editor": {
+              "kind": "number",
+              "readOnly": false,
+              "integer": true,
+              "min": -2147483648,
+              "max": 2147483647
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
