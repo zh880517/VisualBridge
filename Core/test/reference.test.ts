@@ -4,6 +4,7 @@ import {
   ReferenceService,
   collectFieldReferences,
   createDocumentReferenceProvider,
+  createReferenceSearchCursor,
   createReferenceValueRenamePlan,
   parseFieldDefinitions,
   replaceFieldReferenceValues,
@@ -188,6 +189,259 @@ test("reference service awaits target validation and keeps invalid or unavailabl
   }]))[0]?.code, "reference.providerUnavailable");
 });
 
+test("reference analysis resolves each occurrence once and validate delegates to the same pass", async () => {
+  let resolveCount = 0;
+  let validateTargetCount = 0;
+  const provider: ReferenceProvider = {
+    kind: "sample.item",
+    validateTarget() {
+      validateTargetCount += 1;
+      return undefined;
+    },
+    async search() {
+      return [];
+    },
+    async resolve(request) {
+      resolveCount += 1;
+      return request.value === "present"
+        ? [{ kind: "sample.item", target: request.target, value: request.value, title: "Present" }]
+        : [];
+    },
+  };
+  const service = new ReferenceService([provider]);
+  const definition = { kind: "sample.item", target: { scope: "items" }, allowMissing: false } as const;
+  const occurrences = [
+    { definition, value: "present", path: "properties.primary" },
+    { definition, value: "missing", path: "properties.secondary" },
+  ] as const;
+
+  const analysis = await service.analyzeOccurrences(occurrences);
+  assert.equal(resolveCount, occurrences.length);
+  assert.equal(validateTargetCount, occurrences.length);
+  assert.deepEqual(analysis.references.map((reference) => reference.resolution.status), ["resolved", "missing"]);
+  assert.deepEqual(analysis.diagnostics.map((diagnostic) => diagnostic.code), ["reference.missingTarget"]);
+
+  resolveCount = 0;
+  validateTargetCount = 0;
+  assert.deepEqual(
+    (await service.validate(occurrences)).map((diagnostic) => diagnostic.code),
+    ["reference.missingTarget"],
+  );
+  assert.equal(resolveCount, occurrences.length);
+  assert.equal(validateTargetCount, occurrences.length);
+});
+
+test("reference analysis propagates cancellation and never publishes a partial result", async () => {
+  let releaseSecond!: (candidates: readonly ReferenceCandidate[]) => void;
+  let secondStarted!: () => void;
+  const secondStart = new Promise<void>((resolve) => { secondStarted = resolve; });
+  let receivedSignal: AbortSignal | undefined;
+  const provider: ReferenceProvider = {
+    kind: "sample.item",
+    async search() {
+      return [];
+    },
+    async resolve(request) {
+      receivedSignal = request.signal;
+      if (request.value === "first") {
+        return [{ kind: "sample.item", target: request.target, value: request.value, title: "First" }];
+      }
+      secondStarted();
+      return new Promise((resolve) => { releaseSecond = resolve; });
+    },
+  };
+  const service = new ReferenceService([provider]);
+  const definition = { kind: "sample.item", target: {}, allowMissing: false } as const;
+  const controller = new AbortController();
+  let published = false;
+  const analysis = service.analyzeOccurrences([
+    { definition, value: "first", path: "properties.first" },
+    { definition, value: "second", path: "properties.second" },
+  ], controller.signal).then((result) => {
+    published = true;
+    return result;
+  });
+
+  await secondStart;
+  controller.abort();
+  releaseSecond([]);
+  await assert.rejects(analysis, (error) => error instanceof Error && error.name === "AbortError");
+  assert.equal(receivedSignal, controller.signal);
+  assert.equal(published, false);
+});
+
+test("reference cursor pages have no gaps, preserve value types, and reject changed snapshots", async () => {
+  let searchCount = 0;
+  const mixedCandidates: ReferenceCandidate[] = [
+    mixedCandidate("2"),
+    mixedCandidate(3),
+    mixedCandidate("1"),
+    mixedCandidate(1),
+    mixedCandidate("3"),
+    mixedCandidate(2),
+  ];
+  const provider: ReferenceProvider = {
+    kind: "sample.mixed",
+    async search(request) {
+      searchCount += 1;
+      assert.equal(request.query, "item");
+      return mixedCandidates;
+    },
+    async resolve() {
+      return [];
+    },
+  };
+  const firstDefinition = {
+    kind: "sample.mixed",
+    target: { scope: "items", category: "all" },
+    allowMissing: false,
+  } as const;
+  const reorderedDefinition = {
+    ...firstDefinition,
+    target: { category: "all", scope: "items" },
+  } as const;
+  const service = new ReferenceService([provider], "snapshot-a");
+  const seen: ReferenceCandidate[] = [];
+  let cursor;
+  do {
+    const page = await service.searchPage(
+      seen.length === 0 ? firstDefinition : reorderedDefinition,
+      seen.length === 0 ? "  ITEM  " : "item",
+      2,
+      cursor,
+    );
+    assert.equal(page.status, "ok");
+    if (page.status !== "ok") break;
+    seen.push(...page.candidates);
+    cursor = page.nextCursor;
+  } while (cursor !== undefined);
+
+  assert.deepEqual(seen.map((candidate) => `${typeof candidate.value}:${String(candidate.value)}`), [
+    "number:1",
+    "number:2",
+    "number:3",
+    "string:1",
+    "string:2",
+    "string:3",
+  ]);
+  assert.equal(new Set(seen.map((candidate) => `${typeof candidate.value}:${String(candidate.value)}`)).size, 6);
+  assert.equal(searchCount, 3);
+
+  const firstPage = await service.searchPage(firstDefinition, "item", 2);
+  assert.equal(firstPage.status, "ok");
+  if (firstPage.status !== "ok" || firstPage.nextCursor === undefined) return;
+  const searchCountBeforeRejection = searchCount;
+  const changed = await new ReferenceService([provider], "snapshot-b").searchPage(
+    firstDefinition,
+    "item",
+    2,
+    firstPage.nextCursor,
+  );
+  assert.equal(changed.status, "cursor.snapshotChanged");
+  assert.equal(changed.candidates.length, 0);
+  assert.equal(searchCount, searchCountBeforeRejection);
+
+  for (const [definition, query] of [
+    [{ ...firstDefinition, kind: "sample.other" }, "item"],
+    [{ ...firstDefinition, target: { scope: "other", category: "all" } }, "item"],
+    [firstDefinition, "other query"],
+  ] as const) {
+    const mismatch = await service.searchPage(definition, query, 2, firstPage.nextCursor);
+    assert.equal(mismatch.status, "cursor.queryMismatch");
+    assert.equal(mismatch.candidates.length, 0);
+  }
+  assert.equal(searchCount, searchCountBeforeRejection);
+
+  const wrongValueType = await service.searchPage(firstDefinition, "item", 2, {
+    ...firstPage.nextCursor,
+    after: {
+      ...firstPage.nextCursor.after,
+      valueType: "string",
+    },
+  });
+  assert.equal(wrongValueType.status, "cursor.invalid");
+  assert.equal(searchCount, searchCountBeforeRejection);
+});
+
+test("provider pages must advance strictly beyond the previous stable-order boundary", async () => {
+  const target = { scope: "items" } as const;
+  const first = { kind: "sample.paged", target, value: "b", title: "Beta" } as const;
+  const earlier = { kind: "sample.paged", target, value: "a", title: "Alpha" } as const;
+  const provider: ReferenceProvider = {
+    kind: "sample.paged",
+    async search() { return []; },
+    async searchPage(request) {
+      if (request.cursor === undefined) {
+        return {
+          status: "ok",
+          candidates: [first],
+          nextCursor: createReferenceSearchCursor(
+            "sample.paged",
+            target,
+            request.query,
+            request.snapshotDependencyKey,
+            first,
+            {
+              providerId: "sample.provider",
+              instanceId: "instance-a",
+              generation: 1,
+              entryHash: "b".repeat(64),
+              cursor: "opaque-page-2",
+              snapshotHash: "a".repeat(64),
+            },
+          ),
+        };
+      }
+      return { status: "ok", candidates: [earlier] };
+    },
+    async resolve() { return []; },
+  };
+  const service = new ReferenceService([provider], "snapshot-a");
+  const definition = { kind: "sample.paged", target, allowMissing: false } as const;
+  const firstPage = await service.searchPage(definition, "", 1);
+  assert.equal(firstPage.status, "ok");
+  if (firstPage.status !== "ok" || firstPage.nextCursor === undefined) return;
+  assert.deepEqual(firstPage.nextCursor.providerContinuation, {
+    providerId: "sample.provider",
+    instanceId: "instance-a",
+    generation: 1,
+    entryHash: "b".repeat(64),
+    cursor: "opaque-page-2",
+    snapshotHash: "a".repeat(64),
+  });
+  const secondPage = await service.searchPage(definition, "", 1, firstPage.nextCursor);
+  assert.equal(secondPage.status, "providerUnavailable");
+  assert.match(secondPage.message, /strictly ordered after/u);
+
+  const damagedContinuation = await service.searchPage(definition, "", 1, {
+    ...firstPage.nextCursor,
+    providerContinuation: { ...firstPage.nextCursor.providerContinuation!, generation: -1 },
+  });
+  assert.equal(damagedContinuation.status, "cursor.invalid");
+});
+
+test("provider pages reject duplicate candidates before exposing a continuation", async () => {
+  const target = { scope: "items" } as const;
+  const duplicate = { kind: "sample.paged", target, value: "a", title: "Alpha" } as const;
+  const provider: ReferenceProvider = {
+    kind: "sample.paged",
+    async search() { return []; },
+    async searchPage() {
+      return { status: "ok", candidates: [duplicate, duplicate] };
+    },
+    async resolve() { return []; },
+  };
+  const page = await new ReferenceService([provider], "snapshot-a").searchPage(
+    { kind: "sample.paged", target, allowMissing: false },
+    "",
+    2,
+  );
+
+  assert.equal(page.status, "providerUnavailable");
+  assert.match(page.message, /deterministically ordered/u);
+  assert.deepEqual(page.candidates, []);
+});
+
 test("field reference replacement follows nested definitions and materializes defaults", () => {
   const diagnostics: DocumentDiagnostic[] = [];
   const definitions = parseFieldDefinitions([{
@@ -274,5 +528,15 @@ function candidate(value: number, title: string, path: string, rowId: string): R
       sheetId: "skills",
       rowId,
     },
+  };
+}
+
+function mixedCandidate(value: string | number): ReferenceCandidate {
+  return {
+    kind: "sample.mixed",
+    target: { category: "all", scope: "items" },
+    value,
+    title: "Item",
+    description: `${typeof value} ${String(value)}`,
   };
 }

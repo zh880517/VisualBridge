@@ -1,5 +1,12 @@
 import type { JsonValue } from "../Form/field";
-import type { ReferenceCandidate, ReferenceProvider } from "./reference";
+import {
+  DEFAULT_REFERENCE_SNAPSHOT_DEPENDENCY_KEY,
+  normalizeReferenceQuery,
+  paginateReferenceCandidates,
+  type ReferenceCandidate,
+  type ReferenceProvider,
+  type ReferenceSearchPageRequest,
+} from "./reference";
 
 export const DOCUMENT_REFERENCE_KIND = "document";
 
@@ -38,18 +45,45 @@ export function createDocumentReferenceProvider(
       }))
       .sort((left, right) => candidateKey(left).localeCompare(candidateKey(right)))
   );
+  const searchPage = async (request: ReferenceSearchPageRequest) => {
+    const target = readTarget(request.target);
+    if (target === undefined) {
+      return paginateReferenceCandidates({
+        kind: DOCUMENT_REFERENCE_KIND,
+        target: request.target,
+        query: request.query,
+        limit: request.limit,
+        snapshotDependencyKey: request.snapshotDependencyKey,
+        candidates: [],
+        ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+      });
+    }
+    const terms = normalizeReferenceQuery(request.query).split(" ").filter(Boolean);
+    const filtered = (await candidates(target)).filter((candidate) => {
+      const text = `${candidate.title}\n${candidate.description ?? ""}\n${candidate.value}\n${candidate.location?.path ?? ""}`.toLowerCase();
+      return terms.every((term) => text.includes(term));
+    });
+    return paginateReferenceCandidates({
+      kind: DOCUMENT_REFERENCE_KIND,
+      target: request.target,
+      query: request.query,
+      limit: request.limit,
+      snapshotDependencyKey: request.snapshotDependencyKey,
+      candidates: filtered,
+      ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+    });
+  };
   return {
     kind: DOCUMENT_REFERENCE_KIND,
     validateTarget: validateDocumentReferenceTarget,
     async search(request) {
-      const target = readTarget(request.target);
-      if (target === undefined) return [];
-      const terms = request.query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
-      return (await candidates(target)).filter((candidate) => {
-        const text = `${candidate.title}\n${candidate.description ?? ""}\n${candidate.value}\n${candidate.location?.path ?? ""}`.toLocaleLowerCase();
-        return terms.every((term) => text.includes(term));
-      }).slice(0, request.limit);
+      const page = await searchPage({
+        ...request,
+        snapshotDependencyKey: DEFAULT_REFERENCE_SNAPSHOT_DEPENDENCY_KEY,
+      });
+      return page.candidates;
     },
+    searchPage,
     async resolve(request) {
       const target = readTarget(request.target);
       if (target === undefined || typeof request.value !== "string") return [];

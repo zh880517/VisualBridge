@@ -3,8 +3,9 @@ import type { JsonValue } from "../Form/field";
 import type { ProjectProviderCapabilities } from "../Project/projectFile";
 import type { ReferenceCandidate, ReferenceLocation } from "../Reference/reference";
 
-export const PROJECT_PROVIDER_PROTOCOL_VERSION = 1;
+export const PROJECT_PROVIDER_PROTOCOL_VERSION = 2;
 export const PROJECT_PROVIDER_JSON_RPC_VERSION = "2.0" as const;
+export const PROJECT_PROVIDER_REFERENCE_CURSOR_MAX_LENGTH = 16_384;
 
 export type ProjectProviderRequestId = string | number;
 export type ProjectProviderMethod =
@@ -41,6 +42,8 @@ export interface ProjectProviderReferenceSearchParams {
   readonly target: Readonly<Record<string, JsonValue>>;
   readonly query: string;
   readonly limit: number;
+  readonly cursor?: string;
+  readonly snapshotHash?: string;
 }
 
 export interface ProjectProviderReferenceResolveParams {
@@ -106,7 +109,16 @@ export interface ProjectProviderUnavailableResult {
 }
 
 export type ProjectProviderReferenceSearchResult =
-  | { readonly status: "ok"; readonly candidates: readonly ReferenceCandidate[] }
+  | {
+      readonly status: "ok";
+      readonly candidates: readonly ReferenceCandidate[];
+      readonly snapshotHash: string;
+      readonly nextCursor?: string;
+    }
+  | {
+      readonly status: "cursor.invalid" | "cursor.queryMismatch" | "cursor.snapshotChanged";
+      readonly message: string;
+    }
   | ProjectProviderInvalidTargetResult
   | ProjectProviderUnavailableResult;
 
@@ -348,13 +360,23 @@ function readReferenceSearchParams(
   issues: ProjectProviderIssue[],
 ): ProjectProviderReferenceSearchParams | undefined {
   if (!isRecordAt(value, path, issues)) return undefined;
-  rejectUnknownKeys(value, ["kind", "target", "query", "limit"], path, issues);
+  rejectUnknownKeys(value, ["kind", "target", "query", "limit", "cursor", "snapshotHash"], path, issues);
   const shared = readReferenceParams(value, path, issues);
   const query = readString(value.query, `${path}.query`, issues);
   const limit = readBoundedInteger(value.limit, `${path}.limit`, 1, 200, issues);
-  return shared === undefined || query === undefined || limit === undefined
+  const hasCursor = Object.prototype.hasOwnProperty.call(value, "cursor");
+  const hasSnapshotHash = Object.prototype.hasOwnProperty.call(value, "snapshotHash");
+  if (hasCursor !== hasSnapshotHash) {
+    issues.push({ path, message: "Expected 'cursor' and 'snapshotHash' to be supplied together." });
+  }
+  const cursor = hasCursor
+    ? readBoundedNonEmptyString(value.cursor, `${path}.cursor`, PROJECT_PROVIDER_REFERENCE_CURSOR_MAX_LENGTH, issues)
+    : undefined;
+  const snapshotHash = hasSnapshotHash ? readHash(value.snapshotHash, `${path}.snapshotHash`, issues) : undefined;
+  return shared === undefined || query === undefined || limit === undefined || hasCursor !== hasSnapshotHash
+    || (hasCursor && (cursor === undefined || snapshotHash === undefined))
     ? undefined
-    : { ...shared, query, limit };
+    : { ...shared, query, limit, ...(cursor === undefined ? {} : { cursor, snapshotHash: snapshotHash! }) };
 }
 
 function readReferenceResolveParams(
@@ -498,13 +520,31 @@ function readReferenceSearchResult(
   const status = readStatus(value, path, issues);
   if (status === "invalidTarget") return readInvalidTarget(value, path, issues);
   if (status === "providerUnavailable") return readUnavailable(value, path, issues);
+  if (status === "cursor.invalid" || status === "cursor.queryMismatch" || status === "cursor.snapshotChanged") {
+    if (!isRecord(value)) return undefined;
+    rejectUnknownKeys(value, ["status", "message"], path, issues);
+    const message = readNonEmptyString(value.message, `${path}.message`, issues);
+    return message === undefined ? undefined : { status, message };
+  }
   if (status !== "ok" || !isRecord(value)) {
-    if (status !== undefined) issues.push({ path: `${path}.status`, message: "Expected 'ok', 'invalidTarget' or 'providerUnavailable'." });
+    if (status !== undefined) issues.push({ path: `${path}.status`, message: "Expected 'ok', a cursor status, 'invalidTarget' or 'providerUnavailable'." });
     return undefined;
   }
-  rejectUnknownKeys(value, ["status", "candidates"], path, issues);
+  rejectUnknownKeys(value, ["status", "candidates", "snapshotHash", "nextCursor"], path, issues);
   const candidates = readCandidates(value.candidates, `${path}.candidates`, issues);
-  return candidates === undefined ? undefined : { status: "ok", candidates };
+  const snapshotHash = readHash(value.snapshotHash, `${path}.snapshotHash`, issues);
+  const nextCursor = value.nextCursor === undefined
+    ? undefined
+    : readBoundedNonEmptyString(
+        value.nextCursor,
+        `${path}.nextCursor`,
+        PROJECT_PROVIDER_REFERENCE_CURSOR_MAX_LENGTH,
+        issues,
+      );
+  return candidates === undefined || snapshotHash === undefined
+    || (value.nextCursor !== undefined && nextCursor === undefined)
+    ? undefined
+    : { status: "ok", candidates, snapshotHash, ...(nextCursor === undefined ? {} : { nextCursor }) };
 }
 
 function readReferenceResolveResult(
@@ -875,6 +915,20 @@ function readNonEmptyString(value: unknown, path: string, issues: ProjectProvide
   if (typeof value === "string" && value.length > 0) return value;
   issues.push({ path, message: "Expected a non-empty string." });
   return undefined;
+}
+
+function readBoundedNonEmptyString(
+  value: unknown,
+  path: string,
+  maxLength: number,
+  issues: ProjectProviderIssue[],
+): string | undefined {
+  const result = readNonEmptyString(value, path, issues);
+  if (result !== undefined && result.length > maxLength) {
+    issues.push({ path, message: `Expected a string no longer than ${String(maxLength)} characters.` });
+    return undefined;
+  }
+  return result;
 }
 
 function readInteger(value: unknown, path: string, issues: ProjectProviderIssue[]): number | undefined {

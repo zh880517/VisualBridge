@@ -16,6 +16,9 @@
   },
   "include": [
     "src/tableReveal.ts",
-    "test/**/*.ts"
+    "src/tableRecordVirtualization.ts",
+    "src/virtualizedTableRecordViewport.tsx",
+    "test/**/*.ts",
+    "test/**/*.tsx"
   ]
 }

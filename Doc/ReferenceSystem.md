@@ -4,7 +4,7 @@
 
 Reference System 为 Graph、Entity、Structured 和 Table Document 提供同一套跨文档引用契约。字段所属模块只声明“引用什么”，不直接扫描文件、解析业务表或实现选择器。Core 负责稳定契约、Provider 注册、搜索、解析和诊断；VS Code 与 MCP 只负责宿主交互和持久化边界。
 
-当前内置 `document`、`entity.component`、`graph.element` 和 `table.row` 四类 Provider。它们分别引用 Project Document Type 下的稳定 Document ID、Entity 文档中的稳定 Component 实例 ID、Graph 文档内部的稳定元素 ID，以及 Table Type/Sheet 下的有效记录。Project Provider V1 还能由 Project File 显式声明自定义 kind，并通过独立 stdio 进程接入同一 Reference Service；完整运行与安全契约见 [`ProjectProvider.md`](ProjectProvider.md)。Unity Asset 和运行时实例仍不在当前范围；本阶段不增加 Unity Exporter、Importer、Runtime 或 Debug 代码。
+当前内置 `document`、`entity.component`、`graph.element` 和 `table.row` 四类 Provider。它们分别引用 Project Document Type 下的稳定 Document ID、Entity 文档中的稳定 Component 实例 ID、Graph 文档内部的稳定元素 ID，以及 Table Type/Sheet 下的有效记录。Project Provider V2 还能由 Project File 显式声明自定义 kind，并通过独立 stdio 进程接入同一 Reference Service；完整运行与安全契约见 [`ProjectProvider.md`](ProjectProvider.md)。Unity Asset 和运行时实例仍不在当前范围；本阶段不增加 Unity Exporter、Importer、Runtime 或 Debug 代码。
 
 ## 2. 字段契约
 
@@ -81,9 +81,9 @@ Provider 通过 Project Registry 发现所有 `editor: "table"` 的 Document Typ
 
 Reference Service 注册少量按 `kind` 唯一的 Provider：
 
-- `search` 按结构化 `target` 和文本查询返回稳定排序的候选，数量限制在 1 到 200。
+- `search` 是第一页便利入口；分页搜索按结构化 `target`、规范查询、Reference Snapshot 依赖键和不透明 Cursor 返回稳定候选，单页数量受限。
 - `resolve` 按严格类型值返回 `resolved`、`missing`、`ambiguous` 或 `providerUnavailable`。
-- `validate` 将文档内 occurrence 转换为统一 `DocumentDiagnostic`。
+- `analyzeOccurrences` 对每个 occurrence 只解析一次，同时返回统一 `DocumentDiagnostic` 和解析结果；`validate` 委托该单遍分析。
 
 内置 Provider 与 Project Provider 进入同一个 Registry。Project File Parser 拒绝自定义 kind 与内置 kind 或另一 Project Provider 重名；独立进程返回的 Candidate 还要经过共享 Host 的 kind、target、value、Project 和已声明 Document Location 检查，不能把候选注入其他作用域。
 
@@ -112,7 +112,9 @@ Safe Delete 先由领域 Adapter 建立删除闭包。闭包内互相引用随�
 
 选择按钮向 Extension Host 发送结构化 definition 和当前值，由原生 Quick Pick 展示候选；Webview 只接收最终稳定值。跳转按钮先解析引用，歧义时要求选择具体目标。Table 目标由 Table Editor 定位物理 Sheet/Row；Document 目标打开其声明的 Authoring Document；Graph Element 目标会切换到指定 Graph，选择并居中 Node，或居中并临时高亮 Port；Entity Component 目标会打开所属 Entity、展开对应卡片、滚动聚焦并临时高亮。Graph 与 Entity Webview 未就绪或隐藏重建时，Host 会保留带请求 ID 的最新定位请求，直到 Webview 返回处理结果；完整作用域失效时明确失败，不按同名元素猜测。
 
-工作区索引以磁盘上的 Project Table 文档为基线，并用已打开 Table Custom Document 的当前语义快照覆盖同一逻辑表。未保存的新增、删除或改单元格会立即参与其他编辑器的搜索与校验；关闭文档后移除覆盖并回到磁盘基线。
+工作区索引和 Reference Service 共享同一份已提交的不可变 Project Semantic Snapshot，不各自扫描或解析 Project。已打开 Table Custom Document 的当前语义快照作为 Picker 临时覆盖层合并到同一查询视图；未保存的新增、删除或改单元格会参与交互式搜索与解析，但不会原地修改已提交 Workspace Index。关闭文档后移除覆盖并回到磁盘基线。
+
+Reference Cursor 绑定 kind、规范 target、规范查询、稳定排序所需的候选边界和 Project Snapshot 依赖键。MCP 内置 Provider 的依赖键同时包含物理来源 Manifest 与本次实际解析得到的精确语义快照，Provider 直接消费这组已捕获只读对象，不在生成候选时二次读取磁盘；因此并发写入即使把物理 Hash 改回旧值，也不能让另一组候选冒用旧 Snapshot。Project Provider 的 Core 外层 Cursor 还安全封装 Provider ID、Host 实例、入口代码 Hash、进程 generation、Provider 不透明 continuation 与 Provider `snapshotHash`；内置 Provider 不携带这段状态。每一页必须按同一 comparator 确定性排序并严格大于上一页边界。Snapshot、Provider 实例/进程/入口或候选依赖变化时旧 Cursor 返回 `cursor.snapshotChanged`，调用方必须从第一页重新搜索；损坏状态与跨查询复用分别返回 `cursor.invalid`、`cursor.queryMismatch`，不得把旧位置应用到新候选集合。完整性能、取消和分页契约见 [`WorkspaceIndexPerformance.md`](WorkspaceIndexPerformance.md)。
 
 Document Browser 使用同一 Reference Service 的解析候选展示每个文档的出站引用，并按候选 Location 的 Project、Document Type 与物理路径派生 `Referenced By` 关系。反向关系仅是工作区索引视图，不写回任何 Authoring Document；缺失或歧义引用继续使用本文件定义的诊断和解析状态。完整 Browser 契约见 `DocumentBrowser.md`。
 
@@ -124,7 +126,7 @@ Document Lifecycle 复用相同 Provider、Location 和 occurrence，不维护�
 
 `visualbridge_references` 提供两个动作：
 
-- `search`：传入 `kind`、`target`、可选 `query`、`limit` 和 `allowMissing`，返回结构化候选及定位。
+- `search`：传入 `kind`、`target`、可选 `query`、`limit`、`allowMissing` 和不透明 `cursor`，返回结构化候选、定位及可选 `nextCursor`。
 - `resolve`：传入相同 definition 与字符串或数值 `value`，返回解析状态和候选。
 
 Graph、Entity、Structured、Table 的读取与校验结果会附加共享 Reference 诊断。四类 Operation 写入在 `baseHash` 与可恢复 Project Transaction 之外，还会拒绝本次批次新引入的 Reference error。MCP 不重新实现任何类型的 Registry、分表去重、行显示名或字段递归规则。
@@ -133,4 +135,4 @@ Graph、Entity、Structured、Table 的读取与校验结果会附加共享 Refe
 
 ## 7. 自动化基线
 
-`npm test` 覆盖 Field Definition 解析、嵌套 occurrence、四个内置 Provider 的稳定排序与完整定位、严格类型解析、缺失与歧义诊断、自定义 Project Provider 的协议/候选边界、Entity / Graph 身份传播、Entity / Graph Editor 定位计划、Table 有效行候选和定位。真实 stdio MCP 测试覆盖 Project Provider 的默认禁用与显式授权、Graph Element 预览、Entity Component 提交、错误 `baseHash`、Project 锁与中断恢复；真实 Extension Host 分别验证 Trusted 与 Restricted Workspace。测试不包含 Unity。
+`npm test` 覆盖 Field Definition 解析、嵌套 occurrence、四个内置 Provider 的稳定排序与完整定位、严格类型解析、缺失与歧义诊断、自定义 Project Provider V2 的协议/候选边界、超过 200 条的完整分页、错查询/损坏 Cursor/Snapshot 与进程代变化拒绝、Entity / Graph 身份传播、Entity / Graph Editor 定位计划、Table 有效行候选和定位。真实 stdio MCP 测试覆盖 Project Provider 的默认禁用与显式授权、Graph Element 预览、Entity Component 提交、错误 `baseHash`、Project 锁与中断恢复；真实 Extension Host 分别验证 Trusted 与 Restricted Workspace。测试不包含 Unity。

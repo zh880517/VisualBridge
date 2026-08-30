@@ -37,10 +37,10 @@ test("sample Project Provider exposes deterministic healthy reference and valida
 
   try {
     assert.deepEqual(await request("initialize", {
-      protocolVersion: 1,
+      protocolVersion: 2,
       providerId: "sample.provider",
       project: { projectId: "visualbridge.provider-semantics", projectHash: "0".repeat(64) },
-    }), { protocolVersion: 1 });
+    }), { protocolVersion: 2 });
     assert.deepEqual(await request("capabilities", {}), {
       capabilities: {
         reference: { kinds: ["sample.asset"] },
@@ -54,6 +54,7 @@ test("sample Project Provider exposes deterministic healthy reference and valida
       limit: 10,
     });
     assert.equal(search.status, "ok");
+    assert.match(search.snapshotHash, /^[a-f0-9]{64}$/u);
     assert.deepEqual(search.candidates.map((candidate) => candidate.value), ["asset.sword"]);
     const resolved = await request("reference/resolve", {
       kind: "sample.asset",

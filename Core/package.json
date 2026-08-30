@@ -11,7 +11,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/test/catalogSource.test.js dist/test/documentAdapter.test.js dist/test/documentIndex.test.js dist/test/documentLifecycle.test.js dist/test/projectFile.test.js dist/test/projectProvider.test.js dist/test/reference.test.js"
+    "test": "npm run build && node --test dist/test/catalogSource.test.js dist/test/documentAdapter.test.js dist/test/documentIndex.test.js dist/test/documentLifecycle.test.js dist/test/incrementalSemanticSnapshot.test.js dist/test/projectFile.test.js dist/test/projectProvider.test.js dist/test/reference.test.js"
   },
   "devDependencies": {
     "@types/node": "^24.13.1"

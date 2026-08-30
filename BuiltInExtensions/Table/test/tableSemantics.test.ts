@@ -6,10 +6,13 @@ import { parseProjectFile } from "@visualbridge/core";
 import ExcelJS = require("exceljs");
 import {
   applyTableOperations,
+  buildTableRowSearchText,
   buildTableCatalogRegistry,
   collectAddressableTableIdentityKeys,
   collectTableOwnedIdentities,
   formatTableRowDisplayName,
+  matchesTableRowSearch,
+  normalizeTableSearchQuery,
   parseCsvTable,
   parseTableCatalog,
   parseXlsxTable,
@@ -246,6 +249,29 @@ test("row display-name patterns use stable Column IDs", async () => {
     result.diagnostics.filter((diagnostic) => diagnostic.code === "tableCatalog.unknownRowDisplayNameColumn").length,
     2,
   );
+});
+
+test("Table row search uses catalog encodings without erasing cell value types", async () => {
+  const { tableType, layout, csv } = await loadFixture();
+  const parsed = parseCsvTable(csv, tableType, layout, "Skills_A");
+  assert.equal(parsed.success, true);
+  if (!parsed.success) return;
+
+  const definition = tableType.sheets[0]!;
+  const sourceRow = parsed.document.sheets[0]!.rows[0]!;
+  const row = {
+    ...sourceRow,
+    cells: { ...sourceRow.cells, id: 101, name: "101" },
+  };
+  const searchText = buildTableRowSearchText(row, definition);
+
+  assert.equal(typeof row.cells.id, "number");
+  assert.equal(typeof row.cells.name, "string");
+  assert.ok(searchText.includes("101_101"));
+  assert.ok(searchText.includes("1001|2;1002|1"));
+  assert.equal(matchesTableRowSearch(row, definition, "101 1001|2"), true);
+  assert.deepEqual(normalizeTableSearchQuery("  FIREBALL   101  "), ["fireball", "101"]);
+  assert.deepEqual(normalizeTableSearchQuery("  CAFE\u0301   ITEM  "), ["café", "item"]);
 });
 
 test("Sheet aliases are stable identifiers and cannot collide with canonical IDs", async () => {

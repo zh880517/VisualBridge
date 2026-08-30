@@ -1,5 +1,6 @@
 export { encodeTableCell } from "./src/cellCodec";
 export { formatTableRowDisplayName, resolveTableColumn, resolveTableSheet } from "./src/tableCatalog";
+export { buildTableRowSearchText, normalizeTableSearchQuery } from "./src/tableSearch";
 export type {
   TableColumnDefinition,
   TableSheetDefinition,

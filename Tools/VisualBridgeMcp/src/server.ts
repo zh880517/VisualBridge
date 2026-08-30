@@ -235,13 +235,14 @@ function createServer(): McpServer {
       outputSchema: toolOutputSchema,
       annotations: { readOnlyHint: true },
     },
-    async ({ projectFile, action, kind, target, allowMissing, query, value, limit }) => handle(() =>
+    async ({ projectFile, action, kind, target, allowMissing, query, value, limit, cursor }) => handle(() =>
       referenceService.query({
         projectFile,
         action,
         definition: referenceDefinition(kind, target, allowMissing),
         ...(query === undefined ? {} : { query }),
         ...(value === undefined ? {} : { value }),
+        ...(cursor === undefined ? {} : { cursor }),
         limit,
       })),
   );
@@ -291,6 +292,7 @@ const normalizedPath = z.string().min(1).max(1024).refine(
   "Expected a normalized project-relative path using '/' separators.",
 );
 const cursorSchema = z.string().min(1).max(256).optional();
+const referenceCursorSchema = z.string().min(1).max(256 * 1024).optional();
 const selectorSchema = z.record(z.string(), z.json()).default({});
 const operationSchema = z.object({ type: stableId }).loose();
 const toolOutputSchema = z.discriminatedUnion("status", [
@@ -370,9 +372,13 @@ const referenceInputSchema = z.object({
   query: z.string().max(512).optional(),
   value: z.union([z.string(), z.number().finite()]).optional(),
   limit: z.number().int().min(1).max(200).default(50),
+  cursor: referenceCursorSchema,
 }).strict().superRefine((value, context) => {
   if (value.action === "resolve" && value.value === undefined) {
     context.addIssue({ code: "custom", path: ["value"], message: "Resolve requires value." });
+  }
+  if (value.action === "resolve" && value.cursor !== undefined) {
+    context.addIssue({ code: "custom", path: ["cursor"], message: "Resolve does not accept cursor." });
   }
 });
 

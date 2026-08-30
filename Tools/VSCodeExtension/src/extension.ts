@@ -1,5 +1,9 @@
 import * as vscode from "vscode";
-import type { DocumentLifecycleDeleteTarget, ReferenceLocation } from "@visualbridge/core";
+import type {
+  DocumentLifecycleDeleteTarget,
+  ProjectProviderDocumentSnapshot,
+  ReferenceLocation,
+} from "@visualbridge/core";
 import { TABLE_EDITOR_ID } from "@visualbridge/table";
 import { CatalogBrowser } from "./catalog/catalogBrowser";
 import { createDocument } from "./commands/createDocument";
@@ -163,6 +167,62 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.commands.registerCommand(
         "visualbridge.test.getCatalogBrowserSnapshot",
         () => catalogBrowser.snapshot(),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.getDocumentIndexSnapshot",
+        () => ({ documents: documents.documents, stats: documents.refreshStats }),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.rebuildDocumentIndex",
+        async () => {
+          const result = await documents.rebuild();
+          return { result, documents: documents.documents, stats: documents.refreshStats };
+        },
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.cancelDocumentIndexRefreshAtPhase",
+        async (phase: "discover" | "semantic" | "reference" | "provider" = "reference") => {
+          const controller = new AbortController();
+          let observed = false;
+          const subscription = documents.onDidProgress((event) => {
+            if (!observed && event.phase === phase) {
+              observed = true;
+              controller.abort();
+            }
+          });
+          try {
+            const result = await documents.refresh(controller.signal);
+            return { result, observed, documents: documents.documents, stats: documents.refreshStats };
+          } finally {
+            subscription.dispose();
+          }
+        },
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.validateProviderDocument",
+        async (
+          markerUri: vscode.Uri,
+          snapshot: ProjectProviderDocumentSnapshot,
+          dependencyKey: string,
+          abortAfterMilliseconds?: number,
+        ) => {
+          const markerIdentity = process.platform === "win32"
+            ? markerUri.fsPath.toLocaleLowerCase("en-US")
+            : markerUri.fsPath;
+          const project = projects.projects.find((candidate) => (
+            (process.platform === "win32"
+              ? candidate.markerUri.fsPath.toLocaleLowerCase("en-US")
+              : candidate.markerUri.fsPath) === markerIdentity
+          ));
+          if (project === undefined) throw new Error(`Project '${markerUri.toString()}' is unavailable.`);
+          const controller = abortAfterMilliseconds === undefined ? undefined : new AbortController();
+          const timer = controller === undefined ? undefined : setTimeout(() => controller.abort(), abortAfterMilliseconds);
+          try {
+            return await projectProviders.validateDocument(project, snapshot, controller?.signal, dependencyKey);
+          } finally {
+            if (timer !== undefined) clearTimeout(timer);
+          }
+        },
       ),
       vscode.commands.registerCommand(
         "visualbridge.test.resolveDocument",

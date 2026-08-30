@@ -4,19 +4,27 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import readline from "node:readline";
 
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const CAPABILITIES = {
   reference: { kinds: ["sample.asset"] },
   validator: { documentTypes: ["sample.provider.settings"] },
 };
 const ASSETS = [
+  { value: 1, title: "Typed One", description: "Numeric stable value candidate." },
+  { value: "1", title: "Typed One", description: "String stable value candidate." },
   { value: "asset.bow", title: "Bow", description: "Fixed ranged weapon candidate." },
   { value: "asset.shield", title: "Shield", description: "Fixed defensive candidate." },
   { value: "asset.sword", title: "Sword", description: "Fixed melee weapon candidate." },
+  ...Array.from({ length: 260 }, (_, index) => ({
+    value: `asset.bulk.${String(index).padStart(3, "0")}`,
+    title: `Bulk Asset ${String(index).padStart(3, "0")}`,
+    description: "Deterministic bulk pagination candidate.",
+  })),
 ];
 const options = parseArguments(process.argv.slice(2));
 const mode = options.get("mode") ?? "healthy";
@@ -52,6 +60,11 @@ input.on("line", (line) => {
 
   if (message?.method === "$/cancelRequest") return;
   if (message?.id === undefined) return;
+  if (mode === "crashOnContinuation" && startCount === 1
+    && message.method === "reference/search" && message.params?.cursor !== undefined) {
+    recordEvent("fault", { mode, method: message.method, id: message.id });
+    process.exit(73);
+  }
   if (shouldFault(message.method)) {
     if (mode === "rewriteAuthoringInvalidResult") rewriteAuthoringSource();
     emitFault(message);
@@ -95,11 +108,44 @@ function handleRequest(method, params) {
       const validation = validateTarget(params);
       if (validation.status !== "valid") return validation;
       const query = String(params.query ?? "").toLocaleLowerCase("en-US");
-      const candidates = ASSETS
+      const snapshotHash = referenceSnapshotHash();
+      let offset = 0;
+      if (params.cursor !== undefined || params.snapshotHash !== undefined) {
+        if (typeof params.cursor !== "string" || typeof params.snapshotHash !== "string") {
+          return cursorError("cursor.invalid", "cursor and snapshotHash must be supplied together.");
+        }
+        const decoded = decodeReferenceCursor(params.cursor);
+        if (decoded === undefined) return cursorError("cursor.invalid", "Reference cursor is malformed.");
+        if (decoded.query !== query || decoded.target !== canonicalJson(params.target)) {
+          return cursorError("cursor.queryMismatch", "Reference cursor belongs to a different query or target.");
+        }
+        if (decoded.snapshotHash !== params.snapshotHash || params.snapshotHash !== snapshotHash) {
+          return cursorError("cursor.snapshotChanged", "Reference candidate snapshot changed.");
+        }
+        offset = decoded.offset;
+      }
+      const matches = ASSETS
         .filter((asset) => `${asset.title}\u0000${asset.value}`.toLocaleLowerCase("en-US").includes(query))
-        .slice(0, params.limit)
+        .sort(compareAssets);
+      if (offset > matches.length) return cursorError("cursor.invalid", "Reference cursor offset is outside the result set.");
+      const candidates = matches
+        .slice(offset, offset + params.limit)
         .map(candidate);
-      return { status: "ok", candidates };
+      const nextOffset = offset + candidates.length;
+      return {
+        status: "ok",
+        candidates,
+        snapshotHash,
+        ...(nextOffset < matches.length ? {
+          nextCursor: encodeReferenceCursor({
+            version: 1,
+            query,
+            target: canonicalJson(params.target),
+            offset: nextOffset,
+            snapshotHash,
+          }),
+        } : {}),
+      };
     }
     case "reference/resolve": {
       const validation = validateTarget(params);
@@ -176,6 +222,60 @@ function candidate(asset) {
     title: asset.title,
     description: asset.description,
   };
+}
+
+function referenceSnapshotHash() {
+  let revision = "0";
+  if (stateDirectory !== undefined) {
+    try {
+      revision = readFileSync(path.join(stateDirectory, "reference-snapshot.txt"), "utf8");
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+  return createHash("sha256").update(JSON.stringify({ revision, assets: ASSETS })).digest("hex");
+}
+
+function encodeReferenceCursor(value) {
+  const payload = mode === "largeContinuation"
+    ? { ...value, padding: "x".repeat(11_500) }
+    : value;
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
+function decodeReferenceCursor(value) {
+  try {
+    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    return decoded?.version === 1
+      && typeof decoded.query === "string"
+      && typeof decoded.target === "string"
+      && Number.isSafeInteger(decoded.offset)
+      && decoded.offset >= 0
+      && typeof decoded.snapshotHash === "string"
+      && /^[a-f0-9]{64}$/u.test(decoded.snapshotHash)
+      ? decoded
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function cursorError(status, message) {
+  return { status, message };
+}
+
+function compareAssets(left, right) {
+  return left.title < right.title ? -1 : left.title > right.title ? 1
+    : typeof left.value !== typeof right.value ? (typeof left.value === "number" ? -1 : 1)
+      : left.value < right.value ? -1 : left.value > right.value ? 1 : 0;
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function mutateHostResult(method, result) {

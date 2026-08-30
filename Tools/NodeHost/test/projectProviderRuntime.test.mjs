@@ -126,6 +126,62 @@ test("honors AbortSignal cancellation and stops a request that does not settle",
   assert.equal(runtime.state, "stopped");
 });
 
+test("cancellation during start, backoff and ready transitions never leaves an unhandled rejection", async () => {
+  await assertNoUnhandledRejections(async () => {
+    await withRuntime({ passPathsInArguments: true }, {}, async (fixture, runtime) => {
+      const controller = new AbortController();
+      controller.abort();
+      await assert.rejects(
+        runtime.start({ ...invocation(fixture.projectRoot), signal: controller.signal }),
+        (error) => isRuntimeError(error, "provider.cancelled"),
+      );
+    });
+
+    await withRuntime(
+      { mode: "timeout", faultMethod: "initialize", passPathsInArguments: true },
+      { requestTimeoutMs: 2_000, cancellationGraceMs: 30 },
+      async (fixture, runtime) => {
+        const controller = new AbortController();
+        const starting = runtime.start({ ...invocation(fixture.projectRoot), signal: controller.signal });
+        setTimeout(() => controller.abort(), 20);
+        await assert.rejects(starting, (error) => isRuntimeError(error, "provider.cancelled"));
+      },
+    );
+
+    await withRuntime(
+      { mode: "crashThenHealthy", crashStarts: 1, passPathsInArguments: true },
+      { restart: { initialDelayMs: 100, maxDelayMs: 100, maxAttempts: 4, stableAfterMs: 1_000 } },
+      async (fixture, runtime) => {
+        await assert.rejects(
+          runtime.start(invocation(fixture.projectRoot)),
+          (error) => isRuntimeError(error, "provider.crashed"),
+        );
+        assert.equal(runtime.state, "backoff");
+        const controller = new AbortController();
+        const restarting = runtime.start({ ...invocation(fixture.projectRoot), signal: controller.signal });
+        setTimeout(() => controller.abort(), 20);
+        await assert.rejects(restarting, (error) => isRuntimeError(error, "provider.cancelled"));
+      },
+    );
+
+    await withRuntime(
+      { mode: "timeout", faultMethod: "reference/search", passPathsInArguments: true },
+      { requestTimeoutMs: 2_000, cancellationGraceMs: 30 },
+      async (fixture, runtime) => {
+        await runtime.start(invocation(fixture.projectRoot));
+        const controller = new AbortController();
+        const request = runtime.request(
+          "reference/search",
+          SEARCH_PARAMS,
+          { ...invocation(fixture.projectRoot), signal: controller.signal },
+        );
+        setTimeout(() => controller.abort(), 20);
+        await assert.rejects(request, (error) => isRuntimeError(error, "provider.cancelled"));
+      },
+    );
+  });
+});
+
 test("isolates crashes and restarts only after exponential backoff", async (t) => {
   const fixture = await createProviderFixture({
     mode: "crashThenHealthy",
@@ -279,6 +335,34 @@ async function createRuntime(fixture, overrides = {}) {
     restart: overrides.restart ?? { initialDelayMs: 20, maxDelayMs: 80, maxAttempts: 4, stableAfterMs: 1_000 },
     ...(overrides.log === undefined ? {} : { log: overrides.log }),
   });
+}
+
+async function withRuntime(fixtureOptions, runtimeOptions, action) {
+  const fixture = await createProviderFixture(fixtureOptions);
+  const runtime = await createRuntime(fixture, runtimeOptions);
+  try {
+    await action(fixture, runtime);
+  } finally {
+    await safeDispose(runtime);
+    await fixture.dispose();
+  }
+}
+
+async function assertNoUnhandledRejections(action) {
+  const unhandled = [];
+  const listener = (reason) => { unhandled.push(reason); };
+  process.on("unhandledRejection", listener);
+  try {
+    await action();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  } finally {
+    process.removeListener("unhandledRejection", listener);
+  }
+  assert.deepEqual(
+    unhandled,
+    [],
+    `Unhandled rejection(s): ${unhandled.map((reason) => String(reason?.stack ?? reason)).join("\n")}`,
+  );
 }
 
 function baseOptions(fixture, definition) {

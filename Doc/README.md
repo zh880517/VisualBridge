@@ -9,9 +9,10 @@
 - `StructuredConfigModel.md`：Structured Config V1、Project 唯一类型绑定、共享字段、VS Code 与 MCP 原子编辑契约。
 - `TableSemanticModel.md`：Table Catalog V1、项目级表头行、C# 导出字段/单元格编码、CSV/XLSX Codec、分表与去重策略及 VS Code 编辑契约。
 - `ReferenceSystem.md`：跨 Graph、Entity、Structured、Table 的共享引用契约、`table.row` Provider、VS Code 选择/跳转和 MCP 查询校验语义。
-- `ProjectProvider.md`：Project Provider V1 声明、stdio JSON-RPC、Reference/Validator、Trust、MCP allowlist、进程生命周期和故障处理手册。
+- `ProjectProvider.md`：Project Provider V2 声明、stdio JSON-RPC、Reference/Validator、分页快照、Trust、MCP allowlist、进程生命周期和故障处理手册。
 - `ProjectCatalogManagement.md`：Project Settings、文件归属校验、Project Operation、Catalog 来源 Hash/过期状态与只读 Catalog Browser。
 - `DocumentBrowser.md`：统一 Document Browser、共享索引、搜索/创建/全量校验、引用关系与错误入口。
+- `WorkspaceIndexPerformance.md`：不可变增量语义快照、刷新取消、Reference/Provider 依赖缓存、稳定分页、Table 虚拟化与大工程基准手册。
 - `ProjectRefactoring.md`：项目级 Reference Value 重命名、影响预览、四类文档适配与多文件回滚事务。
 - `VisualBridgeMcp.md`：项目级 stdio MCP 的工具边界、查询契约、`baseHash` 并发控制和原子写入语义。
 - `DocumentLifecycle.md`：Document Create/Copy/Move/Safe Delete 的 preview/apply、引用闭包和物理事务契约。

@@ -27,6 +27,18 @@ exports.run = async function run() {
 
   await test("does not start a declared Project Provider while untrusted", async () => {
     await vscode.commands.executeCommand("visualbridge.refreshProjects");
+    const diagnostics = await vscode.commands.executeCommand(
+      "visualbridge.test.validateProviderDocument",
+      vscode.Uri.file(path.join(workspacePath, "VisualBridge.project.vbjson")),
+      {
+        documentTypeId: "sample.provider.settings",
+        path: "Config/ProviderSettings.providerconfig",
+        sourceHash: "0".repeat(64),
+        content: { formatVersion: 1, properties: {} },
+      },
+      "restricted-provider-cache",
+    );
+    assert.deepEqual(diagnostics, []);
     await new Promise((resolve) => setTimeout(resolve, 750));
     await assert.rejects(
       readFile(path.join(providerStatePath, "events.ndjson"), "utf8"),

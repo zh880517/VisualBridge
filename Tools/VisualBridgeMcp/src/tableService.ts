@@ -11,6 +11,7 @@ import {
 } from "@visualbridge/core";
 import {
   applyTableOperations,
+  buildTableRowSearchText,
   buildTableCatalogRegistry,
   collectTableReferences,
   createEmptyCsvTableSource,
@@ -18,6 +19,7 @@ import {
   createEmptyTableCatalogRegistry,
   formatTableRowDisplayName,
   matchTableSheetDefinitions,
+  normalizeTableSearchQuery,
   parseCsvTable,
   parseTableCatalog,
   parseXlsxTable,
@@ -59,6 +61,7 @@ export interface TableCatalogContext {
   readonly project: ProjectContext;
   readonly documentTypeId: string;
   readonly catalogPaths: readonly string[];
+  readonly catalogHash: string;
   readonly registry: TableCatalogRegistry;
   readonly tableType: RegisteredTableTypeDefinition;
   readonly diagnostics: readonly DocumentDiagnostic[];
@@ -134,11 +137,17 @@ export class TableService {
     if (kind === "summary") {
       throw new VisualBridgeMcpError("catalog.kindUnsupported", "Table Catalog summary is not searchable.");
     }
-    const query = request.query.trim().toLocaleLowerCase();
+    const query = normalizeCatalogSearchQuery(request.query);
     const filtered = definitions
-      .filter((definition) => query.length === 0 || JSON.stringify(definition).toLocaleLowerCase().includes(query))
+      .filter((definition) => query.length === 0 || JSON.stringify(definition).toLowerCase().includes(query))
       .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
-    const page = pageItems(filtered, request.cursor, request.limit, catalogCursorScope(request, kind));
+    const page = pageItems(
+      filtered,
+      request.cursor,
+      request.limit,
+      catalogCursorScope(request, kind),
+      { catalogHash: catalog.catalogHash },
+    );
     return { ...base, kind, query: request.query, results: page.items, nextCursor: page.nextCursor };
   }
 
@@ -165,7 +174,13 @@ export class TableService {
       if (!(errorValue instanceof TableLoadError)) throw errorValue;
       const invalid = invalidTableLoadResult(errorValue);
       if (request.action !== "search") return invalid;
-      const page = pageItems([], request.cursor, request.limit, documentCursorScope(request));
+      const page = pageItems(
+        [],
+        request.cursor,
+        request.limit,
+        documentCursorScope(request),
+        { sourceHash: errorValue.baseHash, catalogHash: errorValue.catalogHash },
+      );
       return { ...invalid, query: request.query, results: page.items };
     }
     const referenceDiagnostics = await this.referenceDiagnostics(loaded);
@@ -175,7 +190,13 @@ export class TableService {
       const sheet = sheetId === undefined ? undefined : this.requirePhysicalSheet(loaded, sheetId);
       const page = sheet === undefined
         ? undefined
-        : pageItems(sheet.rows.map(semanticRow), request.cursor, request.limit, documentCursorScope(request));
+        : pageItems(
+            sheet.rows.map(semanticRow),
+            request.cursor,
+            request.limit,
+            documentCursorScope(request),
+            tableCursorSnapshot(loaded),
+          );
       return {
         ...tableIdentity(loaded),
         valid: !diagnostics.some((diagnostic) => diagnostic.severity === "error"),
@@ -206,7 +227,7 @@ export class TableService {
     const definitions = sheetDefinitionId === undefined
       ? loaded.catalog.tableType.sheets
       : [this.requireSheetDefinition(loaded, sheetDefinitionId)];
-    const terms = request.query.toLocaleLowerCase().split(/\s+/).filter((term) => term.length > 0);
+    const terms = normalizeTableSearchQuery(request.query);
     const results: Record<string, unknown>[] = [];
     for (const definition of definitions) {
       const entries = effectiveOnly
@@ -216,7 +237,7 @@ export class TableService {
             .flatMap((sheet) => sheet.rows.map((row) => ({ sheetId: sheet.id, sheetName: sheet.name, row })));
       for (const entry of entries) {
         const displayName = formatTableRowDisplayName(entry.row.cells, definition);
-        const searchText = `${displayName}\n${stableJson(entry.row.cells)}`.toLocaleLowerCase();
+        const searchText = buildTableRowSearchText(entry.row, definition);
         if (terms.every((term) => searchText.includes(term))) {
           results.push({
             kind: "row",
@@ -230,7 +251,13 @@ export class TableService {
         }
       }
     }
-    const page = pageItems(results, request.cursor, request.limit, documentCursorScope(request));
+    const page = pageItems(
+      results,
+      request.cursor,
+      request.limit,
+      documentCursorScope(request),
+      tableCursorSnapshot(loaded),
+    );
     return {
       ...tableIdentity(loaded),
       valid: !diagnostics.some((diagnostic) => diagnostic.severity === "error"),
@@ -640,7 +667,13 @@ export class TableService {
     };
     const parsed = await parseXlsxTable(bytes, catalog.tableType, layout);
     if (!parsed.success) {
-      throw new TableLoadError(context, source.hash, [source], [...catalog.diagnostics, ...parsed.diagnostics]);
+      throw new TableLoadError(
+        context,
+        source.hash,
+        catalog.catalogHash,
+        [source],
+        [...catalog.diagnostics, ...parsed.diagnostics],
+      );
     }
     const loadedSource = { ...source, sheetIds: parsed.document.sheets.map((sheet) => sheet.id) };
     const providerDiagnostics = this.references === undefined ? [] : await this.references.validateProviderDocument(
@@ -697,6 +730,7 @@ export class TableService {
         throw new TableLoadError(
           context,
           hashSourceManifest([...sources, baseSource]),
+          catalog.catalogHash,
           [...sources, baseSource],
           [diagnostic("table.invalidUtf8", sourcePath, formatError(errorValue))],
         );
@@ -705,6 +739,7 @@ export class TableService {
         throw new TableLoadError(
           context,
           hashSourceManifest([...sources, baseSource]),
+          catalog.catalogHash,
           [...sources, baseSource],
           parsed.diagnostics.map((item) => ({ ...item, path: `${physicalName}.${item.path}` })),
         );
@@ -789,11 +824,14 @@ export class TableService {
     }
     const diagnostics: DocumentDiagnostic[] = [];
     const catalogs: TableCatalog[] = [];
+    const catalogSources: { readonly path: string; readonly hash: string }[] = [];
     const sourceIndexes: number[] = [];
     for (const [catalogIndex, catalogPath] of catalogPaths.entries()) {
       try {
         const absolutePath = await resolveExistingProjectPath(project, catalogPath);
-        const result = parseTableCatalog(decodeUtf8(await readFile(absolutePath), catalogPath));
+        const bytes = await readFile(absolutePath);
+        catalogSources.push({ path: catalogPath, hash: hashBytes(bytes) });
+        const result = parseTableCatalog(decodeUtf8(bytes, catalogPath));
         diagnostics.push(...result.diagnostics.map((item) => ({
           ...item,
           path: prefixCatalogPath(catalogIndex, item.path),
@@ -826,7 +864,15 @@ export class TableService {
         diagnostics,
       );
     }
-    return { project, documentTypeId, catalogPaths, registry, tableType, diagnostics };
+    return {
+      project,
+      documentTypeId,
+      catalogPaths,
+      catalogHash: hashPathManifest(catalogSources),
+      registry,
+      tableType,
+      diagnostics,
+    };
   }
 
   private async renderSources(loaded: LoadedTable, document: TableDocument): Promise<readonly RenderedSource[]> {
@@ -906,6 +952,7 @@ class TableLoadError extends Error {
   public constructor(
     public readonly context: TableDocumentContext,
     public readonly baseHash: string,
+    public readonly catalogHash: string,
     public readonly sources: readonly TableSource[],
     public readonly diagnostics: readonly DocumentDiagnostic[],
   ) {
@@ -935,7 +982,7 @@ function catalogCursorScope(request: DocumentCatalogRequest, kind: string): unkn
     documentTypeId: request.documentTypeId,
     editor: "table",
     kind,
-    query: request.query,
+    query: normalizeCatalogSearchQuery(request.query),
     selector: request.selector,
   };
 }
@@ -948,8 +995,19 @@ function documentCursorScope(request: DocumentRequest): unknown {
     documentTypeId: request.documentTypeId,
     editor: "table",
     path: request.path,
-    query: request.query,
+    query: normalizeTableSearchQuery(request.query),
     selector: request.selector,
+  };
+}
+
+function normalizeCatalogSearchQuery(query: string): string {
+  return query.normalize("NFC").trim().toLowerCase();
+}
+
+function tableCursorSnapshot(loaded: LoadedTable): unknown {
+  return {
+    sourceHash: loaded.baseHash,
+    catalogHash: loaded.catalog.catalogHash,
   };
 }
 
@@ -1108,6 +1166,17 @@ function hashSourceManifest(sources: readonly TableSource[]): string {
     hash.update(source.path);
     hash.update("\0");
     hash.update(source.hash);
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+function hashPathManifest(entries: readonly { readonly path: string; readonly hash: string }[]): string {
+  const hash = createHash("sha256");
+  for (const entry of entries) {
+    hash.update(entry.path);
+    hash.update("\0");
+    hash.update(entry.hash);
     hash.update("\0");
   }
   return hash.digest("hex");

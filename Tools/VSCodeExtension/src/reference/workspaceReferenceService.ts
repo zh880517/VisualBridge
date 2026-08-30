@@ -40,6 +40,14 @@ import type { WorkspaceProjectProviderService } from "../provider/workspaceProje
 
 export const REVEAL_REFERENCE_COMMAND = "visualbridge.revealReference";
 
+export interface WorkspaceProjectSemanticSnapshot {
+  readonly dependencyKey: string;
+  readonly documents: readonly DocumentReferenceDocument[];
+  readonly entities: readonly EntityReferenceDocument[];
+  readonly graphs: readonly GraphReferenceDocument[];
+  readonly tables: readonly TableReferenceDocument[];
+}
+
 interface ReferenceQuickPickItem extends vscode.QuickPickItem {
   readonly candidate: ReferenceCandidate;
 }
@@ -58,6 +66,7 @@ export class WorkspaceReferenceService implements vscode.Disposable {
     readonly document: TableReferenceDocument;
     readonly sequence: number;
   }>();
+  private readonly snapshots = new Map<string, WorkspaceProjectSemanticSnapshot>();
   private openTableSequence = 0;
 
   public constructor(
@@ -65,14 +74,14 @@ export class WorkspaceReferenceService implements vscode.Disposable {
     private readonly output: vscode.OutputChannel,
     private readonly providers?: WorkspaceProjectProviderService,
   ) {
-    const clear = (): void => this.invalidate();
+    const clearFallback = (): void => this.invalidateFallback();
     this.disposables.push(
-      projects.onDidChange(clear),
-      vscode.workspace.onDidCreateFiles(clear),
-      vscode.workspace.onDidDeleteFiles(clear),
-      vscode.workspace.onDidRenameFiles(clear),
-      vscode.workspace.onDidSaveTextDocument(clear),
-      vscode.workspace.onDidChangeTextDocument(clear),
+      projects.onDidChange(() => this.invalidate()),
+      vscode.workspace.onDidCreateFiles(clearFallback),
+      vscode.workspace.onDidDeleteFiles(clearFallback),
+      vscode.workspace.onDidRenameFiles(clearFallback),
+      vscode.workspace.onDidSaveTextDocument(clearFallback),
+      vscode.workspace.onDidChangeTextDocument(clearFallback),
     );
   }
 
@@ -89,20 +98,64 @@ export class WorkspaceReferenceService implements vscode.Disposable {
     project: ProjectContext,
     definition: ReferenceDefinition,
     value: string | number,
+    signal?: AbortSignal,
   ): Promise<ReferenceResolution> {
-    return (await this.createService(project)).resolve(definition, value);
+    return (await this.createService(project)).resolve(definition, value, signal);
   }
 
   public invalidate(): void {
+    this.invalidateFallback();
+    this.snapshots.clear();
+  }
+
+  private invalidateFallback(): void {
     this.tableDocuments.clear();
     this.semanticDocuments.clear();
+  }
+
+  public updateProjectSnapshot(
+    project: ProjectContext,
+    snapshot: WorkspaceProjectSemanticSnapshot,
+  ): void {
+    const key = project.markerUri.toString();
+    this.snapshots.set(key, Object.freeze({
+      dependencyKey: snapshot.dependencyKey,
+      documents: Object.freeze([...snapshot.documents]),
+      entities: Object.freeze([...snapshot.entities]),
+      graphs: Object.freeze([...snapshot.graphs]),
+      tables: Object.freeze([...snapshot.tables]),
+    }));
+    this.tableDocuments.delete(key);
+    this.semanticDocuments.delete(key);
+  }
+
+  public removeProjectSnapshot(project: ProjectContext): void {
+    this.snapshots.delete(project.markerUri.toString());
   }
 
   public async validate(
     project: ProjectContext,
     occurrences: readonly ReferenceOccurrence[],
+    signal?: AbortSignal,
   ) {
-    return (await this.createService(project)).validate(occurrences);
+    return (await this.createService(project)).validate(occurrences, signal);
+  }
+
+  public async analyze(
+    project: ProjectContext,
+    occurrences: readonly ReferenceOccurrence[],
+    signal?: AbortSignal,
+  ) {
+    return (await this.createService(project)).analyzeOccurrences(occurrences, signal);
+  }
+
+  public async analyzeSnapshot(
+    project: ProjectContext,
+    snapshot: WorkspaceProjectSemanticSnapshot,
+    occurrences: readonly ReferenceOccurrence[],
+    signal?: AbortSignal,
+  ) {
+    return (await this.createService(project, snapshot)).analyzeOccurrences(occurrences, signal);
   }
 
   public async validateChange(
@@ -231,19 +284,30 @@ export class WorkspaceReferenceService implements vscode.Disposable {
     this.tableDocuments.clear();
     this.semanticDocuments.clear();
     this.openTableDocuments.clear();
+    this.snapshots.clear();
     for (const disposable of this.disposables.splice(0)) {
       disposable.dispose();
     }
   }
 
-  private async createService(project: ProjectContext): Promise<ReferenceService> {
+  private async createService(
+    project: ProjectContext,
+    snapshotOverride?: WorkspaceProjectSemanticSnapshot,
+  ): Promise<ReferenceService> {
+    const snapshot = snapshotOverride ?? this.snapshots.get(project.markerUri.toString());
     return new ReferenceService([
-      createDocumentReferenceProvider(() => this.loadSemanticDocuments(project).then((loaded) => loaded.documents)),
-      createEntityComponentReferenceProvider(() => this.loadSemanticDocuments(project).then((loaded) => loaded.entities)),
-      createGraphElementReferenceProvider(() => this.loadSemanticDocuments(project).then((loaded) => loaded.graphs)),
-      createTableRowReferenceProvider(() => this.loadTableDocuments(project)),
+      createDocumentReferenceProvider(() => snapshot === undefined
+        ? this.loadSemanticDocuments(project).then((loaded) => loaded.documents)
+        : Promise.resolve(snapshot.documents)),
+      createEntityComponentReferenceProvider(() => snapshot === undefined
+        ? this.loadSemanticDocuments(project).then((loaded) => loaded.entities)
+        : Promise.resolve(snapshot.entities)),
+      createGraphElementReferenceProvider(() => snapshot === undefined
+        ? this.loadSemanticDocuments(project).then((loaded) => loaded.graphs)
+        : Promise.resolve(snapshot.graphs)),
+      createTableRowReferenceProvider(() => this.loadTableDocuments(project, snapshot?.tables)),
       ...await this.providers?.referenceProviders(project) ?? [],
-    ]);
+    ], snapshot?.dependencyKey);
   }
 
   private loadSemanticDocuments(project: ProjectContext): Promise<{
@@ -262,18 +326,26 @@ export class WorkspaceReferenceService implements vscode.Disposable {
     return loading;
   }
 
-  private async loadTableDocuments(project: ProjectContext): Promise<readonly TableReferenceDocument[]> {
+  private async loadTableDocuments(
+    project: ProjectContext,
+    snapshotDocuments?: readonly TableReferenceDocument[],
+  ): Promise<readonly TableReferenceDocument[]> {
     const key = project.markerUri.toString();
-    const existing = this.tableDocuments.get(key);
-    let loading = existing;
-    if (loading === undefined) {
-      loading = loadProjectTableDocuments(project, this.output).catch((errorValue: unknown) => {
-        this.tableDocuments.delete(key);
-        throw errorValue;
-      });
-      this.tableDocuments.set(key, loading);
+    let diskDocuments: readonly TableReferenceDocument[];
+    if (snapshotDocuments !== undefined) {
+      diskDocuments = snapshotDocuments;
+    } else {
+      const existing = this.tableDocuments.get(key);
+      let loading = existing;
+      if (loading === undefined) {
+        loading = loadProjectTableDocuments(project, this.output).catch((errorValue: unknown) => {
+          this.tableDocuments.delete(key);
+          throw errorValue;
+        });
+        this.tableDocuments.set(key, loading);
+      }
+      diskDocuments = await loading;
     }
-    const diskDocuments = await loading;
     const overrides = selectCurrentOverrides(
       [...this.openTableDocuments.values()].filter((entry) => entry.projectKey === key),
     );

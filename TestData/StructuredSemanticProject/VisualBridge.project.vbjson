@@ -12,7 +12,9 @@
       "include": [
         "Config/**/*.gamesettings"
       ],
-      "exclude": [],
+      "exclude": [
+        "Config/Excluded/**"
+      ],
       "catalogs": [
         "Catalog/Game.vbstructuredcatalog"
       ]

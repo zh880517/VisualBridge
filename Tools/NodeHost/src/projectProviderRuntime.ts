@@ -192,6 +192,14 @@ export class ProjectProviderRuntime implements AsyncDisposable {
     return this.capabilitiesValue;
   }
 
+  public get generation(): number {
+    return this.processGeneration;
+  }
+
+  public async captureEntryHash(): Promise<string> {
+    return createHash("sha256").update(await readFile(this.entryPath)).digest("hex");
+  }
+
   public async start(invocation: ProjectProviderInvocationOptions): Promise<ProjectProviderCapabilities> {
     await this.guarded(invocation.captureSourceManifest, () => this.ensureReady(invocation.signal));
     return this.capabilitiesValue!;
@@ -293,10 +301,12 @@ export class ProjectProviderRuntime implements AsyncDisposable {
     if (this.stateValue === "ready" && this.processValue !== undefined) return;
     if (this.startPromise !== undefined) return abortable(this.startPromise, signal);
 
-    const starting = this.startProcess(signal).finally(() => {
-      if (this.startPromise === starting) this.startPromise = undefined;
-    });
+    const starting = this.startProcess(signal);
     this.startPromise = starting;
+    const clearStarting = (): void => {
+      if (this.startPromise === starting) this.startPromise = undefined;
+    };
+    void starting.then(clearStarting, clearStarting);
     return abortable(starting, signal);
   }
 
@@ -577,7 +587,7 @@ export class ProjectProviderRuntime implements AsyncDisposable {
     this.recordCrash(errorValue);
   }
 
-  private async faultProcess(generation: number, errorValue: ProjectProviderRuntimeError): Promise<void> {
+  private faultProcess(generation: number, errorValue: ProjectProviderRuntimeError): Promise<void> {
     const settlement = this.faultProcessCore(generation, errorValue);
     this.trackSettlement(settlement);
     return settlement;
@@ -643,7 +653,7 @@ export class ProjectProviderRuntime implements AsyncDisposable {
           `Project Provider did not settle cancelled request '${String(id)}'.`,
         ))
         : this.stopAfterCancellation(generation);
-      void stopping.finally(settle);
+      void stopping.then(settle, settle);
     }, this.cancellationGraceMs);
     this.cancelled.set(id, { timer, settle });
   }
@@ -750,7 +760,8 @@ export class ProjectProviderRuntime implements AsyncDisposable {
 
   private trackSettlement(settlement: Promise<void>): void {
     this.settlements.add(settlement);
-    void settlement.finally(() => this.settlements.delete(settlement));
+    const remove = (): void => { this.settlements.delete(settlement); };
+    void settlement.then(remove, remove);
   }
 
   private async waitForSettlements(): Promise<void> {
@@ -896,7 +907,7 @@ async function resolveProviderEntry(projectRoot: string, relativeEntry: string):
   if (path.extname(relativeEntry).toLowerCase() !== ".mjs") {
     throw new ProjectProviderRuntimeError(
       "provider.invalidEntry",
-      "Project Provider V1 entry must be a project-relative '.mjs' file.",
+      "Project Provider V2 entry must be a project-relative '.mjs' file.",
     );
   }
   const candidate = path.resolve(projectRoot, ...relativeEntry.split("/"));
@@ -1161,11 +1172,32 @@ async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> 
 
 function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (signal === undefined) return promise;
-  if (signal.aborted) return Promise.reject(cancelledError());
   return new Promise<T>((resolve, reject) => {
-    const listener = (): void => reject(cancelledError());
-    signal.addEventListener("abort", listener, { once: true });
-    void promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", listener));
+    let listening = false;
+    const cleanup = (): void => {
+      if (listening) signal.removeEventListener("abort", onAbort);
+      listening = false;
+    };
+    const onAbort = (): void => {
+      cleanup();
+      reject(cancelledError());
+    };
+    void promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (errorValue: unknown) => {
+        cleanup();
+        reject(errorValue);
+      },
+    );
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    listening = true;
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 

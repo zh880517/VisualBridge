@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const { mkdtemp, readFile, rm, symlink, unlink, writeFile } = require("node:fs/promises");
+const { createHash } = require("node:crypto");
 const { tmpdir } = require("node:os");
 const path = require("node:path");
 const vscode = require("vscode");
@@ -70,11 +71,274 @@ exports.run = async function run() {
     assert.ok(events.some((event) => event.method === "capabilities"));
   });
 
+  await test("caches only successful Provider validation for the current source, dependency and host generation", async () => {
+    const projectPath = path.join(workspacePath, "ProviderSemanticProject", "VisualBridge.project.vbjson");
+    const markerUri = vscode.Uri.file(projectPath);
+    const sourcePath = path.join(workspacePath, "ProviderSemanticProject", "Config", "ProviderSettings.providerconfig");
+    const sourceBytes = await readFile(sourcePath);
+    const content = JSON.parse(sourceBytes.toString("utf8"));
+    const sourceHash = createHash("sha256").update(sourceBytes).digest("hex");
+    const snapshot = {
+      documentTypeId: "sample.provider.settings",
+      path: "Config/ProviderSettings.providerconfig",
+      sourceHash,
+      content,
+    };
+    const validate = (currentSnapshot, dependencyKey) => vscode.commands.executeCommand(
+      "visualbridge.test.validateProviderDocument",
+      markerUri,
+      currentSnapshot,
+      dependencyKey,
+    );
+    const validatorRequestCount = async () => (await readProviderEvents(providerStatePath))
+      .filter((event) => event.method === "validator/diagnostics").length;
+
+    const beforeCache = await validatorRequestCount();
+    await validate(snapshot, "provider-cache-dependency-a");
+    await validate(snapshot, "provider-cache-dependency-a");
+    assert.equal(await validatorRequestCount(), beforeCache + 1);
+
+    const changedContent = {
+      ...content,
+      properties: { ...content.properties, displayName: "Provider cache source variant" },
+    };
+    const changedBytes = Buffer.from(`${JSON.stringify(changedContent, undefined, 2)}\n`, "utf8");
+    const changedSnapshot = {
+      ...snapshot,
+      sourceHash: createHash("sha256").update(changedBytes).digest("hex"),
+      content: changedContent,
+    };
+    await validate(changedSnapshot, "provider-cache-dependency-a");
+    assert.equal(await validatorRequestCount(), beforeCache + 2);
+    await validate(snapshot, "provider-cache-dependency-b");
+    assert.equal(await validatorRequestCount(), beforeCache + 3);
+
+    const projectBytes = await readFile(projectPath);
+    try {
+      const definition = JSON.parse(projectBytes.toString("utf8"));
+      definition.providers[0].args.push("--echo-arg", "provider-cache-generation");
+      await writeFile(projectPath, `${JSON.stringify(definition, undefined, 2)}\n`, "utf8");
+      await vscode.commands.executeCommand("visualbridge.refreshProjects");
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const beforeNewHost = await validatorRequestCount();
+      await validate(snapshot, "provider-cache-dependency-b");
+      assert.equal(await validatorRequestCount(), beforeNewHost + 1);
+    } finally {
+      await writeFile(projectPath, projectBytes);
+      await vscode.commands.executeCommand("visualbridge.refreshProjects");
+      await new Promise((resolve) => setTimeout(resolve, 750));
+    }
+  });
+
   await test("registers the stable host commands", async () => {
     const commands = new Set(await vscode.commands.getCommands(true));
     EXPECTED_COMMANDS.forEach((command) => {
       assert.ok(commands.has(command), `Command '${command}' was not registered.`);
     });
+  });
+
+  await test("incrementally rebuilds one semantic document and matches a full scan", async () => {
+    const uri = vscode.Uri.file(path.join(
+      workspacePath,
+      "StructuredSemanticProject",
+      "Config",
+      "Game.gamesettings",
+    ));
+    const beforeBytes = await vscode.workspace.fs.readFile(uri);
+    const before = JSON.parse(new TextDecoder().decode(beforeBytes));
+    const stabilized = await vscode.commands.executeCommand("visualbridge.test.rebuildDocumentIndex");
+    assert.equal(stabilized.result.status, "applied");
+    const baseline = { documents: stabilized.documents, stats: stabilized.stats };
+    let lastEpoch = baseline.stats.epoch;
+    const unrelatedUri = vscode.Uri.file(path.join(workspacePath, "unrelated-index-event.txt"));
+    const excludedUri = vscode.Uri.file(path.join(
+      workspacePath,
+      "StructuredSemanticProject",
+      "Config",
+      "Excluded",
+      "Ignored.gamesettings",
+    ));
+    try {
+      await vscode.workspace.fs.writeFile(unrelatedUri, new TextEncoder().encode("not an authoring source\n"));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const unrelated = await vscode.commands.executeCommand("visualbridge.test.getDocumentIndexSnapshot");
+      assert.equal(unrelated.stats.epoch, baseline.stats.epoch);
+
+      await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(excludedUri, ".."));
+      await vscode.workspace.fs.writeFile(excludedUri, new TextEncoder().encode("{}\n"));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const excluded = await vscode.commands.executeCommand("visualbridge.test.getDocumentIndexSnapshot");
+      assert.equal(excluded.stats.epoch, baseline.stats.epoch);
+
+      const changed = { ...before, properties: { ...before.properties, maxPlayers: before.properties.maxPlayers + 1 } };
+      await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(`${JSON.stringify(changed, undefined, 2)}\n`));
+      const incremental = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getDocumentIndexSnapshot"),
+        (snapshot) => snapshot.stats.epoch > baseline.stats.epoch && snapshot.stats.loaded === 1,
+        20_000,
+        "A single source change did not produce a one-unit incremental semantic refresh.",
+      );
+      lastEpoch = incremental.stats.epoch;
+      assert.equal(incremental.stats.reused, incremental.stats.planned - 1);
+
+      const rebuilt = await vscode.commands.executeCommand("visualbridge.test.rebuildDocumentIndex");
+      assert.equal(rebuilt.result.status, "applied");
+      assert.equal(rebuilt.stats.loaded, rebuilt.stats.planned);
+      assert.equal(rebuilt.stats.reused, 0);
+      assert.deepEqual(rebuilt.documents, incremental.documents);
+      lastEpoch = rebuilt.stats.epoch;
+    } finally {
+      await vscode.workspace.fs.delete(unrelatedUri, { useTrash: false }).then(undefined, () => undefined);
+      await vscode.workspace.fs.delete(excludedUri, { useTrash: false }).then(undefined, () => undefined);
+      await vscode.workspace.fs.writeFile(uri, beforeBytes);
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getDocumentIndexSnapshot"),
+        (snapshot) => snapshot.stats.epoch > lastEpoch && snapshot.stats.loaded === 1,
+        20_000,
+        "The restored source did not refresh incrementally.",
+      );
+    }
+  });
+
+  await test("invalidates only documents bound to a changed Catalog and matches a full scan", async () => {
+    const uri = vscode.Uri.file(path.join(
+      workspacePath,
+      "StructuredSemanticProject",
+      "Catalog",
+      "Game.vbstructuredcatalog",
+    ));
+    const beforeBytes = await vscode.workspace.fs.readFile(uri);
+    const before = JSON.parse(new TextDecoder().decode(beforeBytes));
+    const baseline = await vscode.commands.executeCommand("visualbridge.test.getDocumentIndexSnapshot");
+    let lastEpoch = baseline.stats.epoch;
+    try {
+      const changed = {
+        ...before,
+        configTypes: before.configTypes.map((entry, index) => (
+          index === 0 ? { ...entry, title: `${entry.title} Incremental` } : entry
+        )),
+      };
+      await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(`${JSON.stringify(changed, undefined, 2)}\n`));
+      const incremental = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getDocumentIndexSnapshot"),
+        (snapshot) => snapshot.stats.epoch > baseline.stats.epoch && snapshot.stats.loaded === 1,
+        20_000,
+        "A Catalog change did not invalidate exactly its bound semantic document.",
+      );
+      assert.equal(incremental.stats.reused, incremental.stats.planned - 1);
+      assert.ok(incremental.documents.some((document) => document.title.endsWith(" Incremental")));
+
+      const rebuilt = await vscode.commands.executeCommand("visualbridge.test.rebuildDocumentIndex");
+      assert.equal(rebuilt.result.status, "applied");
+      assert.deepEqual(rebuilt.documents, incremental.documents);
+      lastEpoch = rebuilt.stats.epoch;
+    } finally {
+      await vscode.workspace.fs.writeFile(uri, beforeBytes);
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getDocumentIndexSnapshot"),
+        (snapshot) => snapshot.stats.epoch > lastEpoch && snapshot.stats.loaded === 1,
+        20_000,
+        "The restored Catalog did not invalidate exactly its bound semantic document.",
+      );
+    }
+  });
+
+  await test("invalidates one logical CSV family when a physical partition changes", async () => {
+    const uri = vscode.Uri.file(path.join(
+      workspacePath,
+      "StructuredSemanticProject",
+      "Tables",
+      "Skills_Extra.skillstable",
+    ));
+    const baseline = await vscode.commands.executeCommand("visualbridge.test.getDocumentIndexSnapshot");
+    let lastEpoch = baseline.stats.epoch;
+    try {
+      await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode([
+        "技能ID\t技能名",
+        "Id\tName",
+        "103\tLightning",
+        "",
+      ].join("\n")));
+      const incremental = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getDocumentIndexSnapshot"),
+        (snapshot) => snapshot.stats.epoch > baseline.stats.epoch
+          && snapshot.stats.loaded === 1
+          && snapshot.documents.some((document) => (
+            document.documentTypeId === "sample.table.skills"
+            && document.sourcePaths.includes("Tables/Skills_Extra.skillstable")
+          )),
+        20_000,
+        "A CSV partition change did not invalidate exactly one logical family.",
+      );
+      assert.equal(incremental.stats.reused, incremental.stats.planned - 1);
+      const table = incremental.documents.find((document) => (
+        document.projectId === "visualbridge.structured-semantics"
+        && document.documentTypeId === "sample.table.skills"
+      ));
+      assert.ok(table);
+      assert.deepEqual(table.sourcePaths, [
+        "Tables/Skills_Extra.skillstable",
+        "Tables/Skills_Main.skillstable",
+      ]);
+
+      const rebuilt = await vscode.commands.executeCommand("visualbridge.test.rebuildDocumentIndex");
+      assert.equal(rebuilt.result.status, "applied");
+      assert.deepEqual(rebuilt.documents, incremental.documents);
+      lastEpoch = rebuilt.stats.epoch;
+    } finally {
+      await vscode.workspace.fs.delete(uri, { useTrash: false }).then(undefined, () => undefined);
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getDocumentIndexSnapshot"),
+        (snapshot) => snapshot.stats.epoch > lastEpoch
+          && snapshot.stats.loaded === 1
+          && !snapshot.documents.some((document) => document.sourcePaths.includes("Tables/Skills_Extra.skillstable")),
+        20_000,
+        "Deleting the CSV partition did not invalidate exactly one logical family.",
+      );
+    }
+  });
+
+  await test("keeps the last complete index when a refresh is cancelled before commit", async () => {
+    const uri = vscode.Uri.file(path.join(
+      workspacePath,
+      "StructuredSemanticProject",
+      "Config",
+      "Game.gamesettings",
+    ));
+    const document = await vscode.workspace.openTextDocument(uri);
+    const originalText = document.getText();
+    const original = JSON.parse(originalText);
+    const baseline = await vscode.commands.executeCommand("visualbridge.test.getDocumentIndexSnapshot");
+    const changed = {
+      ...original,
+      properties: { ...original.properties, maxPlayers: 999 },
+    };
+    const replaceDocument = async (text) => {
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), text);
+      assert.equal(await vscode.workspace.applyEdit(edit), true);
+    };
+    try {
+      await replaceDocument(`${JSON.stringify(changed, undefined, 2)}\n`);
+      const cancelled = await vscode.commands.executeCommand(
+        "visualbridge.test.cancelDocumentIndexRefreshAtPhase",
+        "provider",
+      );
+      assert.equal(cancelled.observed, true);
+      assert.equal(cancelled.result.status, "cancelled");
+      assert.deepEqual(cancelled.documents, baseline.documents);
+      assert.deepEqual(cancelled.stats, baseline.stats);
+
+      const changedResult = await vscode.commands.executeCommand("visualbridge.test.rebuildDocumentIndex");
+      assert.equal(changedResult.result.status, "applied");
+      assert.notDeepEqual(changedResult.documents, baseline.documents);
+    } finally {
+      await replaceDocument(originalText);
+      await document.save();
+      const restored = await vscode.commands.executeCommand("visualbridge.test.rebuildDocumentIndex");
+      assert.equal(restored.result.status, "applied");
+      assert.deepEqual(restored.documents, baseline.documents);
+    }
   });
 
   await test("moves and safely deletes a Structured document through lifecycle transactions", async () => {

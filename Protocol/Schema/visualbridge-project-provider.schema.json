@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://visualbridge.dev/schema/visualbridge-project-provider.schema.json",
-  "title": "VisualBridge Project Provider V1 JSON-RPC message",
+  "title": "VisualBridge Project Provider V2 JSON-RPC message",
   "oneOf": [
     { "$ref": "#/$defs/hostMessage" },
     { "$ref": "#/$defs/providerResponse" }
@@ -14,6 +14,11 @@
     "hash": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
+    },
+    "providerCursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384
     },
     "requestId": {
       "oneOf": [
@@ -115,7 +120,7 @@
               "type": "object",
               "required": ["protocolVersion", "providerId", "project"],
               "properties": {
-                "protocolVersion": { "const": 1 },
+                "protocolVersion": { "const": 2 },
                 "providerId": { "$ref": "#/$defs/identifier" },
                 "project": { "$ref": "#/$defs/projectSnapshot" }
               },
@@ -149,7 +154,13 @@
                 "kind": { "$ref": "#/$defs/identifier" },
                 "target": { "$ref": "#/$defs/jsonObject" },
                 "query": { "type": "string" },
-                "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+                "cursor": { "$ref": "#/$defs/providerCursor" },
+                "snapshotHash": { "$ref": "#/$defs/hash" }
+              },
+              "dependentRequired": {
+                "cursor": ["snapshotHash"],
+                "snapshotHash": ["cursor"]
               },
               "additionalProperties": false
             }
@@ -356,10 +367,21 @@
       "oneOf": [
         {
           "type": "object",
-          "required": ["status", "candidates"],
+          "required": ["status", "candidates", "snapshotHash"],
           "properties": {
             "status": { "const": "ok" },
-            "candidates": { "type": "array", "items": { "$ref": "#/$defs/referenceCandidate" } }
+            "candidates": { "type": "array", "items": { "$ref": "#/$defs/referenceCandidate" } },
+            "snapshotHash": { "$ref": "#/$defs/hash" },
+            "nextCursor": { "$ref": "#/$defs/providerCursor" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "message"],
+          "properties": {
+            "status": { "enum": ["cursor.invalid", "cursor.queryMismatch", "cursor.snapshotChanged"] },
+            "message": { "type": "string", "minLength": 1 }
           },
           "additionalProperties": false
         },
@@ -452,7 +474,7 @@
         {
           "type": "object",
           "required": ["protocolVersion"],
-          "properties": { "protocolVersion": { "const": 1 } },
+          "properties": { "protocolVersion": { "const": 2 } },
           "additionalProperties": false
         },
         {

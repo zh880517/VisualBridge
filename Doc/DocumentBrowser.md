@@ -31,7 +31,7 @@ VS Code 的 `WorkspaceDocumentIndex` 负责宿主适配：
 
 索引不复制 Graph、Entity、Structured 或 Table 规则。Catalog 不可用、源文件解析失败和引用缺失都会保留为结构化诊断，原始文件不被修改。
 
-V1 在插件激活、Project 变化和匹配文件保存或增删后重新建立语义快照。文本 Custom Editor 的未保存内容由当前打开的 `TextDocument` 提供；Table 的工作区索引以已保存的物理载体为准，Table 编辑器内部仍使用自己的未保存语义快照完成编辑与引用选择。大工程后续可把宿主刷新改为按 Document Type 和文件增量更新，但不得改变 Core 索引结果、稳定排序或语义校验来源。
+当前实现建立按 Project、Document Type、Catalog 依赖和逻辑物理来源键控的不可变语义快照。插件激活时完整建立基线；Project、Catalog 或匹配文件保存、创建和删除后重新发现来源，但只对依赖键变化的逻辑文档运行正式 Parser/Validator，其他单元直接复用。CSV 分表按完整物理文件族作为一个逻辑单元。Reference Service 直接消费同一 Project Snapshot，单遍生成引用诊断和解析结果，不再为索引刷新重复扫描 Project。文本 Custom Editor 的已保存版本进入索引；Table Custom Editor 的未保存语义作为 Reference Picker 临时覆盖层，不改写已提交索引。取消、事件合并、进度和陈旧 generation 丢弃的完整契约见 [`WorkspaceIndexPerformance.md`](WorkspaceIndexPerformance.md)。
 
 ## 3. 浏览树
 

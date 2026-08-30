@@ -1,4 +1,12 @@
-import type { JsonValue, ReferenceCandidate, ReferenceProvider } from "@visualbridge/core";
+import {
+  DEFAULT_REFERENCE_SNAPSHOT_DEPENDENCY_KEY,
+  normalizeReferenceQuery,
+  paginateReferenceCandidates,
+  type JsonValue,
+  type ReferenceCandidate,
+  type ReferenceProvider,
+  type ReferenceSearchPageRequest,
+} from "@visualbridge/core";
 import { resolveEntityComponentType, type EntityCatalogRegistry } from "./entityCatalog";
 import type { EntityDocument } from "./entityDocument";
 
@@ -30,18 +38,33 @@ export function createEntityComponentReferenceProvider(
     candidates.set(target.documentTypeId, loading);
     return loading;
   };
+  const searchPage = async (request: ReferenceSearchPageRequest) => {
+    const target = readTarget(request.target);
+    const terms = normalizeReferenceQuery(request.query).split(" ").filter(Boolean);
+    const filtered = target === undefined ? [] : (await loadCandidates(target)).filter((candidate) => {
+      const text = `${candidate.title}\n${candidate.description ?? ""}\n${candidate.value}`.toLowerCase();
+      return terms.every((term) => text.includes(term));
+    });
+    return paginateReferenceCandidates({
+      kind: ENTITY_COMPONENT_REFERENCE_KIND,
+      target: request.target,
+      query: request.query,
+      limit: request.limit,
+      snapshotDependencyKey: request.snapshotDependencyKey,
+      candidates: filtered,
+      ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+    });
+  };
   return {
     kind: ENTITY_COMPONENT_REFERENCE_KIND,
     validateTarget: validateEntityComponentReferenceTarget,
     async search(request) {
-      const target = readTarget(request.target);
-      if (target === undefined) return [];
-      const terms = request.query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
-      return (await loadCandidates(target)).filter((candidate) => {
-        const text = `${candidate.title}\n${candidate.description ?? ""}\n${candidate.value}`.toLocaleLowerCase();
-        return terms.every((term) => text.includes(term));
-      }).slice(0, request.limit);
+      return (await searchPage({
+        ...request,
+        snapshotDependencyKey: DEFAULT_REFERENCE_SNAPSHOT_DEPENDENCY_KEY,
+      })).candidates;
     },
+    searchPage,
     async resolve(request) {
       const target = readTarget(request.target);
       if (target === undefined || typeof request.value !== "string") return [];

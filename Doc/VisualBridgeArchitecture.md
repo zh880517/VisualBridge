@@ -224,7 +224,7 @@ VisualBridge Project File 不保存编辑器窗口状态、连接端口、当前
   -> 监听文件变化
 ```
 
-工程索引的宿主实现允许按规模选择概要扫描或完整语义快照，但索引结果必须使用各 Document Type 既有 Parser、Catalog Registry、Validator 和 Reference Collector，不允许另建简化语义。当前 VS Code Document Browser V1 在激活、Project 变化和匹配文件保存或增删后建立四类文档的完整语义快照，用于错误和引用入口；它不会在每次打开文档时重扫。后续大工程可改为按 Document Type 和文件增量刷新，但不得改变稳定排序、诊断和引用结果。
+工程索引使用各 Document Type 既有 Parser、Catalog Registry、Validator 和 Reference Collector，不建立简化语义。当前 VS Code Host 在激活时建立四类文档基线，随后按 Project、Document Type、Catalog 依赖和逻辑物理来源增量复用不可变语义单元；Reference Service 消费同一 Project Snapshot。刷新支持事件合并、取消、进度与陈旧 generation 丢弃，增量与强制完整重建必须产生相同稳定排序、诊断和引用结果。完整契约见 [`WorkspaceIndexPerformance.md`](WorkspaceIndexPerformance.md)。
 
 项目级重构同样建立在语义索引和 Reference Provider 之上。当前支持唯一解析的 `document`、`entity.component`、`graph.element` 和 `table.row`：Core 生成按完整目标位置匹配的确定性影响计划，各 Document Type 通过正式语义变换、Validator 和 Serializer 生成修改，VS Code 与 MCP Host 使用源哈希、临时载体和 rollback 副本提交多文件事务。不得退化为跨工程文本替换。完整约束见 `ProjectRefactoring.md`。
 
@@ -577,7 +577,7 @@ Unity Adapter
 
 ### 项目 Provider
 
-项目 Provider 作为独立进程运行，通过固定的 NDJSON JSON-RPC 2.0 V1 协议与基础插件通信。Provider V1 只提供：
+项目 Provider 作为独立进程运行，通过固定的 NDJSON JSON-RPC 2.0 V2 协议与基础插件通信。Provider V2 只提供：
 
 - Reference Provider。
 - 自定义 Validator。
@@ -648,7 +648,7 @@ AI Host
 
 当前已落地的 `Tools/VisualBridgeMcp` V2 是仅面向本地 Authoring Project 的 stdio 入口。它从进程工作目录或 `VISUALBRIDGE_WORKSPACE` 环境变量确定发现根目录，只保留 Project、Catalog、Document、Apply Operations、Document Lifecycle、Reference 和 Refactor 七个稳定工具；旧的 Graph、Entity、Structured、Table 专用工具不保留兼容别名。除 Project 发现外，请求必须显式带回 `projectFile`、`documentTypeId` 与 `editor`，但最终 Adapter 仍由 Project Registry 解析出的 `DocumentType.editor` 决定，调用方不能借 `editor` 绕过文件归属或自定义扩展名规则。
 
-Core 定义宿主无关的 `SemanticDocumentAdapter`、`DocumentCodec` 与 `CatalogAdapter` 契约，四个 Built-in 包只组合各自既有 Parser、Catalog Registry、Validator、Operation、Reference Collector 和 Serializer。MCP Host 的 Document Adapter Registry 负责路由，文件系统、安全路径、锁、Hash 和持久化仍留在 Host；Table 的 CSV family 与 XLSX 保持多来源/二进制 Codec，不伪装成单文本文件。MCP 支持按来源 `baseHash` 原子执行普通 Operation，并按完整依赖清单预览和提交 Document Lifecycle 与项目级引用重构。Project Provider V1 可在启动时授权后提供自定义 Reference 和 Validator，但不提供写能力。当前不提供独立 CLI，不连接 Unity，也不包含 Runtime 或 Debug 能力。具体工具、结果信封与写入流程见 `VisualBridgeMcp.md`。
+Core 定义宿主无关的 `SemanticDocumentAdapter`、`DocumentCodec` 与 `CatalogAdapter` 契约，四个 Built-in 包只组合各自既有 Parser、Catalog Registry、Validator、Operation、Reference Collector 和 Serializer。MCP Host 的 Document Adapter Registry 负责路由，文件系统、安全路径、锁、Hash 和持久化仍留在 Host；Table 的 CSV family 与 XLSX 保持多来源/二进制 Codec，不伪装成单文本文件。MCP 支持按来源 `baseHash` 原子执行普通 Operation，并按完整依赖清单预览和提交 Document Lifecycle 与项目级引用重构。Project Provider V2 可在启动时授权后提供自定义 Reference 和 Validator，但不提供写能力。当前不提供独立 CLI，不连接 Unity，也不包含 Runtime 或 Debug 能力。具体工具、结果信封与写入流程见 `VisualBridgeMcp.md`。
 
 ### MCP 能力边界
 
@@ -855,7 +855,7 @@ VS Code 宿主边界使用官方 `@vscode/test-electron` 在最低支持版本 `
 ### 阶段三：Catalog、Reference 与项目扩展
 
 - 完成 Unity 接入前的 Authoring / Catalog 交接契约、Catalog Registry、过期状态和只读 Catalog Browser；此阶段使用已提交固定 Catalog，不实现 Unity 生成器。
-- 已落地 Reference Service、通用 Reference Picker、反向关系、项目重构和 Project Provider V1。
+- 已落地 Reference Service、通用 Reference Picker、反向关系、项目重构和 Project Provider V2。
 - 已落地 Project Provider 的独立 `.mjs` 进程、重启、诊断、Workspace Trust 与 MCP allowlist 边界。
 - Project Settings、只读 Catalog Browser 和 Catalog 来源 Hash/过期状态契约已经完成；下一步处理大工程增量索引。
 
@@ -921,7 +921,7 @@ Domain Reload 会中断连接。Unity Bridge 重新登记实例，VS Code 和 MC
 
 ### 大型工程性能
 
-索引语义必须来自正式 Parser、Catalog Registry、Validator 和 Reference Collector。Document Browser V1 在激活、Project 变化和匹配源保存或增删后重建完整语义快照，不因每次文件打开或键盘输入重建；大工程后续按 Document Type 和单文件增量刷新。Provider 和 Webview 不因无关文件变化重建全部工程状态。
+索引语义来自正式 Parser、Catalog Registry、Validator 和 Reference Collector。Document Browser 已使用按 Project、Document Type、Catalog 与逻辑物理来源依赖键的不可变增量快照：单文件变化只重跑对应语义单元，Catalog 变化重跑绑定类型，include/exclude 外事件不增加 generation。Reference 与 Index 共享快照，Provider 结果按依赖键缓存并支持取消，Table Record DOM 使用有稳定上限的虚拟化窗口。确定性生成器提供数千 Document/数万 Row 输入；正确性断言可失败 CI，耗时与内存仅生成报告。详见 [`WorkspaceIndexPerformance.md`](WorkspaceIndexPerformance.md)。
 
 ## 已确定的架构决策
 
@@ -944,7 +944,7 @@ Domain Reload 会中断连接。Unity Bridge 重新登记实例，VS Code 和 MC
 - VS Code 和 MCP 共享 VisualBridgeCore。
 - MCP 是 AI 的唯一交互 API。
 - stdio MCP Server 由 AI Host 按会话启动。
-- Project Provider V1 固定运行 Project 声明的构建后 `.mjs` 入口，不直接执行 `.ts`；当前 MCP V2 使用 Node.js `>=20` 运行已构建的 `Tools/VisualBridgeMcp/dist/server.js`。
+- Project Provider V2 固定运行 Project 声明的构建后 `.mjs` 入口，不直接执行 `.ts`；当前 MCP V2 使用 Node.js `>=20` 运行已构建的 `Tools/VisualBridgeMcp/dist/server.js`。
 - 项目 `.ts` 不直接加载到 VS Code Extension Host。
 - 自定义 Webview TypeScript/TSX 仍需要构建为 JavaScript/CSS。
 - 内置 Graph Canvas 使用 React 与 React Flow；React Flow 的节点和连线数据由 Graph Document 派生，用户交互必须转换为 Graph Operation 后才能写入源文档。
@@ -962,12 +962,12 @@ Domain Reload 会中断连接。Unity Bridge 重新登记实例，VS Code 和 MC
 
 ## 留待实施阶段确定
 
-Graph V3、Graph Catalog V4、Entity/Structured/Table V1、Project V1、Project Provider V1 和 MCP V2 已由各自正式文档定义当前 Authoring 契约。以下条目指跨语言 Protocol 冻结、Unity/发布集成或尚未落地的扩展，不表示现有格式与工具字段未定义：
+Graph V3、Graph Catalog V4、Entity/Structured/Table V1、Project V1、Project Provider V2 和 MCP V2 已由各自正式文档定义当前 Authoring 契约。以下条目指跨语言 Protocol 冻结、Unity/发布集成或尚未落地的扩展，不表示现有格式与工具字段未定义：
 
 - 已落地 Document、Catalog、Project、Operation、Diagnostic、Reference 和 MCP Schema 的跨语言 Protocol 表达及最终版本联动。
 - 新类型的稳定 ID 生成、alias 迁移与旧数据导入策略；当前内置类型的稳定 ID/alias 规则保持由各领域文档定义。
 - Structured Config 和 Table 载体进入 Unity Import/Compile 后的跨语言冻结；当前 JSON/CSV/XLSX Authoring 格式保持有效。
-- 未来 Unity/DAP 协议的错误码、诊断位置和生成契约；当前 Provider JSON-RPC V1、MCP V2 Operation 与错误信封已经固定。
+- 未来 Unity/DAP 协议的错误码、诊断位置和生成契约；当前 Provider JSON-RPC V2、MCP V2 Operation 与错误信封已经固定。
 - 可选 Provider SDK 的发布形态；当前 Provider 直接面向 `ProjectProvider.md` 与 JSON Schema，入口/Node/依赖策略已经固定。
 - Entity / Form 之外的 Webview UI SDK、组件模型、隔离和热重载方式。
 - Unity Catalog Generator、Importer 和 Compiler API。

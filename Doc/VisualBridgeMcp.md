@@ -12,7 +12,7 @@
 - 通过一个统一入口批量执行 GraphOperation、EntityOperation、StructuredOperation 或 TableOperation。
 - 搜索、解析稳定引用，以及预览和提交项目级引用重构。
 - 通过统一 Lifecycle 入口预览或提交 Document 创建、复制、移动和安全删除。
-- 在启动时显式授权后，复用 Project Provider V1 的自定义 Reference 与 Validator。
+- 在启动时显式授权后，复用 Project Provider V2 的自定义 Reference 与 Validator。
 - 使用 `baseHash`、锁、临时载体、替换前复查、原子替换和冲突拒绝保护写入。
 
 当前没有独立 CLI，不连接 Unity，也不包含 Exporter、Importer、Runtime、Debug、DAP 或 WebSocket 功能。Project Provider 默认禁用，只有 Server 启动环境显式启用并给出规范化绝对入口 allowlist 后才运行；Tool 请求不能提升权限。
@@ -321,7 +321,7 @@ Document Delete 的 `plan.ownedIdentities` 包含整个 Document；`entity.compo
 }
 ```
 
-Cursor V1 绑定原始请求中的 Tool、action、Project、Document Type、editor、path、kind、query 与 selector，不绑定页面大小，并用 checksum 拒绝意外修改。跨查询 Cursor 返回 `cursor.queryMismatch`，损坏、checksum 不匹配或未知版本返回 `cursor.invalid`。
+普通 Project/Catalog 查询的 Cursor V1 绑定原始请求中的 Tool、action、Project、Document Type、editor、path、kind、query 与 selector，不绑定页面大小，并用 checksum 拒绝意外修改。Table Record/Catalog 查询使用快照绑定 Cursor，同时绑定有序物理来源 Manifest 和 Catalog 内容 Hash；Reference 查询使用 Core Reference Cursor，并绑定 Project Semantic Snapshot 依赖键。Project Provider V2 的 Reference Cursor 还封装 Provider Host 实例、入口 Hash、进程 generation、Provider continuation 与 Provider Snapshot Hash，所以可连续读取超过 200 条候选而不会在 Host 本地截断。Provider continuation 最多 16,384 个字符；MCP 外层 Reference Cursor 的输入上限为 262,144 个字符，以容纳 JSON 与 base64url 封装后的合法 continuation，调用方仍只能原样回传。跨查询 Cursor 返回 `cursor.queryMismatch`，损坏、checksum 不匹配或未知版本返回 `cursor.invalid`，来源、语义快照、Provider 入口/进程或候选快照改变返回 `cursor.snapshotChanged`。
 
 ## Catalog 契约
 
@@ -543,7 +543,7 @@ Lifecycle 与普通 Operation 的业务状态：
 
 ## Reference 与 Refactor
 
-`visualbridge_references` 始终提供 `document`、`entity.component`、`graph.element` 和 `table.row` 内置 Provider，并在 MCP 启动时授权后注册 Project File 声明的自定义 kind。所有 Provider 都区分 `resolved`、`missing`、`ambiguous` 与 `providerUnavailable`；目标使用稳定语义 selector，路径和显示名只出现在返回 Location。
+`visualbridge_references` 始终提供 `document`、`entity.component`、`graph.element` 和 `table.row` 内置 Provider，并在 MCP 启动时授权后注册 Project File 声明的自定义 kind。所有 Provider 都区分 `resolved`、`missing`、`ambiguous` 与 `providerUnavailable`；目标使用稳定语义 selector，路径和显示名只出现在返回 Location。`search` 返回可选 `nextCursor`；后续页必须原样传回 `cursor`。Cursor 绑定 kind、规范 target、规范 query、严格值类型候选位置，以及由 Project File、Catalog 和 Authoring 来源内容组成的物理 Manifest 与本次实际解析得到的精确语义快照。内置 Provider 只消费已捕获语义对象，不会在生成候选时二次读取可能已经改变的磁盘来源。
 
 | kind | target |
 | --- | --- |
@@ -571,7 +571,7 @@ Project Provider 授权只从启动环境读取：`VISUALBRIDGE_PROVIDER_ENABLED
 }
 ```
 
-把 `action` 改为 `resolve` 并传 `value` 可精确解析一个稳定值。
+把 `action` 改为 `resolve` 并传 `value` 可精确解析一个稳定值；`resolve` 不接受 Cursor。搜索返回 `nextCursor` 时，下一请求保持其他字段不变并把它作为 `cursor` 传入。`cursor.queryMismatch` 或 `cursor.snapshotChanged` 都要求从无 Cursor 的第一页重新开始。
 
 `visualbridge_refactor_reference.preview` 唯一解析旧目标，构建确定性影响计划，并返回 `previewHash` 与完整 `baseHashes`。`apply` 必须原样带回两者；Host 在 Project 锁内重建计划，Project、Catalog、Document 或 CSV family 任一依赖变化都会拒绝。Entity Component、Graph Element、Table Row 和 Document ID 都通过正式领域变换，不做项目级字符串替换。
 

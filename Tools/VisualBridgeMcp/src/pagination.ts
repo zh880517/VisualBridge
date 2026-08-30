@@ -11,9 +11,11 @@ export function pageItems<T>(
   cursor: string | undefined,
   limit: number,
   scope: unknown,
+  snapshot?: unknown,
 ): Page<T> {
   const scopeHash = hashScope(scope);
-  const offset = decodeCursor(cursor, scopeHash);
+  const snapshotHash = snapshot === undefined ? undefined : hashScope(snapshot);
+  const offset = decodeCursor(cursor, scopeHash, snapshotHash);
   if (offset > items.length) {
     throw new VisualBridgeMcpError("cursor.outOfRange", "The pagination cursor is outside the current result set.");
   }
@@ -21,11 +23,15 @@ export function pageItems<T>(
   const nextOffset = offset + page.length;
   return {
     items: page,
-    ...(nextOffset < items.length ? { nextCursor: encodeCursor(nextOffset, scopeHash) } : {}),
+    ...(nextOffset < items.length ? { nextCursor: encodeCursor(nextOffset, scopeHash, snapshotHash) } : {}),
   };
 }
 
-function decodeCursor(cursor: string | undefined, scopeHash: string): number {
+function decodeCursor(
+  cursor: string | undefined,
+  scopeHash: string,
+  snapshotHash: string | undefined,
+): number {
   if (cursor === undefined) {
     return 0;
   }
@@ -38,7 +44,10 @@ function decodeCursor(cursor: string | undefined, scopeHash: string): number {
       readonly scopeHash?: unknown;
       readonly checksum?: unknown;
     };
-    if (payload.version !== 1) throw new Error("unsupported cursor version");
+    if ((value as { readonly v?: unknown }).v === 2) {
+      return decodeSnapshotCursor(value, scopeHash, snapshotHash);
+    }
+    if (payload.version !== 1 || snapshotHash !== undefined) throw new Error("unsupported cursor version");
     if (payload.scopeHash !== scopeHash) {
       throw new VisualBridgeMcpError(
         "cursor.queryMismatch",
@@ -57,7 +66,18 @@ function decodeCursor(cursor: string | undefined, scopeHash: string): number {
   }
 }
 
-function encodeCursor(offset: number, scopeHash: string): string {
+function encodeCursor(offset: number, scopeHash: string, snapshotHash: string | undefined): string {
+  if (snapshotHash !== undefined) {
+    const queryHash = compactHash(scopeHash);
+    const currentSnapshotHash = compactHash(snapshotHash);
+    return Buffer.from(JSON.stringify({
+      v: 2,
+      o: offset,
+      q: queryHash,
+      s: currentSnapshotHash,
+      c: snapshotCursorChecksum(offset, queryHash, currentSnapshotHash),
+    }), "utf8").toString("base64url");
+  }
   return Buffer.from(JSON.stringify({
     version: 1,
     offset,
@@ -66,8 +86,54 @@ function encodeCursor(offset: number, scopeHash: string): string {
   }), "utf8").toString("base64url");
 }
 
+function decodeSnapshotCursor(
+  value: object,
+  scopeHash: string,
+  snapshotHash: string | undefined,
+): number {
+  const payload = value as {
+    readonly v?: unknown;
+    readonly o?: unknown;
+    readonly q?: unknown;
+    readonly s?: unknown;
+    readonly c?: unknown;
+  };
+  if (payload.v !== 2 || snapshotHash === undefined) throw new Error("invalid snapshot cursor payload");
+  const queryHash = compactHash(scopeHash);
+  if (payload.q !== queryHash) {
+    throw new VisualBridgeMcpError(
+      "cursor.queryMismatch",
+      "The pagination cursor does not belong to this query.",
+    );
+  }
+  const currentSnapshotHash = compactHash(snapshotHash);
+  if (payload.s !== currentSnapshotHash) {
+    throw new VisualBridgeMcpError(
+      "cursor.snapshotChanged",
+      "The paginated data snapshot changed; restart the query without a cursor.",
+    );
+  }
+  const offset = payload.o;
+  if (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0
+    || payload.c !== snapshotCursorChecksum(offset, queryHash, currentSnapshotHash)) {
+    throw new Error("invalid snapshot cursor checksum");
+  }
+  return offset;
+}
+
 function cursorChecksum(offset: number, scopeHash: string): string {
   return createHash("sha256").update(`visualbridge-cursor-v1\0${offset}\0${scopeHash}`).digest("hex");
+}
+
+function snapshotCursorChecksum(offset: number, queryHash: string, snapshotHash: string): string {
+  return createHash("sha256")
+    .update(`visualbridge-cursor-v2\0${offset}\0${queryHash}\0${snapshotHash}`)
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function compactHash(value: string): string {
+  return value.slice(0, 32);
 }
 
 function hashScope(scope: unknown): string {

@@ -12,6 +12,8 @@ const VALID_MODES = new Set([
   "timeout",
   "crash",
   "crashThenHealthy",
+  "crashOnContinuation",
+  "largeContinuation",
   "stderr",
   "rewriteAuthoring",
   "rewriteAuthoringInvalidResult",

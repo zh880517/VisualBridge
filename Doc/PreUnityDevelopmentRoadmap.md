@@ -76,13 +76,13 @@
 - 同一生命周期请求从 VS Code 与 MCP 得到相同预览、冲突结果和确定性输出。
 - 不通过字符串替换、文件后缀猜测或直接修改未知 JSON 实现。
 
-### VB-PU-04 Project Provider V1 — `complete`
+### VB-PU-04 Project Provider V2 — `complete`
 
 范围：
 
 - 重新设计 Project File 的显式 Provider 声明；当前开发阶段不承担旧格式兼容。
 - Provider 作为独立 stdio JSON-RPC 进程运行，不加载到 Extension Host。
-- V1 只开放自定义 Reference Provider 和 Validator，返回候选、解析结果和诊断；不暴露 Operation 能力。只有出现第二个真实修改用例并证明共享边界后才设计 Provider Operation。
+- V2 只开放自定义 Reference Provider 和 Validator，返回候选、解析结果、稳定分页和诊断；不暴露 Operation 能力。只有出现第二个真实修改用例并证明共享边界后才设计 Provider Operation。
 - 实现初始化、能力协商、Project 变化、关闭、超时、崩溃隔离、退避重启和结构化日志。
 - 仅在 Workspace Trust 允许时启动，入口和参数按数组传递，不拼接 Shell 命令。
 - VS Code 与 MCP 使用相同 Provider 契约和相同 Reference / Validation 结果。
@@ -113,7 +113,7 @@
 - Catalog 冲突与过期状态能在 Browser 和 Problems 中定位。
 - Catalog Browser 不会改写生成或外部维护的 Catalog 文件。
 
-### VB-PU-06 大工程性能与编辑体验 — `in_progress`
+### VB-PU-06 大工程性能与编辑体验 — `complete`
 
 范围：
 
@@ -131,7 +131,7 @@
 - 大表滚动、搜索、选择和字段编辑具有稳定 DOM 节点上限，不随总记录数线性创建节点。
 - Provider 缓存失效与取消有确定性断言；耗时和内存只生成基准报告，不作为跨机器固定阈值的 CI 失败条件。
 
-### VB-PU-07 协议冻结、可靠性与发布门槛 — `pending`
+### VB-PU-07 协议冻结、可靠性与发布门槛 — `in_progress`
 
 范围：
 

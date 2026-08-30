@@ -1,10 +1,14 @@
 import {
   collectFieldReferences,
+  DEFAULT_REFERENCE_SNAPSHOT_DEPENDENCY_KEY,
+  normalizeReferenceQuery,
+  paginateReferenceCandidates,
   type DocumentDiagnostic,
   type JsonValue,
   type ReferenceCandidate,
   type ReferenceOccurrence,
   type ReferenceProvider,
+  type ReferenceSearchPageRequest,
 } from "@visualbridge/core";
 import {
   formatTableRowDisplayName,
@@ -46,21 +50,33 @@ export function createTableRowReferenceProvider(
     candidates.set(key, loading);
     return loading;
   };
+  const searchPage = async (request: ReferenceSearchPageRequest) => {
+    const target = readTarget(request.target);
+    const terms = normalizeReferenceQuery(request.query).split(" ").filter(Boolean);
+    const filtered = target === undefined ? [] : (await loadCandidates(target)).filter((candidate) => {
+      const searchText = `${candidate.title}\n${candidate.description ?? ""}\n${String(candidate.value)}`.toLowerCase();
+      return terms.every((term) => searchText.includes(term));
+    });
+    return paginateReferenceCandidates({
+      kind: TABLE_ROW_REFERENCE_KIND,
+      target: request.target,
+      query: request.query,
+      limit: request.limit,
+      snapshotDependencyKey: request.snapshotDependencyKey,
+      candidates: filtered,
+      ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+    });
+  };
   return {
     kind: TABLE_ROW_REFERENCE_KIND,
     validateTarget: validateTableRowReferenceTarget,
     async search(request) {
-      const target = readTarget(request.target);
-      if (target === undefined) {
-        return [];
-      }
-      const terms = request.query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
-      const targetCandidates = await loadCandidates(target);
-      return targetCandidates.filter((candidate) => {
-        const searchText = `${candidate.title}\n${candidate.description ?? ""}\n${String(candidate.value)}`.toLocaleLowerCase();
-        return terms.every((term) => searchText.includes(term));
-      }).slice(0, request.limit);
+      return (await searchPage({
+        ...request,
+        snapshotDependencyKey: DEFAULT_REFERENCE_SNAPSHOT_DEPENDENCY_KEY,
+      })).candidates;
     },
+    searchPage,
     async resolve(request) {
       const target = readTarget(request.target);
       if (target === undefined) {

@@ -1,8 +1,8 @@
-# Project Provider V1
+# Project Provider V2
 
-Project Provider V1 允许工程在不修改 VisualBridge Core 的情况下增加自定义 Reference kind 和项目校验。Provider 是由 Project File 显式声明、由共享 Node Host 作为独立进程运行的工程代码；VS Code 与 MCP 复用同一协议、候选约束、诊断约束和源文件保护逻辑。
+Project Provider V2 允许工程在不修改 VisualBridge Core 的情况下增加自定义 Reference kind 和项目校验。Provider 是由 Project File 显式声明、由共享 Node Host 作为独立进程运行的工程代码；VS Code 与 MCP 复用同一协议、候选约束、诊断约束和源文件保护逻辑。
 
-V1 不提供 Document Operation、导入、转换、通用命令、Unity Runtime 或 Debug 能力。Provider 返回语义结果，不能通过协议写入 Authoring 文件。完整 JSON-RPC 结构由 [`visualbridge-project-provider.schema.json`](../Protocol/Schema/visualbridge-project-provider.schema.json) 固定，Project 声明由 [`visualbridge-project.schema.json`](../Protocol/Schema/visualbridge-project.schema.json) 固定。
+V2 不提供 Document Operation、导入、转换、通用命令、Unity Runtime 或 Debug 能力。Provider 返回语义结果，不能通过协议写入 Authoring 文件。完整 JSON-RPC 结构由 [`visualbridge-project-provider.schema.json`](../Protocol/Schema/visualbridge-project-provider.schema.json) 固定，Project 声明由 [`visualbridge-project.schema.json`](../Protocol/Schema/visualbridge-project.schema.json) 固定。
 
 ## 1. 架构与职责
 
@@ -72,15 +72,19 @@ flowchart LR
 
 | 方向 | Method | 用途 | 成功结果 |
 | --- | --- | --- | --- |
-| Host → Provider | `initialize` | 协商 `protocolVersion: 1`、Provider ID、Project ID/Hash | `{ "protocolVersion": 1 }` |
+| Host → Provider | `initialize` | 协商 `protocolVersion: 2`、Provider ID、Project ID/Hash | `{ "protocolVersion": 2 }` |
 | Host → Provider | `capabilities` | 获取实际启用能力 | `{ "capabilities": ... }` |
 | Host → Provider | `reference/validateTarget` | 校验 kind 的结构化 target | `valid` / `invalidTarget` / `providerUnavailable` |
-| Host → Provider | `reference/search` | 按 kind、target、query、limit 搜索 | `ok` candidates / `invalidTarget` / `providerUnavailable` |
+| Host → Provider | `reference/search` | 按 kind、target、query、limit 和可选 continuation 搜索 | `ok` page / cursor 状态 / `invalidTarget` / `providerUnavailable` |
 | Host → Provider | `reference/resolve` | 按严格 string/number value 解析 | `resolved` / `missing` / `ambiguous` / 失败状态 |
 | Host → Provider | `validator/diagnostics` | 校验宿主解析的语义快照 | `ok` diagnostics / `providerUnavailable` |
 | Host → Provider | `shutdown` | 请求正常退出 | `{}` |
 | Host → Provider | `projectChanged` | 无 `id` 通知 Project/Document Set 版本变化 | 无响应 |
 | Host → Provider | `$/cancelRequest` | 请求超时或调用方取消后通知对应 `id` | 无响应 |
+
+`reference/search` 第一页不传 `cursor`/`snapshotHash`；续页必须同时原样传回 Provider 上一页给出的不透明 `nextCursor` 和稳定 SHA-256 `snapshotHash`。成功结果始终包含 `snapshotHash`，有下一页时才包含 `nextCursor`；单页最多 200 条且不能超过请求 `limit`，Provider continuation 最多 16,384 个字符。Provider 必须对同一 Snapshot 使用统一稳定排序，续页严格位于上一页边界之后。损坏 continuation、换 query/target、候选 Snapshot 改变分别返回 `cursor.invalid`、`cursor.queryMismatch`、`cursor.snapshotChanged`，不能静默从第一页重放。
+
+Host 再把 Provider continuation 包进 Core 外层 Cursor，并绑定 Provider ID、Host 实例、入口代码 SHA-256、进程 generation、Provider `snapshotHash` 和 Project Semantic Snapshot。Provider 入口变化、Host 重建、进程重启或候选变化后，旧 Cursor 都明确返回 `cursor.snapshotChanged`。因此即使 Project/Catalog/Document Manifest 没变化，Provider 私有数据变化也不能继续消费旧分页。
 
 Reference Candidate 必须保持请求的 `kind` 和规范化 `target`。Resolve Candidate 的 `value` 还必须与请求值类型和值完全相同。可选 `location` 必须属于当前 Project，并且 `documentTypeId`/`path` 必须解析为当前 Project 声明的 Authoring Document。搜索返回数不能超过 Host 传入的 `limit`。
 
@@ -100,7 +104,7 @@ sequenceDiagram
   alt process is stopped or restart delay elapsed
     Host->>Provider: spawn process (shell false)
     Host->>Provider: initialize
-    Provider-->>Host: protocolVersion 1
+    Provider-->>Host: protocolVersion 2
     Host->>Provider: capabilities
     Provider-->>Host: declared capability subset
   end
@@ -117,6 +121,10 @@ sequenceDiagram
 ```
 
 超时或 `AbortSignal` 取消时，Host 先发送 `$/cancelRequest`；Provider 未在宽限期内结束请求时，Host 终止进程。异常退出进入有上限的指数退避，连续失败超过上限进入 `quarantined`。一次稳定运行可以清零重启计数。Project 定义变化会释放旧 Host；普通 Authoring source 变化发送带递增 `revision` 和 `documentSetHash` 的 `projectChanged` 通知。
+
+Workspace Validator 只缓存一次完整成功的 `validator/diagnostics` 结果。每次查询即使存在相同 Document 缓存，也必须先重新检查当前 Workspace Trust、Project 是否仍有 Provider 声明、Project Root 是否仍为本地 `file` scheme，并读取当前 Project File hash 取得仍存活的 Host generation；未授权时立即清除该 Project 缓存并释放旧 Host，不能从缓存返回诊断。缓存键包含 Project URI、当前 Project File hash、Host 实例 generation、各 Provider 进程的 generation/state、Project Semantic Snapshot 依赖键、Document Type、规范路径和 `sourceHash`。首次 RPC 可能把进程从 stopped 推进为 ready，因此成功结果按 RPC 完成后的 generation 写入。Provider 定义、Host 重建或进程重启、Project/Catalog/Document 依赖、Document 内容任一变化都不能命中旧结果。
+
+缓存值是冻结的诊断快照。只有 `unavailableProviderIds` 为空、没有 `externalModification` 且调用方 `AbortSignal` 未取消时才允许写入；取消、timeout/crash/quarantine、Provider 返回 unavailable、协议违规和外部修改诊断只返回当前调用，且同时使该 Project 的既有成功缓存失效。Project/Authoring source 事件、Trust 授权变化和 Host 重建都会推进缓存 revision；一次 RPC 即使随后成功，只要它启动后的 revision 已失效，就只能把结果返回给原调用方，不能回填缓存。Reference 请求同样贯通 `AbortSignal`，分页 Cursor 绑定 Provider/Project Snapshot 依赖键。首次真实 RPC 仍执行请求前后的物理 Manifest 检查，缓存层不绕过 Host 的能力、诊断作用域或源文件保护边界。详见 [`WorkspaceIndexPerformance.md`](WorkspaceIndexPerformance.md)。
 
 ## 5. Trust、授权与源文件保护
 
@@ -146,7 +154,7 @@ node .\Tools\VisualBridgeMcp\dist\server.js
 1. 先为业务选择稳定且 Project 内唯一的 Reference kind，或选择要校验的已有 Document Type；不要复用文件后缀作为 kind。
 2. 实现一个读取 stdin、逐行解析 JSON、按 `id` 回写单行 JSON 的 `.mjs` 进程。可参考 [`sample-provider.mjs`](../TestData/ProviderSemanticProject/Providers/sample-provider.mjs)。
 3. `initialize` 必须确认协议版本，`capabilities` 只返回 Project 声明的子集。未知 method 返回标准 `methodNotFound`，业务暂不可用返回 `providerUnavailable`。
-4. Reference target 必须是稳定结构化 JSON；候选 value 只用 string/number 稳定键，显示名放 `title`，导航信息放 `location`。
+4. Reference target 必须是稳定结构化 JSON；候选 value 只用 string/number 稳定键，显示名放 `title`，导航信息放 `location`。搜索要实现 V2 continuation/snapshot 配对、稳定排序和三个固定 cursor business status。
 5. Validator 只读取请求的 `content`，不要自行按扩展名重读或修改文件。诊断 `path` 使用领域语义路径，`documentPath` 必须原样来自请求快照。
 6. stdout 仅用于协议，调试输出写 stderr。处理 `$/cancelRequest`，收到 `shutdown` 后尽快返回 `{}` 并退出。
 7. 在完整 Project File 的 `providers` 数组声明入口和能力，运行 Core/Node Host/MCP/VS Code Host 自动化验证。
@@ -181,4 +189,4 @@ MCP 使用步骤：
 
 固定自动化覆盖 Project 声明、协议 Parser/Schema、能力越权、参数无 Shell 解释、超时/取消、崩溃/退避、非法 JSON/结果、stderr、候选与诊断越界、源文件新增/覆盖、外部修改优先级、VS Code Trusted/Restricted Host，以及 MCP 默认禁用、显式 allowlist、自定义 Reference/Validator 和直接写入拒绝。
 
-当前不实现 Unity Catalog Exporter、Importer、Runtime、Debug、DAP、Provider Operation、自定义 Webview Module 加载或独立 VisualBridge CLI。这些能力不能借 Provider V1 绕过现有 Core Parser、Operation、Lifecycle、Project Transaction 和 `baseHash` 规则。
+当前不实现 Unity Catalog Exporter、Importer、Runtime、Debug、DAP、Provider Operation、自定义 Webview Module 加载或独立 VisualBridge CLI。这些能力不能借 Provider V2 绕过现有 Core Parser、Operation、Lifecycle、Project Transaction 和 `baseHash` 规则。

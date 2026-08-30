@@ -45,6 +45,7 @@
 *.tsbuildinfo
 /.playwright-cli/
 /output/playwright/
+/output/large-corpus/
 
 # Gradle cache directory
 .gradle/

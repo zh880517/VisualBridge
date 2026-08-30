@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -12,6 +13,7 @@ import {
   type ReferenceDefinition,
   type ReferenceOccurrence,
   type ReferenceResolution,
+  type ReferenceSearchCursor,
 } from "@visualbridge/core";
 import {
   createEntityComponentReferenceProvider,
@@ -52,6 +54,9 @@ import {
 import type { TableService } from "./tableService.js";
 import { loadMcpEntityRegistry } from "./entityRegistry.js";
 import type { McpProjectProviderService } from "./projectProviderService.js";
+import { referenceSemanticSnapshotDependencyKey } from "./referenceSnapshot.js";
+
+const BUILT_IN_SEMANTIC_REFERENCE_KINDS = new Set(["document", "entity.component", "graph.element"]);
 
 export class VisualBridgeReferenceService {
   public constructor(
@@ -67,19 +72,33 @@ export class VisualBridgeReferenceService {
     readonly query?: string;
     readonly value?: string | number;
     readonly limit: number;
+    readonly cursor?: string;
   }): Promise<Record<string, unknown>> {
     const project = await this.workspace.resolveProject(options.projectFile);
-    const service = await this.createProjectService(project.projectFile);
+    const service = await this.createProjectService(project.projectFile, [options.definition.kind]);
     if (options.action === "search") {
-      const result = await service.searchDetailed(options.definition, options.query ?? "", options.limit);
+      const result = await service.searchPage(
+        options.definition,
+        options.query ?? "",
+        options.limit,
+        options.cursor === undefined ? undefined : decodeReferenceSearchCursor(options.cursor),
+      );
+      if (result.status === "cursor.invalid"
+        || result.status === "cursor.queryMismatch"
+        || result.status === "cursor.snapshotChanged") {
+        throw new VisualBridgeMcpError(result.status, result.message);
+      }
       return {
         projectFile: project.projectFile,
         action: options.action,
         definition: options.definition,
         query: options.query ?? "",
         status: result.status,
-        ...(result.message === undefined ? {} : { message: result.message }),
+        ...("message" in result ? { message: result.message } : {}),
         results: result.candidates,
+        ...(result.status === "ok" && result.nextCursor !== undefined
+          ? { nextCursor: encodeReferenceSearchCursor(result.nextCursor) }
+          : {}),
       };
     }
     if (options.value === undefined) {
@@ -99,7 +118,10 @@ export class VisualBridgeReferenceService {
     projectFile: string,
     occurrences: readonly ReferenceOccurrence[],
   ): Promise<readonly DocumentDiagnostic[]> {
-    return this.createProjectService(projectFile).then((service) => service.validate(occurrences));
+    return this.createProjectService(
+      projectFile,
+      occurrences.map((occurrence) => occurrence.definition.kind),
+    ).then((service) => service.validate(occurrences));
   }
 
   public async resolve(
@@ -107,7 +129,7 @@ export class VisualBridgeReferenceService {
     definition: ReferenceDefinition,
     value: string | number,
   ): Promise<ReferenceResolution> {
-    return (await this.createProjectService(projectFile)).resolve(definition, value);
+    return (await this.createProjectService(projectFile, [definition.kind])).resolve(definition, value);
   }
 
   public async validateChange(
@@ -118,7 +140,10 @@ export class VisualBridgeReferenceService {
     readonly diagnostics: readonly DocumentDiagnostic[];
     readonly introducedErrors: readonly DocumentDiagnostic[];
   }> {
-    const service = await this.createProjectService(projectFile);
+    const service = await this.createProjectService(
+      projectFile,
+      [...before, ...after].map((occurrence) => occurrence.definition.kind),
+    );
     const baseline = diagnosticCounts(await service.validate(before));
     const diagnostics = await service.validate(after);
     const introducedErrors = diagnostics.filter((diagnostic) => {
@@ -155,21 +180,52 @@ export class VisualBridgeReferenceService {
     ));
   }
 
-  public async createProjectService(projectFile: string): Promise<ReferenceService> {
+  public async createProjectService(
+    projectFile: string,
+    requestedKinds?: readonly string[],
+  ): Promise<ReferenceService> {
     const project = await this.workspace.resolveProject(projectFile);
-    let semanticDocuments: Promise<{
+    const kinds = requestedKinds === undefined ? undefined : new Set(requestedKinds);
+    const needsSemanticDocuments = kinds === undefined
+      || [...kinds].some((kind) => BUILT_IN_SEMANTIC_REFERENCE_KINDS.has(kind));
+    const needsTableDocuments = kinds === undefined || kinds.has("table.row");
+    const semanticDocuments: {
       readonly documents: readonly DocumentReferenceDocument[];
       readonly entities: readonly EntityReferenceDocument[];
       readonly graphs: readonly GraphReferenceDocument[];
-    }> | undefined;
-    const loadSemanticDocuments = () => (semanticDocuments ??= this.loadSemanticDocuments(project.projectFile));
+    } = needsSemanticDocuments
+      ? await this.loadSemanticDocuments(project)
+      : { documents: [], entities: [], graphs: [] };
+    const tableDocuments = needsTableDocuments
+      ? await this.tables.loadReferenceDocuments(project.projectFile)
+      : [];
+    const sourceDependencyKey = await this.captureSnapshotDependencyKey(project);
+    const snapshotDependencyKey = referenceSemanticSnapshotDependencyKey(sourceDependencyKey, {
+      project: project.definition,
+      ...(kinds === undefined || kinds.has("document") ? { documents: semanticDocuments.documents } : {}),
+      ...(kinds === undefined || kinds.has("entity.component") ? { entities: semanticDocuments.entities } : {}),
+      ...(kinds === undefined || kinds.has("graph.element") ? { graphs: semanticDocuments.graphs } : {}),
+      ...(needsTableDocuments ? { tables: tableDocuments } : {}),
+    });
     return new ReferenceService([
-      createDocumentReferenceProvider(() => loadSemanticDocuments().then((loaded) => loaded.documents)),
-      createEntityComponentReferenceProvider(() => loadSemanticDocuments().then((loaded) => loaded.entities)),
-      createGraphElementReferenceProvider(() => loadSemanticDocuments().then((loaded) => loaded.graphs)),
-      createTableRowReferenceProvider(() => this.tables.loadReferenceDocuments(project.projectFile)),
+      createDocumentReferenceProvider(async () => semanticDocuments.documents),
+      createEntityComponentReferenceProvider(async () => semanticDocuments.entities),
+      createGraphElementReferenceProvider(async () => semanticDocuments.graphs),
+      createTableRowReferenceProvider(async () => tableDocuments),
       ...await this.providers?.referenceProviders(project) ?? [],
-    ]);
+    ], snapshotDependencyKey);
+  }
+
+  private async captureSnapshotDependencyKey(project: ProjectContext): Promise<string> {
+    const sourcePaths = await this.workspace.listAuthoringSourcePaths(project);
+    const manifest = await Promise.all(sourcePaths.map(async (sourcePath) => {
+      const absolutePath = await resolveExistingProjectPath(project, sourcePath);
+      return [sourcePath, hashBytes(await readFile(absolutePath))] as const;
+    }));
+    return createHash("sha256")
+      .update("visualbridge-reference-snapshot-v1\0")
+      .update(JSON.stringify(manifest))
+      .digest("hex");
   }
 
   public async buildProjectIndex(projectFile: string): Promise<readonly IndexedDocument[]> {
@@ -264,12 +320,11 @@ export class VisualBridgeReferenceService {
     return documents.sort((left, right) => documentIndexKey(left).localeCompare(documentIndexKey(right)));
   }
 
-  private async loadSemanticDocuments(projectFile: string): Promise<{
+  private async loadSemanticDocuments(project: ProjectContext): Promise<{
     readonly documents: readonly DocumentReferenceDocument[];
     readonly entities: readonly EntityReferenceDocument[];
     readonly graphs: readonly GraphReferenceDocument[];
   }> {
-    const project = await this.workspace.resolveProject(projectFile);
     const declared = await this.workspace.listDeclaredDocuments(project);
     const documents: DocumentReferenceDocument[] = [];
     const entities: EntityReferenceDocument[] = [];
@@ -464,4 +519,20 @@ function decodeUtf8(bytes: Uint8Array, sourcePath: string): string {
       `File '${sourcePath}' is not valid UTF-8: ${errorValue instanceof Error ? errorValue.message : String(errorValue)}`,
     );
   }
+}
+
+function encodeReferenceSearchCursor(cursor: ReferenceSearchCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeReferenceSearchCursor(cursor: string): ReferenceSearchCursor {
+  try {
+    return JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as ReferenceSearchCursor;
+  } catch {
+    throw new VisualBridgeMcpError("cursor.invalid", "The pagination cursor is invalid.");
+  }
+}
+
+function hashBytes(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }

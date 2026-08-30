@@ -6,8 +6,9 @@ import { isSortable, useSortable } from "@dnd-kit/react/sortable";
 import type { DocumentDiagnostic, JsonValue } from "@visualbridge/core";
 import { CommonIcon, FieldsEditor, IconButton, ListItemActions, WebviewReferenceBridge } from "@visualbridge/form-editor";
 import {
-  encodeTableCell,
+  buildTableRowSearchText,
   formatTableRowDisplayName,
+  normalizeTableSearchQuery,
   resolveTableColumn,
   resolveTableSheet,
   type TableColumnDefinition,
@@ -22,6 +23,8 @@ import {
   TABLE_REVEAL_RESULT_MESSAGE_TYPE,
   type TableRevealRequest,
 } from "../tableReveal";
+import { indexTableRecords } from "../tableRecordVirtualization";
+import { VirtualizedTableRecordViewport } from "../virtualizedTableRecordViewport";
 import "../styles.css";
 
 interface VsCodeApi {
@@ -45,6 +48,13 @@ interface TableInvalidMessage {
   readonly type: "tableInvalid";
   readonly revision: number;
   readonly diagnostics: readonly DocumentDiagnostic[];
+}
+
+interface TableRecordListEntry {
+  readonly row: TableRow;
+  readonly sourceIndex: number;
+  readonly name: string;
+  readonly searchText: string;
 }
 
 type HostMessage = TableStateMessage | TableInvalidMessage | {
@@ -154,13 +164,29 @@ function TableEditorApp(): ReactElement {
       : resolveTableSheet(state.tableType, sheet.definitionId),
     [sheet, state],
   );
-  const filteredRows = useMemo(
+  const indexedRows = useMemo<readonly TableRecordListEntry[]>(
     () => sheet === undefined || definition === undefined
       ? []
-      : sheet.rows.filter((row) => matchesQuery(row, definition, query)),
-    [definition, query, sheet],
+      : indexTableRecords(sheet.rows).map(({ record: row, sourceIndex }) => ({
+          row,
+          sourceIndex,
+          name: displayRowName(row, definition),
+          searchText: buildTableRowSearchText(row, definition),
+        })),
+    [definition, sheet],
   );
-  const selectedRow = sheet?.rows.find((row) => row.id === selectedRowId);
+  const rowsById = useMemo(
+    () => new Map(indexedRows.map((entry) => [entry.row.id, entry])),
+    [indexedRows],
+  );
+  const queryTerms = useMemo(() => normalizeTableSearchQuery(query), [query]);
+  const filteredRows = useMemo(
+    () => queryTerms.length === 0
+      ? indexedRows
+      : indexedRows.filter((entry) => queryTerms.every((term) => entry.searchText.includes(term))),
+    [indexedRows, queryTerms],
+  );
+  const selectedRow = selectedRowId === undefined ? undefined : rowsById.get(selectedRowId)?.row;
 
   useEffect(() => {
     if (sheet === undefined) {
@@ -273,30 +299,30 @@ function TableEditorApp(): ReactElement {
                   }
                 }}
               >
-                <div className="record-scroll">
-                  {filteredRows.map((row) => {
-                    const sourceIndex = sheet.rows.indexOf(row);
-                    return (
-                      <SortableRecordItem
-                        key={row.id}
-                        row={row}
-                        index={sourceIndex}
-                        active={row.id === selectedRow?.id}
-                        name={displayRowName(row, definition)}
-                        disabled={pending}
-                        dragDisabled={query.trim().length > 0}
-                        onSelect={() => setSelectedRowId(row.id)}
-                        onAdd={() => insertRowAt(sourceIndex + 1)}
-                        onDelete={() => submit([{
-                          type: "table.removeRow",
-                          sheetId: sheet.id,
-                          rowId: row.id,
-                        }])}
-                      />
-                    );
-                  })}
-                  {filteredRows.length === 0 && <p className="record-empty">没有匹配的记录</p>}
-                </div>
+                <VirtualizedTableRecordViewport
+                  items={filteredRows}
+                  getItemKey={tableRecordListEntryKey}
+                  scrollToKey={selectedRowId}
+                  ariaLabel="当前分表记录"
+                  emptyContent={<p className="record-empty">没有匹配的记录</p>}
+                  renderItem={(entry) => (
+                    <SortableRecordItem
+                      row={entry.row}
+                      index={entry.sourceIndex}
+                      active={entry.row.id === selectedRow?.id}
+                      name={entry.name}
+                      disabled={pending}
+                      dragDisabled={query.trim().length > 0}
+                      onSelect={() => setSelectedRowId(entry.row.id)}
+                      onAdd={() => insertRowAt(entry.sourceIndex + 1)}
+                      onDelete={() => submit([{
+                        type: "table.removeRow",
+                        sheetId: sheet.id,
+                        rowId: entry.row.id,
+                      }])}
+                    />
+                  )}
+                />
               </DragDropProvider>
             </aside>
             <section className="record-editor">
@@ -537,32 +563,13 @@ function rowsForDefinition(document: TableDocument, definition: TableSheetDefini
     .flatMap((sheet) => sheet.rows);
 }
 
-function matchesQuery(row: TableRow, definition: TableSheetDefinition, query: string): boolean {
-  const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  if (terms.length === 0) {
-    return true;
-  }
-  const haystack = [
-    displayRowName(row, definition),
-    ...definition.columns.map((column) => formatCellValue(row.cells[column.id], column)),
-  ].join(" ").toLocaleLowerCase();
-  return terms.every((term) => haystack.includes(term));
-}
-
 function displayRowName(row: TableRow, definition: TableSheetDefinition): string {
   const name = formatTableRowDisplayName(row.cells, definition).trim();
   return name.length === 0 ? "未命名记录" : name;
 }
 
-function formatCellValue(value: JsonValue | undefined, column: TableColumnDefinition): string {
-  if (value === undefined) {
-    return "";
-  }
-  try {
-    return encodeTableCell(value, column);
-  } catch {
-    return typeof value === "string" ? value : JSON.stringify(value);
-  }
+function tableRecordListEntryKey(entry: TableRecordListEntry): string {
+  return entry.row.id;
 }
 
 function SaveState(props: { readonly dirty: boolean; readonly pending: boolean }): ReactElement {

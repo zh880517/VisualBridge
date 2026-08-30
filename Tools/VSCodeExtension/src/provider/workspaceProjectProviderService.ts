@@ -11,17 +11,25 @@ import {
   type ProjectProviderSourceManifestEntry,
 } from "@visualbridge/node-host";
 import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
+import {
+  isProviderValidationResultCacheable,
+  ProviderValidationCache,
+  providerValidationCacheKey,
+} from "./providerValidationCache";
 
 interface CachedHost {
   readonly projectHash: string;
+  readonly generation: number;
   readonly host: ProjectProviderHost;
 }
 
 export class WorkspaceProjectProviderService implements vscode.Disposable {
   private readonly hosts = new Map<string, Promise<CachedHost>>();
   private readonly disposables: vscode.Disposable[] = [];
+  private readonly validationCache = new ProviderValidationCache();
   private projectChangeTimer: NodeJS.Timeout | undefined;
   private revision = 0;
+  private nextHostGeneration = 0;
 
   public constructor(
     private readonly projects: ProjectRegistry,
@@ -39,35 +47,75 @@ export class WorkspaceProjectProviderService implements vscode.Disposable {
   }
 
   public async referenceProviders(project: ProjectContext): Promise<readonly ReferenceProvider[]> {
-    return (await this.getHost(project))?.referenceProviders ?? [];
+    return (await this.getHost(project))?.host.referenceProviders ?? [];
   }
 
   public async validateDocument(
     project: ProjectContext,
     snapshot: ProjectProviderDocumentSnapshot,
+    signal?: AbortSignal,
+    projectDependencyKey = "unknown",
   ): Promise<readonly DocumentDiagnostic[]> {
-    const host = await this.getHost(project);
-    if (host === undefined) return [];
-    const result = await host.validateDocuments([snapshot]);
-    return result.diagnostics.map(({ documentTypeId: _documentTypeId, documentPath: _documentPath, ...item }) => item);
+    throwIfAborted(signal);
+    const projectKey = project.markerUri.toString();
+    const cachedHost = await this.getHost(project);
+    throwIfAborted(signal);
+    if (cachedHost === undefined) return [];
+    const providerGenerationKey = currentProviderGenerationKey(cachedHost);
+    const cacheKey = providerValidationCacheKey(
+      projectKey,
+      providerGenerationKey,
+      projectDependencyKey,
+      snapshot,
+    );
+    return this.validationCache.getOrValidate(projectKey, cacheKey, signal, async (currentSignal) => {
+      const result = await cachedHost.host.validateDocuments([snapshot], currentSignal);
+      throwIfAborted(currentSignal);
+      const diagnostics = result.diagnostics.map(({
+        documentTypeId: _documentTypeId,
+        documentPath: _documentPath,
+        ...item
+      }) => item);
+      return {
+        diagnostics,
+        cacheable: isProviderValidationResultCacheable(result),
+        cacheKey: providerValidationCacheKey(
+          projectKey,
+          currentProviderGenerationKey(cachedHost),
+          projectDependencyKey,
+          snapshot,
+        ),
+      };
+    });
   }
 
   public dispose(): void {
     if (this.projectChangeTimer !== undefined) clearTimeout(this.projectChangeTimer);
     this.disposables.splice(0).forEach((disposable) => disposable.dispose());
+    this.validationCache.clear();
     void this.reset();
   }
 
-  private async getHost(project: ProjectContext): Promise<ProjectProviderHost | undefined> {
+  private async getHost(project: ProjectContext): Promise<CachedHost | undefined> {
+    const key = project.markerUri.toString();
     if (!vscode.workspace.isTrusted || project.definition.providers.length === 0 || project.rootUri.scheme !== "file") {
+      this.validationCache.invalidateProject(key);
+      const unauthorized = this.hosts.get(key);
+      if (unauthorized !== undefined) {
+        this.hosts.delete(key);
+        const settled = await Promise.allSettled([unauthorized]);
+        await Promise.all(settled.flatMap((result) => (
+          result.status === "fulfilled" ? [result.value.host.dispose()] : []
+        )));
+      }
       return undefined;
     }
     const projectHash = hashBytes(await vscode.workspace.fs.readFile(project.markerUri));
-    const key = project.markerUri.toString();
     const existingPromise = this.hosts.get(key);
     if (existingPromise !== undefined) {
       const existing = await existingPromise;
-      if (existing.projectHash === projectHash) return existing.host;
+      if (existing.projectHash === projectHash) return existing;
+      this.validationCache.invalidateProject(key);
       this.hosts.delete(key);
       await existing.host.dispose();
     }
@@ -76,7 +124,7 @@ export class WorkspaceProjectProviderService implements vscode.Disposable {
       throw errorValue;
     });
     this.hosts.set(key, loading);
-    return (await loading).host;
+    return loading;
   }
 
   private async createHost(project: ProjectContext, projectHash: string): Promise<CachedHost> {
@@ -98,7 +146,7 @@ export class WorkspaceProjectProviderService implements vscode.Disposable {
       },
       log: (event) => this.output.appendLine(`[provider] ${JSON.stringify(event)}`),
     });
-    return { projectHash, host };
+    return { projectHash, generation: ++this.nextHostGeneration, host };
   }
 
   private async captureSourceManifest(
@@ -119,6 +167,9 @@ export class WorkspaceProjectProviderService implements vscode.Disposable {
 
   private scheduleProjectChanged(): void {
     if (!vscode.workspace.isTrusted || this.hosts.size === 0) return;
+    for (const project of this.projects.projects) {
+      this.validationCache.invalidateProject(project.markerUri.toString());
+    }
     if (this.projectChangeTimer !== undefined) clearTimeout(this.projectChangeTimer);
     this.projectChangeTimer = setTimeout(() => {
       this.projectChangeTimer = undefined;
@@ -129,6 +180,7 @@ export class WorkspaceProjectProviderService implements vscode.Disposable {
   private async notifyProjectChanged(): Promise<void> {
     const revision = ++this.revision;
     for (const project of this.projects.projects) {
+      this.validationCache.invalidateProject(project.markerUri.toString());
       const cached = this.hosts.get(project.markerUri.toString());
       if (cached === undefined) continue;
       try {
@@ -150,6 +202,7 @@ export class WorkspaceProjectProviderService implements vscode.Disposable {
   }
 
   private async reset(): Promise<void> {
+    this.validationCache.clear();
     const hosts = [...this.hosts.values()];
     this.hosts.clear();
     const settled = await Promise.allSettled(hosts);
@@ -161,6 +214,10 @@ export class WorkspaceProjectProviderService implements vscode.Disposable {
 
 function hashManifest(entries: readonly ProjectProviderSourceManifestEntry[]): string {
   return hashBytes(Buffer.from(JSON.stringify([...entries].sort((left, right) => compareOrdinal(left.path, right.path)))));
+}
+
+function currentProviderGenerationKey(cachedHost: CachedHost): string {
+  return `${cachedHost.projectHash}:${cachedHost.generation}:${cachedHost.host.cacheGenerationKey}`;
 }
 
 function hashBytes(value: Uint8Array): string {
@@ -179,4 +236,8 @@ function compareOrdinal(left: string, right: string): number {
 
 function formatError(errorValue: unknown): string {
   return errorValue instanceof Error ? errorValue.message : String(errorValue);
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) throw new DOMException("Provider validation was cancelled.", "AbortError");
 }

@@ -957,6 +957,32 @@ test("MCP V2 Table adapter preserves CSV families and XLSX through the shared co
       query: "rewards",
     });
     assert.deepEqual(columns.results.map((entry) => entry.id), ["rewards"]);
+    const catalogFirstPage = await call(client, "visualbridge_catalog", {
+      ...selector,
+      action: "search",
+      kind: "columns",
+      query: "",
+      limit: 1,
+    });
+    assert.equal(catalogFirstPage.results.length, 1);
+    assert.equal(typeof catalogFirstPage.nextCursor, "string");
+    const normalizedCatalogFirstPage = await call(client, "visualbridge_catalog", {
+      ...selector,
+      action: "search",
+      kind: "columns",
+      query: "  I  ",
+      limit: 1,
+    });
+    assert.equal(typeof normalizedCatalogFirstPage.nextCursor, "string");
+    const normalizedCatalogSecondPage = await call(client, "visualbridge_catalog", {
+      ...selector,
+      action: "search",
+      kind: "columns",
+      query: "i",
+      limit: 1,
+      cursor: normalizedCatalogFirstPage.nextCursor,
+    });
+    assert.equal(normalizedCatalogSecondPage.results.length, 1);
 
     const csvPath = "Tables/Skills_A.csv";
     const csv = await call(client, "visualbridge_document", {
@@ -973,7 +999,7 @@ test("MCP V2 Table adapter preserves CSV families and XLSX through the shared co
       ...selector,
       action: "search",
       path: csvPath,
-      query: "Blink",
+      query: "  BLINK  ",
       selector: { sheetDefinitionId: "skills", effectiveOnly: true },
     });
     assert.deepEqual(rowSearch.results.map((entry) => entry.rowId), ["Skills_A:key-102", "Skills_B:key-202"]);
@@ -986,12 +1012,15 @@ test("MCP V2 Table adapter preserves CSV families and XLSX through the shared co
       limit: 1,
     });
     assert.deepEqual(firstPage.results.map((entry) => entry.rowId), ["Skills_A:key-102"]);
+    assert.equal(typeof firstPage.results[0].cells.id, "number");
+    assert.equal(typeof firstPage.results[0].cells.name, "string");
     assert.equal(typeof firstPage.nextCursor, "string");
+    assert.ok(firstPage.nextCursor.length <= 256);
     const secondPage = await call(client, "visualbridge_document", {
       ...selector,
       action: "search",
       path: csvPath,
-      query: "Blink",
+      query: "  BLINK  ",
       selector: { sheetDefinitionId: "skills", effectiveOnly: true },
       limit: 1,
       cursor: firstPage.nextCursor,
@@ -1011,6 +1040,82 @@ test("MCP V2 Table adapter preserves CSV families and XLSX through the shared co
       },
     });
     assert.equal(mismatchedCursor.isError, true);
+    assert.equal(mismatchedCursor.structuredContent.error.code, "cursor.queryMismatch");
+    const mismatchedSelector = await client.callTool({
+      name: "visualbridge_document",
+      arguments: {
+        ...selector,
+        action: "search",
+        path: csvPath,
+        query: "Blink",
+        selector: { sheetDefinitionId: "skills", effectiveOnly: false },
+        limit: 1,
+        cursor: firstPage.nextCursor,
+      },
+    });
+    assert.equal(mismatchedSelector.isError, true);
+    assert.equal(mismatchedSelector.structuredContent.error.code, "cursor.queryMismatch");
+
+    const csvBFile = path.join(projectRoot, "Tables", "Skills_B.csv");
+    const originalCsvB = await readFile(csvBFile, "utf8");
+    try {
+      const changedCsvB = originalCsvB.replace("Blink\t202", "Blink Changed\t202");
+      assert.notEqual(changedCsvB, originalCsvB);
+      await writeFile(csvBFile, changedCsvB, "utf8");
+      const changedSourceCursor = await client.callTool({
+        name: "visualbridge_document",
+        arguments: {
+          ...selector,
+          action: "search",
+          path: csvPath,
+          query: "Blink",
+          selector: { sheetDefinitionId: "skills", effectiveOnly: true },
+          limit: 1,
+          cursor: firstPage.nextCursor,
+        },
+      });
+      assert.equal(changedSourceCursor.isError, true);
+      assert.equal(changedSourceCursor.structuredContent.error.code, "cursor.snapshotChanged");
+    } finally {
+      await writeFile(csvBFile, originalCsvB, "utf8");
+    }
+
+    const catalogFile = path.join(projectRoot, "Catalog", "Gameplay.vbtablecatalog");
+    const originalCatalog = await readFile(catalogFile, "utf8");
+    try {
+      const catalogPayload = JSON.parse(originalCatalog);
+      catalogPayload.tableTypes[0].sheets[0].rowDisplayNamePattern = "{name}_{id}";
+      await writeFile(catalogFile, `${JSON.stringify(catalogPayload, null, 2)}\n`, "utf8");
+      const changedCatalogCursor = await client.callTool({
+        name: "visualbridge_document",
+        arguments: {
+          ...selector,
+          action: "search",
+          path: csvPath,
+          query: "Blink",
+          selector: { sheetDefinitionId: "skills", effectiveOnly: true },
+          limit: 1,
+          cursor: firstPage.nextCursor,
+        },
+      });
+      assert.equal(changedCatalogCursor.isError, true);
+      assert.equal(changedCatalogCursor.structuredContent.error.code, "cursor.snapshotChanged");
+      const changedCatalogPage = await client.callTool({
+        name: "visualbridge_catalog",
+        arguments: {
+          ...selector,
+          action: "search",
+          kind: "columns",
+          query: "",
+          limit: 1,
+          cursor: catalogFirstPage.nextCursor,
+        },
+      });
+      assert.equal(changedCatalogPage.isError, true);
+      assert.equal(changedCatalogPage.structuredContent.error.code, "cursor.snapshotChanged");
+    } finally {
+      await writeFile(catalogFile, originalCatalog, "utf8");
+    }
     const validation = await call(client, "visualbridge_document", {
       ...selector,
       action: "validate",
@@ -1045,7 +1150,6 @@ test("MCP V2 Table adapter preserves CSV families and XLSX through the shared co
     assert.equal(guardedKeyRename.status, "invalid");
     assert.ok(guardedKeyRename.diagnostics.some((diagnostic) => diagnostic.code === "lifecycle.required"));
 
-    const csvBFile = path.join(projectRoot, "Tables", "Skills_B.csv");
     const beforeInvalid = await readFile(csvBFile);
     const invalid = await call(client, "visualbridge_apply_operations", {
       ...selector,
@@ -1211,6 +1315,34 @@ test("MCP V2 Table adapter preserves CSV families and XLSX through the shared co
       }],
     });
     assert.equal(invalidApply.status, "invalid");
+  });
+});
+
+test("MCP Table search preserves typed cells when number and string values have the same text", async () => {
+  await withFixture("TableSemanticProject", async ({ projectRoot, client }) => {
+    const skillsAFile = path.join(projectRoot, "Tables", "Skills_A.csv");
+    const original = await readFile(skillsAFile, "utf8");
+    const changed = original.replace("Fireball\t101", "101\t101");
+    assert.notEqual(changed, original);
+    await writeFile(skillsAFile, changed, "utf8");
+
+    const discovery = await call(client, "visualbridge_project", { action: "discover" });
+    const results = await call(client, "visualbridge_document", {
+      projectFile: discovery.projects[0].projectFile,
+      documentTypeId: "game.table.skills",
+      editor: "table",
+      action: "search",
+      path: "Tables/Skills_A.csv",
+      query: "101",
+      selector: { sheetDefinitionId: "skills", effectiveOnly: true },
+    });
+    const row = results.results.find((entry) => entry.rowId === "Skills_A:key-101");
+    assert.notEqual(row, undefined);
+    assert.equal(row.displayName, "101_101");
+    assert.equal(row.cells.id, 101);
+    assert.equal(typeof row.cells.id, "number");
+    assert.equal(row.cells.name, "101");
+    assert.equal(typeof row.cells.name, "string");
   });
 });
 
@@ -1527,6 +1659,121 @@ test("MCP explicit startup authorization enables Provider reference and validato
     assert.deepEqual(references.results.map((candidate) => candidate.value), ["asset.sword"]);
     assert.equal(Object.hasOwn(references, "candidates"), false);
 
+    const typedFirstPage = await call(running.client, "visualbridge_references", {
+      projectFile,
+      action: "search",
+      kind: "sample.asset",
+      target: { scope: "weapons" },
+      query: "typed",
+      limit: 1,
+    });
+    assert.deepEqual(typedFirstPage.results.map((candidate) => candidate.value), [1]);
+    assert.equal(typeof typedFirstPage.results[0].value, "number");
+    assert.equal(typeof typedFirstPage.nextCursor, "string");
+    const typedSecondPage = await call(running.client, "visualbridge_references", {
+      projectFile,
+      action: "search",
+      kind: "sample.asset",
+      target: { scope: "weapons" },
+      query: "  TYPED  ",
+      limit: 1,
+      cursor: typedFirstPage.nextCursor,
+    });
+    assert.deepEqual(typedSecondPage.results.map((candidate) => candidate.value), ["1"]);
+    assert.equal(typeof typedSecondPage.results[0].value, "string");
+    assert.equal(typedSecondPage.nextCursor, undefined);
+
+    const bulkValues = [];
+    let bulkCursor;
+    do {
+      const bulkPage = await call(running.client, "visualbridge_references", {
+        projectFile,
+        action: "search",
+        kind: "sample.asset",
+        target: { scope: "weapons" },
+        query: "bulk",
+        limit: 73,
+        ...(bulkCursor === undefined ? {} : { cursor: bulkCursor }),
+      });
+      bulkValues.push(...bulkPage.results.map((candidate) => candidate.value));
+      bulkCursor = bulkPage.nextCursor;
+    } while (bulkCursor !== undefined);
+    assert.equal(bulkValues.length, 260);
+    assert.equal(new Set(bulkValues).size, 260);
+    assert.equal(bulkValues[0], "asset.bulk.000");
+    assert.equal(bulkValues.at(-1), "asset.bulk.259");
+
+    const mismatchedReferenceCursor = await running.client.callTool({
+      name: "visualbridge_references",
+      arguments: {
+        projectFile,
+        action: "search",
+        kind: "sample.asset",
+        target: { scope: "weapons" },
+        query: "sword",
+        limit: 1,
+        cursor: typedFirstPage.nextCursor,
+      },
+    });
+    assert.equal(mismatchedReferenceCursor.isError, true);
+    assert.equal(mismatchedReferenceCursor.structuredContent.error.code, "cursor.queryMismatch");
+    const invalidReferenceCursor = await running.client.callTool({
+      name: "visualbridge_references",
+      arguments: {
+        projectFile,
+        action: "search",
+        kind: "sample.asset",
+        target: { scope: "weapons" },
+        query: "typed",
+        cursor: "not-a-reference-cursor",
+      },
+    });
+    assert.equal(invalidReferenceCursor.isError, true);
+    assert.equal(invalidReferenceCursor.structuredContent.error.code, "cursor.invalid");
+
+    const providerSnapshotPath = path.join(fixture.stateDirectory, "reference-snapshot.txt");
+    await writeFile(providerSnapshotPath, "changed", "utf8");
+    try {
+      const providerSnapshotChanged = await running.client.callTool({
+        name: "visualbridge_references",
+        arguments: {
+          projectFile,
+          action: "search",
+          kind: "sample.asset",
+          target: { scope: "weapons" },
+          query: "typed",
+          limit: 1,
+          cursor: typedFirstPage.nextCursor,
+        },
+      });
+      assert.equal(providerSnapshotChanged.isError, true);
+      assert.equal(providerSnapshotChanged.structuredContent.error.code, "cursor.snapshotChanged");
+    } finally {
+      await rm(providerSnapshotPath, { force: true });
+    }
+
+    const sourcePath = path.join(fixture.projectRoot, "Config", "ProviderSettings.providerconfig");
+    const sourceBeforeCursorChange = await readFile(sourcePath);
+    try {
+      await writeFile(sourcePath, Buffer.concat([sourceBeforeCursorChange, Buffer.from("\n")]));
+      const changedReferenceCursor = await running.client.callTool({
+        name: "visualbridge_references",
+        arguments: {
+          projectFile,
+          action: "search",
+          kind: "sample.asset",
+          target: { scope: "weapons" },
+          query: "typed",
+          limit: 1,
+          cursor: typedFirstPage.nextCursor,
+        },
+      });
+      assert.equal(changedReferenceCursor.isError, true);
+      assert.equal(changedReferenceCursor.structuredContent.error.code, "cursor.snapshotChanged");
+    } finally {
+      await writeFile(sourcePath, sourceBeforeCursorChange);
+    }
+
     const validated = await call(running.client, "visualbridge_document", {
       action: "validate",
       projectFile,
@@ -1538,7 +1785,6 @@ test("MCP explicit startup authorization enables Provider reference and validato
       validated.diagnostics.some((diagnostic) => diagnostic.code === "sample.provider.displayNameReview"),
       JSON.stringify(validated, undefined, 2),
     );
-    const sourcePath = path.join(fixture.projectRoot, "Config", "ProviderSettings.providerconfig");
     const sourceBeforeRejectedOperation = await readFile(sourcePath);
     const rejected = await call(running.client, "visualbridge_apply_operations", {
       projectFile,
@@ -1567,6 +1813,96 @@ test("MCP explicit startup authorization enables Provider reference and validato
     } finally {
       await fixture.dispose();
     }
+  }
+});
+
+test("MCP Provider Reference cursors reject a restarted Provider process generation", async () => {
+  const fixture = await createProviderFixture({ mode: "crashOnContinuation" });
+  const running = await startClient(fixture.temporaryRoot, {
+    VISUALBRIDGE_PROVIDER_ENABLED: "1",
+    VISUALBRIDGE_PROVIDER_ALLOWLIST: JSON.stringify([fixture.entryPath]),
+  });
+  try {
+    const projectFile = "ProviderSemanticProject/VisualBridge.project.vbjson";
+    const first = await call(running.client, "visualbridge_references", {
+      projectFile,
+      action: "search",
+      kind: "sample.asset",
+      target: { scope: "weapons" },
+      query: "bulk",
+      limit: 50,
+    });
+    assert.equal(typeof first.nextCursor, "string");
+
+    const crashed = await running.client.callTool({
+      name: "visualbridge_references",
+      arguments: {
+        projectFile,
+        action: "search",
+        kind: "sample.asset",
+        target: { scope: "weapons" },
+        query: "bulk",
+        limit: 50,
+        cursor: first.nextCursor,
+      },
+    });
+    assert.notEqual(crashed.isError, true);
+    assert.equal(crashed.structuredContent.status, "ok");
+    assert.equal(crashed.structuredContent.data.status, "providerUnavailable");
+
+    const restarted = await running.client.callTool({
+      name: "visualbridge_references",
+      arguments: {
+        projectFile,
+        action: "search",
+        kind: "sample.asset",
+        target: { scope: "weapons" },
+        query: "bulk",
+        limit: 50,
+        cursor: first.nextCursor,
+      },
+    });
+    assert.equal(restarted.isError, true);
+    assert.equal(restarted.structuredContent.error.code, "cursor.snapshotChanged");
+  } finally {
+    await running.client.close().catch(() => undefined);
+    await fixture.dispose();
+  }
+});
+
+test("MCP can round-trip a large legal Provider continuation without outer-cursor truncation", async () => {
+  const fixture = await createProviderFixture({ mode: "largeContinuation" });
+  const running = await startClient(fixture.temporaryRoot, {
+    VISUALBRIDGE_PROVIDER_ENABLED: "1",
+    VISUALBRIDGE_PROVIDER_ALLOWLIST: JSON.stringify([fixture.entryPath]),
+  });
+  try {
+    const projectFile = "ProviderSemanticProject/VisualBridge.project.vbjson";
+    const first = await call(running.client, "visualbridge_references", {
+      projectFile,
+      action: "search",
+      kind: "sample.asset",
+      target: { scope: "weapons" },
+      query: "bulk",
+      limit: 1,
+    });
+    assert.equal(typeof first.nextCursor, "string");
+    assert.ok(first.nextCursor.length > 16 * 1024);
+    assert.ok(first.nextCursor.length <= 256 * 1024);
+
+    const second = await call(running.client, "visualbridge_references", {
+      projectFile,
+      action: "search",
+      kind: "sample.asset",
+      target: { scope: "weapons" },
+      query: "bulk",
+      limit: 1,
+      cursor: first.nextCursor,
+    });
+    assert.deepEqual(second.results.map((candidate) => candidate.value), ["asset.bulk.001"]);
+  } finally {
+    await running.client.close().catch(() => undefined);
+    await fixture.dispose();
   }
 });
 

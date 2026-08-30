@@ -10,7 +10,7 @@ const PROJECT_HASH = "a".repeat(64);
 const DOCUMENT_SET_HASH = "b".repeat(64);
 const SOURCE_HASH = "c".repeat(64);
 
-test("Project Provider host messages require strict JSON-RPC V1 shapes", () => {
+test("Project Provider host messages require strict JSON-RPC V2 shapes", () => {
   assert.deepEqual(parseProjectProviderHostMessage({
     jsonrpc: "2.0",
     id: "initialize-1",
@@ -27,7 +27,7 @@ test("Project Provider host messages require strict JSON-RPC V1 shapes", () => {
       id: "initialize-1",
       method: "initialize",
       params: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         providerId: "sample.provider",
         project: { projectId: "sample.project", projectHash: PROJECT_HASH },
       },
@@ -73,6 +73,69 @@ test("Project Provider host messages require strict JSON-RPC V1 shapes", () => {
   assert.equal(notificationWithId.success, false);
   if (!notificationWithId.success) {
     assert.deepEqual(notificationWithId.issues, [{ path: "id", message: "Unknown property 'id'." }]);
+  }
+});
+
+test("Reference search V2 strictly pairs opaque continuations with snapshot hashes", () => {
+  const firstPage = parseProjectProviderHostMessage({
+    jsonrpc: "2.0",
+    id: 10,
+    method: "reference/search",
+    params: { kind: "sample.item", target: { scope: "all" }, query: "bow", limit: 50 },
+  });
+  assert.equal(firstPage.success, true);
+
+  const nextPage = parseProjectProviderHostMessage({
+    jsonrpc: "2.0",
+    id: 11,
+    method: "reference/search",
+    params: {
+      kind: "sample.item",
+      target: { scope: "all" },
+      query: "bow",
+      limit: 50,
+      cursor: "opaque-provider-cursor",
+      snapshotHash: PROJECT_HASH,
+    },
+  });
+  assert.equal(nextPage.success, true);
+
+  for (const params of [
+    { kind: "sample.item", target: {}, query: "", limit: 10, cursor: "orphan" },
+    { kind: "sample.item", target: {}, query: "", limit: 10, snapshotHash: PROJECT_HASH },
+  ]) {
+    const invalid = parseProjectProviderHostMessage({
+      jsonrpc: "2.0", id: 12, method: "reference/search", params,
+    });
+    assert.equal(invalid.success, false);
+  }
+
+  const success = parseProjectProviderResponse({
+    jsonrpc: "2.0",
+    id: 13,
+    result: {
+      status: "ok",
+      candidates: [],
+      snapshotHash: PROJECT_HASH,
+      nextCursor: "opaque-provider-cursor",
+    },
+  }, "reference/search");
+  assert.equal(success.success, true);
+
+  const missingSnapshot = parseProjectProviderResponse({
+    jsonrpc: "2.0",
+    id: 14,
+    result: { status: "ok", candidates: [] },
+  }, "reference/search");
+  assert.equal(missingSnapshot.success, false);
+
+  for (const status of ["cursor.invalid", "cursor.queryMismatch", "cursor.snapshotChanged"] as const) {
+    const cursorFailure = parseProjectProviderResponse({
+      jsonrpc: "2.0",
+      id: 15,
+      result: { status, message: `${status} fixture` },
+    }, "reference/search");
+    assert.equal(cursorFailure.success, true);
   }
 });
 

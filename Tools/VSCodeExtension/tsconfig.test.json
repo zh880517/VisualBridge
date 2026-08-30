@@ -15,6 +15,7 @@
   "include": [
     "src/editor/webviewEpoch.ts",
     "src/document/lifecycleOperationGuard.ts",
+    "src/document/projectSemanticDependency.ts",
     "test/unit/**/*.ts"
   ]
 }

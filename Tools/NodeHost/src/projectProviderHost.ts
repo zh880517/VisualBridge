@@ -1,4 +1,5 @@
 import {
+  createReferenceSearchCursor,
   type JsonValue,
   type ProjectProviderDiagnostic,
   type ProjectProviderDocumentSnapshot,
@@ -10,6 +11,7 @@ import {
   type ReferenceProvider,
   type VisualBridgeProjectDefinition,
 } from "@visualbridge/core";
+import { randomUUID } from "node:crypto";
 import {
   ProjectProviderExternalModificationError,
   ProjectProviderRuntime,
@@ -43,6 +45,7 @@ export interface ProjectProviderValidationResult {
 
 interface ProviderSlot {
   readonly definition: VisualBridgeProjectDefinition["providers"][number];
+  readonly instanceId: string;
   readonly runtime?: ProjectProviderRuntime;
   readonly createError?: unknown;
 }
@@ -65,7 +68,7 @@ export class ProjectProviderHost implements AsyncDisposable {
           ...(options.log === undefined ? {} : { log: options.log }),
           ...options.runtime,
         });
-        return { definition, runtime };
+        return { definition, instanceId: randomUUID(), runtime };
       } catch (createError) {
         options.log?.({
           timestamp: new Date().toISOString(),
@@ -76,7 +79,7 @@ export class ProjectProviderHost implements AsyncDisposable {
           state: "stopped",
           message: formatError(createError),
         });
-        return { definition, createError };
+        return { definition, instanceId: randomUUID(), createError };
       }
     }));
     return new ProjectProviderHost(options, slots);
@@ -85,14 +88,16 @@ export class ProjectProviderHost implements AsyncDisposable {
   public get referenceProviders(): readonly ReferenceProvider[] {
     return this.slots.flatMap((slot) => slot.definition.capabilities.reference?.kinds.map((kind) => ({
       kind,
-      validateTarget: (target: Readonly<Record<string, JsonValue>>) => this.validateTarget(slot, kind, target),
+      validateTarget: (target: Readonly<Record<string, JsonValue>>, signal?: AbortSignal) => (
+        this.validateTarget(slot, kind, target, signal)
+      ),
       search: async (request) => {
         const result = await this.request<ProjectProviderReferenceSearchResult>(slot, "reference/search", {
           kind,
           target: request.target,
           query: request.query,
           limit: request.limit,
-        });
+        }, request.signal);
         if (result.status !== "ok") throw providerBusinessError(slot.definition.id, result);
         if (result.candidates.length > request.limit) {
           throw protocolViolation(slot.definition.id, "Reference search returned more candidates than requested.");
@@ -100,12 +105,86 @@ export class ProjectProviderHost implements AsyncDisposable {
         await this.assertCandidates(slot, result.candidates, kind, request.target);
         return result.candidates;
       },
+      searchPage: async (request) => {
+        const continuation = request.cursor?.providerContinuation;
+        if (request.cursor !== undefined && continuation === undefined) {
+          return cursorFailure("cursor.invalid", "Provider-backed Reference cursor is missing its continuation state.");
+        }
+        if (continuation !== undefined && continuation.providerId !== slot.definition.id) {
+          return cursorFailure("cursor.snapshotChanged", "Project Provider instance changed after the cursor was issued.");
+        }
+        if (continuation !== undefined && continuation.instanceId !== slot.instanceId) {
+          return cursorFailure("cursor.snapshotChanged", "Project Provider host instance changed after the cursor was issued.");
+        }
+        if (continuation !== undefined && slot.runtime !== undefined
+          && await slot.runtime.captureEntryHash() !== continuation.entryHash) {
+          return cursorFailure("cursor.snapshotChanged", "Project Provider entry changed after the cursor was issued.");
+        }
+        const result = await this.request<ProjectProviderReferenceSearchResult>(slot, "reference/search", {
+          kind,
+          target: request.target,
+          query: request.query,
+          limit: request.limit,
+          ...(continuation === undefined ? {} : {
+            cursor: continuation.cursor,
+            snapshotHash: continuation.snapshotHash,
+          }),
+        }, request.signal);
+        const generation = slot.runtime?.generation;
+        if (generation === undefined) {
+          throw protocolViolation(slot.definition.id, "Reference search completed without an active Provider generation.");
+        }
+        const entryHash = await slot.runtime!.captureEntryHash();
+        if (continuation !== undefined && entryHash !== continuation.entryHash) {
+          return cursorFailure("cursor.snapshotChanged", "Project Provider entry changed after the cursor was issued.");
+        }
+        if (continuation !== undefined && generation !== continuation.generation) {
+          return cursorFailure("cursor.snapshotChanged", "Project Provider process generation changed after the cursor was issued.");
+        }
+        if (result.status === "cursor.invalid" || result.status === "cursor.queryMismatch"
+          || result.status === "cursor.snapshotChanged") {
+          return cursorFailure(result.status, result.message);
+        }
+        if (result.status !== "ok") throw providerBusinessError(slot.definition.id, result);
+        if (continuation !== undefined && result.snapshotHash !== continuation.snapshotHash) {
+          return cursorFailure("cursor.snapshotChanged", "Project Provider snapshot changed after the cursor was issued.");
+        }
+        if (result.candidates.length > request.limit) {
+          throw protocolViolation(slot.definition.id, "Reference search returned more candidates than requested.");
+        }
+        if (result.nextCursor !== undefined && result.candidates.length === 0) {
+          throw protocolViolation(slot.definition.id, "Reference search returned a continuation for an empty page.");
+        }
+        await this.assertCandidates(slot, result.candidates, kind, request.target);
+        const last = result.candidates.at(-1);
+        return {
+          status: "ok" as const,
+          candidates: result.candidates,
+          ...(result.nextCursor === undefined || last === undefined ? {} : {
+            nextCursor: createReferenceSearchCursor(
+              kind,
+              request.target,
+              request.query,
+              request.snapshotDependencyKey,
+              last,
+              {
+                providerId: slot.definition.id,
+                instanceId: slot.instanceId,
+                generation,
+                entryHash,
+                cursor: result.nextCursor,
+                snapshotHash: result.snapshotHash,
+              },
+            ),
+          }),
+        };
+      },
       resolve: async (request) => {
         const result = await this.request<ProjectProviderReferenceResolveResult>(slot, "reference/resolve", {
           kind,
           target: request.target,
           value: request.value,
-        });
+        }, request.signal);
         if (result.status === "invalidTarget" || result.status === "providerUnavailable") {
           throw providerBusinessError(slot.definition.id, result);
         }
@@ -113,6 +192,14 @@ export class ProjectProviderHost implements AsyncDisposable {
         return result.candidates;
       },
     })) ?? []);
+  }
+
+  public get cacheGenerationKey(): string {
+    return JSON.stringify(this.slots.map((slot) => ({
+      providerId: slot.definition.id,
+      generation: slot.runtime?.generation ?? -1,
+      state: slot.runtime?.state ?? "unavailable",
+    })));
   }
 
   public async validateDocuments(
@@ -188,11 +275,13 @@ export class ProjectProviderHost implements AsyncDisposable {
     slot: ProviderSlot,
     kind: string,
     target: Readonly<Record<string, JsonValue>>,
+    signal?: AbortSignal,
   ): Promise<string | undefined> {
     const result = await this.request<ProjectProviderReferenceValidateTargetResult>(
       slot,
       "reference/validateTarget",
       { kind, target },
+      signal,
     );
     if (result.status === "valid") return undefined;
     if (result.status === "invalidTarget") return result.message;
@@ -285,6 +374,13 @@ function providerBusinessError(
     result.message ?? `Project Provider '${providerId}' returned '${result.status}'.`,
     { providerId, status: result.status },
   );
+}
+
+function cursorFailure(
+  status: "cursor.invalid" | "cursor.queryMismatch" | "cursor.snapshotChanged",
+  message: string,
+) {
+  return { status, candidates: [] as const, message };
 }
 
 function protocolViolation(providerId: string, message: string): ProjectProviderRuntimeError {
