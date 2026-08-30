@@ -1,0 +1,4 @@
+# Protocol schema hashes and generated artifacts must be identical on every checkout.
+Protocol/Schema/*.json text eol=lf
+Protocol/Generated/*.json text eol=lf
+Protocol/Generated/*.d.ts text eol=lf
