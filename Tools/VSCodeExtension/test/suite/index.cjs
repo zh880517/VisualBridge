@@ -1113,9 +1113,12 @@ exports.run = async function run() {
         [{ type: "structured.setField", fieldId: "maxPlayers", value: 9 }],
       );
       assert.ok(document.version > versionBeforeExternalRefresh);
-      assert.equal(JSON.parse(document.getText()).properties.maxPlayers, 6);
+      assert.equal(document.getText(), externallyChangedBeforeSave);
       assert.equal(document.isDirty, false);
-      assert.equal(JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(uri))).properties.maxPlayers, 6);
+      assert.equal(
+        Buffer.compare(Buffer.from(await vscode.workspace.fs.readFile(uri)), Buffer.from(externallyChangedBeforeSave, "utf8")),
+        0,
+      );
 
       await vscode.commands.executeCommand(
         "visualbridge.test.applyDocumentOperations",
@@ -1140,9 +1143,12 @@ exports.run = async function run() {
         [{ type: "structured.setField", fieldId: "maxPlayers", value: 10 }],
       );
       assert.ok(document.version > versionBeforeSecondExternalRefresh);
-      assert.equal(JSON.parse(document.getText()).properties.maxPlayers, 7);
+      assert.equal(document.getText(), externallyChangedAfterSave);
       assert.equal(document.isDirty, false);
-      assert.equal(JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(uri))).properties.maxPlayers, 7);
+      assert.equal(
+        Buffer.compare(Buffer.from(await vscode.workspace.fs.readFile(uri)), Buffer.from(externallyChangedAfterSave, "utf8")),
+        0,
+      );
     } finally {
       if (document?.isDirty) {
         await vscode.commands.executeCommand("workbench.action.files.revert").catch(() => undefined);

@@ -180,9 +180,8 @@ export class StructuredEditorSession {
   ): Promise<void> {
     writeFileSync(this.document.uri.fsPath, externalText, "utf8");
     this.confirmExternalChangesTestHook = async () => {
-      await this.replaceDocumentText(externalText);
-      if (!await this.document.save()) {
-        throw new Error("VS Code failed to save the deterministic external-change test refresh.");
+      if (!await this.reloadDocumentFromDisk(externalText)) {
+        throw new Error("VS Code failed to reload the deterministic external-change test refresh.");
       }
       this.baseDiskTextHash = hashText(externalText);
     };
@@ -321,17 +320,17 @@ export class StructuredEditorSession {
       return true;
     }
     if (!this.document.isDirty) {
-      this.baseDiskTextHash = diskTextHash;
       if (diskText !== this.document.getText()) {
-        await this.replaceDocumentText(diskText);
-        if (!await this.document.save()) {
+        if (!await this.reloadDocumentFromDisk(diskText)) {
           await this.rejectOperation("文件已发生外部修改，但 VS Code 未能完成刷新。");
           return false;
         }
+        this.baseDiskTextHash = diskTextHash;
         await this.sendState();
         await this.rejectOperation("文件已被外部修改，编辑器已刷新，请重试刚才的操作。");
         return false;
       }
+      this.baseDiskTextHash = diskTextHash;
       return true;
     }
     const choice = await vscode.window.showWarningMessage(
@@ -345,8 +344,7 @@ export class StructuredEditorSession {
       return true;
     }
     if (choice === DISCARD_AND_RELOAD) {
-      await this.replaceDocumentText(diskText);
-      if (!await this.document.save()) {
+      if (!await this.reloadDocumentFromDisk(diskText)) {
         await this.rejectOperation("无法完成放弃并刷新，文档未保存。");
         return false;
       }
@@ -357,6 +355,11 @@ export class StructuredEditorSession {
     }
     await this.rejectOperation("已取消操作，未写入任何修改。");
     return false;
+  }
+
+  private async reloadDocumentFromDisk(expectedText: string): Promise<boolean> {
+    await vscode.commands.executeCommand("workbench.action.files.revert");
+    return !this.document.isDirty && this.document.getText() === expectedText;
   }
 
   private async replaceDocumentText(text: string): Promise<void> {
