@@ -338,7 +338,10 @@ async function recoverInterruptedTransaction(projectRoot: string): Promise<void>
     if (isNodeError(errorValue, "ENOENT")) return;
     throw errorValue;
   }
-  const journal = parseJournal(bytes, projectRoot);
+  const declaredProjectRoot = path.resolve(projectRoot);
+  const canonicalProjectRoot = await realpath(declaredProjectRoot);
+  const trustedProjectRoots = [declaredProjectRoot, canonicalProjectRoot];
+  const journal = await parseJournal(bytes, trustedProjectRoots);
   for (const entry of journal.entries) {
     await ensurePhysicalTarget(projectRoot, entry.absolutePath, entry.path);
   }
@@ -469,7 +472,7 @@ async function writeJournal(projectRoot: string, journal: TransactionJournal): P
   }
 }
 
-function parseJournal(bytes: Buffer, projectRoot: string): TransactionJournal {
+async function parseJournal(bytes: Buffer, trustedProjectRoots: readonly string[]): Promise<TransactionJournal> {
   try {
     const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as {
       readonly version?: unknown;
@@ -493,10 +496,15 @@ function parseJournal(bytes: Buffer, projectRoot: string): TransactionJournal {
         || (value.version === 2 && entry.beforeHash === undefined && entry.afterHash === undefined)) {
         throw new Error("invalid transaction journal entry");
       }
-      ensureInside(projectRoot, entry.absolutePath, entry.path);
-      ensureInside(projectRoot, entry.temporaryPath, entry.path);
-      ensureInside(projectRoot, entry.backupPath, entry.path);
-      ensureTargetMatchesLogicalPath(projectRoot, entry.path, entry.absolutePath);
+      const journalProjectRoot = await resolveJournalProjectRoot(
+        trustedProjectRoots,
+        entry.path,
+        entry.absolutePath,
+      );
+      const entryProjectRoots = [...trustedProjectRoots, journalProjectRoot];
+      ensureInsideTrustedRoot(entryProjectRoots, entry.absolutePath, entry.path);
+      ensureInsideTrustedRoot(entryProjectRoots, entry.temporaryPath, entry.path);
+      ensureInsideTrustedRoot(entryProjectRoots, entry.backupPath, entry.path);
       const expectedPrefix = `${entry.absolutePath}.visualbridge-${value.transactionId}`;
       if (entry.temporaryPath !== `${expectedPrefix}.tmp` || entry.backupPath !== `${expectedPrefix}.rollback`) {
         throw new Error("transaction journal paths do not match the transaction identity");
@@ -681,30 +689,92 @@ async function readOptionalHash(filePath: string): Promise<string | undefined> {
 }
 
 function ensureInside(root: string, candidate: string, displayPath: string): void {
+  if (isInside(root, candidate)) return;
+  throw new ProjectTransactionFailure(
+    "transaction.pathOutsideProject",
+    `Transaction source '${displayPath}' leaves the project root.`,
+  );
+}
+
+function ensureInsideTrustedRoot(roots: readonly string[], candidate: string, displayPath: string): void {
+  if (roots.some((root) => isInside(root, candidate))) return;
+  throw new ProjectTransactionFailure(
+    "transaction.pathOutsideProject",
+    `Transaction source '${displayPath}' leaves the project root.`,
+  );
+}
+
+function isInside(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
-  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new ProjectTransactionFailure(
-      "transaction.pathOutsideProject",
-      `Transaction source '${displayPath}' leaves the project root.`,
-    );
-  }
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
 function ensureTargetMatchesLogicalPath(projectRoot: string, logicalPath: string, absolutePath: string): void {
+  ensureTargetMatchesLogicalPathForRoots([projectRoot], logicalPath, absolutePath);
+}
+
+function ensureTargetMatchesLogicalPathForRoots(
+  projectRoots: readonly string[],
+  logicalPath: string,
+  absolutePath: string,
+): void {
+  const logicalSegments = validateLogicalPath(logicalPath);
+  const absoluteIdentity = pathIdentity(absolutePath);
+  if (!projectRoots.some((projectRoot) => (
+    pathIdentity(path.resolve(projectRoot, ...logicalSegments)) === absoluteIdentity
+  ))) {
+    throwPathMismatch(logicalPath);
+  }
+}
+
+async function resolveJournalProjectRoot(
+  trustedProjectRoots: readonly string[],
+  logicalPath: string,
+  absolutePath: string,
+): Promise<string> {
+  const logicalSegments = validateLogicalPath(logicalPath);
+  const absoluteIdentity = pathIdentity(absolutePath);
+  const trustedMatch = trustedProjectRoots.find((projectRoot) => (
+    pathIdentity(path.resolve(projectRoot, ...logicalSegments)) === absoluteIdentity
+  ));
+  if (trustedMatch !== undefined) return trustedMatch;
+
+  let journalProjectRoot = path.resolve(absolutePath);
+  for (const _segment of logicalSegments) journalProjectRoot = path.dirname(journalProjectRoot);
+  if (pathIdentity(path.resolve(journalProjectRoot, ...logicalSegments)) !== absoluteIdentity) {
+    throwPathMismatch(logicalPath);
+  }
+  let canonicalJournalProjectRoot: string;
+  try {
+    canonicalJournalProjectRoot = await realpath(journalProjectRoot);
+  } catch {
+    throwPathMismatch(logicalPath);
+  }
+  if (!trustedProjectRoots.some((projectRoot) => (
+    pathIdentity(projectRoot) === pathIdentity(canonicalJournalProjectRoot)
+  ))) {
+    throwPathMismatch(logicalPath);
+  }
+  return journalProjectRoot;
+}
+
+function validateLogicalPath(logicalPath: string): readonly string[] {
+  const segments = logicalPath.split("/");
   if (logicalPath.length === 0 || logicalPath.includes("\\") || logicalPath.includes(":") || logicalPath.startsWith("/")
-    || logicalPath.split("/").some((segment) => segment.length === 0 || segment === "." || segment === "..")) {
+    || segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")) {
     throw new ProjectTransactionFailure(
       "transaction.pathInvalid",
       `Transaction source path '${logicalPath}' is not normalized.`,
     );
   }
-  const expectedPath = path.resolve(projectRoot, ...logicalPath.split("/"));
-  if (path.relative(expectedPath, absolutePath) !== "") {
-    throw new ProjectTransactionFailure(
-      "transaction.pathMismatch",
-      `Transaction source '${logicalPath}' does not match its physical path.`,
-    );
-  }
+  return segments;
+}
+
+function throwPathMismatch(logicalPath: string): never {
+  throw new ProjectTransactionFailure(
+    "transaction.pathMismatch",
+    `Transaction source '${logicalPath}' does not match its physical path.`,
+  );
 }
 
 async function ensurePhysicalTarget(projectRoot: string, absolutePath: string, logicalPath: string): Promise<void> {

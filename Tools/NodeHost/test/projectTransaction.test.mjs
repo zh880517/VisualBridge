@@ -274,6 +274,64 @@ test("recovery preserves a dangling symbolic-link target and its journal", async
   });
 });
 
+test("recovery accepts journal paths from a trusted project-root identity", async (context) => {
+  await withTemporaryProject(async (physicalRoot) => {
+    const targetPath = path.join(physicalRoot, "restored.txt");
+    const before = bytes("before trusted-root recovery");
+    const transactionId = "00000000-0000-4000-8000-000000000107";
+    const entry = journalEntry(targetPath, "restored.txt", transactionId, before, undefined);
+    await writeFile(entry.backupPath, before);
+    await writeJournal(physicalRoot, {
+      version: 2,
+      transactionId,
+      phase: "prepared",
+      entries: [entry],
+    });
+
+    await withTemporaryDirectoryAlias(context, physicalRoot, async (projectRoot) => {
+      await withProjectTransaction(projectRoot, async () => undefined);
+    });
+
+    assert.deepEqual(await readFile(targetPath), before);
+    await assertNoTransactionArtifacts(physicalRoot);
+  });
+});
+
+test("recovery through a trusted project-root alias rejects an inner directory alias", async (context) => {
+  await withTemporaryProject(async (physicalRoot) => {
+    await withTemporaryDirectoryAlias(context, physicalRoot, async (projectRoot) => {
+      const physicalDirectory = path.join(physicalRoot, "physical-directory");
+      const aliasedDirectory = path.join(physicalRoot, "aliased-directory");
+      await mkdir(physicalDirectory);
+      await symlink(physicalDirectory, aliasedDirectory, process.platform === "win32" ? "junction" : "dir");
+      const transactionId = "00000000-0000-4000-8000-000000000108";
+      const targetPath = path.join(projectRoot, "aliased-directory", "created.txt");
+      const entry = journalEntry(
+        targetPath,
+        "aliased-directory/created.txt",
+        transactionId,
+        undefined,
+        bytes("must not recover through inner alias"),
+      );
+      await writeJournal(projectRoot, {
+        version: 2,
+        transactionId,
+        phase: "prepared",
+        entries: [entry],
+      });
+
+      await assert.rejects(
+        withProjectTransaction(projectRoot, async () => undefined),
+        (error) => error instanceof ProjectTransactionFailure && error.code === "transaction.pathAlias",
+      );
+
+      await assert.rejects(lstat(path.join(physicalDirectory, "created.txt")), { code: "ENOENT" });
+      assert.equal((await lstat(aliasedDirectory)).isSymbolicLink(), true);
+      assert.equal((await readFile(path.join(physicalRoot, ".visualbridge-transaction.json"))).length > 0, true);
+    });
+  });
+});
+
 test("prepared version 2 journals roll back create, delete, and move in reverse order", async () => {
   await withTemporaryProject(async (projectRoot) => {
     const createPath = path.join(projectRoot, "created.txt");

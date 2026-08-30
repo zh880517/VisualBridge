@@ -1,10 +1,11 @@
-import { access, cp, mkdir, mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, readdir } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { runTests } from "@vscode/test-electron";
+import { removeIsolatedDirectory } from "../test/support/removeIsolatedDirectory.mjs";
 
 const TEST_DIRECTORY_PREFIX = "visualbridge-vsix-cli-";
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -47,7 +48,7 @@ try {
   await runPackagedActivation(installedPath);
   console.log(`[vscode-cli] PASS installed, inspected, and activated ${expectedIdentity}`);
 } finally {
-  await removeIsolatedDirectory(temporaryPath);
+  await removeIsolatedDirectory(temporaryPath, TEST_DIRECTORY_PREFIX);
 }
 
 function runCode(args) {
@@ -227,20 +228,4 @@ async function listPackagedPaths(rootPath, relativeDirectory = "") {
     }
   }
   return result.sort();
-}
-
-async function removeIsolatedDirectory(directoryPath) {
-  const resolvedTemporaryRoot = await realpath(tmpdir());
-  const resolvedDirectory = path.resolve(directoryPath);
-  if (!resolvedDirectory.startsWith(`${resolvedTemporaryRoot}${path.sep}`)
-    || !path.basename(resolvedDirectory).startsWith(TEST_DIRECTORY_PREFIX)) {
-    throw new Error(`Refusing to remove non-test directory '${resolvedDirectory}'.`);
-  }
-
-  await rm(resolvedDirectory, {
-    recursive: true,
-    force: true,
-    maxRetries: 5,
-    retryDelay: 250,
-  });
 }

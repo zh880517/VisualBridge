@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, unlink, utimes, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -978,7 +978,7 @@ test("MCP V2 Structured adapter uses one read/search/validate/apply contract", a
   });
 });
 
-test("MCP V2 Table adapter preserves CSV families and XLSX through the shared contract", async () => {
+test("MCP V2 Table adapter preserves CSV families and XLSX through the shared contract", async (context) => {
   await withFixture("TableSemanticProject", async ({ projectRoot, client }) => {
     const discovery = await call(client, "visualbridge_project", { action: "discover" });
     const projectFile = discovery.projects[0].projectFile;
@@ -1354,7 +1354,7 @@ test("MCP V2 Table adapter preserves CSV families and XLSX through the shared co
       }],
     });
     assert.equal(invalidApply.status, "invalid");
-  });
+  }, { trustedRootAliasContext: context });
 });
 
 test("MCP Table search preserves typed cells when number and string values have the same text", async () => {
@@ -2008,10 +2008,31 @@ async function assertNoActiveTransactionArtifacts(projectRoot) {
   }
 }
 
-async function withFixture(name, action) {
-  const temporaryRoot = await mkdtemp(path.join(tmpdir(), "visualbridge-mcp-v2-"));
+async function withFixture(name, action, options = {}) {
+  const physicalTemporaryRoot = await mkdtemp(path.join(tmpdir(), "visualbridge-mcp-v2-"));
+  const physicalProjectRoot = path.join(physicalTemporaryRoot, name);
+  await cp(path.join(repositoryRoot, "TestData", name), physicalProjectRoot, { recursive: true });
+  let aliasParent;
+  let temporaryRoot = physicalTemporaryRoot;
+  if (options.trustedRootAliasContext !== undefined) {
+    aliasParent = await mkdtemp(path.join(tmpdir(), "visualbridge-mcp-root-alias-"));
+    temporaryRoot = path.join(aliasParent, "workspace");
+    try {
+      await symlink(physicalTemporaryRoot, temporaryRoot, process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      if (![
+        "EPERM",
+        "EACCES",
+        "ENOSYS",
+        "ENOTSUP",
+      ].includes(error?.code)) throw error;
+      options.trustedRootAliasContext.skip(`directory aliases are unavailable on this platform (${error.code})`);
+      await rm(aliasParent, { recursive: true, force: true });
+      aliasParent = undefined;
+      temporaryRoot = physicalTemporaryRoot;
+    }
+  }
   const projectRoot = path.join(temporaryRoot, name);
-  await cp(path.join(repositoryRoot, "TestData", name), projectRoot, { recursive: true });
   const running = await startClient(temporaryRoot);
   try {
     await action({ temporaryRoot, projectRoot, client: running.client, stderr: running.stderr });
@@ -2019,7 +2040,8 @@ async function withFixture(name, action) {
     assert.fail(`${error instanceof Error ? error.stack ?? error.message : String(error)}\nMCP stderr:\n${running.stderr()}`);
   } finally {
     await running.client.close().catch(() => undefined);
-    await rm(temporaryRoot, { recursive: true, force: true });
+    if (aliasParent !== undefined) await rm(aliasParent, { recursive: true, force: true });
+    await rm(physicalTemporaryRoot, { recursive: true, force: true });
   }
 }
 

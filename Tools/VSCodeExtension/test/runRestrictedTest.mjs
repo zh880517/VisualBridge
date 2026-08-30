@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { downloadAndUnzipVSCode } from "@vscode/test-electron";
 import { configureProviderFixture } from "../../NodeHost/test/providerFixture.mjs";
+import { removeIsolatedDirectory } from "./support/removeIsolatedDirectory.mjs";
 
 const TEST_DIRECTORY_PREFIX = "visualbridge-vscode-restricted-";
 const TEST_VERSION = process.env.VISUALBRIDGE_VSCODE_TEST_VERSION ?? "1.105.1";
@@ -55,7 +56,7 @@ try {
   completed = true;
 } finally {
   if (completed || process.env.VISUALBRIDGE_CLEAN_FAILED_TEST === "1") {
-    await removeIsolatedDirectory(temporaryPath);
+    await removeIsolatedDirectory(temporaryPath, TEST_DIRECTORY_PREFIX);
   } else {
     console.error(`[vscode-restricted] Preserved failed run at ${temporaryPath}`);
   }
@@ -100,20 +101,5 @@ async function runRestrictedTests(executablePath, paths) {
         reject(new Error(`Restricted VS Code test exited with ${code ?? signal}.`));
       }
     });
-  });
-}
-
-async function removeIsolatedDirectory(directoryPath) {
-  const resolvedTemporaryRoot = await realpath(tmpdir());
-  const resolvedDirectory = path.resolve(directoryPath);
-  if (!resolvedDirectory.startsWith(`${resolvedTemporaryRoot}${path.sep}`)
-    || !path.basename(resolvedDirectory).startsWith(TEST_DIRECTORY_PREFIX)) {
-    throw new Error(`Refusing to remove non-test directory '${resolvedDirectory}'.`);
-  }
-  await rm(resolvedDirectory, {
-    recursive: true,
-    force: true,
-    maxRetries: 5,
-    retryDelay: 250,
   });
 }
