@@ -2,6 +2,7 @@
   "name": "@visualbridge/node-host",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "src/index.ts",
@@ -9,7 +10,7 @@
     "dist"
   ],
   "engines": {
-    "node": ">=20"
+    "node": "22.22.1"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -20,6 +21,6 @@
     "@visualbridge/core": "*"
   },
   "devDependencies": {
-    "@types/node": "^24.13.1"
+    "@types/node": "22.20.1"
   }
 }

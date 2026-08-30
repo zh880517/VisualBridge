@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://visualbridge.dev/schema/visualbridge-primitives.schema.json",
+  "title": "VisualBridge Protocol Primitives V1",
+  "$defs": {
+    "jsonValue": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "number" },
+        { "type": "string" },
+        { "type": "array", "items": { "$ref": "#/$defs/jsonValue" } },
+        { "type": "object", "additionalProperties": { "$ref": "#/$defs/jsonValue" } }
+      ]
+    },
+    "jsonObject": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+    },
+    "stableId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "alias": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "normalizedPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!.*:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*\\/$).+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "formatVersion": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "referenceValue": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "number" }
+      ]
+    },
+    "cursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 262144
+    },
+    "shortCursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "query": {
+      "type": "string",
+      "maxLength": 512
+    },
+    "pageLimit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200
+    },
+    "documentPageLimit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+    },
+    "hashManifest": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/normalizedPath" },
+      "additionalProperties": { "$ref": "#/$defs/sha256" }
+    },
+    "dependency": {
+      "type": "object",
+      "required": ["kind", "key", "hash", "paths"],
+      "properties": {
+        "kind": { "enum": ["project", "catalog", "documentSet", "referenceIndex"] },
+        "key": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "hash": { "$ref": "#/$defs/sha256" },
+        "paths": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": { "$ref": "#/$defs/normalizedPath" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "diagnostic": {
+      "type": "object",
+      "required": ["severity", "code", "path", "message"],
+      "properties": {
+        "severity": { "enum": ["error", "warning"] },
+        "code": { "$ref": "#/$defs/stableId" },
+        "path": { "type": "string" },
+        "message": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "$ref": "#/$defs/stableId" },
+        "message": { "type": "string", "minLength": 1 },
+        "details": { "$ref": "#/$defs/jsonValue" }
+      },
+      "additionalProperties": false
+    },
+    "lockOwner": {
+      "type": "object",
+      "required": ["version", "token", "pid", "startedAt"],
+      "properties": {
+        "version": { "const": 1 },
+        "token": { "type": "string", "format": "uuid" },
+        "pid": { "type": "integer", "minimum": 1 },
+        "startedAt": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

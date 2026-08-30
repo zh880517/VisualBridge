@@ -8,7 +8,9 @@ Keep durable documentation in `Doc/`. Put task plans and temporary design notes 
 
 ## Build, Test, and Development Commands
 
-- `npm install` — install monorepo dependencies from the root lockfile.
+Use Node.js 22.22.1 and npm 10.9.4 as declared by `.nvmrc`, `engines.node`, and `packageManager`. Switch Node versions before installing; `.npmrc` intentionally rejects a mismatched runtime.
+
+- `npm ci` — install the exact monorepo dependencies from the root lockfile.
 - `npm run check` — type-check VisualBridgeCore and the VS Code extension.
 - `npm run build` — compile Core and bundle the extension into `Tools/VSCodeExtension/dist/`.
 - `npm run package:vscode` — create a VSIX under `Tools/VSCodeExtension/artifacts/`.

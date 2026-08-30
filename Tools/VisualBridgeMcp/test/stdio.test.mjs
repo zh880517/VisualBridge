@@ -35,8 +35,12 @@ test("MCP V2 exposes seven stable tools and routes Graph semantics with real cro
       ],
     );
     for (const tool of listed.tools) {
-      assert.equal(tool.inputSchema.type, "object", `${tool.name} input must be structured.`);
-      assert.equal(tool.inputSchema.additionalProperties, false, `${tool.name} input must reject unknown keys.`);
+      const inputBranches = tool.inputSchema.oneOf ?? tool.inputSchema.anyOf ?? [tool.inputSchema];
+      assert.ok(inputBranches.every((branch) => branch.type === "object"), `${tool.name} input must be structured.`);
+      assert.ok(
+        inputBranches.every((branch) => branch.additionalProperties === false),
+        `${tool.name} input must reject unknown keys in every action branch.`,
+      );
       const outputBranches = tool.outputSchema.anyOf ?? tool.outputSchema.oneOf;
       assert.equal(outputBranches.length, 2, `${tool.name} output must discriminate success and error.`);
       assert.ok(outputBranches.every((branch) => branch.type === "object" && branch.additionalProperties === false));
@@ -122,6 +126,21 @@ test("MCP V2 exposes seven stable tools and routes Graph semantics with real cro
       documentTypeId: "logicGraph",
       editor: "graph",
     };
+    const invalidLifecyclePreview = await client.callTool({
+      name: "visualbridge_document_lifecycle",
+      arguments: {
+        action: "preview",
+        projectFile,
+        operation: {
+          kind: "copy",
+          source: { ...graphCopySelector, path: graphPath },
+          target: { ...graphCopySelector, path: "Graph/EdgeCollisionCopy.vbgraph" },
+          stableIdRemap: [],
+        },
+        previewHash: "a".repeat(64),
+      },
+    });
+    assert.equal(invalidLifecyclePreview.isError, true);
     const graphCopySeed = await call(client, "visualbridge_document_lifecycle", {
       action: "preview",
       projectFile,
@@ -177,6 +196,11 @@ test("MCP V2 exposes seven stable tools and routes Graph semantics with real cro
       },
     });
     assert.equal(driveQualifiedPath.isError, true);
+    const trailingSlashPath = await client.callTool({
+      name: "visualbridge_document",
+      arguments: { ...selector, action: "read", path: `${graphPath}/` },
+    });
+    assert.equal(trailingSlashPath.isError, true);
     const wrongCatalogEditor = await client.callTool({
       name: "visualbridge_catalog",
       arguments: { ...selector, editor: "entity", action: "read", kind: "summary" },
@@ -202,14 +226,20 @@ test("MCP V2 exposes seven stable tools and routes Graph semantics with real cro
       value: "semantic-sample",
     });
     assert.equal(documentReference.status, "resolved");
-    const refactor = await call(client, "visualbridge_refactor_reference", {
+    const refactorPreviewArguments = {
       projectFile,
       action: "preview",
       kind: "graph.element",
       target: { documentTypeId: "logicGraph", elementKind: "node" },
       oldValue: "step_b",
       newValue: "step_second",
+    };
+    const invalidRefactorPreview = await client.callTool({
+      name: "visualbridge_refactor_reference",
+      arguments: { ...refactorPreviewArguments, previewHash: "a".repeat(64) },
     });
+    assert.equal(invalidRefactorPreview.isError, true);
+    const refactor = await call(client, "visualbridge_refactor_reference", refactorPreviewArguments);
     assert.match(refactor.previewHash, /^[a-f0-9]{64}$/);
     assert.equal(refactor.sources.length, 1);
 

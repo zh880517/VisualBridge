@@ -42,8 +42,7 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
     },
     "propertyValues": {
-      "type": "object",
-      "additionalProperties": true
+      "$ref": "visualbridge-primitives.schema.json#/$defs/jsonObject"
     },
     "component": {
       "type": "object",

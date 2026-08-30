@@ -244,12 +244,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         (uri: vscode.Uri) => editorProvider.getGraphEditorTestState(uri),
       ),
       vscode.commands.registerCommand(
+        "visualbridge.test.getEntityEditorState",
+        (uri: vscode.Uri) => editorProvider.getEntityEditorTestState(uri),
+      ),
+      vscode.commands.registerCommand(
         "visualbridge.test.pauseNextTableReveal",
         (uri: vscode.Uri) => tableEditorProvider.pauseNextRevealForTest(uri),
       ),
       vscode.commands.registerCommand(
         "visualbridge.test.applyTableOperations",
         (uri: vscode.Uri, operations: unknown) => tableEditorProvider.applyOperationsForTest(uri, operations),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.applyDocumentOperations",
+        (uri: vscode.Uri, editor: "entity" | "graph" | "structured", operations: unknown) => (
+          editorProvider.applyOperationsForTest(uri, editor, operations)
+        ),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.applyStructuredOperationsAfterExternalWrite",
+        (uri: vscode.Uri, externalText: string, operations: unknown) => (
+          editorProvider.applyOperationsAfterExternalWriteForTest(uri, externalText, operations)
+        ),
       ),
       vscode.commands.registerCommand(
         "visualbridge.test.assertIdentityOperationsAllowed",
@@ -260,6 +276,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.commands.registerCommand(
         "visualbridge.test.saveTable",
         (uri: vscode.Uri) => tableEditorProvider.saveForTest(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.failReferenceRefactorCommittedRefresh",
+        (phase: "tableEditor" | "documentIndex", message: string) => (
+          refactors.failCommittedRefreshForTest(phase, message)
+        ),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.renameReferenceTarget",
+        (request: import("./refactor/workspaceReferenceRefactor").WorkspaceReferenceTargetRenameRequest) => (
+          refactors.renameTarget(request)
+        ),
       ),
       vscode.commands.registerCommand(
         "visualbridge.test.lifecycleMove",

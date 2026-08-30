@@ -107,7 +107,7 @@ Project、Document、Document Type、Element、Reference、Runtime Instance 和�
 
 ### AI 与人工使用同一核心
 
-VS Code 和 MCP 都依赖 VisualBridgeCore 与 Built-in 语义包，不分别实现 Parser、Catalog、Operation、Validator、Reference 或 Serializer。两者保留符合宿主生命周期的持久化方式：VS Code 使用 TextDocument / WorkspaceEdit，MCP 使用可恢复 Project Transaction。
+VS Code 和 MCP 都依赖 VisualBridgeCore 与 Built-in 语义包，不分别实现 Parser、Catalog、Operation、Validator、Reference 或 Serializer。普通 VS Code 文本文档编辑使用 TextDocument / WorkspaceEdit 以保留 Undo/Redo；VS Code Lifecycle、Reference Refactor、Table 多来源保存与所有 MCP 写入通过 `Tools/NodeHost` 共用可恢复 Project Transaction。完整锁、Hash、journal 和恢复契约见 [`ProjectTransaction.md`](ProjectTransaction.md)。
 
 ## 总体架构
 

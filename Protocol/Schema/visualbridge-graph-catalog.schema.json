@@ -93,7 +93,7 @@
         "valueType": { "enum": ["string", "number", "boolean", "json"] },
         "dataTypeId": { "$ref": "#/$defs/identifier" },
         "required": { "type": "boolean", "default": false },
-        "defaultValue": {},
+        "defaultValue": { "$ref": "visualbridge-primitives.schema.json#/$defs/jsonValue" },
         "editor": { "$ref": "#/$defs/propertyEditor" },
         "reference": { "$ref": "#/$defs/reference" }
       },
@@ -122,7 +122,7 @@
       "required": ["kind", "target"],
       "properties": {
         "kind": { "$ref": "#/$defs/identifier" },
-        "target": { "type": "object", "additionalProperties": true },
+        "target": { "$ref": "visualbridge-primitives.schema.json#/$defs/jsonObject" },
         "allowMissing": { "type": "boolean", "default": false }
       },
       "additionalProperties": false
@@ -132,7 +132,7 @@
       "required": ["title", "value"],
       "properties": {
         "title": { "type": "string" },
-        "value": {}
+        "value": { "$ref": "visualbridge-primitives.schema.json#/$defs/jsonValue" }
       },
       "additionalProperties": false
     },
@@ -194,7 +194,7 @@
       "properties": {
         "valueType": { "enum": ["string", "number", "boolean", "json"] },
         "dataTypeId": { "$ref": "#/$defs/identifier" },
-        "defaultValue": {},
+        "defaultValue": { "$ref": "visualbridge-primitives.schema.json#/$defs/jsonValue" },
         "editor": { "$ref": "#/$defs/propertyEditor" },
         "reference": { "$ref": "#/$defs/reference" }
       },

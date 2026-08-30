@@ -1,0 +1,69 @@
+{
+  "formatVersion": 4,
+  "catalogId": "sample.gameplay.graph",
+  "title": "Sample Gameplay Graph",
+  "source": {
+    "status": "unknown"
+  },
+  "dataTypes": [
+    {
+      "id": "string",
+      "title": "String",
+      "accepts": []
+    }
+  ],
+  "graphTypes": [
+    {
+      "id": "sample.encounter.root",
+      "aliases": [],
+      "title": "Encounter",
+      "usage": "root",
+      "supportedCatalogIds": [
+        "sample.gameplay.graph"
+      ],
+      "portConnectionRules": {
+        "input": "single",
+        "output": "multiple"
+      },
+      "allowedNodeSelectors": [
+        {
+          "tags": [
+            "sample"
+          ]
+        }
+      ],
+      "properties": [],
+      "nodeConstraints": [],
+      "initialNodes": [],
+      "allowSubgraphs": false
+    }
+  ],
+  "nodeTypes": [
+    {
+      "id": "sample.message",
+      "aliases": [],
+      "title": "Message",
+      "category": "Sample",
+      "menuPath": [
+        "Sample"
+      ],
+      "tags": [
+        "sample"
+      ],
+      "traits": [],
+      "ports": [],
+      "dynamicPortGroups": [],
+      "properties": [
+        {
+          "id": "text",
+          "title": "Text",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "string",
+          "required": true,
+          "defaultValue": "Hello"
+        }
+      ]
+    }
+  ]
+}

@@ -53,12 +53,14 @@ interface EntityStateOptions {
 export class EntityEditorSession {
   private readonly disposables: vscode.Disposable[] = [];
   private readonly catalogDisposables: vscode.Disposable[] = [];
-  private baseDiskHash = "";
+  // TextDocument conflicts intentionally compare decoded UTF-8 text. Project Transactions use exact-byte hashes.
+  private baseDiskTextHash = "";
   private operationQueue: Promise<void> = Promise.resolve();
   private disposed = false;
   private webviewReady = false;
   private readonly webviewEpoch = new WebviewEpoch();
   private readonly revealMailbox = new EntityRevealMailbox();
+  private lastRevealResult: { readonly target: EntityRevealTarget; readonly found: boolean } | undefined;
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -67,12 +69,12 @@ export class EntityEditorSession {
     private match: DocumentMatch,
     private readonly projects: ProjectRegistry,
     private readonly references: WorkspaceReferenceService,
-    private readonly diagnostics: vscode.DiagnosticCollection,
+    private readonly publishDiagnostics: (diagnostics: readonly vscode.Diagnostic[]) => void,
     private readonly output: vscode.OutputChannel,
   ) {}
 
   public async open(): Promise<void> {
-    this.baseDiskHash = await this.readDiskHash();
+    this.baseDiskTextHash = await this.readDiskTextHash();
     this.webviewEpoch.begin(createNonce());
     const nonce = createNonce();
     const webviewRoot = vscode.Uri.joinPath(this.extensionUri, "dist", "webview");
@@ -121,7 +123,7 @@ export class EntityEditorSession {
                 : {}),
           });
           if (!event.document.isDirty) {
-            void this.updateDiskBaseline();
+            this.baseDiskTextHash = hashText(event.document.getText());
           }
         } else if (this.getCatalogUris().some((catalogUri) => sameUri(event.document.uri, catalogUri))) {
           void this.sendState();
@@ -129,7 +131,8 @@ export class EntityEditorSession {
       }),
       vscode.workspace.onDidSaveTextDocument((savedDocument) => {
         if (sameUri(savedDocument.uri, this.document.uri)) {
-          void this.updateDiskBaseline().then(() => this.sendState());
+          this.baseDiskTextHash = hashText(savedDocument.getText());
+          void this.sendState();
         }
       }),
       this.projects.onDidChange(() => {
@@ -181,6 +184,38 @@ export class EntityEditorSession {
     }
   }
 
+  public get testState(): {
+    readonly ready: boolean;
+    readonly active: boolean;
+    readonly visible: boolean;
+    readonly lastRevealResult?: { readonly target: EntityRevealTarget; readonly found: boolean };
+  } {
+    return {
+      ready: this.webviewReady && this.webviewEpoch.isReady && !this.disposed,
+      active: this.panel.active,
+      visible: this.panel.visible,
+      ...(this.lastRevealResult === undefined ? {} : { lastRevealResult: this.lastRevealResult }),
+    };
+  }
+
+  public async applyOperationsForTest(operations: unknown): Promise<void> {
+    const webviewToken = this.webviewEpoch.currentToken;
+    if (!this.isReady || webviewToken === undefined) {
+      throw new Error("No ready Entity editor session was found.");
+    }
+    const webviewEpoch = this.webviewEpoch.capture();
+    const operation = this.operationQueue
+      .catch(() => undefined)
+      .then(() => this.handleMessage({
+        type: "applyOperations",
+        webviewToken,
+        documentVersion: this.document.version,
+        operations,
+      }, webviewEpoch));
+    this.operationQueue = operation;
+    await operation;
+  }
+
   private async handleMessage(message: WebviewMessage, webviewEpoch: number): Promise<void> {
     if (!this.isCurrentWebviewEpoch(webviewEpoch)) {
       return;
@@ -194,7 +229,13 @@ export class EntityEditorSession {
     }
     if (message.type === ENTITY_REVEAL_RESULT_MESSAGE_TYPE) {
       if (typeof message.requestId !== "string" || typeof message.found !== "boolean") return;
-      if (this.revealMailbox.acknowledge(message.requestId) && !message.found) {
+      const delivered = this.revealMailbox.deliverable;
+      if (this.revealMailbox.acknowledge(message.requestId)) {
+        if (delivered?.requestId === message.requestId) {
+          this.lastRevealResult = { target: delivered.target, found: message.found };
+        }
+      }
+      if (delivered?.requestId === message.requestId && !message.found) {
         this.output.appendLine(
           `[entity] Reveal target was not found in ${this.match.relativePath}: ${typeof message.message === "string" ? message.message : "unknown target"}`,
         );
@@ -212,6 +253,7 @@ export class EntityEditorSession {
       await this.rejectOperation("文档已发生变化，编辑器已刷新，请重试刚才的操作。");
       return;
     }
+    const documentVersion = message.documentVersion;
     if (containsLifecycleGuardedRemoval("entity", message.operations)) {
       const target = lifecycleDeleteTarget("entity", message.operations);
       if (target === undefined || this.document.isDirty) {
@@ -236,6 +278,9 @@ export class EntityEditorSession {
     if (!await this.confirmExternalChanges()) {
       return;
     }
+    if (!this.isCurrentOperation(documentVersion, webviewEpoch)) {
+      return;
+    }
 
     const parseResult = parseEntityDocument(this.document.getText());
     if (!parseResult.success) {
@@ -245,6 +290,9 @@ export class EntityEditorSession {
       return;
     }
     const catalogResult = await loadEntityCatalogRegistry(this.match.project, this.match.documentType.catalogs);
+    if (!this.isCurrentOperation(documentVersion, webviewEpoch)) {
+      return;
+    }
     if (!catalogResult.ready && operationsRequireCatalog(message.operations)) {
       this.updateDiagnostics([...parseResult.diagnostics, ...catalogResult.diagnostics]);
       await this.rejectOperation(formatCatalogUnavailable(catalogResult.diagnostics));
@@ -262,6 +310,9 @@ export class EntityEditorSession {
         collectEntityReferences(parseResult.document, catalogResult.registry),
         collectEntityReferences(operationResult.document, catalogResult.registry),
       );
+      if (!this.isCurrentOperation(documentVersion, webviewEpoch)) {
+        return;
+      }
       if (referenceResult.introducedErrors.length > 0) {
         this.updateDiagnostics([...catalogResult.diagnostics, ...operationResult.diagnostics, ...referenceResult.diagnostics]);
         await this.rejectOperation(formatDiagnostics(referenceResult.introducedErrors));
@@ -276,6 +327,9 @@ export class EntityEditorSession {
       sourceHash: hashText(nextText),
       content: operationResult.document as unknown as JsonValue,
     });
+    if (!this.isCurrentOperation(documentVersion, webviewEpoch)) {
+      return;
+    }
     const providerErrors = providerDiagnostics.filter((diagnostic) => diagnostic.severity === "error");
     if (providerErrors.length > 0) {
       this.updateDiagnostics([...catalogResult.diagnostics, ...operationResult.diagnostics, ...providerDiagnostics]);
@@ -283,7 +337,7 @@ export class EntityEditorSession {
       return;
     }
     if (nextText === this.document.getText()) {
-      await this.panel.webview.postMessage({
+      await this.postMessage({
         type: "operationCompleted",
         documentVersion: this.document.version,
         changed: false,
@@ -300,7 +354,7 @@ export class EntityEditorSession {
     this.output.appendLine(
       `[entity] Applied operations to ${this.match.relativePath} at document version ${this.document.version}.`,
     );
-    await this.panel.webview.postMessage({
+    await this.postMessage({
       type: "operationCompleted",
       documentVersion: this.document.version,
       changed: true,
@@ -310,13 +364,13 @@ export class EntityEditorSession {
 
   private async confirmExternalChanges(): Promise<boolean> {
     const diskBytes = await vscode.workspace.fs.readFile(this.document.uri);
-    const diskHash = hashBytes(diskBytes);
-    if (diskHash === this.baseDiskHash) {
+    const diskText = new TextDecoder("utf-8", { fatal: true }).decode(diskBytes);
+    const diskTextHash = hashText(diskText);
+    if (diskTextHash === this.baseDiskTextHash) {
       return true;
     }
-    const diskText = new TextDecoder("utf-8", { fatal: true }).decode(diskBytes);
     if (!this.document.isDirty) {
-      this.baseDiskHash = diskHash;
+      this.baseDiskTextHash = diskTextHash;
       if (diskText !== this.document.getText()) {
         await this.replaceDocumentText(diskText);
         if (!await this.document.save()) {
@@ -336,7 +390,7 @@ export class EntityEditorSession {
       DISCARD_AND_RELOAD,
     );
     if (choice === OVERWRITE) {
-      this.baseDiskHash = diskHash;
+      this.baseDiskTextHash = diskTextHash;
       return true;
     }
     if (choice === DISCARD_AND_RELOAD) {
@@ -345,7 +399,7 @@ export class EntityEditorSession {
         await this.rejectOperation("无法完成放弃并刷新，文档未保存。");
         return false;
       }
-      this.baseDiskHash = diskHash;
+      this.baseDiskTextHash = diskTextHash;
       await this.sendState();
       await this.rejectOperation("已放弃本地修改并读取磁盘版本。");
       return false;
@@ -366,6 +420,8 @@ export class EntityEditorSession {
     if (this.disposed) {
       return false;
     }
+    const webviewEpoch = this.webviewEpoch.capture();
+    const documentVersion = this.document.version;
     const sourceText = this.document.getText();
     const result = parseEntityDocument(sourceText);
     this.updateDiagnostics(result.diagnostics);
@@ -390,8 +446,11 @@ export class EntityEditorSession {
         content: result.document as unknown as JsonValue,
       }),
     ];
+    if (!this.isCurrentOperation(documentVersion, webviewEpoch)) {
+      return false;
+    }
     this.updateDiagnostics(diagnostics);
-    return this.panel.webview.postMessage({
+    return this.postMessage({
       type: "entityState",
       documentVersion: this.document.version,
       document: result.document,
@@ -419,7 +478,7 @@ export class EntityEditorSession {
   private async sendPendingReveal(): Promise<void> {
     const pendingReveal = this.revealMailbox.deliverable;
     if (this.disposed || pendingReveal === undefined) return;
-    if (!await this.panel.webview.postMessage(pendingReveal)) {
+    if (!await this.postMessage(pendingReveal)) {
       this.revealMailbox.markUnavailable();
     }
   }
@@ -446,7 +505,7 @@ export class EntityEditorSession {
     diagnostics: readonly DocumentDiagnostic[],
     options: EntityStateOptions = {},
   ): Promise<boolean> {
-    return this.panel.webview.postMessage({
+    return this.postMessage({
       type: "entityInvalid",
       documentVersion: this.document.version,
       isDirty: this.document.isDirty,
@@ -457,10 +516,13 @@ export class EntityEditorSession {
   }
 
   private async rejectOperation(message: string): Promise<void> {
-    await this.panel.webview.postMessage({ type: "operationRejected", message });
+    await this.postMessage({ type: "operationRejected", message });
   }
 
   private updateDiagnostics(items: readonly DocumentDiagnostic[]): void {
+    if (this.disposed) {
+      return;
+    }
     const diagnostics = items.map((item) => {
       const diagnostic = new vscode.Diagnostic(
         new vscode.Range(0, 0, 0, 1),
@@ -471,19 +533,18 @@ export class EntityEditorSession {
       diagnostic.source = "VisualBridge";
       return diagnostic;
     });
-    this.diagnostics.set(this.document.uri, diagnostics);
+    this.publishDiagnostics(diagnostics);
   }
 
-  private async readDiskHash(): Promise<string> {
+  private async readDiskTextHash(): Promise<string> {
     try {
-      return hashBytes(await vscode.workspace.fs.readFile(this.document.uri));
+      const diskText = new TextDecoder("utf-8", { fatal: true }).decode(
+        await vscode.workspace.fs.readFile(this.document.uri),
+      );
+      return hashText(diskText);
     } catch {
       return hashText(this.document.getText());
     }
-  }
-
-  private async updateDiskBaseline(): Promise<void> {
-    this.baseDiskHash = await this.readDiskHash();
   }
 
   private async handleReady(message: WebviewMessage, webviewEpoch: number): Promise<void> {
@@ -513,11 +574,27 @@ export class EntityEditorSession {
     if (this.disposed || !this.panel.visible || token === undefined) {
       return;
     }
-    await this.panel.webview.postMessage({ type: "requestReady", webviewToken: token });
+    await this.postMessage({ type: "requestReady", webviewToken: token });
+  }
+
+  private async postMessage(message: unknown): Promise<boolean> {
+    if (this.disposed) return false;
+    try {
+      return await this.panel.webview.postMessage(message);
+    } catch (errorValue) {
+      if (!this.disposed && !/Webview is disposed/u.test(formatError(errorValue))) {
+        this.output.appendLine(`[entity] Failed to post a Webview message for ${this.match.relativePath}: ${formatError(errorValue)}`);
+      }
+      return false;
+    }
   }
 
   private isCurrentWebviewEpoch(webviewEpoch: number): boolean {
     return !this.disposed && this.webviewEpoch.isCurrent(webviewEpoch);
+  }
+
+  private isCurrentOperation(documentVersion: number, webviewEpoch: number): boolean {
+    return this.document.version === documentVersion && this.isCurrentWebviewEpoch(webviewEpoch);
   }
 
   private dispose(): void {
@@ -533,7 +610,6 @@ export class EntityEditorSession {
     for (const disposable of this.disposables.splice(0)) {
       disposable.dispose();
     }
-    this.diagnostics.delete(this.document.uri);
   }
 }
 
@@ -553,10 +629,6 @@ const CATALOG_OPERATION_TYPES: ReadonlySet<string> = new Set([
 
 function fullDocumentRange(document: vscode.TextDocument): vscode.Range {
   return new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length));
-}
-
-function hashBytes(value: Uint8Array): string {
-  return createHash("sha256").update(value).digest("hex");
 }
 
 function hashText(value: string): string {

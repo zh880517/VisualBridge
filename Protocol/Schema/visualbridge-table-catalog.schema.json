@@ -200,7 +200,7 @@
       "required": ["kind", "target"],
       "properties": {
         "kind": { "$ref": "#/$defs/identifier" },
-        "target": { "type": "object", "additionalProperties": true },
+        "target": { "$ref": "visualbridge-primitives.schema.json#/$defs/jsonObject" },
         "allowMissing": { "type": "boolean", "default": false }
       },
       "additionalProperties": false

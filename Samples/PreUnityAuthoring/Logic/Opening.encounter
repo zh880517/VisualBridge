@@ -1,0 +1,31 @@
+{
+  "formatVersion": 3,
+  "documentId": "sample.encounter.opening",
+  "rootGraphId": "root",
+  "graphs": [
+    {
+      "id": "root",
+      "graphTypeId": "sample.encounter.root",
+      "title": "Opening Encounter",
+      "properties": {},
+      "interfacePorts": [],
+      "nodes": [
+        {
+          "kind": "node",
+          "id": "welcome",
+          "nodeTypeId": "sample.message",
+          "title": "Welcome",
+          "position": {
+            "x": 80,
+            "y": 80
+          },
+          "properties": {
+            "text": "Welcome to VisualBridge"
+          },
+          "dynamicPorts": []
+        }
+      ],
+      "edges": []
+    }
+  ]
+}

@@ -86,6 +86,14 @@ export type WorkspaceReferenceTargetRenameResult =
       readonly success: true;
       readonly fileCount: number;
       readonly referenceCount: number;
+      readonly maintenance?: {
+        readonly code: "refactor.committedRefreshFailed";
+        readonly message: string;
+        readonly failures: readonly {
+          readonly phase: "tableEditor" | "documentIndex";
+          readonly message: string;
+        }[];
+      };
     }
   | {
       readonly success: false;
@@ -96,6 +104,11 @@ export type WorkspaceReferenceTargetRenameResult =
 const SUPPORTED_RENAME_KINDS = new Set(["document", "entity.component", "graph.element", "table.row"]);
 
 export class WorkspaceReferenceRefactor {
+  private committedRefreshFailureForTest: {
+    readonly phase: "tableEditor" | "documentIndex";
+    readonly message: string;
+  } | undefined;
+
   public constructor(
     private readonly projects: ProjectRegistry,
     private readonly documents: WorkspaceDocumentIndex,
@@ -137,9 +150,13 @@ export class WorkspaceReferenceRefactor {
     }
     const result = await this.applyPlan(project, planned.plan, { confirm: true });
     if (result.success) {
-      void vscode.window.showInformationMessage(
-        `Renamed ${String(planned.plan.oldValue)} to ${String(planned.plan.newValue)} in ${result.fileCount} source file(s) and ${result.referenceCount} reference occurrence(s).`,
-      );
+      if (result.maintenance === undefined) {
+        void vscode.window.showInformationMessage(
+          `Renamed ${String(planned.plan.oldValue)} to ${String(planned.plan.newValue)} in ${result.fileCount} source file(s) and ${result.referenceCount} reference occurrence(s).`,
+        );
+      } else {
+        void vscode.window.showWarningMessage(result.maintenance.message);
+      }
     } else if (result.code !== "refactor.cancelled") {
       void vscode.window.showWarningMessage(result.message);
     }
@@ -172,10 +189,21 @@ export class WorkspaceReferenceRefactor {
     if (planned.plan.kind !== "table.row") {
       return blocked("refactor.unsupportedTarget", "Table key editing can only rename a table.row target.");
     }
-    return this.applyPlan(project, planned.plan, {
+    const result = await this.applyPlan(project, planned.plan, {
       confirm: request.confirm,
       allowOpenTableTarget: true,
     });
+    if (result.success && result.maintenance !== undefined) {
+      void vscode.window.showWarningMessage(result.maintenance.message);
+    }
+    return result;
+  }
+
+  public failCommittedRefreshForTest(
+    phase: "tableEditor" | "documentIndex",
+    message: string,
+  ): void {
+    this.committedRefreshFailureForTest = { phase, message };
   }
 
   private async applyPlan(
@@ -243,19 +271,69 @@ export class WorkspaceReferenceRefactor {
 
     try {
       await commitWrites(project, writes, prepared);
-      if (allowedTarget?.editor === "table") {
-        await this.tables.refreshAfterReferenceRefactor(project, allowedTarget.sourcePaths);
-      }
-      this.references.invalidate();
-      await this.documents.refresh();
-      this.output.appendLine(
-        `[refactor] Renamed ${String(plan.oldValue)} -> ${String(plan.newValue)}; ${writes.length} files, ${plan.changes.length} references.`,
-      );
-      return { success: true, fileCount: writes.length, referenceCount: plan.changes.length };
     } catch (errorValue) {
       this.output.appendLine(`[refactor] Commit failed: ${formatError(errorValue)}`);
       return blocked("refactor.commitFailed", `Refactor was not applied: ${formatError(errorValue)}`);
     }
+
+    const refreshFailures: {
+      readonly phase: "tableEditor" | "documentIndex";
+      readonly message: string;
+    }[] = [];
+    this.references.invalidate();
+    if (allowedTarget?.editor === "table") {
+      try {
+        const injectedFailure = this.takeCommittedRefreshFailureForTest("tableEditor");
+        if (injectedFailure !== undefined) throw new Error(injectedFailure);
+        await this.tables.refreshAfterReferenceRefactor(project, allowedTarget.sourcePaths);
+      } catch (errorValue) {
+        refreshFailures.push({ phase: "tableEditor", message: formatError(errorValue) });
+      }
+    }
+    try {
+      const injectedFailure = this.takeCommittedRefreshFailureForTest("documentIndex");
+      const refresh = injectedFailure === undefined
+        ? await this.documents.refresh()
+        : { status: "failed" as const, epoch: -1, message: injectedFailure };
+      if (refresh.status !== "applied") {
+        refreshFailures.push({
+          phase: "documentIndex",
+          message: refresh.status === "failed"
+            ? refresh.message
+            : `Document Index refresh ended with status '${refresh.status}'.`,
+        });
+      }
+    } catch (errorValue) {
+      refreshFailures.push({ phase: "documentIndex", message: formatError(errorValue) });
+    }
+
+    const summary = `Renamed ${String(plan.oldValue)} -> ${String(plan.newValue)}; ${writes.length} files, ${plan.changes.length} references.`;
+    if (refreshFailures.length === 0) {
+      this.output.appendLine(`[refactor] ${summary}`);
+      return { success: true, fileCount: writes.length, referenceCount: plan.changes.length };
+    }
+    const failureSummary = refreshFailures
+      .map((failure) => `${failure.phase}: ${failure.message}`)
+      .join("; ");
+    const maintenance = {
+      code: "refactor.committedRefreshFailed" as const,
+      message: `Refactor committed, but post-commit refresh was incomplete. Do not retry the rename; refresh the affected editor or Document Index. ${failureSummary}`,
+      failures: refreshFailures,
+    };
+    this.output.appendLine(`[refactor] ${summary} ${maintenance.code}: ${failureSummary}`);
+    return {
+      success: true,
+      fileCount: writes.length,
+      referenceCount: plan.changes.length,
+      maintenance,
+    };
+  }
+
+  private takeCommittedRefreshFailureForTest(phase: "tableEditor" | "documentIndex"): string | undefined {
+    if (this.committedRefreshFailureForTest?.phase !== phase) return undefined;
+    const failure = this.committedRefreshFailureForTest;
+    this.committedRefreshFailureForTest = undefined;
+    return failure.message;
   }
 
   private async prepareDocument(

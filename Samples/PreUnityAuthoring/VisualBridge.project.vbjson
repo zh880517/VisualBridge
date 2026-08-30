@@ -1,0 +1,79 @@
+{
+  "formatVersion": 1,
+  "projectId": "visualbridge.sample.pre-unity-authoring",
+  "documentRoots": [
+    "Logic",
+    "Entities",
+    "Config",
+    "Tables"
+  ],
+  "documentTypes": [
+    {
+      "id": "sample.encounter",
+      "editor": "graph",
+      "include": [
+        "Logic/**/*.encounter"
+      ],
+      "exclude": [],
+      "catalogs": [
+        "Catalog/Gameplay.vbgraphcatalog"
+      ]
+    },
+    {
+      "id": "sample.hero",
+      "editor": "entity",
+      "include": [
+        "Entities/**/*.character"
+      ],
+      "exclude": [],
+      "catalogs": [
+        "Catalog/Gameplay.vbentitycatalog"
+      ]
+    },
+    {
+      "id": "sample.settings",
+      "editor": "structured",
+      "include": [
+        "Config/**/*.settingsdata"
+      ],
+      "exclude": [],
+      "catalogs": [
+        "Catalog/Gameplay.vbstructuredcatalog"
+      ]
+    },
+    {
+      "id": "sample.skills",
+      "editor": "table",
+      "include": [
+        "Tables/**/*.csv"
+      ],
+      "exclude": [],
+      "catalogs": [
+        "Catalog/Gameplay.vbtablecatalog"
+      ]
+    }
+  ],
+  "tableLayout": {
+    "nameKeyRow": 2,
+    "dataStartRow": 3
+  },
+  "providers": [
+    {
+      "id": "sample.assets",
+      "entry": "Providers/sample-provider.mjs",
+      "args": [],
+      "capabilities": {
+        "reference": {
+          "kinds": [
+            "sample.asset"
+          ]
+        },
+        "validator": {
+          "documentTypes": [
+            "sample.settings"
+          ]
+        }
+      }
+    }
+  ]
+}

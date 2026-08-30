@@ -4,6 +4,7 @@ import { lstat, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } fro
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createRequire } from "node:module";
 import {
   ProjectTransactionConflict,
   ProjectTransactionFailure,
@@ -57,6 +58,56 @@ test("mutation transactions create, delete, move, and preserve the replace API",
       { path: "move-source.txt", previousHash: hash(movedBytes) },
       { path: "move-target.txt", hash: hash(movedBytes) },
     ]);
+    await assertNoTransactionArtifacts(projectRoot);
+  });
+});
+
+test("a live commit failure rolls every already-replaced source back atomically", async () => {
+  await withTemporaryProject(async (projectRoot) => {
+    const before = bytes("before");
+    const after = bytes("after");
+    const mutations = [];
+    for (let index = 0; index < 2; index += 1) {
+      const logicalPath = `source-${String(index).padStart(3, "0")}.txt`;
+      const absolutePath = path.join(projectRoot, logicalPath);
+      await writeFile(absolutePath, before);
+      mutations.push({ path: logicalPath, absolutePath, before, after });
+    }
+
+    const require = createRequire(import.meta.url);
+    const fsPromises = require("node:fs/promises");
+    const originalRename = fsPromises.rename;
+    const businessTargets = new Set(mutations.map((mutation) => mutation.absolutePath));
+    const publishedTargets = [];
+    fsPromises.rename = async (source, destination) => {
+      const isBusinessPublish = source.endsWith(".tmp") && businessTargets.has(destination);
+      if (isBusinessPublish && publishedTargets.length === 1) {
+        assert.deepEqual(
+          await readFile(publishedTargets[0]),
+          after,
+          "The first business source was not in its published after state before the injected failure.",
+        );
+        throw Object.assign(new Error("Injected second publish failure."), { code: "EIO" });
+      }
+      await originalRename(source, destination);
+      if (isBusinessPublish) publishedTargets.push(destination);
+    };
+    try {
+      await assert.rejects(withProjectTransaction(
+        projectRoot,
+        (transaction) => transaction.mutate(mutations),
+      ));
+    } finally {
+      fsPromises.rename = originalRename;
+    }
+    assert.deepEqual(
+      publishedTargets,
+      [mutations[0].absolutePath],
+      "The failpoint did not run after exactly one business source was published.",
+    );
+    for (const mutation of mutations) {
+      assert.deepEqual(await readFile(mutation.absolutePath), before, `${mutation.path} was not rolled back.`);
+    }
     await assertNoTransactionArtifacts(projectRoot);
   });
 });

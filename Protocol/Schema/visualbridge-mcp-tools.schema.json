@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://visualbridge.dev/schema/visualbridge-mcp-tools.schema.json",
+  "title": "VisualBridge MCP V2 Tool Contracts",
+  "$defs": {
+    "toolOutput": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["contractVersion", "status", "data"],
+          "properties": {
+            "contractVersion": { "const": 2 },
+            "status": { "enum": ["ok", "preview", "applied", "unchanged", "invalid", "blocked", "conflict"] },
+            "data": { "$ref": "visualbridge-primitives.schema.json#/$defs/jsonObject" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["contractVersion", "status", "error"],
+          "properties": {
+            "contractVersion": { "const": 2 },
+            "status": { "const": "error" },
+            "error": { "$ref": "visualbridge-primitives.schema.json#/$defs/error" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "visualbridge_project.input": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": { "enum": ["discover", "read", "listDocuments"] },
+        "projectFile": { "$ref": "visualbridge-primitives.schema.json#/$defs/normalizedPath" },
+        "editor": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" },
+        "documentTypeId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" },
+        "query": { "$ref": "visualbridge-primitives.schema.json#/$defs/query", "default": "" },
+        "cursor": { "$ref": "visualbridge-primitives.schema.json#/$defs/shortCursor" },
+        "limit": { "$ref": "visualbridge-primitives.schema.json#/$defs/pageLimit", "default": 50 }
+      },
+      "additionalProperties": false
+    },
+    "visualbridge_catalog.input": {
+      "type": "object",
+      "required": ["action", "projectFile", "documentTypeId", "editor"],
+      "properties": {
+        "action": { "enum": ["read", "search"] },
+        "projectFile": { "$ref": "visualbridge-primitives.schema.json#/$defs/normalizedPath" },
+        "documentTypeId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" },
+        "editor": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" },
+        "kind": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" },
+        "query": { "$ref": "visualbridge-primitives.schema.json#/$defs/query", "default": "" },
+        "cursor": { "$ref": "visualbridge-primitives.schema.json#/$defs/shortCursor" },
+        "limit": { "$ref": "visualbridge-primitives.schema.json#/$defs/pageLimit", "default": 50 },
+        "selector": { "$ref": "visualbridge-primitives.schema.json#/$defs/jsonObject", "default": {} }
+      },
+      "additionalProperties": false
+    },
+    "visualbridge_document.input": {
+      "type": "object",
+      "required": ["action", "projectFile", "documentTypeId", "editor", "path"],
+      "properties": {
+        "action": { "enum": ["read", "search", "validate"] },
+        "projectFile": { "$ref": "visualbridge-primitives.schema.json#/$defs/normalizedPath" },
+        "documentTypeId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" },
+        "editor": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" },
+        "path": { "$ref": "visualbridge-primitives.schema.json#/$defs/normalizedPath" },
+        "query": { "$ref": "visualbridge-primitives.schema.json#/$defs/query", "default": "" },
+        "cursor": { "$ref": "visualbridge-primitives.schema.json#/$defs/shortCursor" },
+        "limit": { "$ref": "visualbridge-primitives.schema.json#/$defs/documentPageLimit", "default": 100 },
+        "selector": { "$ref": "visualbridge-primitives.schema.json#/$defs/jsonObject", "default": {} }
+      },
+      "additionalProperties": false
+    },
+    "visualbridge_apply_operations.input": { "$ref": "visualbridge-authoring-contracts.schema.json#/$defs/applyOperationsRequest" },
+    "visualbridge_references.input": {
+      "type": "object",
+      "required": ["projectFile", "action", "kind"],
+      "properties": {
+        "projectFile": { "$ref": "visualbridge-primitives.schema.json#/$defs/normalizedPath" },
+        "action": { "enum": ["search", "resolve"] },
+        "kind": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" },
+        "target": { "$ref": "visualbridge-primitives.schema.json#/$defs/jsonObject", "default": {} },
+        "allowMissing": { "type": "boolean", "default": false },
+        "query": { "$ref": "visualbridge-primitives.schema.json#/$defs/query" },
+        "value": { "$ref": "visualbridge-primitives.schema.json#/$defs/referenceValue" },
+        "limit": { "$ref": "visualbridge-primitives.schema.json#/$defs/pageLimit", "default": 50 },
+        "cursor": { "$ref": "visualbridge-primitives.schema.json#/$defs/cursor" }
+      },
+      "additionalProperties": false
+    },
+    "visualbridge_refactor_reference.input": {
+      "anyOf": [
+        { "$ref": "visualbridge-authoring-contracts.schema.json#/$defs/refactorPreviewStringRequest" },
+        { "$ref": "visualbridge-authoring-contracts.schema.json#/$defs/refactorPreviewNumberRequest" },
+        { "$ref": "visualbridge-authoring-contracts.schema.json#/$defs/refactorApplyStringRequest" },
+        { "$ref": "visualbridge-authoring-contracts.schema.json#/$defs/refactorApplyNumberRequest" }
+      ]
+    },
+    "mcpLifecycleSelector": { "$ref": "visualbridge-authoring-contracts.schema.json#/$defs/lifecycleSelector" },
+    "mcpLifecycleCreateOperation": {
+      "oneOf": [
+        { "type": "object", "required": ["kind", "target", "parameters"], "properties": { "kind": { "const": "create" }, "target": { "type": "object", "required": ["projectId", "documentTypeId", "editor", "path"], "properties": { "projectId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "documentTypeId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "editor": { "const": "graph" }, "path": { "$ref": "visualbridge-primitives.schema.json#/$defs/normalizedPath" } }, "additionalProperties": false }, "parameters": { "type": "object", "required": ["documentId", "rootGraphId"], "properties": { "documentId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "rootGraphId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "graphTypeId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "initialNodeIds": { "type": "array", "items": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "default": [] } }, "additionalProperties": false } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "target", "parameters"], "properties": { "kind": { "const": "create" }, "target": { "type": "object", "required": ["projectId", "documentTypeId", "editor", "path"], "properties": { "projectId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "documentTypeId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "editor": { "const": "entity" }, "path": { "$ref": "visualbridge-primitives.schema.json#/$defs/normalizedPath" } }, "additionalProperties": false }, "parameters": { "type": "object", "required": ["documentId", "entityTypeId"], "properties": { "documentId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "entityTypeId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "title": { "type": "string", "minLength": 1, "maxLength": 512 } }, "additionalProperties": false } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "target", "parameters"], "properties": { "kind": { "const": "create" }, "target": { "type": "object", "required": ["projectId", "documentTypeId", "editor", "path"], "properties": { "projectId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "documentTypeId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "editor": { "const": "structured" }, "path": { "$ref": "visualbridge-primitives.schema.json#/$defs/normalizedPath" } }, "additionalProperties": false }, "parameters": { "type": "object", "required": ["documentId"], "properties": { "documentId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" } }, "additionalProperties": false } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "target", "parameters"], "properties": { "kind": { "const": "create" }, "target": { "type": "object", "required": ["projectId", "documentTypeId", "editor", "path"], "properties": { "projectId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "documentTypeId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "editor": { "const": "table" }, "path": { "$ref": "visualbridge-primitives.schema.json#/$defs/normalizedPath" } }, "additionalProperties": false }, "parameters": { "oneOf": [ { "type": "object", "required": ["format"], "properties": { "format": { "const": "csv" }, "physicalName": { "type": "string", "minLength": 1, "maxLength": 255 } }, "additionalProperties": false }, { "type": "object", "required": ["format"], "properties": { "format": { "const": "xlsx" } }, "additionalProperties": false } ] } }, "additionalProperties": false }
+      ]
+    },
+    "mcpLifecycleDeleteTarget": {
+      "oneOf": [
+        { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "document" } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "componentId"], "properties": { "kind": { "const": "entity.component" }, "componentId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "graphId", "elementKind", "elementId"], "properties": { "kind": { "const": "graph.element" }, "graphId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "elementKind": { "const": "graph" }, "elementId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "graphId", "elementKind", "elementId"], "properties": { "kind": { "const": "graph.element" }, "graphId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "elementKind": { "enum": ["node", "interfacePort"] }, "elementId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "graphId", "elementKind", "elementId", "nodeId"], "properties": { "kind": { "const": "graph.element" }, "graphId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "elementKind": { "const": "dynamicPort" }, "elementId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }, "nodeId": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "sheetId", "rowId"], "properties": { "kind": { "const": "table.row" }, "sheetId": { "type": "string", "minLength": 1, "maxLength": 1024 }, "rowId": { "type": "string", "minLength": 1, "maxLength": 1024 } }, "additionalProperties": false }
+      ]
+    },
+    "mcpLifecycleOperation": {
+      "oneOf": [
+        { "$ref": "#/$defs/mcpLifecycleCreateOperation" },
+        { "type": "object", "required": ["kind", "source", "target", "stableIdRemap"], "properties": { "kind": { "const": "copy" }, "source": { "$ref": "#/$defs/mcpLifecycleSelector" }, "target": { "$ref": "#/$defs/mcpLifecycleSelector" }, "stableIdRemap": { "type": "array", "maxItems": 100000, "items": { "$ref": "#/$defs/mcpLifecycleStableIdentityRemap" } } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "source", "target"], "properties": { "kind": { "const": "move" }, "source": { "$ref": "#/$defs/mcpLifecycleSelector" }, "target": { "$ref": "#/$defs/mcpLifecycleSelector" } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "source", "target"], "properties": { "kind": { "const": "delete" }, "source": { "$ref": "#/$defs/mcpLifecycleSelector" }, "target": { "$ref": "#/$defs/mcpLifecycleDeleteTarget" } }, "additionalProperties": false }
+      ]
+    },
+    "mcpLifecycleStableIdentityValue": { "oneOf": [ { "type": "string", "maxLength": 4096 }, { "type": "number" } ] },
+    "mcpLifecycleStableIdentityRemap": { "type": "object", "required": ["identityKey", "from", "to"], "properties": { "identityKey": { "type": "string", "minLength": 1, "maxLength": 1024 }, "from": { "$ref": "#/$defs/mcpLifecycleStableIdentityValue" }, "to": { "$ref": "#/$defs/mcpLifecycleStableIdentityValue" } }, "additionalProperties": false },
+    "visualbridge_document_lifecycle.input": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["action", "projectFile", "operation"],
+          "properties": {
+            "action": { "const": "preview" },
+            "projectFile": { "$ref": "visualbridge-primitives.schema.json#/$defs/normalizedPath" },
+            "operation": { "$ref": "#/$defs/mcpLifecycleOperation" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["action", "projectFile", "operation", "previewHash", "planPayload", "baseHashes", "dependencies"],
+          "properties": {
+            "action": { "const": "apply" },
+            "projectFile": { "$ref": "visualbridge-primitives.schema.json#/$defs/normalizedPath" },
+            "operation": { "$ref": "#/$defs/mcpLifecycleOperation" },
+            "previewHash": { "$ref": "visualbridge-primitives.schema.json#/$defs/sha256" },
+            "planPayload": { "type": "string", "minLength": 1, "maxLength": 16777216 },
+            "baseHashes": { "$ref": "visualbridge-primitives.schema.json#/$defs/hashManifest" },
+            "dependencies": { "type": "array", "maxItems": 100000, "items": { "$ref": "visualbridge-primitives.schema.json#/$defs/dependency" } }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "visualbridge_project.output": { "$ref": "#/$defs/toolOutput" },
+    "visualbridge_catalog.output": { "$ref": "#/$defs/toolOutput" },
+    "visualbridge_document.output": { "$ref": "#/$defs/toolOutput" },
+    "visualbridge_apply_operations.output": { "$ref": "#/$defs/toolOutput" },
+    "visualbridge_references.output": { "$ref": "#/$defs/toolOutput" },
+    "visualbridge_refactor_reference.output": { "$ref": "#/$defs/toolOutput" },
+    "visualbridge_document_lifecycle.output": { "$ref": "#/$defs/toolOutput" }
+  }
+}

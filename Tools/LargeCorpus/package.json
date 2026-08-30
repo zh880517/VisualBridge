@@ -2,9 +2,10 @@
   "name": "@visualbridge/large-corpus",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": "22.22.1"
   },
   "scripts": {
     "build": "npm run check",

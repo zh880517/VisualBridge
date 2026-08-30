@@ -1,9 +1,11 @@
 const assert = require("node:assert/strict");
 const { mkdtemp, readFile, rm, symlink, unlink, writeFile } = require("node:fs/promises");
+const fsPromises = require("node:fs/promises");
 const { createHash } = require("node:crypto");
 const { tmpdir } = require("node:os");
 const path = require("node:path");
 const vscode = require("vscode");
+const ExcelJS = require("exceljs");
 
 const EXTENSION_ID = "kyl.visualbridge";
 const EXPECTED_COMMANDS = [
@@ -852,6 +854,7 @@ exports.run = async function run() {
         20_000,
         "Table editor did not become ready for the key-refactor test.",
       );
+      const indexBeforeRefactor = await vscode.commands.executeCommand("visualbridge.test.getDocumentIndexSnapshot");
 
       await vscode.commands.executeCommand("visualbridge.test.applyTableOperations", tableUri, [{
         type: "table.setCell",
@@ -869,6 +872,14 @@ exports.run = async function run() {
         Buffer.compare(Buffer.from(await vscode.workspace.fs.readFile(extraUri)), Buffer.from(extraBytes)),
         0,
       );
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getDocumentIndexSnapshot"),
+        (snapshot) => snapshot.stats.epoch > indexBeforeRefactor.stats.epoch,
+        20_000,
+        "Reference Refactor did not refresh the Workspace Document Index.",
+      );
+      const refreshedEditor = await vscode.commands.executeCommand("visualbridge.test.getTableEditorState", tableUri);
+      assert.equal(refreshedEditor.activeReadyPanelCount, 1, "Reference Refactor did not retain a refreshed Table editor.");
 
       await vscode.commands.executeCommand("visualbridge.test.applyTableOperations", tableUri, [{
         type: "table.duplicateRow",
@@ -892,6 +903,351 @@ exports.run = async function run() {
       await vscode.workspace.fs.writeFile(tableUri, tableBefore);
       await vscode.workspace.fs.writeFile(entityUri, entityBefore);
       await vscode.workspace.fs.delete(extraUri, { useTrash: false }).catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("reports committed Reference Refactors when Table or Document Index refresh fails", async () => {
+    const projectRoot = path.join(workspacePath, "EntitySemanticProject");
+    const tableUri = vscode.Uri.file(path.join(projectRoot, "Tables", "Skills_Main.skillstable"));
+    const entityUri = vscode.Uri.file(path.join(projectRoot, "Config", "Entities", "Player.herojson"));
+    const tableBefore = await vscode.workspace.fs.readFile(tableUri);
+    const entityBefore = await vscode.workspace.fs.readFile(entityUri);
+    const failures = [
+      { phase: "tableEditor", message: "injected committed Table refresh failure", newValue: 1001 },
+      { phase: "documentIndex", message: "injected committed Document Index failure result", newValue: 1002 },
+    ];
+
+    for (const failure of failures) {
+      try {
+        await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+        await vscode.commands.executeCommand(
+          "visualbridge.test.failReferenceRefactorCommittedRefresh",
+          failure.phase,
+          failure.message,
+        );
+        const result = await vscode.commands.executeCommand(
+          "visualbridge.test.renameReferenceTarget",
+          tableKeyRenameRequest(failure.newValue),
+        );
+        assert.equal(result.success, true, "A committed refactor must not report that it was not applied.");
+        assert.equal(result.maintenance?.code, "refactor.committedRefreshFailed");
+        assert.deepEqual(result.maintenance?.failures, [{ phase: failure.phase, message: failure.message }]);
+        assert.match(result.maintenance?.message ?? "", /Refactor committed/u);
+        assert.match(result.maintenance?.message ?? "", /Do not retry/u);
+
+        const tableAfter = new TextDecoder().decode(await vscode.workspace.fs.readFile(tableUri));
+        const entityAfter = JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(entityUri)));
+        assert.ok(tableAfter.includes(`Fireball\t${failure.newValue}`));
+        assert.equal(entityAfter.properties.primarySkillId, failure.newValue);
+      } finally {
+        await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+        await vscode.workspace.fs.writeFile(tableUri, tableBefore);
+        await vscode.workspace.fs.writeFile(entityUri, entityBefore);
+        await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+      }
+    }
+  });
+
+  await test("applies Graph, Entity, and Structured Webview operations with Undo, Redo, save, and disk persistence", async () => {
+    const cases = [
+      {
+        editor: "graph",
+        uri: vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "Graph", "SemanticSample.vbgraph")),
+        operations: [{
+          type: "graph.updateGraph",
+          graphId: "root",
+          title: "Host Operation Graph",
+          properties: { priority: 1 },
+        }],
+        readValue: (value) => value.graphs.find((graph) => graph.id === "root")?.title,
+        beforeValue: "Semantic Sample",
+        afterValue: "Host Operation Graph",
+      },
+      {
+        editor: "entity",
+        uri: vscode.Uri.file(path.join(workspacePath, "EntitySemanticProject", "Config", "Entities", "Player.herojson")),
+        operations: [{ type: "entity.setTitle", title: "Host Operation Entity" }],
+        readValue: (value) => value.title,
+        beforeValue: "Sample Player",
+        afterValue: "Host Operation Entity",
+      },
+      {
+        editor: "structured",
+        uri: vscode.Uri.file(path.join(workspacePath, "StructuredSemanticProject", "Config", "Game.gamesettings")),
+        operations: [{ type: "structured.setField", fieldId: "maxPlayers", value: 8 }],
+        readValue: (value) => value.properties.maxPlayers,
+        beforeValue: 5,
+        afterValue: 8,
+      },
+    ];
+
+    for (const entry of cases) {
+      const before = await vscode.workspace.fs.readFile(entry.uri);
+      let document;
+      try {
+        await vscode.commands.executeCommand("vscode.openWith", entry.uri, "visualbridge.documentEditor.option");
+        await waitForAsync(
+          () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", entry.uri),
+          (ready) => ready === true,
+          20_000,
+          `${entry.editor} editor did not become ready for the operation lifecycle test.`,
+        );
+        document = await vscode.workspace.openTextDocument(entry.uri);
+        assert.equal(entry.readValue(JSON.parse(document.getText())), entry.beforeValue);
+
+        await vscode.commands.executeCommand(
+          "visualbridge.test.applyDocumentOperations",
+          entry.uri,
+          entry.editor,
+          entry.operations,
+        );
+        await waitFor(
+          () => entry.readValue(JSON.parse(document.getText())),
+          (value) => value === entry.afterValue,
+          10_000,
+          `${entry.editor} operation did not update the authoritative TextDocument.`,
+        );
+        assert.equal(document.isDirty, true);
+
+        await vscode.commands.executeCommand("undo");
+        await waitFor(
+          () => entry.readValue(JSON.parse(document.getText())),
+          (value) => value === entry.beforeValue,
+          10_000,
+          `${entry.editor} undo did not restore the semantic source.`,
+        );
+        await vscode.commands.executeCommand("redo");
+        await waitFor(
+          () => entry.readValue(JSON.parse(document.getText())),
+          (value) => value === entry.afterValue,
+          10_000,
+          `${entry.editor} redo did not restore the operation.`,
+        );
+
+        assert.equal(await document.save(), true);
+        assert.equal(document.isDirty, false);
+        const diskValue = entry.readValue(JSON.parse(new TextDecoder().decode(
+          await vscode.workspace.fs.readFile(entry.uri),
+        )));
+        assert.equal(diskValue, entry.afterValue);
+      } finally {
+        if (document?.isDirty) {
+          await vscode.commands.executeCommand("workbench.action.files.revert").catch(() => undefined);
+        }
+        await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+        await vscode.workspace.fs.writeFile(entry.uri, before);
+        await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+      }
+    }
+  });
+
+  await test("jumps to Graph nodes and Entity components through real Webview acknowledgements", async () => {
+    const graphUri = vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "Graph", "SemanticSample.vbgraph"));
+    const entityUri = vscode.Uri.file(path.join(workspacePath, "EntitySemanticProject", "Config", "Entities", "Player.herojson"));
+    try {
+      await vscode.commands.executeCommand("visualbridge.revealReference", {
+        projectId: "GraphSemanticProject",
+        documentTypeId: "logicGraph",
+        path: "Graph/SemanticSample.vbgraph",
+        elementKind: "node",
+        elementId: "step_b",
+        graphId: "root",
+        nodeId: "step_b",
+      });
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorState", graphUri),
+        (state) => state.lastRevealResults.some((result) => (
+          result.found === true && result.target.nodeId === "step_b"
+        )),
+        20_000,
+        "Graph reference jump was not acknowledged by the Webview.",
+      );
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+
+      await vscode.commands.executeCommand("visualbridge.revealReference", {
+        projectId: "visualbridge.entity-semantics",
+        documentTypeId: "hero-config",
+        path: "Config/Entities/Player.herojson",
+        documentId: "sample.player",
+        elementKind: "component",
+        elementId: "health",
+        componentId: "health",
+      });
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getEntityEditorState", entityUri),
+        (state) => state.lastRevealResults.some((result) => (
+          result.found === true && result.target.componentId === "health"
+        )),
+        20_000,
+        "Entity reference jump was not acknowledged by the Webview.",
+      );
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+    }
+  });
+
+  await test("rejects Structured operations after external changes before and after a save", async () => {
+    const uri = vscode.Uri.file(path.join(workspacePath, "StructuredSemanticProject", "Config", "Game.gamesettings"));
+    const before = await vscode.workspace.fs.readFile(uri);
+    let document;
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", uri, "visualbridge.documentEditor.option");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", uri),
+        (ready) => ready === true,
+        20_000,
+        "Structured editor did not become ready for the external-change test.",
+      );
+      document = await vscode.workspace.openTextDocument(uri);
+      const original = JSON.parse(document.getText());
+      const externallyChangedBeforeSave = `${JSON.stringify({
+        ...original,
+        properties: { ...original.properties, maxPlayers: 6 },
+      }, undefined, 2)}\n`;
+      const versionBeforeExternalRefresh = document.version;
+      await vscode.commands.executeCommand(
+        "visualbridge.test.applyStructuredOperationsAfterExternalWrite",
+        uri,
+        externallyChangedBeforeSave,
+        [{ type: "structured.setField", fieldId: "maxPlayers", value: 9 }],
+      );
+      assert.ok(document.version > versionBeforeExternalRefresh);
+      assert.equal(JSON.parse(document.getText()).properties.maxPlayers, 6);
+      assert.equal(document.isDirty, false);
+      assert.equal(JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(uri))).properties.maxPlayers, 6);
+
+      await vscode.commands.executeCommand(
+        "visualbridge.test.applyDocumentOperations",
+        uri,
+        "structured",
+        [{ type: "structured.setField", fieldId: "maxPlayers", value: 9 }],
+      );
+      assert.equal(JSON.parse(document.getText()).properties.maxPlayers, 9);
+      assert.equal(await document.save(), true);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      const saved = JSON.parse(document.getText());
+      const externallyChangedAfterSave = `${JSON.stringify({
+        ...saved,
+        properties: { ...saved.properties, maxPlayers: 7 },
+      }, undefined, 2)}\n`;
+      const versionBeforeSecondExternalRefresh = document.version;
+      await vscode.commands.executeCommand(
+        "visualbridge.test.applyStructuredOperationsAfterExternalWrite",
+        uri,
+        externallyChangedAfterSave,
+        [{ type: "structured.setField", fieldId: "maxPlayers", value: 10 }],
+      );
+      assert.ok(document.version > versionBeforeSecondExternalRefresh);
+      assert.equal(JSON.parse(document.getText()).properties.maxPlayers, 7);
+      assert.equal(document.isDirty, false);
+      assert.equal(JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(uri))).properties.maxPlayers, 7);
+    } finally {
+      if (document?.isDirty) {
+        await vscode.commands.executeCommand("workbench.action.files.revert").catch(() => undefined);
+      }
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+      await vscode.workspace.fs.writeFile(uri, before);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("retains split Graph diagnostics until their owning panels close", async () => {
+    const uri = vscode.Uri.file(path.join(
+      workspacePath,
+      "GraphSemanticProject",
+      "Graph",
+      "SemanticSample.vbgraph",
+    ));
+    const before = await vscode.workspace.fs.readFile(uri);
+    const beforeText = new TextDecoder().decode(before);
+    let document;
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", uri, "visualbridge.documentEditor");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorState", uri),
+        (state) => state?.sessionCount === 1 && state.diagnosticOwnerCount === 1,
+        20_000,
+        "Graph editor did not publish its initial owned diagnostic snapshot.",
+      );
+      await withTimeout(
+        vscode.commands.executeCommand("workbench.action.splitEditorRight"),
+        20_000,
+        "VS Code did not split the Graph custom editor.",
+      );
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorState", uri),
+        (state) => state?.sessionCount === 2 && state.diagnosticOwnerCount === 2,
+        20_000,
+        "Both Graph panels did not publish owned diagnostic snapshots.",
+      );
+
+      document = await vscode.workspace.openTextDocument(uri);
+      const invalidEdit = new vscode.WorkspaceEdit();
+      invalidEdit.replace(
+        uri,
+        new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
+        "{ invalid graph document\n",
+      );
+      assert.equal(await vscode.workspace.applyEdit(invalidEdit), true);
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorState", uri),
+        (state) => state?.diagnosticOwnerCount === 2 && state.publishedDiagnosticCount > 0,
+        20_000,
+        "Split Graph panels did not publish the invalid-document diagnostics.",
+      );
+
+      await vscode.commands.executeCommand("workbench.action.focusLeftGroup");
+      await vscode.commands.executeCommand("workbench.action.closeEditorsInOtherGroups");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorState", uri),
+        (state) => state?.sessionCount === 1
+          && state.diagnosticOwnerCount === 1
+          && state.publishedDiagnosticCount > 0,
+        5_000,
+        "Closing one Graph panel cleared diagnostics still owned by the surviving panel.",
+      );
+      assert.ok(vscode.languages.getDiagnostics(uri).some((diagnostic) => diagnostic.source === "VisualBridge"));
+
+      const restoreEdit = new vscode.WorkspaceEdit();
+      restoreEdit.replace(
+        uri,
+        new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
+        beforeText,
+      );
+      assert.equal(await vscode.workspace.applyEdit(restoreEdit), true);
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorState", uri),
+        (state) => state?.sessionCount === 0
+          && state.diagnosticOwnerCount === 0
+          && state.publishedDiagnosticCount === 0,
+        5_000,
+        "Closing the last Graph panel retained its diagnostic ownership.",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const afterAsyncValidation = await vscode.commands.executeCommand(
+        "visualbridge.test.getGraphEditorState",
+        uri,
+      );
+      assert.equal(afterAsyncValidation.diagnosticOwnerCount, 0);
+      assert.equal(afterAsyncValidation.publishedDiagnosticCount, 0);
+    } finally {
+      if (document !== undefined && !document.isClosed && document.getText() !== beforeText) {
+        const restoreEdit = new vscode.WorkspaceEdit();
+        restoreEdit.replace(
+          uri,
+          new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
+          beforeText,
+        );
+        await vscode.workspace.applyEdit(restoreEdit);
+      }
+      if (document !== undefined && !document.isClosed && document.isDirty) {
+        await document.save();
+      }
+      await vscode.commands.executeCommand("workbench.action.closeAllGroups").catch(() => undefined);
+      await vscode.workspace.fs.writeFile(uri, before);
       await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
     }
   });
@@ -1109,6 +1465,111 @@ exports.run = async function run() {
       await vscode.workspace.fs.writeFile(secondUri, secondBefore);
       await vscode.commands.executeCommand("workbench.action.files.revert").catch(() => undefined);
       await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("rolls a two-source CSV family back when the second transaction publish fails", async () => {
+    const projectRoot = path.join(workspacePath, "TableSemanticProject");
+    const firstUri = vscode.Uri.file(path.join(projectRoot, "Tables", "Skills_A.csv"));
+    const secondUri = vscode.Uri.file(path.join(projectRoot, "Tables", "Skills_B.csv"));
+    const firstBefore = await vscode.workspace.fs.readFile(firstUri);
+    const secondBefore = await vscode.workspace.fs.readFile(secondUri);
+    const originalRename = fsPromises.rename;
+    let publishedCount = 0;
+    try {
+      await withTimeout(vscode.commands.executeCommand("visualbridge.openDocument", firstUri), 20_000, "CSV rollback family did not open.");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", firstUri),
+        (ready) => ready === true,
+        20_000,
+        "CSV rollback editor did not become ready.",
+      );
+      await vscode.commands.executeCommand("visualbridge.test.applyTableOperations", firstUri, [
+        {
+          type: "table.setCell",
+          sheetId: "skills:Skills_A",
+          rowId: "Skills_A:key-101",
+          columnId: "name",
+          value: "Fireball Rollback",
+        },
+        {
+          type: "table.setCell",
+          sheetId: "skills:Skills_B",
+          rowId: "Skills_B:key-101",
+          columnId: "name",
+          value: "Fireball Override Rollback",
+        },
+      ]);
+
+      fsPromises.rename = async (source, destination) => {
+        const isCsvPublish = source.endsWith(".tmp")
+          && source.includes(".visualbridge-")
+          && (destination === firstUri.fsPath || destination === secondUri.fsPath);
+        if (isCsvPublish && publishedCount === 1) {
+          throw Object.assign(new Error("Injected CSV second publish failure."), { code: "EIO" });
+        }
+        await originalRename(source, destination);
+        if (isCsvPublish) publishedCount += 1;
+      };
+      await assert.rejects(vscode.commands.executeCommand("visualbridge.test.saveTable", firstUri));
+      assert.equal(publishedCount, 1);
+      assert.equal(Buffer.compare(Buffer.from(await vscode.workspace.fs.readFile(firstUri)), Buffer.from(firstBefore)), 0);
+      assert.equal(Buffer.compare(Buffer.from(await vscode.workspace.fs.readFile(secondUri)), Buffer.from(secondBefore)), 0);
+      const tableEntries = await fsPromises.readdir(path.join(projectRoot, "Tables"));
+      assert.equal(tableEntries.some((entry) => entry.includes(".visualbridge-")), false);
+    } finally {
+      fsPromises.rename = originalRename;
+      await vscode.commands.executeCommand("workbench.action.files.revert").catch(() => undefined);
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+      await vscode.workspace.fs.writeFile(firstUri, firstBefore);
+      await vscode.workspace.fs.writeFile(secondUri, secondBefore);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("saves XLSX edits while preserving unrelated sheet state, formulas, and styles", async () => {
+    const uri = vscode.Uri.file(path.join(workspacePath, "TableSemanticProject", "Tables", "Skills.xlsx"));
+    const original = await vscode.workspace.fs.readFile(uri);
+    try {
+      const seeded = new ExcelJS.Workbook();
+      await seeded.xlsx.load(original.buffer.slice(original.byteOffset, original.byteOffset + original.byteLength));
+      const notes = seeded.getWorksheet("Notes");
+      assert.ok(notes);
+      notes.state = "hidden";
+      notes.getCell("B1").value = { formula: "SUM(Skills_A!B3:B4)", result: 602 };
+      notes.getCell("A1").font = { bold: true, color: { argb: "FF336699" } };
+      const seededBytes = Uint8Array.from(Buffer.from(await seeded.xlsx.writeBuffer()));
+      await vscode.workspace.fs.writeFile(uri, seededBytes);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+
+      await withTimeout(vscode.commands.executeCommand("visualbridge.openDocument", uri), 20_000, "XLSX did not open.");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", uri),
+        (ready) => ready === true,
+        20_000,
+        "XLSX editor did not become ready.",
+      );
+      await vscode.commands.executeCommand("visualbridge.test.applyTableOperations", uri, [{
+        type: "table.setCell",
+        sheetId: "skills:Skills_A",
+        rowId: "Skills_A:key-301",
+        columnId: "name",
+        value: "Fireball Host Saved",
+      }]);
+      assert.equal(await vscode.commands.executeCommand("visualbridge.test.saveTable", uri), 1);
+
+      const savedBytes = await vscode.workspace.fs.readFile(uri);
+      const saved = new ExcelJS.Workbook();
+      await saved.xlsx.load(savedBytes.buffer.slice(savedBytes.byteOffset, savedBytes.byteOffset + savedBytes.byteLength));
+      assert.equal(saved.getWorksheet("Skills_A")?.getCell("A3").value, "Fireball Host Saved");
+      assert.equal(saved.getWorksheet("Notes")?.state, "hidden");
+      assert.equal(saved.getWorksheet("Notes")?.getCell("B1").value?.formula, "SUM(Skills_A!B3:B4)");
+      assert.equal(saved.getWorksheet("Notes")?.getCell("A1").font.bold, true);
+      assert.equal(saved.getWorksheet("Notes")?.getCell("A1").font.color?.argb, "FF336699");
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+      await vscode.workspace.fs.writeFile(uri, original);
       await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
     }
   });
@@ -1423,6 +1884,12 @@ exports.run = async function run() {
       await vscode.commands.executeCommand("workbench.action.files.revert");
       await vscode.commands.executeCommand("visualbridge.catalogBrowser.refresh");
     }
+    await waitFor(
+      () => vscode.languages.getDiagnostics(uri),
+      (diagnostics) => !diagnostics.some((entry) => entry.code === "graphCatalogRegistry.duplicateCatalogId"),
+      10_000,
+      "Resolved Catalog Registry conflicts were not cleared from Problems.",
+    );
   });
 
   await test("edits Project Settings through validated Operations and rejects stale or ambiguous changes", async () => {
@@ -1619,6 +2086,31 @@ async function assertEditorRoute(workspacePath, segments, expectedViewType, open
     5_000,
     `Closed custom editor still reports ready for '${uri.fsPath}'.`,
   );
+}
+
+function tableKeyRenameRequest(newValue) {
+  return {
+    projectId: "visualbridge.entity-semantics",
+    definition: {
+      kind: "table.row",
+      target: {
+        tableTypeId: "sample.table.skills",
+        sheetId: "skills",
+        documentTypeId: "sample.table.skills",
+      },
+      allowMissing: false,
+    },
+    location: {
+      projectId: "visualbridge.entity-semantics",
+      documentTypeId: "sample.table.skills",
+      path: "Tables/Skills_Main.skillstable",
+      sheetId: "skills:Skills_Main",
+      rowId: "Skills_Main:key-101",
+    },
+    oldValue: 101,
+    newValue,
+    confirm: false,
+  };
 }
 
 async function test(name, action) {

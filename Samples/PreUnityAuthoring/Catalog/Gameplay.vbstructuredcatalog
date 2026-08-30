@@ -1,0 +1,45 @@
+{
+  "formatVersion": 1,
+  "catalogId": "sample.gameplay.structured",
+  "title": "Sample Gameplay Settings",
+  "source": {
+    "status": "unknown"
+  },
+  "configTypes": [
+    {
+      "id": "sample.settings",
+      "title": "Game Settings",
+      "aliases": [],
+      "properties": [
+        {
+          "id": "displayName",
+          "title": "Display Name",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "string",
+          "defaultValue": "Sample Game",
+          "editor": {
+            "kind": "text"
+          }
+        },
+        {
+          "id": "startingAsset",
+          "title": "Starting Asset",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "string",
+          "defaultValue": "asset.sword",
+          "editor": {
+            "kind": "reference"
+          },
+          "reference": {
+            "kind": "sample.asset",
+            "target": {
+              "scope": "weapons"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

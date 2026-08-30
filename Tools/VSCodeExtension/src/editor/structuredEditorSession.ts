@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import * as vscode from "vscode";
 import type { DocumentDiagnostic, JsonValue } from "@visualbridge/core";
 import {
@@ -39,11 +40,13 @@ interface StructuredStateOptions {
 export class StructuredEditorSession {
   private readonly disposables: vscode.Disposable[] = [];
   private readonly catalogDisposables: vscode.Disposable[] = [];
-  private baseDiskHash = "";
+  // TextDocument conflicts intentionally compare decoded UTF-8 text. Project Transactions use exact-byte hashes.
+  private baseDiskTextHash = "";
   private operationQueue: Promise<void> = Promise.resolve();
   private disposed = false;
   private webviewReady = false;
   private readonly webviewEpoch = new WebviewEpoch();
+  private confirmExternalChangesTestHook: (() => Promise<void>) | undefined;
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -52,12 +55,12 @@ export class StructuredEditorSession {
     private match: DocumentMatch,
     private readonly projects: ProjectRegistry,
     private readonly references: WorkspaceReferenceService,
-    private readonly diagnostics: vscode.DiagnosticCollection,
+    private readonly publishDiagnostics: (diagnostics: readonly vscode.Diagnostic[]) => void,
     private readonly output: vscode.OutputChannel,
   ) {}
 
   public async open(): Promise<void> {
-    this.baseDiskHash = await this.readDiskHash();
+    this.baseDiskTextHash = await this.readDiskTextHash();
     this.webviewEpoch.begin(createNonce());
     const nonce = createNonce();
     const webviewRoot = vscode.Uri.joinPath(this.extensionUri, "dist", "webview");
@@ -106,7 +109,7 @@ export class StructuredEditorSession {
                 : {}),
           });
           if (!event.document.isDirty) {
-            void this.updateDiskBaseline();
+            this.baseDiskTextHash = hashText(event.document.getText());
           }
         } else if (this.getCatalogUris().some((catalogUri) => sameUri(event.document.uri, catalogUri))) {
           void this.sendState();
@@ -114,7 +117,8 @@ export class StructuredEditorSession {
       }),
       vscode.workspace.onDidSaveTextDocument((savedDocument) => {
         if (sameUri(savedDocument.uri, this.document.uri)) {
-          void this.updateDiskBaseline().then(() => this.sendState());
+          this.baseDiskTextHash = hashText(savedDocument.getText());
+          void this.sendState();
         }
       }),
       this.projects.onDidChange(() => {
@@ -152,6 +156,43 @@ export class StructuredEditorSession {
       && this.panel.visible;
   }
 
+  public async applyOperationsForTest(operations: unknown): Promise<void> {
+    const webviewToken = this.webviewEpoch.currentToken;
+    if (!this.isReady || webviewToken === undefined) {
+      throw new Error("No ready Structured editor session was found.");
+    }
+    const webviewEpoch = this.webviewEpoch.capture();
+    const operation = this.operationQueue
+      .catch(() => undefined)
+      .then(() => this.handleMessage({
+        type: "applyOperations",
+        webviewToken,
+        documentVersion: this.document.version,
+        operations,
+      }, webviewEpoch));
+    this.operationQueue = operation;
+    await operation;
+  }
+
+  public async applyOperationsAfterExternalWriteForTest(
+    externalText: string,
+    operations: unknown,
+  ): Promise<void> {
+    writeFileSync(this.document.uri.fsPath, externalText, "utf8");
+    this.confirmExternalChangesTestHook = async () => {
+      await this.replaceDocumentText(externalText);
+      if (!await this.document.save()) {
+        throw new Error("VS Code failed to save the deterministic external-change test refresh.");
+      }
+      this.baseDiskTextHash = hashText(externalText);
+    };
+    try {
+      await this.applyOperationsForTest(operations);
+    } finally {
+      this.confirmExternalChangesTestHook = undefined;
+    }
+  }
+
   private async handleMessage(message: WebviewMessage, webviewEpoch: number): Promise<void> {
     if (!this.isCurrentWebviewEpoch(webviewEpoch)) {
       return;
@@ -174,7 +215,11 @@ export class StructuredEditorSession {
       await this.rejectOperation("文档已发生变化，编辑器已刷新，请重试刚才的操作。");
       return;
     }
+    const documentVersion = message.documentVersion;
     if (!await this.confirmExternalChanges()) {
+      return;
+    }
+    if (!this.isCurrentOperation(documentVersion, webviewEpoch)) {
       return;
     }
 
@@ -186,6 +231,9 @@ export class StructuredEditorSession {
       return;
     }
     const catalogResult = await loadStructuredCatalogRegistry(this.match.project, this.match.documentType.catalogs);
+    if (!this.isCurrentOperation(documentVersion, webviewEpoch)) {
+      return;
+    }
     if (!catalogResult.ready) {
       this.updateDiagnostics([...parseResult.diagnostics, ...catalogResult.diagnostics]);
       await this.rejectOperation(formatCatalogUnavailable(catalogResult.diagnostics));
@@ -207,6 +255,9 @@ export class StructuredEditorSession {
       collectStructuredReferences(parseResult.document, catalogResult.registry, this.match.documentType.id),
       collectStructuredReferences(operationResult.document, catalogResult.registry, this.match.documentType.id),
     );
+    if (!this.isCurrentOperation(documentVersion, webviewEpoch)) {
+      return;
+    }
     if (referenceResult.introducedErrors.length > 0) {
       this.updateDiagnostics([
         ...catalogResult.diagnostics,
@@ -224,6 +275,9 @@ export class StructuredEditorSession {
       sourceHash: hashText(nextText),
       content: operationResult.document as unknown as JsonValue,
     });
+    if (!this.isCurrentOperation(documentVersion, webviewEpoch)) {
+      return;
+    }
     const providerErrors = providerDiagnostics.filter((diagnostic) => diagnostic.severity === "error");
     if (providerErrors.length > 0) {
       this.updateDiagnostics([...catalogResult.diagnostics, ...operationResult.diagnostics, ...providerDiagnostics]);
@@ -231,7 +285,7 @@ export class StructuredEditorSession {
       return;
     }
     if (nextText === this.document.getText()) {
-      await this.panel.webview.postMessage({
+      await this.postMessage({
         type: "operationCompleted",
         documentVersion: this.document.version,
         changed: false,
@@ -248,7 +302,7 @@ export class StructuredEditorSession {
     this.output.appendLine(
       `[structured] Applied operations to ${this.match.relativePath} at document version ${this.document.version}.`,
     );
-    await this.panel.webview.postMessage({
+    await this.postMessage({
       type: "operationCompleted",
       documentVersion: this.document.version,
       changed: true,
@@ -258,13 +312,16 @@ export class StructuredEditorSession {
 
   private async confirmExternalChanges(): Promise<boolean> {
     const diskBytes = await vscode.workspace.fs.readFile(this.document.uri);
-    const diskHash = hashBytes(diskBytes);
-    if (diskHash === this.baseDiskHash) {
+    const diskText = new TextDecoder("utf-8", { fatal: true }).decode(diskBytes);
+    const diskTextHash = hashText(diskText);
+    const testHook = this.confirmExternalChangesTestHook;
+    this.confirmExternalChangesTestHook = undefined;
+    await testHook?.();
+    if (diskTextHash === this.baseDiskTextHash) {
       return true;
     }
-    const diskText = new TextDecoder("utf-8", { fatal: true }).decode(diskBytes);
     if (!this.document.isDirty) {
-      this.baseDiskHash = diskHash;
+      this.baseDiskTextHash = diskTextHash;
       if (diskText !== this.document.getText()) {
         await this.replaceDocumentText(diskText);
         if (!await this.document.save()) {
@@ -284,7 +341,7 @@ export class StructuredEditorSession {
       DISCARD_AND_RELOAD,
     );
     if (choice === OVERWRITE) {
-      this.baseDiskHash = diskHash;
+      this.baseDiskTextHash = diskTextHash;
       return true;
     }
     if (choice === DISCARD_AND_RELOAD) {
@@ -293,7 +350,7 @@ export class StructuredEditorSession {
         await this.rejectOperation("无法完成放弃并刷新，文档未保存。");
         return false;
       }
-      this.baseDiskHash = diskHash;
+      this.baseDiskTextHash = diskTextHash;
       await this.sendState();
       await this.rejectOperation("已放弃本地修改并读取磁盘版本。");
       return false;
@@ -314,6 +371,8 @@ export class StructuredEditorSession {
     if (this.disposed) {
       return false;
     }
+    const webviewEpoch = this.webviewEpoch.capture();
+    const documentVersion = this.document.version;
     const sourceText = this.document.getText();
     const result = parseStructuredDocument(sourceText);
     if (!result.success) {
@@ -343,11 +402,14 @@ export class StructuredEditorSession {
         content: result.document as unknown as JsonValue,
       }),
     ];
+    if (!this.isCurrentOperation(documentVersion, webviewEpoch)) {
+      return false;
+    }
     this.updateDiagnostics(diagnostics);
     if (configType === undefined) {
       return this.sendInvalid(diagnostics, options);
     }
-    return this.panel.webview.postMessage({
+    return this.postMessage({
       type: "structuredState",
       documentVersion: this.document.version,
       document: result.document,
@@ -387,7 +449,7 @@ export class StructuredEditorSession {
     diagnostics: readonly DocumentDiagnostic[],
     options: StructuredStateOptions = {},
   ): Promise<boolean> {
-    return this.panel.webview.postMessage({
+    return this.postMessage({
       type: "structuredInvalid",
       documentVersion: this.document.version,
       isDirty: this.document.isDirty,
@@ -398,11 +460,14 @@ export class StructuredEditorSession {
   }
 
   private async rejectOperation(message: string): Promise<void> {
-    await this.panel.webview.postMessage({ type: "operationRejected", message });
+    await this.postMessage({ type: "operationRejected", message });
   }
 
   private updateDiagnostics(items: readonly DocumentDiagnostic[]): void {
-    this.diagnostics.set(this.document.uri, items.map((item) => {
+    if (this.disposed) {
+      return;
+    }
+    this.publishDiagnostics(items.map((item) => {
       const diagnostic = new vscode.Diagnostic(
         new vscode.Range(0, 0, 0, 1),
         `${item.path}: ${item.message}`,
@@ -414,16 +479,15 @@ export class StructuredEditorSession {
     }));
   }
 
-  private async readDiskHash(): Promise<string> {
+  private async readDiskTextHash(): Promise<string> {
     try {
-      return hashBytes(await vscode.workspace.fs.readFile(this.document.uri));
+      const diskText = new TextDecoder("utf-8", { fatal: true }).decode(
+        await vscode.workspace.fs.readFile(this.document.uri),
+      );
+      return hashText(diskText);
     } catch {
       return hashText(this.document.getText());
     }
-  }
-
-  private async updateDiskBaseline(): Promise<void> {
-    this.baseDiskHash = await this.readDiskHash();
   }
 
   private async handleReady(message: WebviewMessage, webviewEpoch: number): Promise<void> {
@@ -451,11 +515,27 @@ export class StructuredEditorSession {
     if (this.disposed || !this.panel.visible || token === undefined) {
       return;
     }
-    await this.panel.webview.postMessage({ type: "requestReady", webviewToken: token });
+    await this.postMessage({ type: "requestReady", webviewToken: token });
+  }
+
+  private async postMessage(message: unknown): Promise<boolean> {
+    if (this.disposed) return false;
+    try {
+      return await this.panel.webview.postMessage(message);
+    } catch (errorValue) {
+      if (!this.disposed && !/Webview is disposed/u.test(formatError(errorValue))) {
+        this.output.appendLine(`[structured] Failed to post a Webview message for ${this.match.relativePath}: ${formatError(errorValue)}`);
+      }
+      return false;
+    }
   }
 
   private isCurrentWebviewEpoch(webviewEpoch: number): boolean {
     return !this.disposed && this.webviewEpoch.isCurrent(webviewEpoch);
+  }
+
+  private isCurrentOperation(documentVersion: number, webviewEpoch: number): boolean {
+    return this.document.version === documentVersion && this.isCurrentWebviewEpoch(webviewEpoch);
   }
 
   private dispose(): void {
@@ -471,16 +551,11 @@ export class StructuredEditorSession {
     for (const disposable of this.disposables.splice(0)) {
       disposable.dispose();
     }
-    this.diagnostics.delete(this.document.uri);
   }
 }
 
 function fullDocumentRange(document: vscode.TextDocument): vscode.Range {
   return new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length));
-}
-
-function hashBytes(value: Uint8Array): string {
-  return createHash("sha256").update(value).digest("hex");
 }
 
 function hashText(value: string): string {

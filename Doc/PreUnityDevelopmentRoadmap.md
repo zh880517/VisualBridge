@@ -131,7 +131,7 @@
 - 大表滚动、搜索、选择和字段编辑具有稳定 DOM 节点上限，不随总记录数线性创建节点。
 - Provider 缓存失效与取消有确定性断言；耗时和内存只生成基准报告，不作为跨机器固定阈值的 CI 失败条件。
 
-### VB-PU-07 协议冻结、可靠性与发布门槛 — `in_progress`
+### VB-PU-07 协议冻结、可靠性与发布门槛 — `complete`
 
 范围：
 
@@ -149,7 +149,7 @@
 - 从空缓存安装依赖、构建、测试和打包可重复执行。
 - Authoring 源文档与 Catalog 的交接契约不存在仍待决定的结构性字段；Project Discovery、WebSocket、Unity Import/Compile、Runtime 和 Debug 协议留到后续 Unity 路线图，不在本阶段伪冻结。
 
-### VB-PU-08 最终文档审计与使用手册 — `pending`
+### VB-PU-08 最终文档审计与使用手册 — `in_progress`
 
 范围：
 

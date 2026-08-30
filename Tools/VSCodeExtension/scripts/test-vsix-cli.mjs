@@ -1,9 +1,10 @@
-import { access, mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { runTests } from "@vscode/test-electron";
 
 const TEST_DIRECTORY_PREFIX = "visualbridge-vsix-cli-";
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -18,6 +19,9 @@ const codeInvocation = await resolveCodeInvocation(codeCommand);
 const temporaryPath = await mkdtemp(path.join(tmpdir(), TEST_DIRECTORY_PREFIX));
 const userDataPath = path.join(temporaryPath, "user-data");
 const extensionsPath = path.join(temporaryPath, "extensions");
+const workspacePath = path.join(temporaryPath, "workspace");
+const repositoryPath = path.resolve(extensionPath, "..", "..");
+const cachePath = path.join(repositoryPath, ".utmp", "vscode-test");
 
 try {
   await access(vsixPath, constants.R_OK);
@@ -39,8 +43,9 @@ try {
     throw new Error(`Expected '${expectedIdentity}' in installed extensions, received: ${installed.join(", ")}`);
   }
 
-  await verifyInstalledFiles(extensionsPath, manifest);
-  console.log(`[vscode-cli] PASS installed and inspected ${expectedIdentity}`);
+  const installedPath = await verifyInstalledFiles(extensionsPath, manifest);
+  await runPackagedActivation(installedPath);
+  console.log(`[vscode-cli] PASS installed, inspected, and activated ${expectedIdentity}`);
 } finally {
   await removeIsolatedDirectory(temporaryPath);
 }
@@ -179,6 +184,35 @@ async function verifyInstalledFiles(extensionsDirectory, expectedManifest) {
   if (leakedPaths.length > 0) {
     throw new Error(`Unexpected packaged paths: ${leakedPaths.join(", ")}`);
   }
+  return installedPath;
+}
+
+async function runPackagedActivation(installedPath) {
+  await Promise.all([
+    cp(path.join(repositoryPath, "TestData"), workspacePath, { recursive: true }),
+    mkdir(cachePath, { recursive: true }),
+  ]);
+  const testVersion = process.env.VISUALBRIDGE_VSCODE_TEST_VERSION ?? "1.105.1";
+  console.log(`[vscode-cli] Activating packaged extension with VS Code ${testVersion}`);
+  await runTests({
+    version: testVersion,
+    cachePath,
+    extensionDevelopmentPath: path.join(extensionPath, "test", "vsix-runner"),
+    extensionTestsPath: path.join(extensionPath, "test", "suite", "packagedActivation.cjs"),
+    extensionTestsEnv: {
+      VISUALBRIDGE_PACKAGED_EXTENSION_ROOT: installedPath,
+      VISUALBRIDGE_TEST_WORKSPACE: workspacePath,
+      VISUALBRIDGE_TEST_EXTENSION_VERSION: manifest.version,
+    },
+    launchArgs: [
+      workspacePath,
+      "--disable-workspace-trust",
+      "--skip-welcome",
+      "--skip-release-notes",
+      `--user-data-dir=${userDataPath}`,
+      `--extensions-dir=${extensionsPath}`,
+    ],
+  });
 }
 
 async function listPackagedPaths(rootPath, relativeDirectory = "") {

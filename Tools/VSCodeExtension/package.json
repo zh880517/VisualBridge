@@ -10,6 +10,15 @@
     "type": "git",
     "url": "https://github.com/zh880517/VisualBridge.git"
   },
+  "homepage": "https://github.com/zh880517/VisualBridge#readme",
+  "bugs": {
+    "url": "https://github.com/zh880517/VisualBridge/issues"
+  },
+  "keywords": [
+    "game-development",
+    "semantic-authoring",
+    "visualbridge"
+  ],
   "type": "commonjs",
   "engines": {
     "vscode": "^1.105.1"
@@ -17,6 +26,9 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": true
+    },
+    "virtualWorkspaces": {
+      "supported": false
     }
   },
   "categories": [
@@ -364,8 +376,8 @@
     "test:cli": "node ./scripts/test-vsix-cli.mjs ./artifacts/visualbridge.vsix"
   },
   "devDependencies": {
-    "@types/node": "^24.13.1",
-    "@types/vscode": "^1.105.0",
+    "@types/node": "22.20.1",
+    "@types/vscode": "1.105.0",
     "@visualbridge/core": "*",
     "@visualbridge/entity": "*",
     "@visualbridge/entity-editor": "*",
@@ -378,9 +390,9 @@
     "@visualbridge/table": "*",
     "@visualbridge/table-editor": "*",
     "@vscode/test-electron": "3.1.0",
-    "@vscode/vsce": "^3.9.2",
-    "esbuild": "^0.28.2",
-    "minimatch": "^10.2.6",
-    "typescript": "^7.0.2"
+    "@vscode/vsce": "3.9.2",
+    "esbuild": "0.28.2",
+    "minimatch": "10.2.6",
+    "typescript": "7.0.2"
   }
 }

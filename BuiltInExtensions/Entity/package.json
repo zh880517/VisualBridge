@@ -2,6 +2,7 @@
   "name": "@visualbridge/entity",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "type": "commonjs",
   "main": "index.ts",
   "types": "index.ts",
@@ -11,7 +12,7 @@
     "test": "npm run build --workspace @visualbridge/core && npm run build && node --test dist/test/entitySemantics.test.js"
   },
   "devDependencies": {
-    "@types/node": "^24.13.1",
+    "@types/node": "22.20.1",
     "@visualbridge/core": "*"
   }
 }

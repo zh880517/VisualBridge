@@ -14,6 +14,9 @@
 - `DocumentBrowser.md`：统一 Document Browser、共享索引、搜索/创建/全量校验、引用关系与错误入口。
 - `WorkspaceIndexPerformance.md`：不可变增量语义快照、刷新取消、Reference/Provider 依赖缓存、稳定分页、Table 虚拟化与大工程基准手册。
 - `ProjectRefactoring.md`：项目级 Reference Value 重命名、影响预览、四类文档适配与多文件回滚事务。
+- `ProjectTransaction.md`：VS Code 与 MCP 共用的 Project 锁、SHA-256 前置条件、四种物理 mutation、journal、回滚与人工恢复契约。
+- `ProtocolContracts.md`：Authoring、Provider、Project Transaction 与 MCP 的版本、Hash、游标、状态、错误和生成一致性契约。
+- `ReleaseQuality.md`：Node/npm/依赖锁定策略、Windows CI、真实 VSIX 激活、空缓存复现、正式样例和发布边界。
 - `VisualBridgeMcp.md`：项目级 stdio MCP 的工具边界、查询契约、`baseHash` 并发控制和原子写入语义。
 - `DocumentLifecycle.md`：Document Create/Copy/Move/Safe Delete 的 preview/apply、引用闭包和物理事务契约。
 - `PreUnityDevelopmentRoadmap.md`：Unity 正式接入前的任务状态、强制验证门槛和最终文档验收标准。

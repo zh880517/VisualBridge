@@ -38,7 +38,7 @@
 .vs/
 
 # Node/TypeScript workspace outputs
-/node_modules/
+node_modules/
 **/dist/
 **/.test-dist/
 **/artifacts/

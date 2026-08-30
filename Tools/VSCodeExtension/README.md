@@ -6,10 +6,11 @@ Use **VisualBridge: Open Project Settings** to edit roots, Document Types, arbit
 
 ## Development
 
-From the repository root:
+Use the repository's pinned Node.js 22.22.1 and npm 10.9.4 toolchain. Switch to the version in `.nvmrc` before installing; `engine-strict=true` intentionally rejects installs made with a different Node release. From the repository root:
 
 ```powershell
-npm install
+nvm use 22.22.1
+npm ci
 npm run check
 npm run build
 ```
@@ -32,9 +33,11 @@ Validate the packaged artifact separately:
 npm run test:vscode:cli
 ```
 
-This command builds the VSIX, resolves the installed VS Code CLI, installs the package into unique temporary User Data and Extensions directories, verifies the exact `kyl.visualbridge` identity/version, and checks the packaged extension entry point, every Manifest-declared JSON Schema, icon, and all four Webview JavaScript/CSS bundles. It also rejects leaked test files, packaging scripts, and source maps. The result proves that the VSIX is installable and structurally complete; interactive Webview behavior remains covered by domain tests and targeted real-page checks rather than being inferred from CLI installation.
+This command builds the VSIX, resolves the installed VS Code CLI, installs the package into unique temporary User Data and Extensions directories, verifies the exact `kyl.visualbridge` identity/version, and checks the packaged extension entry point, every Manifest-declared JSON Schema, icon, and all four Webview JavaScript/CSS bundles. It also rejects leaked test files, packaging scripts, and source maps. Finally it launches the pinned VS Code runtime, proves the installed extension activates from `workspaceContains`, invokes a registered command, and opens a Graph through the packaged custom editor. Interactive Webview behavior remains covered by domain tests and targeted real-page checks rather than being inferred from package installation alone.
 
 The extension currently includes the Graph Document V3 editor with Graph Catalog V4, the Entity Document V1 editor with Entity Catalog V1, the Structured Config V1 editor with Structured Catalog V1, the Table Document V1 editor with Table Catalog V1, the unified Document Browser, and Project Provider V2 references/validators. A Project File's document type selects the broad editor category through `"editor": "graph"`, `"editor": "entity"`, `"editor": "structured"` or `"editor": "table"`; its stable `id` is the project-defined subtype, while `include` and `exclude` own the file association. File extensions are not hardcoded type discriminators.
+
+The VSIX is private, distributed as `UNLICENSED`, and intended for local file-system workspaces. VS Code virtual workspaces are explicitly unsupported because project discovery, Catalog loading, atomic document writes, and Provider processes require local file access.
 
 Project Providers run only in a trusted workspace as isolated `.mjs` child processes; Restricted Mode never starts them. They can add declared Reference kinds and Validator diagnostics but cannot add write operations. Provider stderr and structured lifecycle events are written to the `VisualBridge` Output Channel. See `Doc/ProjectProvider.md` for the declaration, protocol, trust and troubleshooting contract.
 

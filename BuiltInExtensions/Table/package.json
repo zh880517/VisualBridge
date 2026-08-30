@@ -2,6 +2,7 @@
   "name": "@visualbridge/table",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "type": "commonjs",
   "main": "index.ts",
   "types": "index.ts",
@@ -11,12 +12,12 @@
     "test": "npm run build --workspace @visualbridge/core && npm run build && node --test dist/test/tableSemantics.test.js dist/test/tableReferences.test.js dist/test/tableSourceFactory.test.js"
   },
   "dependencies": {
-    "csv-parse": "^7.0.2",
-    "csv-stringify": "^6.8.3",
-    "exceljs": "^4.4.0"
+    "csv-parse": "7.0.2",
+    "csv-stringify": "6.8.3",
+    "exceljs": "4.4.0"
   },
   "devDependencies": {
-    "@types/node": "^24.13.1",
+    "@types/node": "22.20.1",
     "@visualbridge/core": "*"
   }
 }

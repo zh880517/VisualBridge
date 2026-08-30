@@ -16,8 +16,7 @@
       "$ref": "#/$defs/identifier"
     },
     "properties": {
-      "type": "object",
-      "additionalProperties": true
+      "$ref": "visualbridge-primitives.schema.json#/$defs/jsonObject"
     }
   },
   "additionalProperties": false,

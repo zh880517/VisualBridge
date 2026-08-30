@@ -257,15 +257,16 @@ function createServer(): McpServer {
       outputSchema: toolOutputSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
     },
-    async ({ projectFile, action, kind, target, oldValue, newValue, previewHash, baseHashes }) => handle(() =>
+    async (request) => handle(() =>
       refactorService.execute({
-        projectFile,
-        action,
-        definition: referenceDefinition(kind, target, false),
-        oldValue,
-        newValue,
-        ...(previewHash === undefined ? {} : { previewHash }),
-        ...(baseHashes === undefined ? {} : { baseHashes }),
+        projectFile: request.projectFile,
+        action: request.action,
+        definition: referenceDefinition(request.kind, request.target, false),
+        oldValue: request.oldValue,
+        newValue: request.newValue,
+        ...(request.action === "apply"
+          ? { previewHash: request.previewHash, baseHashes: request.baseHashes }
+          : {}),
       })),
   );
 
@@ -286,9 +287,8 @@ function createServer(): McpServer {
 }
 
 const stableId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
-const normalizedPath = z.string().min(1).max(1024).refine(
-  (value) => !value.includes("\\") && !value.includes(":") && !value.startsWith("/")
-    && value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== ".."),
+const normalizedPath = z.string().min(1).max(1024).regex(
+  /^(?!\/)(?!.*:)(?!.*\\)(?!.*(?:^|\/)\.{1,2}(?:\/|$))(?!.*\/\/)(?!.*\/$).+$/,
   "Expected a normalized project-relative path using '/' separators.",
 );
 const cursorSchema = z.string().min(1).max(256).optional();
@@ -305,8 +305,8 @@ const toolOutputSchema = z.discriminatedUnion("status", [
     contractVersion: z.literal(CONTRACT_VERSION),
     status: z.literal("error"),
     error: z.object({
-      code: z.string(),
-      message: z.string(),
+      code: stableId,
+      message: z.string().min(1),
       details: z.unknown().optional(),
     }).strict(),
   }).strict(),
@@ -357,7 +357,7 @@ const documentInputSchema = z.object({
 const applyOperationsInputSchema = z.object({
   projectFile: normalizedPath,
   documentTypeId: stableId,
-  editor: stableId,
+  editor: z.enum(["graph", "entity", "structured", "table"]),
   path: normalizedPath,
   baseHash: z.string().regex(/^[a-f0-9]{64}$/),
   operations: z.array(operationSchema).min(1),
@@ -382,26 +382,41 @@ const referenceInputSchema = z.object({
   }
 });
 
-const refactorInputSchema = z.object({
+const refactorInputBase = {
   projectFile: normalizedPath,
-  action: z.enum(["preview", "apply"]),
   kind: z.enum(["document", "entity.component", "graph.element", "table.row"]),
   target: z.record(z.string(), z.json()),
-  oldValue: z.union([z.string(), z.number().finite()]),
-  newValue: z.union([z.string(), z.number().finite()]),
-  previewHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  baseHashes: z.record(z.string(), z.string().regex(/^[a-f0-9]{64}$/)).optional(),
-}).strict().superRefine((value, context) => {
-  if (typeof value.oldValue !== typeof value.newValue) {
-    context.addIssue({ code: "custom", path: ["newValue"], message: "Reference value type must not change." });
-  }
-  if (value.action === "apply" && value.previewHash === undefined) {
-    context.addIssue({ code: "custom", path: ["previewHash"], message: "Apply requires previewHash." });
-  }
-  if (value.action === "apply" && value.baseHashes === undefined) {
-    context.addIssue({ code: "custom", path: ["baseHashes"], message: "Apply requires every source baseHash." });
-  }
-});
+};
+const refactorApplyBase = {
+  ...refactorInputBase,
+  action: z.literal("apply"),
+  previewHash: z.string().regex(/^[a-f0-9]{64}$/),
+  baseHashes: z.record(normalizedPath, z.string().regex(/^[a-f0-9]{64}$/)),
+};
+const refactorInputSchema = z.union([
+  z.object({
+    ...refactorInputBase,
+    action: z.literal("preview"),
+    oldValue: z.string(),
+    newValue: z.string(),
+  }).strict(),
+  z.object({
+    ...refactorInputBase,
+    action: z.literal("preview"),
+    oldValue: z.number().finite(),
+    newValue: z.number().finite(),
+  }).strict(),
+  z.object({
+    ...refactorApplyBase,
+    oldValue: z.string(),
+    newValue: z.string(),
+  }).strict(),
+  z.object({
+    ...refactorApplyBase,
+    oldValue: z.number().finite(),
+    newValue: z.number().finite(),
+  }).strict(),
+]);
 
 const lifecycleSelectorBase = {
   projectId: stableId,
@@ -515,30 +530,24 @@ const lifecycleDependencySchema = z.object({
   hash: z.string().regex(/^[a-f0-9]{64}$/),
   paths: z.array(normalizedPath).max(100_000),
 }).strict();
-const documentLifecycleInputSchema = z.object({
-  action: z.enum(["preview", "apply"]),
+const documentLifecyclePreviewInputSchema = z.object({
+  action: z.literal("preview"),
   projectFile: normalizedPath,
   operation: lifecycleOperationSchema,
-  previewHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  planPayload: z.string().min(1).max(16 * 1024 * 1024).optional(),
-  baseHashes: z.record(normalizedPath, z.string().regex(/^[a-f0-9]{64}$/)).optional(),
-  dependencies: z.array(lifecycleDependencySchema).max(100_000).optional(),
-}).strict().superRefine((value, context) => {
-  const applyFields = ["previewHash", "planPayload", "baseHashes", "dependencies"] as const;
-  if (value.action === "apply") {
-    for (const field of applyFields) {
-      if (value[field] === undefined) {
-        context.addIssue({ code: "custom", path: [field], message: `Apply requires ${field}.` });
-      }
-    }
-    return;
-  }
-  for (const field of applyFields) {
-    if (value[field] !== undefined) {
-      context.addIssue({ code: "custom", path: [field], message: `Preview does not accept ${field}.` });
-    }
-  }
-});
+}).strict();
+const documentLifecycleApplyInputSchema = z.object({
+  action: z.literal("apply"),
+  projectFile: normalizedPath,
+  operation: lifecycleOperationSchema,
+  previewHash: z.string().regex(/^[a-f0-9]{64}$/),
+  planPayload: z.string().min(1).max(16 * 1024 * 1024),
+  baseHashes: z.record(normalizedPath, z.string().regex(/^[a-f0-9]{64}$/)),
+  dependencies: z.array(lifecycleDependencySchema).max(100_000),
+}).strict();
+const documentLifecycleInputSchema = z.discriminatedUnion("action", [
+  documentLifecyclePreviewInputSchema,
+  documentLifecycleApplyInputSchema,
+]);
 
 async function handle(action: () => Promise<Record<string, unknown>>) {
   try {

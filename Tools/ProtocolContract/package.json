@@ -1,0 +1,23 @@
+{
+  "name": "@visualbridge/protocol-contract",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": "22.22.1"
+  },
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "check": "node scripts/generate.mjs --check",
+    "check:mcp": "node scripts/check-mcp.mjs",
+    "test": "npm run check && npm run check:mcp"
+  },
+  "dependencies": {
+    "ajv": "8.20.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "typescript": "7.0.2"
+  }
+}

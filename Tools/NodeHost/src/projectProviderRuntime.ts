@@ -1166,7 +1166,6 @@ async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> 
       reject(cancelledError());
     };
     signal?.addEventListener("abort", listener!, { once: true });
-    timer.unref?.();
   });
 }
 

@@ -24,6 +24,10 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
   private readonly pendingEntityReveals = new Map<string, EntityRevealTarget>();
   private readonly structuredSessions = new Map<string, Set<StructuredEditorSession>>();
   private readonly initializedPanels = new Map<string, Set<vscode.WebviewPanel>>();
+  private readonly sessionDiagnostics = new Map<
+    string,
+    Map<symbol, readonly vscode.Diagnostic[]>
+  >();
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -52,6 +56,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
 
     if (match.documentType.editor === GRAPH_EDITOR_ID) {
       webviewPanel.title = `${match.documentType.id}: ${nodePath.basename(document.uri.fsPath)}`;
+      const diagnosticsOwner = this.createDiagnosticsOwner(document.uri);
       const session = new GraphEditorSession(
         this.extensionUri,
         document,
@@ -59,7 +64,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         match,
         this.projects,
         this.references,
-        this.diagnostics,
+        diagnosticsOwner.publish,
         this.output,
       );
       const uriKey = document.uri.toString();
@@ -69,7 +74,10 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         this.graphSessions.set(uriKey, sessions);
       }
       sessions.add(session);
-      const panelSubscription = webviewPanel.onDidDispose(() => this.removeGraphSession(uriKey, session));
+      const panelSubscription = webviewPanel.onDidDispose(() => {
+        diagnosticsOwner.dispose();
+        this.removeGraphSession(uriKey, session);
+      });
       try {
         await session.open();
         const pendingReveal = this.pendingGraphReveals.get(uriKey);
@@ -79,6 +87,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         }
       } catch (error) {
         panelSubscription.dispose();
+        diagnosticsOwner.dispose();
         this.removeGraphSession(uriKey, session);
         throw error;
       }
@@ -87,6 +96,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
 
     if (match.documentType.editor === ENTITY_EDITOR_ID) {
       webviewPanel.title = `${match.documentType.id}: ${nodePath.basename(document.uri.fsPath)}`;
+      const diagnosticsOwner = this.createDiagnosticsOwner(document.uri);
       const session = new EntityEditorSession(
         this.extensionUri,
         document,
@@ -94,7 +104,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         match,
         this.projects,
         this.references,
-        this.diagnostics,
+        diagnosticsOwner.publish,
         this.output,
       );
       const uriKey = document.uri.toString();
@@ -104,7 +114,10 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         this.entitySessions.set(uriKey, sessions);
       }
       sessions.add(session);
-      const panelSubscription = webviewPanel.onDidDispose(() => this.removeEntitySession(uriKey, session));
+      const panelSubscription = webviewPanel.onDidDispose(() => {
+        diagnosticsOwner.dispose();
+        this.removeEntitySession(uriKey, session);
+      });
       try {
         await session.open();
         const pendingReveal = this.pendingEntityReveals.get(uriKey);
@@ -114,6 +127,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         }
       } catch (error) {
         panelSubscription.dispose();
+        diagnosticsOwner.dispose();
         this.removeEntitySession(uriKey, session);
         throw error;
       }
@@ -122,6 +136,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
 
     if (match.documentType.editor === STRUCTURED_EDITOR_ID) {
       webviewPanel.title = `${match.documentType.id}: ${nodePath.basename(document.uri.fsPath)}`;
+      const diagnosticsOwner = this.createDiagnosticsOwner(document.uri);
       const session = new StructuredEditorSession(
         this.extensionUri,
         document,
@@ -129,7 +144,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         match,
         this.projects,
         this.references,
-        this.diagnostics,
+        diagnosticsOwner.publish,
         this.output,
       );
       const uriKey = document.uri.toString();
@@ -139,11 +154,15 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         this.structuredSessions.set(uriKey, sessions);
       }
       sessions.add(session);
-      const panelSubscription = webviewPanel.onDidDispose(() => this.removeStructuredSession(uriKey, session));
+      const panelSubscription = webviewPanel.onDidDispose(() => {
+        diagnosticsOwner.dispose();
+        this.removeStructuredSession(uriKey, session);
+      });
       try {
         await session.open();
       } catch (error) {
         panelSubscription.dispose();
+        diagnosticsOwner.dispose();
         this.removeStructuredSession(uriKey, session);
         throw error;
       }
@@ -191,10 +210,17 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     readonly activeSessionCount: number;
     readonly visibleSessionCount: number;
     readonly maxReadyGeneration: number;
+    readonly diagnosticOwnerCount: number;
+    readonly publishedDiagnosticCount: number;
     readonly sessionIds: readonly number[];
     readonly readyTokens: readonly string[];
+    readonly lastRevealResults: readonly {
+      readonly target: GraphRevealTarget;
+      readonly found: boolean;
+    }[];
   } {
-    const states = [...this.graphSessions.get(uri.toString()) ?? []].map((session) => session.testState);
+    const uriKey = uri.toString();
+    const states = [...this.graphSessions.get(uriKey) ?? []].map((session) => session.testState);
     return {
       sessionCount: states.length,
       readySessionCount: states.filter((state) => state.ready).length,
@@ -204,10 +230,33 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         (session) => session.testSessionId,
       ),
       readyTokens: states.flatMap((state) => state.readyToken === undefined ? [] : [state.readyToken]),
+      lastRevealResults: states.flatMap((state) => (
+        state.lastRevealResult === undefined ? [] : [state.lastRevealResult]
+      )),
       maxReadyGeneration: states.reduce(
         (maximum, state) => Math.max(maximum, state.readyGeneration),
         0,
       ),
+      diagnosticOwnerCount: this.sessionDiagnostics.get(uriKey)?.size ?? 0,
+      publishedDiagnosticCount: this.diagnostics.get(uri)?.length ?? 0,
+    };
+  }
+
+  public getEntityEditorTestState(uri: vscode.Uri): {
+    readonly sessionCount: number;
+    readonly readySessionCount: number;
+    readonly lastRevealResults: readonly {
+      readonly target: EntityRevealTarget;
+      readonly found: boolean;
+    }[];
+  } {
+    const states = [...this.entitySessions.get(uri.toString()) ?? []].map((session) => session.testState);
+    return {
+      sessionCount: states.length,
+      readySessionCount: states.filter((state) => state.ready).length,
+      lastRevealResults: states.flatMap((state) => (
+        state.lastRevealResult === undefined ? [] : [state.lastRevealResult]
+      )),
     };
   }
 
@@ -222,6 +271,31 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
       : [...this.graphSessions.get(uriKey) ?? []][0];
     if (session === undefined) throw new Error(`No active ${editor} editor session was found.`);
     session.assertIdentityOperationsAllowedForTest(operations);
+  }
+
+  public async applyOperationsForTest(
+    uri: vscode.Uri,
+    editor: "entity" | "graph" | "structured",
+    operations: unknown,
+  ): Promise<void> {
+    const uriKey = uri.toString();
+    const session = editor === "entity"
+      ? [...this.entitySessions.get(uriKey) ?? []][0]
+      : editor === "graph"
+        ? [...this.graphSessions.get(uriKey) ?? []][0]
+        : [...this.structuredSessions.get(uriKey) ?? []][0];
+    if (session === undefined) throw new Error(`No active ${editor} editor session was found.`);
+    await session.applyOperationsForTest(operations);
+  }
+
+  public async applyOperationsAfterExternalWriteForTest(
+    uri: vscode.Uri,
+    externalText: string,
+    operations: unknown,
+  ): Promise<void> {
+    const session = [...this.structuredSessions.get(uri.toString()) ?? []][0];
+    if (session === undefined) throw new Error("No active structured editor session was found.");
+    await session.applyOperationsAfterExternalWriteForTest(externalText, operations);
   }
 
   public async revealGraphReference(location: ReferenceLocation): Promise<void> {
@@ -318,6 +392,56 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     }
   }
 
+  private createDiagnosticsOwner(uri: vscode.Uri): {
+    readonly publish: (diagnostics: readonly vscode.Diagnostic[]) => void;
+    readonly dispose: () => void;
+  } {
+    const uriKey = uri.toString();
+    const owner = Symbol(uriKey);
+    let disposed = false;
+    return {
+      publish: (diagnostics) => {
+        if (disposed) {
+          return;
+        }
+        let snapshots = this.sessionDiagnostics.get(uriKey);
+        if (snapshots === undefined) {
+          snapshots = new Map();
+          this.sessionDiagnostics.set(uriKey, snapshots);
+        }
+        snapshots.set(owner, diagnostics);
+        this.publishDiagnostics(uri, snapshots);
+      },
+      dispose: () => {
+        if (disposed) {
+          return;
+        }
+        disposed = true;
+        const snapshots = this.sessionDiagnostics.get(uriKey);
+        snapshots?.delete(owner);
+        if (snapshots === undefined || snapshots.size === 0) {
+          this.sessionDiagnostics.delete(uriKey);
+          this.diagnostics.delete(uri);
+          return;
+        }
+        this.publishDiagnostics(uri, snapshots);
+      },
+    };
+  }
+
+  private publishDiagnostics(
+    uri: vscode.Uri,
+    snapshots: ReadonlyMap<symbol, readonly vscode.Diagnostic[]>,
+  ): void {
+    const published = new Map<string, vscode.Diagnostic>();
+    for (const diagnostics of snapshots.values()) {
+      for (const diagnostic of diagnostics) {
+        published.set(diagnosticIdentity(diagnostic), diagnostic);
+      }
+    }
+    this.diagnostics.set(uri, [...published.values()]);
+  }
+
   private addInitializedPanel(uriKey: string, panel: vscode.WebviewPanel): void {
     let panels = this.initializedPanels.get(uriKey);
     if (panels === undefined) {
@@ -334,6 +458,23 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
       this.initializedPanels.delete(uriKey);
     }
   }
+}
+
+function diagnosticIdentity(diagnostic: vscode.Diagnostic): string {
+  const code = typeof diagnostic.code === "object"
+    ? `${diagnostic.code.value}:${diagnostic.code.target.toString()}`
+    : String(diagnostic.code ?? "");
+  const { start, end } = diagnostic.range;
+  return [
+    start.line,
+    start.character,
+    end.line,
+    end.character,
+    diagnostic.severity,
+    diagnostic.source ?? "",
+    code,
+    diagnostic.message,
+  ].join("\u0000");
 }
 
 function isProjectRelativePath(value: string): boolean {

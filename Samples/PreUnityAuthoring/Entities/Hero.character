@@ -1,0 +1,20 @@
+{
+  "formatVersion": 1,
+  "documentId": "sample.hero.default",
+  "entityTypeId": "sample.hero",
+  "title": "Sample Hero",
+  "properties": {
+    "name": "Ranger",
+    "health": 120
+  },
+  "components": [
+    {
+      "id": "movement",
+      "componentTypeId": "sample.movement",
+      "enabled": true,
+      "properties": {
+        "speed": 6.5
+      }
+    }
+  ]
+}

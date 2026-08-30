@@ -1,0 +1,11 @@
+{
+  "name": "visualbridge-vsix-test-runner",
+  "displayName": "VisualBridge VSIX Test Runner",
+  "version": "0.0.0",
+  "private": true,
+  "publisher": "kyl-tests",
+  "engines": {
+    "vscode": "^1.105.1"
+  },
+  "main": "./index.cjs"
+}

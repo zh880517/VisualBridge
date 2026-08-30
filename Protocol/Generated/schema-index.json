@@ -1,0 +1,293 @@
+{
+  "generatedBy": "Tools/ProtocolContract/scripts/generate.mjs",
+  "manifestVersion": 1,
+  "schemas": [
+    {
+      "file": "Schema/visualbridge-authoring-contracts.schema.json",
+      "id": "https://visualbridge.dev/schema/visualbridge-authoring-contracts.schema.json",
+      "sha256": "1e6a9056d13f50826c72a7d47e055089f345b7494ede4b46a0f8f6749e27aca7",
+      "definitions": [
+        "applyOperationsRequest",
+        "documentOperation",
+        "documentTransport",
+        "entityOperation",
+        "graphAddDynamicPort",
+        "graphAddEdge",
+        "graphAddInterfacePort",
+        "graphAddNode",
+        "graphAddSubgraph",
+        "graphAssignType",
+        "graphMoveNode",
+        "graphNodeIdOperation",
+        "graphOperation",
+        "graphRemoveDynamicPort",
+        "graphRemoveEdge",
+        "graphRemoveInterfacePort",
+        "graphRemoveNode",
+        "graphRenameElement",
+        "graphReorderDynamicPorts",
+        "graphReorderInterfacePorts",
+        "graphReplaceNodeType",
+        "graphUpdateDynamicPort",
+        "graphUpdateGraph",
+        "graphUpdateInterfacePort",
+        "graphUpdateNode",
+        "lifecycleOperation",
+        "lifecycleRequest",
+        "lifecycleSelector",
+        "refactorApplyNumberRequest",
+        "refactorApplyRequest",
+        "refactorApplyStringRequest",
+        "refactorPreviewNumberRequest",
+        "refactorPreviewRequest",
+        "refactorPreviewStringRequest",
+        "refactorRequest",
+        "referenceCandidate",
+        "referenceDefinition",
+        "referenceLocation",
+        "referenceSearchCursor",
+        "referenceSearchPage",
+        "stableIdentityRemap",
+        "structuredOperation",
+        "tableOperation",
+        "transactionMutation",
+        "transactionPrecondition",
+        "transactionResult"
+      ]
+    },
+    {
+      "file": "Schema/visualbridge-catalog-source.schema.json",
+      "id": "https://visualbridge.dev/schema/visualbridge-catalog-source.schema.json",
+      "sha256": "56f5fb5cdbbc911c178eb8500e8f2279bdf8ded0c652f2db5da23d1d37a179c4",
+      "definitions": [
+        "hash",
+        "identifier"
+      ]
+    },
+    {
+      "file": "Schema/visualbridge-entity-catalog.schema.json",
+      "id": "https://visualbridge.dev/schema/visualbridge-entity-catalog.schema.json",
+      "sha256": "47f3cc428c2d0cbfb511ae12745d3c4aa9033cd52ef2dde8125de81bc2f5c039",
+      "definitions": [
+        "componentGroup",
+        "componentType",
+        "editor",
+        "entityType",
+        "field",
+        "identifier",
+        "identifierArray",
+        "nonEmptyString",
+        "reference",
+        "source",
+        "valueDefinition",
+        "valueShape",
+        "valueType"
+      ]
+    },
+    {
+      "file": "Schema/visualbridge-entity.schema.json",
+      "id": "https://visualbridge.dev/schema/visualbridge-entity.schema.json",
+      "sha256": "f97985aae977a0e024e388be6e3b1bc303153445216ee427e6ea8fa660616c27",
+      "definitions": [
+        "component",
+        "identifier",
+        "propertyValues"
+      ]
+    },
+    {
+      "file": "Schema/visualbridge-graph-catalog.schema.json",
+      "id": "https://visualbridge.dev/schema/visualbridge-graph-catalog.schema.json",
+      "sha256": "ca3dd1e07802dc895a23f9677432a0085d49673a9ac3d0709ab99b639a456c43",
+      "definitions": [
+        "catalogSource",
+        "dynamicPortGroup",
+        "dynamicPortItem",
+        "dynamicPortTemplate",
+        "graphType",
+        "identifier",
+        "initialNode",
+        "nodeConstraint",
+        "nodeSelector",
+        "nodeSource",
+        "nodeType",
+        "port",
+        "portConnectionRules",
+        "property",
+        "propertyEditor",
+        "propertyEditorOption",
+        "reference",
+        "subgraphNodeContract"
+      ]
+    },
+    {
+      "file": "Schema/visualbridge-graph.schema.json",
+      "id": "https://visualbridge.dev/schema/visualbridge-graph.schema.json",
+      "sha256": "44cfc56da80fd1c0b06a3be2367107375d49de875ed837fda25df9008280f40b",
+      "definitions": [
+        "atomicNode",
+        "dynamicPort",
+        "edge",
+        "endpoint",
+        "graph",
+        "identifier",
+        "interfaceEndpoint",
+        "interfacePort",
+        "nodeEndpoint",
+        "position",
+        "properties",
+        "subgraphNode"
+      ]
+    },
+    {
+      "file": "Schema/visualbridge-mcp-tools.schema.json",
+      "id": "https://visualbridge.dev/schema/visualbridge-mcp-tools.schema.json",
+      "sha256": "1cdedefa725bed70bdcac6d76d92b4f8a7d5b79701b089bead09a1c7ac092aba",
+      "definitions": [
+        "mcpLifecycleCreateOperation",
+        "mcpLifecycleDeleteTarget",
+        "mcpLifecycleOperation",
+        "mcpLifecycleSelector",
+        "mcpLifecycleStableIdentityRemap",
+        "mcpLifecycleStableIdentityValue",
+        "toolOutput",
+        "visualbridge_apply_operations.input",
+        "visualbridge_apply_operations.output",
+        "visualbridge_catalog.input",
+        "visualbridge_catalog.output",
+        "visualbridge_document.input",
+        "visualbridge_document.output",
+        "visualbridge_document_lifecycle.input",
+        "visualbridge_document_lifecycle.output",
+        "visualbridge_project.input",
+        "visualbridge_project.output",
+        "visualbridge_refactor_reference.input",
+        "visualbridge_refactor_reference.output",
+        "visualbridge_references.input",
+        "visualbridge_references.output"
+      ]
+    },
+    {
+      "file": "Schema/visualbridge-primitives.schema.json",
+      "id": "https://visualbridge.dev/schema/visualbridge-primitives.schema.json",
+      "sha256": "23c83a69a9d557916a9e2a0a120c0664fb09fbc86dc96703aa7bc036030dc639",
+      "definitions": [
+        "alias",
+        "cursor",
+        "dependency",
+        "diagnostic",
+        "documentPageLimit",
+        "error",
+        "formatVersion",
+        "hashManifest",
+        "jsonObject",
+        "jsonValue",
+        "lockOwner",
+        "normalizedPath",
+        "pageLimit",
+        "query",
+        "referenceValue",
+        "sha256",
+        "shortCursor",
+        "stableId"
+      ]
+    },
+    {
+      "file": "Schema/visualbridge-project-provider.schema.json",
+      "id": "https://visualbridge.dev/schema/visualbridge-project-provider.schema.json",
+      "sha256": "456ef84342e6d44acf878ad8a34991e1c45c9978d7c3f1b1f6c4993dd2915487",
+      "definitions": [
+        "cancelRequestNotification",
+        "capabilities",
+        "capabilitiesRequest",
+        "emptyObject",
+        "errorData",
+        "hash",
+        "hostMessage",
+        "identifier",
+        "initializeRequest",
+        "invalidTargetResult",
+        "jsonObject",
+        "jsonValue",
+        "projectChangedNotification",
+        "projectSnapshot",
+        "providerCursor",
+        "providerResponse",
+        "providerUnavailableResult",
+        "referenceCandidate",
+        "referenceLocation",
+        "referenceResolveRequest",
+        "referenceResolveResult",
+        "referenceSearchRequest",
+        "referenceSearchResult",
+        "referenceValidateTargetRequest",
+        "referenceValidateTargetResult",
+        "relativePath",
+        "requestBase",
+        "requestId",
+        "shutdownRequest",
+        "structuredError",
+        "successResult",
+        "validatorDiagnosticsRequest",
+        "validatorDiagnosticsResult"
+      ]
+    },
+    {
+      "file": "Schema/visualbridge-project.schema.json",
+      "id": "https://visualbridge.dev/schema/visualbridge-project.schema.json",
+      "sha256": "dde9d43f3fdc09ca0978fe0e8650a731726f6490ad1fda2e62023db69b01c3e9",
+      "definitions": [
+        "identifier",
+        "provider",
+        "providerCapabilities",
+        "safeGlob"
+      ]
+    },
+    {
+      "file": "Schema/visualbridge-structured-catalog.schema.json",
+      "id": "https://visualbridge.dev/schema/visualbridge-structured-catalog.schema.json",
+      "sha256": "b1e4b23512fd2fe934175359680ada7aa2548280d049d9df4446be1879d933ba",
+      "definitions": [
+        "configType",
+        "editor",
+        "editorOption",
+        "field",
+        "identifier",
+        "nonEmptyString",
+        "reference",
+        "source",
+        "valueDefinition"
+      ]
+    },
+    {
+      "file": "Schema/visualbridge-structured.schema.json",
+      "id": "https://visualbridge.dev/schema/visualbridge-structured.schema.json",
+      "sha256": "24af3e3ecd5f5481c76ad4e1377d5441d09a238faa37b220dfbc1f6fffc0baf8",
+      "definitions": [
+        "identifier"
+      ]
+    },
+    {
+      "file": "Schema/visualbridge-table-catalog.schema.json",
+      "id": "https://visualbridge.dev/schema/visualbridge-table-catalog.schema.json",
+      "sha256": "6917f8175c0e48382450f7ec88528c7c8acee0d2dda493a497363252b38e8e2b",
+      "definitions": [
+        "cellEncoding",
+        "column",
+        "csv",
+        "editor",
+        "field",
+        "identifier",
+        "identifierArray",
+        "nonEmptyString",
+        "partition",
+        "reference",
+        "sheet",
+        "source",
+        "tableType",
+        "valueDefinition",
+        "valueShape",
+        "valueType"
+      ]
+    }
+  ]
+}

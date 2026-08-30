@@ -1,0 +1,88 @@
+{
+  "formatVersion": 1,
+  "catalogId": "sample.gameplay.table",
+  "title": "Sample Skills",
+  "source": {
+    "status": "unknown"
+  },
+  "tableTypes": [
+    {
+      "id": "sample.skills",
+      "title": "Skills",
+      "aliases": [],
+      "csv": {
+        "delimiter": "\t"
+      },
+      "sheets": [
+        {
+          "id": "skills",
+          "aliases": [],
+          "title": "Skills",
+          "name": "Skills",
+          "nameAliases": [],
+          "rowDisplayNamePattern": "{id}_{name}",
+          "keyColumnId": "id",
+          "partition": {
+            "namePattern": "Skills_{part}",
+            "deduplicateByColumnId": "id",
+            "duplicatePolicy": "error"
+          },
+          "columns": [
+            {
+              "id": "id",
+              "title": "ID",
+              "aliases": [],
+              "nameKey": "Id",
+              "nameKeyAliases": [],
+              "valueType": "number",
+              "dataTypeId": "int",
+              "defaultValue": 1,
+              "editor": {
+                "kind": "number",
+                "integer": true,
+                "min": 1
+              },
+              "cellEncoding": {
+                "kind": "scalar"
+              }
+            },
+            {
+              "id": "name",
+              "title": "Name",
+              "aliases": [],
+              "nameKey": "Name",
+              "nameKeyAliases": [],
+              "valueType": "string",
+              "dataTypeId": "string",
+              "defaultValue": "",
+              "editor": {
+                "kind": "text"
+              },
+              "cellEncoding": {
+                "kind": "scalar"
+              }
+            },
+            {
+              "id": "power",
+              "title": "Power",
+              "aliases": [],
+              "nameKey": "Power",
+              "nameKeyAliases": [],
+              "valueType": "number",
+              "dataTypeId": "int",
+              "defaultValue": 0,
+              "editor": {
+                "kind": "number",
+                "integer": true,
+                "min": 0
+              },
+              "cellEncoding": {
+                "kind": "scalar"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

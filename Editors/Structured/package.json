@@ -2,6 +2,7 @@
   "name": "@visualbridge/structured-editor",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "type": "commonjs",
   "main": "index.ts",
   "types": "index.ts",
@@ -17,12 +18,12 @@
     "@visualbridge/core": "*",
     "@visualbridge/form-editor": "*",
     "@visualbridge/structured": "*",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.5",
-    "esbuild": "^0.28.2"
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "esbuild": "0.28.2"
   }
 }

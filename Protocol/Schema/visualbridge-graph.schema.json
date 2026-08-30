@@ -30,7 +30,7 @@
       "additionalProperties": false
     },
     "properties": {
-      "type": "object"
+      "$ref": "visualbridge-primitives.schema.json#/$defs/jsonObject"
     },
     "interfacePort": {
       "type": "object",
@@ -83,7 +83,7 @@
         "id": { "$ref": "#/$defs/identifier" },
         "groupId": { "$ref": "#/$defs/identifier" },
         "title": { "type": "string" },
-        "value": {}
+        "value": { "$ref": "visualbridge-primitives.schema.json#/$defs/jsonValue" }
       },
       "additionalProperties": false
     },

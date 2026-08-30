@@ -1,0 +1,75 @@
+{
+  "formatVersion": 1,
+  "catalogId": "sample.gameplay.entity",
+  "title": "Sample Gameplay Entity",
+  "source": {
+    "status": "unknown"
+  },
+  "componentGroups": [
+    {
+      "id": "sample.group.movement",
+      "title": "Movement",
+      "aliases": []
+    }
+  ],
+  "entityTypes": [
+    {
+      "id": "sample.hero",
+      "title": "Hero",
+      "aliases": [],
+      "allowedComponentGroupIds": [
+        "sample.group.movement"
+      ],
+      "properties": [
+        {
+          "id": "name",
+          "title": "Name",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "string",
+          "defaultValue": "Hero",
+          "editor": {
+            "kind": "text"
+          }
+        },
+        {
+          "id": "health",
+          "title": "Health",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "int",
+          "defaultValue": 100,
+          "editor": {
+            "kind": "number",
+            "integer": true,
+            "min": 1
+          }
+        }
+      ]
+    }
+  ],
+  "componentTypes": [
+    {
+      "id": "sample.movement",
+      "title": "Movement",
+      "aliases": [],
+      "groupId": "sample.group.movement",
+      "menuPath": [],
+      "properties": [
+        {
+          "id": "speed",
+          "title": "Speed",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "float",
+          "defaultValue": 5,
+          "editor": {
+            "kind": "number",
+            "min": 0,
+            "step": 0.1
+          }
+        }
+      ]
+    }
+  ]
+}

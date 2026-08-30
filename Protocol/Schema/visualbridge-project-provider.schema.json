@@ -101,8 +101,8 @@
       "properties": {
         "jsonrpc": { "const": "2.0" },
         "id": { "$ref": "#/$defs/requestId" },
-        "method": {},
-        "params": {}
+        "method": { "type": "string", "minLength": 1 },
+        "params": { "$ref": "#/$defs/jsonObject" }
       },
       "additionalProperties": false
     },

@@ -1,0 +1,24 @@
+{
+  "name": "@visualbridge/sample-validation",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": "22.22.1"
+  },
+  "scripts": {
+    "build": "npm run check",
+    "check": "node --check test/preUnityAuthoringSample.test.mjs && node --check ../../Samples/PreUnityAuthoring/Providers/sample-provider.mjs",
+    "test": "npm run build --workspace @visualbridge/core && npm run build --workspace @visualbridge/node-host && npm run build --workspace @visualbridge/entity && npm run build --workspace @visualbridge/graph && npm run build --workspace @visualbridge/structured && npm run build --workspace @visualbridge/table && node --test test/preUnityAuthoringSample.test.mjs"
+  },
+  "dependencies": {
+    "@visualbridge/core": "*",
+    "@visualbridge/entity": "*",
+    "@visualbridge/graph": "*",
+    "@visualbridge/node-host": "*",
+    "@visualbridge/structured": "*",
+    "@visualbridge/table": "*",
+    "minimatch": "10.2.6"
+  }
+}

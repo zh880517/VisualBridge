@@ -47,13 +47,13 @@ Document Browser 的 `References` 和 `Referenced By` 项提供通用 Replace �
 提交遵守以下顺序：
 
 1. 拒绝 Project 内任何未保存的 VisualBridge Text Document，并要求关闭该 Project 的全部 Table Custom Editor，避免尚未进入 Workspace Index 的引用变化被遗漏或覆盖宿主内存状态；确认预览后提交前再次检查。
-2. VS Code Host 取得自己的交互式 refactor lock；MCP 取得所有 MCP 写者共享的 Project Transaction lock。两者当前不宣称共享同一个物理锁。
+2. VS Code Host 与 MCP 都通过 `Tools/NodeHost` 取得同一个 Project Transaction lock；同一 Project 的所有协作写者共享物理锁、journal 与恢复协议。
 3. 对所有载体再次比较基线哈希，并在原目录写入、同步临时文件。
 4. 每次替换前再次检查源哈希，将旧文件移动为 rollback 副本，再将临时文件原子改名为目标文件。
-5. 校验全部落盘哈希；任何失败都按逆序恢复已经替换的源文件。MCP 额外使用 prepared/committed journal，并在下次写入前恢复死亡持锁进程留下的事务。
-6. 成功后清除 Reference 缓存并刷新 Workspace Document Index。
+5. 校验全部落盘哈希；任何失败都按逆序恢复已经替换的源文件。VS Code 与 MCP 共用 prepared/committed journal，并在下次写入前恢复死亡持锁进程留下的事务。
+6. 物理提交成功后清除 Reference 缓存，并分别刷新已打开的 Table Editor 与 Workspace Document Index。刷新失败不回滚或自动重放已经提交的写入，也不能返回“未应用”；Host 返回 `refactor.committedRefreshFailed` maintenance，明确说明源文件已经提交、列出 `tableEditor` / `documentIndex` 故障，并要求用户只刷新受影响视图或索引。只有物理事务提交前失败才返回 `refactor.commitFailed`。
 
-这是单机本地工作区事务；不承诺跨 Remote Workspace 或不遵守文件锁的外部进程具备数据库级隔离。`baseHash` 检查仍保证已检测到的并发修改不会被静默覆盖。
+这是单机本地工作区事务；不承诺跨 Remote Workspace 或不遵守文件锁的外部进程具备数据库级隔离。`baseHash` 检查仍保证已检测到的并发修改不会被静默覆盖。完整锁、journal、恢复和错误契约见 [`ProjectTransaction.md`](ProjectTransaction.md)。
 
 ## 6. MCP 非交互入口
 
