@@ -4,7 +4,7 @@
 
 本矩阵是 VisualBridge Unity 接入前 Authoring 基线的最终审计入口。每一项已实现能力都必须同时具备可追踪设计、必要流程图、使用说明、机器契约和自动验证；空项意味着文档里程碑未完成。路线图和提交说明不能替代本矩阵引用的正式资料。
 
-矩阵只覆盖当前已经实现的本地 Authoring 平台。Unity Catalog Exporter、Importer、Compiler、Runtime、Debug、DAP、Player、WebSocket、Project Discovery File 和独立 CLI 均为未来工作，不以占位 Schema 伪装成已完成能力。
+矩阵只覆盖由 `v0.1.0` 固化的本地 Authoring 基线。当前已实现的 Unity Structured Catalog Exporter 与 offline Compiler 由 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 和 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md) 独立审计；Editor Bridge、Runtime、Debug、DAP、Player、WebSocket、Project Discovery File 和独立产品 CLI 仍为未来工作，不以占位 Schema 伪装成已完成能力。
 
 ## 2. 完整性矩阵
 

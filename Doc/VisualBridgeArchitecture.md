@@ -124,23 +124,26 @@ flowchart TB
     NodeHost["Tools/NodeHost\nProject Transaction"]
     VSCode["Tools/VSCodeExtension\nhuman authoring"]
     MCP["Tools/VisualBridgeMcp\nAI authoring"]
-    Future["Future Unity Bridge\nUnity Editor / Runtime Player"]
+    UnityOffline["Unity Package\nStructured offline export / compile"]
+    Future["Future Editor Bridge\nRuntime / Debug / Player"]
 
     Sources --> Core
     Catalogs --> Core
     Provider --> Core
     Protocol --> MCP
-    Protocol -. future generated C# contracts .-> Future
+    Protocol --> UnityOffline
     Core --> Form
     Core --> VSCode
     Core --> MCP
     VSCode --> NodeHost
     MCP --> NodeHost
     NodeHost --> Sources
-    Core -. future import / debug .-> Future
+    Catalogs --> UnityOffline
+    Sources --> UnityOffline
+    UnityOffline -. future connection .-> Future
 ```
 
-当前实线部分已经在单仓库中落地。指向 Unity 的虚线是未来边界：当前没有 C# 协议生成器、Unity 协议消费者、Importer 或 Runtime/Debug Bridge。
+当前实线部分已经在单仓库中落地。Unity Package 已消费同源生成的 C# wire/data bags，并通过 strict `JObject` validator 完成 Profile、Project、Structured Catalog/Document 的离线 Export/Compile；虚线仍表示尚未实现的 Editor Bridge、Runtime、Debug、DAP 与 Player 边界。
 
 ## Authoring Project
 
@@ -148,10 +151,10 @@ flowchart TB
 
 Authoring Project 是平台自己的工程边界，与 Unity Project 和 VS Code Workspace 是不同概念：
 
-- 一个 Unity Project 未来可以关联一个或多个 Authoring Project；当前 Registry 只根据工作区中的 Project File 建立边界，不读取 Unity 工程状态。
+- Unity Integration Profile V1 固定为每个 Unity Project 关联一个位于该 Unity Project 内的 Authoring Project；VS Code Registry 仍只根据工作区中的 Project File 建立边界，不读取 Unity 工程状态。未来多 Project 关联需要先升级 Profile contract。
 - 一个 VS Code 窗口可以加载多个 Authoring Project。
 - 一个 Authoring Project 可以声明多个 Project 相对文档根目录。
-- Project File 可以位于本地工作区内任意工程目录；当前 Schema 不要求它与 `Assets` 平级，也没有 Profile 字段。
+- VS Code 使用的 Project File 可以位于本地工作区内任意工程目录；Unity slice 通过独立的 `ProjectSettings/VisualBridgeIntegration.json` 指向 Unity Project 内的 Project File，不向 Project V1 增加 Unity 字段。
 
 可编辑根目录由固定的 `VisualBridge.project.vbjson` 标识。该文件使用 VisualBridge 专属文件名和 `.vbjson` 后缀，内容为 JSON。VS Code 插件只有在工作区中发现并成功解析该文件后，才启用 VisualBridge 工程功能。
 
@@ -180,7 +183,7 @@ AuthoringRoot/
 - `Logic`、`Entities`、`Config` 和 `Tables`：示例中的 Authoring 源目录；实际名称和后缀完全由 `documentRoots` 与 `include` / `exclude` 决定。
 - `Providers`：可选的已构建 Project Provider V2 `.mjs` 入口；只有 Project 声明且宿主授权后运行。
 
-维护中的真实结构见 [`Samples/PreUnityAuthoring`](../Samples/PreUnityAuthoring/README.md)。当前实现不创建 `.visualbridge/generated`、`.visualbridge/cache` 或 `Library/VisualBridge/Discovery`，也未决定 Unity 实例发现文件应放在哪里。
+维护中的通用 Authoring 结构见 [`Samples/PreUnityAuthoring`](../Samples/PreUnityAuthoring/README.md)；Unity 固定样例位于 `UnityProject/VisualBridgeAuthoring`。当前 Structured Compiler 只在 `UnityProject/Library/VisualBridge/Compiled` 创建可删除派生数据，不创建 `.visualbridge/generated`、`.visualbridge/cache` 或 `Library/VisualBridge/Discovery`；Bridge discovery 位置仍未设计。
 
 ### VisualBridge Project File 职责
 
@@ -249,7 +252,7 @@ DocumentType
 └─ Lifecycle Adapter / Stable ID Remap / Delete Closure
 ```
 
-未来 Unity Compiler/Exporter 和 Debug Mapping 不属于当前 Document Type 注册契约；它们必须在 Unity 垂直切片中依据冻结的 Catalog/Document 输入另行设计。
+当前 Unity Structured Exporter/Compiler 不属于 VS Code Document Type Adapter 注册契约；它们依据冻结的 Profile、Project、Catalog/Document 与显式 C# metadata 独立运行。Debug Mapping 仍未设计。
 
 当前平台支持：
 
@@ -298,7 +301,7 @@ Entity Document 的默认便利后缀是 `.vbentity`，但业务文件可以使�
 
 Structured Catalog V1 声明 Config Type、来源追踪和共享 Field Definition。文件只包含 `formatVersion`、稳定 `documentId` 和完整 `properties`，不保存标题、路径或 C# 类型名。创建时递归物化全部默认字段；编辑器复用共享 Form/Reference 原语，修改以 `structured.setField` 批次进入 Core；MCP 复用同一语义，并与 Graph、Entity、Table 和 Refactor 共用 `baseHash` 检查与可恢复 Project Transaction。
 
-当前不提供旧格式兼容或迁移层，也不实现 Unity Catalog Exporter、Importer、Runtime、Debug 或 `ScriptableObject` 工作流。完整契约见 [`StructuredConfigModel.md`](StructuredConfigModel.md)。
+当前不提供旧格式兼容或迁移层。Unity Structured offline slice 已实现 Catalog Export 与 Editor 派生编译，但不提供 Runtime loader/行为、Debug、DAP、Player 或 `ScriptableObject` 工作流。Authoring 契约见 [`StructuredConfigModel.md`](StructuredConfigModel.md)，Unity 边界见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md)。
 
 ### Table 与 Excel
 
@@ -540,40 +543,38 @@ Custom Editor resolver 只负责建立 DocumentSession、设置 HTML 与注册�
 
 多编辑器场景中的定位请求只归属一个面板，并以逻辑文档级 generation 保证“最新请求获胜”；新请求必须取消同一文档所有面板和文档队列中的旧请求。承载当前 generation 的面板在确认前关闭时，请求必须立即交给同一文档的其他已就绪面板，或回到文档级等待队列；任一面板 ACK 释放 mailbox 后还要重试等待中的接管。
 
-## 后续 Unity Bridge 边界
+## Unity 集成与后续 Bridge 边界
 
 ### 定位
 
-Unity Bridge 当前尚未实现。未来垂直切片需要在单独设计中决定哪些能力属于 Unity Package、工程生成器或 Host；可能涉及：
+首个 Unity Structured offline、Editor-only 垂直切片已经实现：
 
-- 扫描 C# 类型和 Attribute。
-- 生成类型、节点、资产和引用 Catalog。
-- 导入和编译 Authoring Document。
-- 保存稳定 DocumentId、ElementId 与运行时结构的映射。
-- 是否以及如何建立 Editor/Player 通信。
-- 是否发送调试事件和运行时变量。
-- 是否支持从 Unity 请求打开 Authoring Document。
+- `ProjectSettings/VisualBridgeIntegration.json` Profile V1 显式登记一个 Unity Project 内的 Authoring Project、Structured export units 和固定编译输出根；
+- Package metadata marker 以 Attribute 显式登记普通 C# `class` / `struct`、Catalog/Config/Field stable ID、alias、默认值和 editor hint；
+- Editor Exporter 确定性生成或检查 Structured Catalog V1，不执行配置类型构造函数或业务初始化；
+- Editor Compiler 严格读取 Project、Catalog 与 Document，按 `documentRoots`/`include`/`exclude` 和 Document Type ID 唯一路由，在 `Library/VisualBridge/Compiled` 生成可重建 artifact、source mapping 与 managed manifest；
+- 菜单、Unity batchmode Generate/Check 与 EditMode tests 复用同一 Export/Compile 服务，VS Code 和 Bridge 均不是前置。
 
-后续 Catalog Exporter 必须输出 Graph Catalog V4，把稳定 `catalogId`/显示根 `title`、Graph/Node Type 的显式全局无歧义 ID、节点 Catalog 归属、Graph 用途、`supportedCatalogIds`、`portConnectionRules`、允许节点 selector、实例数量约束、初始节点以及 typed subgraph 目标类型写入确定性 Catalog；C# 全名只作为 `source` 追踪信息，不能充当持久身份。Entity Catalog Exporter 只扫描正式项目中运行时使用的普通 class / struct，不引入 `ScriptableObject` 包装层，并将数值、颜色、List 和普通自定义结构递归映射到全项目共享字段模型。Exporter 不执行业务初始化方法获取默认值，也不得输出旧 Catalog 版本。当前 Unity Package 尚未实现这些功能。
+Graph Catalog V4、Entity 与 Table 的 Unity Export/Compile 仍未实现。后续 Graph Exporter 必须把稳定 `catalogId`/显示根 `title`、Graph/Node Type 的显式全局无歧义 ID、节点 Catalog 归属、Graph 用途、`supportedCatalogIds`、`portConnectionRules`、允许节点 selector、实例数量约束、初始节点以及 typed subgraph 目标类型写入确定性 Catalog；C# 全名只作为 `source` 追踪信息，不能充当持久身份。后续 Entity Catalog Exporter 只扫描正式项目中使用的普通 class / struct，不引入 `ScriptableObject` 包装层，并将数值、颜色、List 和普通自定义结构递归映射到全项目共享字段模型。
 
 是否采用 Unity Adapter 注册 Catalog Generator、Importer、Compiler 或 Debug Mapping 仍待真实 Unity 垂直切片决定；当前 Authoring 协议只冻结 Catalog/Document 输入输出和稳定身份约束，不冻结 Unity 内部注册 API。
 
 ### 编译边界
 
-VisualBridge Authoring Host 不直接加载 Unity 程序集，未来 Unity Package 也不得加载 VS Code 插件代码。当前双方唯一已冻结的交接面是 Catalog、Authoring Document、Schema 与稳定 ID；通信协议尚未设计。
+VisualBridge Authoring Host 不直接加载 Unity 程序集，Unity Package 也不加载 VS Code 插件代码。当前双方冻结并落地的离线交接面是 Profile、Catalog、Authoring Document、Schema 与稳定 ID；Editor Bridge 通信协议仍未设计。
 
 ```text
 Current Authoring Host
   -> Node / VS Code / MCP
 
-Future Unity Package
+Current Unity Package
   -> Unity C# environment
 
-Frozen handoff today
-  -> Catalog / Document / Schema / stable IDs
+Frozen offline handoff today
+  -> Profile / Catalog / Document / Schema / stable IDs
 
 Not frozen today
-  -> discovery / transport / runtime / debug protocol
+  -> Editor Bridge discovery / transport / runtime / debug protocol
 ```
 
 ## Extension System
@@ -782,7 +783,7 @@ VisualBridge/
 
 阶段目标是证明“文本源文件 -> VisualBridgeCore -> 校验与确定性修改”。
 
-Project、Graph Core、Entity Core、Structured Core、Table Core、共享 Form Field、Reference System、Project Refactoring、Document Index 和 stdio MCP 垂直切片现已落地。四类文档分别由 `TestData` 固定样例及 Node 自动化测试持续验证；Unity Catalog Exporter、Importer、Runtime 和 Debug 仍不在本阶段范围内。
+Project、Graph Core、Entity Core、Structured Core、Table Core、共享 Form Field、Reference System、Project Refactoring、Document Index 和 stdio MCP 垂直切片现已落地。四类文档分别由 `TestData` 固定样例及 Node 自动化测试持续验证；随后新增的 Unity Structured offline slice 由独立 Profile/Package/Exporter/Compiler 与 Unity EditMode/batchmode 门槛验证。Runtime、Debug、DAP、Player 和其他三个领域的 Unity 实现仍不在当前能力内。
 
 ### 阶段二：VS Code 编辑闭环
 
@@ -799,22 +800,22 @@ VS Code 宿主边界使用官方 `@vscode/test-electron` 在最低支持版本 `
 
 ### 阶段三：Catalog、Reference 与项目扩展
 
-- 完成 Unity 接入前的 Authoring / Catalog 交接契约、Catalog Registry、过期状态和只读 Catalog Browser；此阶段使用已提交固定 Catalog，不实现 Unity 生成器。
+- 完成 Unity 接入前的 Authoring / Catalog 交接契约、Catalog Registry、过期状态和只读 Catalog Browser；该基线最初使用已提交固定 Catalog，后续 Structured Unity slice 已增加同源 C# contract 与确定性 Catalog Exporter。
 - 已落地 Reference Service、通用 Reference Picker、反向关系、项目重构和 Project Provider V2。
 - 已落地 Project Provider 的独立 `.mjs` 进程、重启、诊断、Workspace Trust 与 MCP allowlist 边界。
-- VB-PU-01 至 VB-PU-08 共同构成 Unity 接入前的 Authoring 基线；Project Settings、Catalog 状态、增量索引、Provider 缓存/取消、Table 虚拟化、共享 Form 与 VS Code Host 均属于该基线，Unity Catalog Exporter、Importer、Discovery 和连接协议属于其后的独立阶段。
+- VB-PU-01 至 VB-PU-08 共同构成 Unity 接入前的 Authoring 基线；Project Settings、Catalog 状态、增量索引、Provider 缓存/取消、Table 虚拟化、共享 Form 与 VS Code Host 均属于该基线。其后的 Structured Catalog Export/Compile 已落地，Discovery 和连接协议仍待独立阶段。
 
 Project Settings 的 Project Operation、文件归属校验、外部修改冲突和 Catalog Browser 行为见 [`ProjectCatalogManagement.md`](ProjectCatalogManagement.md)。Catalog 顶层 `source` 明确区分 `unknown`、`current` 与 `stale`；Host 从当前字节计算只读 `contentHash`，不在 Browser 中回写外部维护的 Catalog。
 
 阶段目标是让项目业务能力在不修改基础插件的情况下接入。
 
-Unity 接入前基线的范围与完成门槛见 [`PreUnityDevelopmentRoadmap.md`](PreUnityDevelopmentRoadmap.md)。Unity Catalog Exporter、Importer、Project Discovery File、WebSocket、Runtime 和 Debug 均在后续阶段另行设计，不能由本阶段文档提前承诺其协议字段。
+Unity 接入前基线的范围与完成门槛见 [`PreUnityDevelopmentRoadmap.md`](PreUnityDevelopmentRoadmap.md)。当前 Structured Export/Compile 的准确范围见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md)；Project Discovery、Editor Bridge transport、Runtime 和 Debug 仍需另行设计，不能从离线实现推导协议字段。
 
 ### 阶段四：Unity Editor 连接
 
-- 先以独立设计确定 Unity Project/实例发现、传输、认证、版本协商和重连边界；本阶段不预选 Discovery File 或 WebSocket。
-- 实现普通 C# class/struct 到冻结 Catalog 的确定性 Exporter，以及 Authoring 文档的最小 Import/Compile 垂直切片。
-- 在已证明的传输与权限边界上接入 Unity 请求打开 Authoring 文档。
+- 已完成普通 C# class/struct 到 Structured Catalog V1 的确定性 Exporter，以及 Authoring Structured Document 的最小 offline Import/Compile 垂直切片。
+- 下一步先以独立设计确定 Unity Project/实例发现、传输、认证、版本协商和重连边界；不预选 Discovery File 或 WebSocket。
+- 在已证明的传输与权限边界上实现最小 Editor Bridge，只允许 Unity 请求打开/定位 Authoring 文档。
 
 ### 阶段五：Debug 与 MCP
 
@@ -901,11 +902,11 @@ Domain Reload 会使未来 Unity 连接和运行时身份失效，因此后续�
 
 ## 留待实施阶段确定
 
-Graph V3、Graph Catalog V4、Entity/Structured/Table V1、Project V1、Project Provider V2 和 MCP V2 已由各自正式文档定义当前 Authoring 契约。`Protocol/Schema` 当前冻结 13 份正式 JSON Schema，并生成 `Protocol/Generated/contracts.d.ts` 和 `schema-index.json`；它们是当前 TypeScript/进程间传输契约。未来 C# 生成器必须读取同一 Schema/manifest 并加入 deterministic generation/drift gate，当前阶段尚未生成 C#，Unity 也没有协议消费者。以下条目是 Unity/发布集成或尚未落地的扩展，不表示现有格式与工具字段未定义：
+Graph V3、Graph Catalog V4、Entity/Structured/Table V1、Project V1、Project Provider V2、MCP V2 和 Unity Integration Profile V1 已由各自正式文档与 Schema 定义。`Protocol/Schema` 当前冻结 14 份正式 JSON Schema，并确定性生成四个产物：`Protocol/Generated/contracts.d.ts`、`schema-index.json`、`contracts.g.cs`，以及 Package 内的 `VisualBridgeProtocolContracts.g.cs`。两份 C# 输出是 wire/data bags，不是语义 validator；Unity Profile/Project/Catalog/Document consumer 以 strict `JObject` validator 执行 unknown-field、版本、union/value shape、ID/path/hash 与 Registry 约束。以下条目是尚未落地的扩展，不表示现有格式与工具字段未定义：
 
-- 未来 C# 生成物与 Unity Package 的版本联动；当前 TypeScript 声明和 Schema Hash drift 已由 Protocol gate 固定。
+- Protocol、C# 生成物、Unity Package 与 Compiler/Bridge 的完整发布兼容矩阵；当前生成闭包、Schema Hash 与 Package `0.1.0` 基线已由 Protocol gate 固定。
 - 新类型的稳定 ID 生成、alias 迁移与旧数据导入策略；当前内置类型的稳定 ID/alias 规则保持由各领域文档定义。
-- Structured Config 和 Table 载体进入 Unity Import/Compile 后的跨语言冻结；当前 JSON/CSV/XLSX Authoring 格式保持有效。
+- Structured Config 已完成首个 Unity offline Import/Compile；其当前派生产物仍是 Editor 内部格式。Table 以及 Graph/Entity 进入 Unity 后的跨语言冻结仍待各自垂直切片，当前 JSON/CSV/XLSX Authoring 格式保持有效。
 - 未来 Unity/DAP 协议的错误码、诊断位置和生成契约；当前 Provider JSON-RPC V2、MCP V2 Operation 与错误信封已经固定。
 - 可选 Provider SDK 的发布形态；当前 Provider 直接面向 [`ProjectProvider.md`](ProjectProvider.md) 与 JSON Schema，入口/Node/依赖策略已经固定。
 - Entity / Form 之外的 Webview UI SDK、组件模型、隔离和热重载方式。

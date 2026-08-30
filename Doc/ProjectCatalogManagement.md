@@ -137,7 +137,7 @@ sequenceDiagram
 - `current`：Catalog 内容来自 `sourceHash` 指定的来源快照。
 - `stale`：Catalog 仍来自 `sourceHash`，但外部系统已报告不同的 `currentSourceHash`。两个 Hash 相同会被 Parser 拒绝。
 
-未来 Unity Exporter/Bridge 负责计算并更新来源状态；VS Code 与 MCP 不扫描或解释 C# 来自行推测 Hash。Catalog 类型内部已有的 `source.providerId`/`typeName` 是类型导航元数据，与顶层 Catalog 来源快照不是同一概念。
+当前 Unity Structured Exporter 负责计算并更新其受管 Catalog 的来源状态；VS Code 与 MCP 不扫描或解释 C# 来自行推测 Hash。后续 Bridge 也不得改变这项 ownership。Catalog 类型内部已有的 `source.providerId`/`typeName` 是类型导航元数据，与顶层 Catalog 来源快照不是同一概念。
 
 ## 6. Catalog Browser
 

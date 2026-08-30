@@ -2,11 +2,11 @@
 
 ## 1. 定位与范围
 
-本文冻结 Unity 正式接入前的公开 Authoring 协议。`Protocol/Schema` 中的 JSON Schema 是跨进程、跨语言传输结构的单一事实来源；`Protocol/contract-manifest.json` 是版本、Hash 域、游标上限、状态和错误码的机器可检查登记表。
+本文冻结公开 Authoring 协议以及首个 Unity Structured offline slice 使用的 Integration Profile 契约。`Protocol/Schema` 中的 14 份 JSON Schema 是跨进程、跨语言传输结构的单一事实来源；`Protocol/contract-manifest.json` 是版本、C# 生成闭包、Hash 域、游标上限、状态和错误码的机器可检查登记表。
 
-当前冻结范围包括：通用 primitive、Project/Catalog/Document、Graph/Entity/Structured/Table Operation、Reference、Reference Refactor、Document Lifecycle、Project Transaction 的公开输入/结果、Project Provider V2，以及七个 MCP Tool 的输入/输出。Discovery、WebSocket、Unity Import、Runtime 和 Debug 不在本协议中。
+当前冻结范围包括：通用 primitive、Project/Catalog/Document、Graph/Entity/Structured/Table Operation、Reference、Reference Refactor、Document Lifecycle、Project Transaction 的公开输入/结果、Project Provider V2、七个 MCP Tool 的输入/输出，以及 Unity Integration Profile V1。Unity Compiler 派生产物和 mapping/manifest 当前是 Editor 内部格式，不是公开跨语言 Schema；Discovery、Editor Bridge transport、WebSocket、Runtime 和 Debug 也不在本协议中。
 
-Project Transaction 的 journal 与 lock 文件是 Node Host 私有的持久恢复格式，不是公开跨语言消息。它们仍登记版本并接受实现一致性检查，恢复语义见 [ProjectTransaction.md](ProjectTransaction.md)。未来 C# 合同必须从相同 Schema 生成；当前阶段不生成 C#，也不在 Unity 中实现消费者。
+Project Transaction 的 journal 与 lock 文件是 Node Host 私有的持久恢复格式，不是公开跨语言消息。它们仍登记版本并接受实现一致性检查，恢复语义见 [ProjectTransaction.md](ProjectTransaction.md)。当前 C# contract 与 TypeScript contract 由同一 Schema/manifest 确定性生成；Unity 的 Profile、Project、Catalog 和 Document 消费者先读取 `JObject` 并执行严格语义 validator，不能把生成 DTO 当成 validator。
 
 ## 2. 契约源与生成物
 
@@ -16,15 +16,21 @@ Protocol/Schema/*.schema.json
         ├── AJV 2020-12 编译与正反例
         ├── Protocol/Generated/schema-index.json
         ├── Protocol/Generated/contracts.d.ts
+        ├── Protocol/Generated/contracts.g.cs
+        ├── Packages/com.kyl.visualbridge/Editor/Generated/
+        │   └── VisualBridgeProtocolContracts.g.cs
         └── MCP tools/list 递归一致性检查
 
 Protocol/contract-manifest.json
-        ├── 版本与 Hash 域
+        ├── 版本、C# Schema closure 与输出路径
+        ├── Hash 域
         ├── 状态、冲突和错误码
         └── Core / Node Host / MCP 实现常量对照
 ```
 
-`schema-index.json` 记录每个 Schema 的 `$id`、原始 bytes SHA-256 和定义名；`contracts.d.ts` 是只读传输声明，并由 TypeScript 编译器再次检查。每个正式 Schema 都生成一个由文件名稳定派生的 namespace：`Root` 表示 Schema 根契约，后续声明与该 Schema 的全部 `$defs` 一一对应；注释保留源文件与 `$id`。跨 Schema 的同名定义由 namespace 隔离，namespace 或单个 Schema 内规范化后的 TypeScript 名称冲突、无法解析的 `$ref` 都会使生成失败。
+四个正式生成产物是 `schema-index.json`、`contracts.d.ts`、`contracts.g.cs` 和 Package 内的 `VisualBridgeProtocolContracts.g.cs`。`schema-index.json` 记录每个 Schema 的 `$id`、原始 bytes SHA-256 和定义名；`contracts.d.ts` 是只读传输声明，并由 TypeScript 编译器再次检查。每个正式 Schema 都生成一个由文件名稳定派生的 TypeScript namespace：`Root` 表示 Schema 根契约，后续声明与该 Schema 的全部 `$defs` 一一对应；注释保留源文件与 `$id`。跨 Schema 的同名定义由 namespace 隔离，namespace 或单个 Schema 内规范化后的 TypeScript 名称冲突、无法解析的 `$ref` 都会使生成失败。
+
+两份 C# 文件 bytes 相同，分别供 Protocol 独立编译检查和 Unity Package Editor assembly 消费。其生成类型是 wire/data bags：记录 DataContract/DataMember、nullable/collection/opaque JSON 载体、Schema Hash 与登记信息，但不承诺由 C# 类型系统完整表达 JSON Schema 的 `oneOf`、条件约束或递归语义。Profile loader、Authoring Project parser、Structured Catalog validator 和 Compiler 必须先在严格 `JObject` 层拒绝 unknown property/version、非法 union/value shape、ID/path/hash、alias 与 Registry 冲突，再把已验证数据映射到业务对象；直接反序列化生成 DTO 不是合法的严格验证路径。
 
 生成物不得手改，`generate --check` 会拒绝缺失或漂移。Schema 新增会同时改变 namespace 集合和 index，任何 Schema bytes 变化都会改变 index 中的 SHA-256；因此即使纯 annotation 变化不影响 TypeScript 类型，也不能绕过 drift gate。
 
@@ -43,6 +49,7 @@ Protocol/contract-manifest.json
 | `visualbridge-structured-catalog` / `visualbridge-structured` | Structured Catalog/Document V1 与 `structured.setField`。 |
 | `visualbridge-table-catalog` | Table Catalog V1、列编码和分表策略；CSV/XLSX 物理字节由 Table Codec 负责，不伪装成 JSON Document Schema。 |
 | `visualbridge-authoring-contracts` | Reference、Refactor、Lifecycle、Transaction 与统一 Document transport。 |
+| `visualbridge-unity-integration-profile` | Unity Project 内固定 Profile V1；显式关联一个 Authoring Project、Structured Catalog export units 与 `Library/VisualBridge/Compiled` 派生输出根。语义权威在 Unity Profile loader。 |
 | `visualbridge-mcp-tools` | 七个 stdio MCP Tool 的严格输入/输出信封。 |
 
 Graph、Entity、Structured、Table Catalog 中重复出现的 Field/value-shape 序列化定义是冻结后的公共 wire shape；编辑器语义只有一份，权威实现位于 Core Form model 和 `Editors/Form`。Schema parity 不是四个文件的文本或 bytes 相等检查：生成器会把四个 Catalog 的 10 个共享 `$defs` 解析后做结构 `deepEqual`，还会以同一组正反例行为矩阵分别执行四个 validator。最小 scalar、递归 object/array、结构化 select 和 number Reference 等正例必须全部接受；空白标题、重复 alias、错误递归 shape、缺失 select option 等反例必须全部拒绝。结构不同或任一 validator 的接受/拒绝结果不同都构成 drift。Host 或 Unity 不得据此复制另一套字段编辑规则。Table 的语义传输仍是 JSON 值，但 CSV family 与 XLSX 是 Host Codec 边界，其物理格式不由 JSON Schema 描述。
@@ -123,7 +130,7 @@ Document Lifecycle 的 Core contract 允许领域 Adapter 拥有 create paramete
 
 同一 Project 同时只允许一个 cooperating writer。live owner 绝不被抢占；stale owner 必须先完成安全恢复。`writeInProgress`、`baseHashMismatch`、`dependencyChanged`、`changedBeforeReplace` 都是可预期冲突，均不授权覆盖或就地重试。调用方必须重新读取、重新 preview。
 
-`transaction.finalizationPending` 是已提交但清理待完成的 maintenance 状态，不能重复提交。`transaction.*Failed`、journal/path/recovery 错误的完整集合由 manifest 冻结并从 Node Host 实现提取核对。journal V2 和 lock owner V1 只用于 Node Host 本地恢复；未来 C# 生成器不得据此生成公共 Unity API。
+`transaction.finalizationPending` 是已提交但清理待完成的 maintenance 状态，不能重复提交。`transaction.*Failed`、journal/path/recovery 错误的完整集合由 manifest 冻结并从 Node Host 实现提取核对。journal V2 和 lock owner V1 只用于 Node Host 本地恢复；当前及后续 C# generation closure 都不得据此生成公共 Unity API。
 
 ## 9. 错误与状态登记
 
@@ -163,6 +170,6 @@ npm run check:mcp --workspace @visualbridge/protocol-contract
 npm run test --workspace @visualbridge/protocol-contract
 ```
 
-变更流程为：先修改 Schema/manifest，再重新生成；随后运行 drift check、声明编译、AJV 正反例和真实 stdio MCP 一致性检查。CI 必须先构建 MCP，因为 live check 检查的是实际 `dist/server.js`。未来加入 C# generator 时，只能读取同一组 Schema 和 manifest，并必须加入同样的 deterministic generation/drift gate；不得另建手写 Unity DTO 作为第二事实来源。
+变更流程为：先修改 Schema/manifest，再重新生成四个产物；随后运行 drift check、TypeScript/C# 声明编译、AJV 正反例、Unity strict `JObject` validator parity 和真实 stdio MCP 一致性检查。CI 必须先构建 MCP，因为 live check 检查的是实际 `dist/server.js`。C# generator 只读取 manifest 登记的 Schema closure 与输出路径，并已加入相同 deterministic generation/drift gate；不得另建手写 Unity DTO 作为第二事实来源，也不得把 wire/data bags 的反序列化成功误报为语义校验成功。
 
 完整的外部 Host/MCP 接入步骤见 [`IntegrationGuide.md`](IntegrationGuide.md)，最终文档与验证覆盖矩阵见 [`DocumentationCompleteness.md`](DocumentationCompleteness.md)。

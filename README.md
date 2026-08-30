@@ -1,8 +1,8 @@
 # VisualBridge
 
-VisualBridge 是一个基于 VS Code 的游戏语义内容创作平台。当前 Unity 接入前版本提供 Graph、Entity、Structured Config、Table 四类 Authoring 文档的可视化编辑，共享 Catalog、Form、Reference、Project Transaction 和 MCP 语义，并以文本源文件或受约束的 CSV/XLSX 载体作为权威数据。
+VisualBridge 是一个基于 VS Code 的游戏语义内容创作平台。当前版本提供 Graph、Entity、Structured Config、Table 四类 Authoring 文档的可视化编辑，共享 Catalog、Form、Reference、Project Transaction 和 MCP 语义，并以文本源文件或受约束的 CSV/XLSX 载体作为权威数据。
 
-当前仓库尚未实现 Unity Catalog Exporter、Importer、Compiler、Editor Bridge、Runtime、Debug、DAP、Player Discovery 或 WebSocket 通信。`Packages/com.kyl.visualbridge` 仍是未来 Unity Package 的占位目录；不要把现有 VSIX 或 MCP 能力理解为已经能够导入 Unity 或连接运行时。
+仓库现已落地首个 Unity Structured offline、Editor-only 垂直切片：`Packages/com.kyl.visualbridge` 提供显式 C# metadata、固定 Profile、Structured Catalog Generate/Check，以及从 Authoring Project 到 `Library/VisualBridge/Compiled` 确定性派生产物的 Generate/Check。它不依赖 VS Code 或 Bridge 在线运行。当前仍未实现 Editor Bridge、Runtime loader/行为、Debug、DAP、Player、设备发现或网络通信；Package 中名为 `Kyl.VisualBridge.Runtime` 的程序集只是 player-visible、无 Unity API/无行为的纯 metadata marker surface，不是 Runtime 功能。
 
 本项目是私有项目，所有 npm 包和 VSIX 均标记为 `UNLICENSED`。仓库内容不是公开分发许可证的授权。
 
@@ -14,6 +14,7 @@ VisualBridge 是一个基于 VS Code 的游戏语义内容创作平台。当前 
 - 预览并执行 Document Copy、Path Rename、Move、Safe Delete，以及项目级稳定引用重构。
 - 通过 Project 锁、SHA-256 前置条件、阶段化写入、journal 和条件回滚保护 VS Code 与 MCP 的并发修改。
 - 通过七个稳定的 stdio MCP V2 工具读取、校验和修改同一套 Authoring 数据。
+- 在 Unity `6000.3.10f1` 中按 `ProjectSettings/VisualBridgeIntegration.json` 显式登记普通 C# Structured 类型，确定性导出 Catalog，并离线编译 Structured Document；首期 Profile V1 只关联 Unity Project 内的一个 Authoring Project。
 
 ## 快速开始
 
@@ -71,4 +72,18 @@ npm run test:vscode:cli
 git diff --check
 ```
 
-Unity 代码尚未进入当前实现范围；不要为了验证当前 TypeScript/VSIX 变更打开 Unity Editor。完整的工具链、CI 和发布边界见 [Release Quality](Doc/ReleaseQuality.md)。
+Unity 开发宿主固定为 `UnityProject/ProjectSettings/ProjectVersion.txt` 记录的 `6000.3.10f1`。以下 PowerShell 命令分别执行刷新/编译、Catalog Generate/Check、Structured Compile Generate/Check 与 EditMode tests；日志和结果写入临时目录，不进入产品 diff：
+
+```powershell
+$unityEditor = 'C:\Program Files\Unity 6000.3.10f1\Editor\Unity.exe'
+$unityProject = (Resolve-Path .\UnityProject).Path
+
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -logFile "$env:TEMP\visualbridge-refresh.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod Kyl.VisualBridge.Editor.VisualBridgeStructuredCatalogBatch.Generate -logFile "$env:TEMP\visualbridge-catalog-generate.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod Kyl.VisualBridge.Editor.VisualBridgeStructuredCatalogBatch.Check -logFile "$env:TEMP\visualbridge-catalog-check.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod Kyl.VisualBridge.Editor.VisualBridgeStructuredCompilerBatch.Generate -logFile "$env:TEMP\visualbridge-compile-generate.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod Kyl.VisualBridge.Editor.VisualBridgeStructuredCompilerBatch.Check -logFile "$env:TEMP\visualbridge-compile-check.log"
+& $unityEditor -batchmode -nographics -runTests -testPlatform EditMode -projectPath $unityProject -testResults "$env:TEMP\visualbridge-editmode.xml" -logFile "$env:TEMP\visualbridge-editmode.log"
+```
+
+Catalog 与 Compiler batch 统一返回 `0` 表示成功、`1` 表示执行失败、`2` 表示 Check 发现 drift。退出码之外还必须检查日志与 EditMode XML。Unity 生成的 `.csproj` 可再用 `dotnet build` 做快速编译检查，但不能替代 batchmode import 或 EditMode tests。完整边界见 [Unity Editor 接入架构](Doc/UnityIntegrationArchitecture.md)、[Unity Editor 接入任务清单](Doc/UnityIntegrationRoadmap.md) 与 [Release Quality](Doc/ReleaseQuality.md)。

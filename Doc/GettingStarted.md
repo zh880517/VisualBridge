@@ -2,7 +2,7 @@
 
 ## 1. 适用范围
 
-本手册面向第一次安装 VisualBridge VSIX 并打开 Authoring Project 的使用者。当前版本只支持本地文件系统工作区；VS Code Virtual Workspace 不受支持。Unity Catalog Exporter、Importer、Compiler、Editor Bridge、Runtime 和 Debug 尚未实现，因此本手册从已提交 Catalog 和 Authoring 源文件开始。
+本手册面向第一次安装 VisualBridge VSIX 并打开 Authoring Project 的使用者。当前版本只支持本地文件系统工作区；VS Code Virtual Workspace 不受支持。本手册聚焦 VSIX，因此仍从已提交 Catalog 和 Authoring 源文件开始；仓库同时提供 Unity Structured Catalog Exporter 与 offline Compiler，命令与 Profile 接入见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md)。Editor Bridge、Runtime、Debug、DAP 和 Player 尚未实现。
 
 VisualBridge 是私有 `UNLICENSED` 工具，没有 Marketplace 安装入口。VSIX 必须由仓库构建或从受信任的内部构建产物取得。
 

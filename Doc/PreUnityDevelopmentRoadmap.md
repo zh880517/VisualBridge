@@ -1,10 +1,12 @@
 # VisualBridge Unity 接入前开发任务清单
 
+> 状态：本清单已完成，并由 `v0.1.0` 标记为纯 pre-Unity Authoring 基线。当前 Unity 工作与后续状态以 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md) 为准；以下“当前阶段”均指本清单所记录的历史阶段。
+
 ## 1. 目标与边界
 
 本清单定义 VisualBridge 在正式编写 Unity Catalog Exporter、Importer、Compiler 或 Editor Bridge 之前必须完成的产品、工程与文档底座。任务按依赖顺序持续推进；每个任务完成后都必须更新本清单、执行对应验证、形成范围清晰的提交并推送到 `main`。
 
-当前阶段不实现 Unity Exporter、Importer、Runtime、Debug、DAP、Player、Project Discovery File 或 WebSocket 通信，也不增加 Unity 测试。正式项目中的普通 C# class / struct 仍是未来 Catalog 的定义来源，Authoring 源文件继续是唯一权威数据。
+该阶段不实现 Unity Exporter、Importer、Runtime、Debug、DAP、Player、Project Discovery File 或 WebSocket 通信，也不增加 Unity 测试。正式项目中的普通 C# class / struct 被确定为后续 Catalog 的定义来源，Authoring 源文件继续是唯一权威数据。
 
 状态含义：
 

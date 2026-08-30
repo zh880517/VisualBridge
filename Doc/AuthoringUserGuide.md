@@ -200,7 +200,7 @@ Refactor 不做字符串搜索替换，也不按扩展名猜测文件。目标�
 
 **VisualBridge / Catalogs** 是只读视图。它显示 Registry ready 状态、类型/alias、物理 Catalog、`contentHash`、来源 `unknown/current/stale`、冲突和诊断。点击 Catalog 只打开文本，不会通过 Browser 改写或格式化由外部维护的 Catalog。
 
-遇到 `catalog.sourceStale` 时让 Catalog 的外部维护者重新生成；当前 VisualBridge 不扫描 C# 推测来源，也没有 Unity Catalog Exporter。详见 [Project Settings 与 Catalog Browser](ProjectCatalogManagement.md)。
+遇到 `catalog.sourceStale` 时让 Catalog 的外部维护者重新生成。VS Code Host 不扫描或加载 C#；Unity 项目可通过 Integration Profile 与 Package 的 batch/menu Exporter 重新生成受管 Structured Catalog。详见 [Project Settings 与 Catalog Browser](ProjectCatalogManagement.md) 与 [Unity Editor 接入架构](UnityIntegrationArchitecture.md)。
 
 ## 12. Problems、Output 与 Restricted Mode
 

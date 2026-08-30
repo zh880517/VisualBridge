@@ -4,7 +4,7 @@
 
 Structured Config 用于编辑一个普通 C# class 或 struct 对应的单根配置对象。它替代以 `ScriptableObject` 作为配置编辑载体的工作流，但不要求游戏运行时类型继承框架基类，也不把 Unity 序列化结构写入 Authoring 文件。
 
-V1 已落地严格的 Catalog/Registry、Project 类型绑定、共享字段校验、`structured.setField` 原子操作、VS Code 编辑器和 stdio MCP。当前不实现 Unity Catalog Exporter、Importer、Runtime、Debug 或 `ScriptableObject` 兼容；未来 C# 侧只从正式游戏运行时结构导出 Catalog JSON。
+V1 已落地严格的 Catalog/Registry、Project 类型绑定、共享字段校验、`structured.setField` 原子操作、VS Code 编辑器和 stdio MCP。Unity Package 现已从 Profile 显式登记的普通 C# class / struct 确定性导出同一 Catalog V1，并以只读 Authoring consumer 生成 Editor 派生物与 source mapping。当前仍不实现 Editor Bridge、Runtime、Debug、Player 或 `ScriptableObject` 兼容。
 
 Structured Catalog 顶层使用全平台 Catalog `source` 契约声明来源未知、当前或过期状态；Host 计算只读内容 Hash，完整规则见 [`ProjectCatalogManagement.md`](ProjectCatalogManagement.md)。
 
@@ -155,4 +155,4 @@ Structured 使用 MCP V2 的统一工具，不再暴露类型专用工具：
 
 `TestData/StructuredSemanticProject` 使用 `.gamesettings` 和 `.skillstable` 自定义后缀，覆盖嵌套结构、List、颜色、int/float 语义以及指向 Table Row 的引用。语义测试验证 Registry/alias、严格字段校验、默认值、引用收集、Operation 原子性和确定性序列化；stdio 测试验证真实 MCP Schema、Catalog 搜索、读取、实例搜索、校验、无效批次不落盘和有效多字段原子写入。跨进程冲突、Reference 重构和事务恢复由同一 MCP 套件的 Graph/Entity/Project Transaction 固定样例覆盖。
 
-未来 Unity Catalog Exporter 应从游戏实际使用的普通 C# class/struct 生成同一 Catalog V1，并保持稳定 ID。它不得重新引入 `ScriptableObject` Authoring 资产、Unity 专属字段副本或另一套字段编辑协议；任何 Unity 实现开始前都应先更新本文件和总体架构边界。
+当前 Unity Catalog Exporter 从游戏实际使用的普通 C# class/struct 生成同一 Catalog V1，并保持稳定 ID；Compiler 只读取 Project、Catalog 与 Structured Document，不回写 Authoring。两者均不得重新引入 `ScriptableObject` Authoring 资产、Unity 专属字段副本或另一套字段编辑协议。Profile、确定性、路径安全、派生物 ownership 与验证门槛见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md)。

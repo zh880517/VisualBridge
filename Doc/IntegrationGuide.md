@@ -2,9 +2,9 @@
 
 ## 1. 适用范围
 
-本文面向把现有游戏配置工程接入 VisualBridge 的开发者，说明 Unity 接入前已经可用的 Authoring 能力：Project、任意扩展名 Document Type、外部 Catalog、共享字段、Project Provider V2、stdio MCP、并发保护、日志与故障恢复。
+本文面向把现有游戏配置工程接入 VisualBridge 的开发者，说明本地 Authoring 能力：Project、任意扩展名 Document Type、外部 Catalog、共享字段、Project Provider V2、stdio MCP、并发保护、日志与故障恢复。
 
-当前 Authoring 源文件是唯一权威数据。Catalog 由未来的 C# / Unity Exporter 生成或由测试夹具提供；VisualBridge 不在正式项目中引入 `ScriptableObject`，也尚未实现 Unity Exporter、Importer、Compiler、Runtime、Debug、DAP、WebSocket 或独立 CLI。
+Authoring 源文件是唯一权威数据。当前 Unity Package 已能从 Profile 显式登记的普通 C# class / struct 导出 Structured Catalog V1，并在 Editor 中离线校验、物化与编译 Structured Document；它不引入 `ScriptableObject`。Editor Bridge、Runtime、Debug、DAP、Player、WebSocket 和独立产品 CLI 尚未实现，Unity Profile 与 batch 接入见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md)。
 
 可运行的最小工程位于 [`Samples/PreUnityAuthoring`](../Samples/PreUnityAuthoring/README.md)。接入新工程时应先复制其组织方式，再替换稳定 ID、Catalog 和业务文件，不要根据文件扩展名反推领域语义。
 
@@ -180,4 +180,4 @@ git diff --check
 - 人为制造外部修改时 VS Code 与 MCP 都拒绝覆盖；
 - Provider/MCP 日志和事务恢复材料的位置已纳入团队运维说明。
 
-只有 [`PreUnityDevelopmentRoadmap.md`](PreUnityDevelopmentRoadmap.md) 全部完成后，才另立 Unity Catalog Exporter / Importer 接入任务。首个 Unity 垂直切片不默认包含 Runtime、Debug 或 Player。
+[`PreUnityDevelopmentRoadmap.md`](PreUnityDevelopmentRoadmap.md) 已完成并由 `v0.1.0` 固化；首个 Unity Structured offline slice 的实现、验证与后续 Editor Bridge 任务见 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)。该切片不包含 Runtime、Debug 或 Player。

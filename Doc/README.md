@@ -13,6 +13,7 @@
 ## 总体架构与共享平台
 
 - [VisualBridge 架构设计](VisualBridgeArchitecture.md)：平台定位、模块边界、数据所有权、Authoring/Unity 分工和长期演进边界。
+- [Unity Editor 接入架构](UnityIntegrationArchitecture.md)：已落地的 Structured offline Editor-only 切片、C# wire/data bags、UPM Package、固定 Profile、Catalog Export、派生编译、信任边界和后续最小 Editor Bridge。
 - [VS Code Host](VSCodeHost.md)：激活、Project Registry、Custom Editor 路由、Webview epoch、保存/冲突、诊断和 Trust。
 - [Form Field Editor](FormFieldEditor.md)：跨 Graph、Entity、Structured、Table 的共享字段语义、React 控件、Reference Bridge 和提交边界。
 - [Project Settings 与 Catalog Browser](ProjectCatalogManagement.md)：Project File、文件归属、Project Operation、Catalog 来源 Hash/过期状态和只读 Browser。
@@ -39,7 +40,7 @@
 
 - [Project Provider V2](ProjectProvider.md)：stdio JSON-RPC、Reference/Validator、分页快照、Trust、MCP allowlist、进程生命周期和故障处理。
 - [VisualBridge MCP Server V2](VisualBridgeMcp.md)：七个稳定工具、发现、查询、Operation、Lifecycle、Refactor、并发控制和原子写入。
-- [VisualBridge 协议契约](ProtocolContracts.md)：Schema/manifest 单一事实源、版本、Hash、Cursor、状态、错误和生成一致性。
+- [VisualBridge 协议契约](ProtocolContracts.md)：14 份 Schema/manifest 单一事实源、TypeScript/C# 四个生成产物、版本、Hash、Cursor、状态、错误和生成一致性。
 
 ## 验证、发布与路线图
 
@@ -47,5 +48,6 @@
 - [大工程确定性验证与性能报告](LargeProjectValidation.md)：确定性语料生成、correctness/benchmark profile 和报告解释。
 - [Unity 接入前文档完整性矩阵](DocumentationCompleteness.md)：功能、设计、流程图、使用手册、Schema/Manifest 和自动验证的最终审计入口。
 - [Unity 接入前开发任务清单](PreUnityDevelopmentRoadmap.md)：PU 任务状态、强制验证门槛和 Unity 正式接入条件。
+- [Unity Editor 接入任务清单](UnityIntegrationRoadmap.md)：已完成的 C# contract generator、Package 与 Structured Export/Compile，待实现的最小 Editor Bridge，以及尚未完整关闭的发布 exit criteria。
 
 开发过程中的设计草稿、实施计划和任务文档统一放在 `Doc/Temp`。任务完成后必须删除对应临时文档；需要长期保留的结论应整理进上述正式文档。文档目录新增或删除文件时，根级文档门禁会要求本索引同步更新。
