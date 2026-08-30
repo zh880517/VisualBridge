@@ -14,7 +14,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test test/projectTransaction.test.mjs"
+    "test": "npm run build && node --test test/projectTransaction.test.mjs test/projectProviderRuntime.test.mjs test/projectProviderHost.test.mjs"
+  },
+  "dependencies": {
+    "@visualbridge/core": "*"
   },
   "devDependencies": {
     "@types/node": "^24.13.1"

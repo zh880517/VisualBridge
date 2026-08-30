@@ -14,6 +14,7 @@ import {
 } from "../document/lifecycleOperationGuard";
 import type {
   DocumentDiagnostic,
+  JsonValue,
   ReferenceDefinition,
   ReferenceLocation,
   TableLayoutDefinition,
@@ -222,7 +223,15 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       (current) => this.references.removeTableDocument(current.uri.toString()),
     );
     this.updateReferenceDocument(document);
-    this.updateDiagnostics(document, [...catalogResult.diagnostics, ...loaded.diagnostics]);
+    this.updateDiagnostics(document, [
+      ...catalogResult.diagnostics,
+      ...loaded.diagnostics,
+      ...await this.references.validate(
+        document.match.project,
+        collectTableReferences(document.document, document.tableType),
+      ),
+      ...await this.providerDiagnostics(document),
+    ]);
     return document;
   }
 
@@ -714,10 +723,25 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       });
       return;
     }
+    const providerDiagnostics = await this.references.validateProviderDocument(document.match.project, {
+      documentTypeId: document.match.documentType.id,
+      path: document.match.relativePath,
+      sourceHash: hashBytes(Buffer.from(JSON.stringify(result.document), "utf8")),
+      content: result.document as unknown as JsonValue,
+    });
+    const providerErrors = providerDiagnostics.filter((diagnostic) => diagnostic.severity === "error");
+    if (providerErrors.length > 0) {
+      this.updateDiagnostics(document, [...result.diagnostics, ...referenceResult.diagnostics, ...providerDiagnostics]);
+      await panel.webview.postMessage({
+        type: "operationRejected",
+        message: formatDiagnostics(providerErrors),
+      });
+      return;
+    }
     const before = cloneTableDocument(document.document);
     const after = cloneTableDocument(result.document);
     document.update(after);
-    this.updateDiagnostics(document, [...result.diagnostics, ...referenceResult.diagnostics]);
+    this.updateDiagnostics(document, [...result.diagnostics, ...referenceResult.diagnostics, ...providerDiagnostics]);
     this.changeEmitter.fire({
       document,
       label: "Edit VisualBridge Table",
@@ -756,13 +780,7 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       }
     }
     document.markSaved(rendered);
-    this.updateDiagnostics(document, [
-      ...validateTableDocument(document.document, document.tableType),
-      ...await this.references.validate(
-        document.match.project,
-        collectTableReferences(document.document, document.tableType),
-      ),
-    ]);
+    this.updateDiagnostics(document, await this.semanticDiagnostics(document));
     return writes.length;
   }
 
@@ -774,13 +792,7 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
   }
 
   private async sendState(document: TableCustomDocument, targetPanel?: vscode.WebviewPanel): Promise<boolean> {
-    const diagnostics = [
-      ...validateTableDocument(document.document, document.tableType),
-      ...await this.references.validate(
-        document.match.project,
-        collectTableReferences(document.document, document.tableType),
-      ),
-    ];
+    const diagnostics = await this.semanticDiagnostics(document);
     this.updateDiagnostics(document, diagnostics);
     const message = {
       type: "tableState",
@@ -797,6 +809,26 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       : [targetPanel];
     const results = await Promise.all(panels.map((panel) => panel.webview.postMessage(message)));
     return panels.length > 0 && results.every((posted) => posted);
+  }
+
+  private async semanticDiagnostics(document: TableCustomDocument): Promise<readonly DocumentDiagnostic[]> {
+    return [
+      ...validateTableDocument(document.document, document.tableType),
+      ...await this.references.validate(
+        document.match.project,
+        collectTableReferences(document.document, document.tableType),
+      ),
+      ...await this.providerDiagnostics(document),
+    ];
+  }
+
+  private providerDiagnostics(document: TableCustomDocument): Promise<readonly DocumentDiagnostic[]> {
+    return this.references.validateProviderDocument(document.match.project, {
+      documentTypeId: document.match.documentType.id,
+      path: document.match.relativePath,
+      sourceHash: hashBytes(Buffer.from(JSON.stringify(document.document), "utf8")),
+      content: document.document as unknown as JsonValue,
+    });
   }
 
   private claimPendingReveal(document: TableCustomDocument, state: TablePanelRevealState): void {

@@ -9,6 +9,7 @@ import {
   type ReferenceCandidate,
   type ReferenceDefinition,
   type ReferenceOccurrence,
+  type ProjectProviderDocumentSnapshot,
   type ReferenceResolution,
 } from "@visualbridge/core";
 import {
@@ -35,6 +36,7 @@ import {
 import { loadEntityCatalogRegistry } from "../catalog/entityCatalogLoader";
 import { loadTableCatalogRegistry } from "../catalog/tableCatalogLoader";
 import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
+import type { WorkspaceProjectProviderService } from "../provider/workspaceProjectProviderService";
 
 export const REVEAL_REFERENCE_COMMAND = "visualbridge.revealReference";
 
@@ -61,6 +63,7 @@ export class WorkspaceReferenceService implements vscode.Disposable {
   public constructor(
     projects: ProjectRegistry,
     private readonly output: vscode.OutputChannel,
+    private readonly providers?: WorkspaceProjectProviderService,
   ) {
     const clear = (): void => this.invalidate();
     this.disposables.push(
@@ -73,21 +76,21 @@ export class WorkspaceReferenceService implements vscode.Disposable {
     );
   }
 
-  public search(
+  public async search(
     project: ProjectContext,
     definition: ReferenceDefinition,
     query = "",
     limit = 200,
   ): Promise<readonly ReferenceCandidate[]> {
-    return this.createService(project).search(definition, query, limit);
+    return (await this.createService(project)).search(definition, query, limit);
   }
 
-  public resolve(
+  public async resolve(
     project: ProjectContext,
     definition: ReferenceDefinition,
     value: string | number,
   ): Promise<ReferenceResolution> {
-    return this.createService(project).resolve(definition, value);
+    return (await this.createService(project)).resolve(definition, value);
   }
 
   public invalidate(): void {
@@ -95,11 +98,11 @@ export class WorkspaceReferenceService implements vscode.Disposable {
     this.semanticDocuments.clear();
   }
 
-  public validate(
+  public async validate(
     project: ProjectContext,
     occurrences: readonly ReferenceOccurrence[],
   ) {
-    return this.createService(project).validate(occurrences);
+    return (await this.createService(project)).validate(occurrences);
   }
 
   public async validateChange(
@@ -110,7 +113,7 @@ export class WorkspaceReferenceService implements vscode.Disposable {
     readonly diagnostics: readonly DocumentDiagnostic[];
     readonly introducedErrors: readonly DocumentDiagnostic[];
   }> {
-    const service = this.createService(project);
+    const service = await this.createService(project);
     const baseline = diagnosticCounts(await service.validate(before));
     const diagnostics = await service.validate(after);
     const introducedErrors = diagnostics.filter((diagnostic) => {
@@ -126,6 +129,13 @@ export class WorkspaceReferenceService implements vscode.Disposable {
       return false;
     });
     return { diagnostics, introducedErrors };
+  }
+
+  public async validateProviderDocument(
+    project: ProjectContext,
+    snapshot: ProjectProviderDocumentSnapshot,
+  ): Promise<readonly DocumentDiagnostic[]> {
+    return this.providers?.validateDocument(project, snapshot) ?? [];
   }
 
   public async pick(
@@ -226,12 +236,13 @@ export class WorkspaceReferenceService implements vscode.Disposable {
     }
   }
 
-  private createService(project: ProjectContext): ReferenceService {
+  private async createService(project: ProjectContext): Promise<ReferenceService> {
     return new ReferenceService([
       createDocumentReferenceProvider(() => this.loadSemanticDocuments(project).then((loaded) => loaded.documents)),
       createEntityComponentReferenceProvider(() => this.loadSemanticDocuments(project).then((loaded) => loaded.entities)),
       createGraphElementReferenceProvider(() => this.loadSemanticDocuments(project).then((loaded) => loaded.graphs)),
       createTableRowReferenceProvider(() => this.loadTableDocuments(project)),
+      ...await this.providers?.referenceProviders(project) ?? [],
     ]);
   }
 

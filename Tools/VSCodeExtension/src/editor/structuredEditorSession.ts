@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import * as vscode from "vscode";
-import type { DocumentDiagnostic } from "@visualbridge/core";
+import type { DocumentDiagnostic, JsonValue } from "@visualbridge/core";
 import {
   STRUCTURED_EDITOR_ID,
   applyStructuredOperations,
@@ -218,6 +218,18 @@ export class StructuredEditorSession {
     }
 
     const nextText = serializeStructuredDocument(operationResult.document);
+    const providerDiagnostics = await this.references.validateProviderDocument(this.match.project, {
+      documentTypeId: this.match.documentType.id,
+      path: this.match.relativePath,
+      sourceHash: hashText(nextText),
+      content: operationResult.document as unknown as JsonValue,
+    });
+    const providerErrors = providerDiagnostics.filter((diagnostic) => diagnostic.severity === "error");
+    if (providerErrors.length > 0) {
+      this.updateDiagnostics([...catalogResult.diagnostics, ...operationResult.diagnostics, ...providerDiagnostics]);
+      await this.rejectOperation(formatDiagnostics(providerErrors));
+      return;
+    }
     if (nextText === this.document.getText()) {
       await this.panel.webview.postMessage({
         type: "operationCompleted",
@@ -302,7 +314,8 @@ export class StructuredEditorSession {
     if (this.disposed) {
       return false;
     }
-    const result = parseStructuredDocument(this.document.getText());
+    const sourceText = this.document.getText();
+    const result = parseStructuredDocument(sourceText);
     if (!result.success) {
       this.updateDiagnostics(result.diagnostics);
       return this.sendInvalid(result.diagnostics, options);
@@ -323,6 +336,12 @@ export class StructuredEditorSession {
             collectStructuredReferences(result.document, catalogResult.registry, this.match.documentType.id),
           )
         : []),
+      ...await this.references.validateProviderDocument(this.match.project, {
+        documentTypeId: this.match.documentType.id,
+        path: this.match.relativePath,
+        sourceHash: hashText(sourceText),
+        content: result.document as unknown as JsonValue,
+      }),
     ];
     this.updateDiagnostics(diagnostics);
     if (configType === undefined) {

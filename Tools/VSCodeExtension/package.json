@@ -14,6 +14,11 @@
   "engines": {
     "vscode": "^1.105.1"
   },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
   "categories": [
     "Other"
   ],
@@ -312,7 +317,9 @@
     "watch": "npm run clean && npm run build:graph-editor && npm run build:entity-editor && npm run build:structured-editor && npm run build:table-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap --watch",
     "package:vsix": "npm run build && npm run prepare:package && vsce package --no-dependencies --out artifacts/visualbridge.vsix",
     "test:unit": "node ./test/runUnitTests.mjs",
-    "test:host": "npm run build:host-dependencies && npm run build && node ./test/runTest.mjs",
+    "test:host": "npm run build:host-dependencies && npm run build && node ./test/runTest.mjs && node ./test/runRestrictedTest.mjs",
+    "test:host:trusted": "npm run build:host-dependencies && npm run build && node ./test/runTest.mjs",
+    "test:host:restricted": "npm run build:host-dependencies && npm run build && node ./test/runRestrictedTest.mjs",
     "test:cli": "node ./scripts/test-vsix-cli.mjs ./artifacts/visualbridge.vsix"
   },
   "devDependencies": {

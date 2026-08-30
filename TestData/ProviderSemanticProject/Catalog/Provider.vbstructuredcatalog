@@ -1,0 +1,43 @@
+{
+  "formatVersion": 1,
+  "catalogId": "sample.provider.catalog",
+  "title": "Provider Settings",
+  "configTypes": [
+    {
+      "id": "sample.provider.settings",
+      "title": "Provider Settings",
+      "aliases": [],
+      "description": "Fixed Project Provider process-test document.",
+      "properties": [
+        {
+          "id": "assetId",
+          "title": "Asset",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "string",
+          "defaultValue": "asset.sword",
+          "editor": {
+            "kind": "reference"
+          },
+          "reference": {
+            "kind": "sample.asset",
+            "target": {
+              "scope": "weapons"
+            }
+          }
+        },
+        {
+          "id": "displayName",
+          "title": "Display Name",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "string",
+          "defaultValue": "Needs Provider Review",
+          "editor": {
+            "kind": "text"
+          }
+        }
+      ]
+    }
+  ]
+}

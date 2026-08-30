@@ -1,0 +1,535 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://visualbridge.dev/schema/visualbridge-project-provider.schema.json",
+  "title": "VisualBridge Project Provider V1 JSON-RPC message",
+  "oneOf": [
+    { "$ref": "#/$defs/hostMessage" },
+    { "$ref": "#/$defs/providerResponse" }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "requestId": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      ]
+    },
+    "relativePath": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*\\\\)(?!.*//).+$"
+    },
+    "jsonValue": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "number" },
+        { "type": "string" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/jsonValue" }
+        },
+        {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+        }
+      ]
+    },
+    "jsonObject": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+    },
+    "projectSnapshot": {
+      "type": "object",
+      "required": ["projectId", "projectHash"],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/identifier" },
+        "projectHash": { "$ref": "#/$defs/hash" }
+      },
+      "additionalProperties": false
+    },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "reference": {
+          "type": "object",
+          "required": ["kinds"],
+          "properties": {
+            "kinds": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/identifier" }
+            }
+          },
+          "additionalProperties": false
+        },
+        "validator": {
+          "type": "object",
+          "required": ["documentTypes"],
+          "properties": {
+            "documentTypes": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/identifier" }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "anyOf": [
+        { "required": ["reference"] },
+        { "required": ["validator"] }
+      ],
+      "additionalProperties": false
+    },
+    "requestBase": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/requestId" },
+        "method": {},
+        "params": {}
+      },
+      "additionalProperties": false
+    },
+    "emptyObject": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "initializeRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        {
+          "properties": {
+            "method": { "const": "initialize" },
+            "params": {
+              "type": "object",
+              "required": ["protocolVersion", "providerId", "project"],
+              "properties": {
+                "protocolVersion": { "const": 1 },
+                "providerId": { "$ref": "#/$defs/identifier" },
+                "project": { "$ref": "#/$defs/projectSnapshot" }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "capabilitiesRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        {
+          "properties": {
+            "method": { "const": "capabilities" },
+            "params": { "$ref": "#/$defs/emptyObject" }
+          }
+        }
+      ]
+    },
+    "referenceSearchRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        {
+          "properties": {
+            "method": { "const": "reference/search" },
+            "params": {
+              "type": "object",
+              "required": ["kind", "target", "query", "limit"],
+              "properties": {
+                "kind": { "$ref": "#/$defs/identifier" },
+                "target": { "$ref": "#/$defs/jsonObject" },
+                "query": { "type": "string" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "referenceResolveRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        {
+          "properties": {
+            "method": { "const": "reference/resolve" },
+            "params": {
+              "type": "object",
+              "required": ["kind", "target", "value"],
+              "properties": {
+                "kind": { "$ref": "#/$defs/identifier" },
+                "target": { "$ref": "#/$defs/jsonObject" },
+                "value": { "type": ["string", "number"] }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "referenceValidateTargetRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        {
+          "properties": {
+            "method": { "const": "reference/validateTarget" },
+            "params": {
+              "type": "object",
+              "required": ["kind", "target"],
+              "properties": {
+                "kind": { "$ref": "#/$defs/identifier" },
+                "target": { "$ref": "#/$defs/jsonObject" }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "validatorDiagnosticsRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        {
+          "properties": {
+            "method": { "const": "validator/diagnostics" },
+            "params": {
+              "type": "object",
+              "required": ["project", "documents"],
+              "properties": {
+                "project": { "$ref": "#/$defs/projectSnapshot" },
+                "documents": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["documentTypeId", "path", "sourceHash", "content"],
+                    "properties": {
+                      "documentTypeId": { "$ref": "#/$defs/identifier" },
+                      "path": { "$ref": "#/$defs/relativePath" },
+                      "sourceHash": { "$ref": "#/$defs/hash" },
+                      "content": { "$ref": "#/$defs/jsonValue" }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "shutdownRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        {
+          "properties": {
+            "method": { "const": "shutdown" },
+            "params": { "$ref": "#/$defs/emptyObject" }
+          }
+        }
+      ]
+    },
+    "projectChangedNotification": {
+      "type": "object",
+      "required": ["jsonrpc", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "method": { "const": "projectChanged" },
+        "params": {
+          "type": "object",
+          "required": ["projectId", "projectHash", "documentSetHash", "revision"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/identifier" },
+            "projectHash": { "$ref": "#/$defs/hash" },
+            "documentSetHash": { "$ref": "#/$defs/hash" },
+            "revision": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "cancelRequestNotification": {
+      "type": "object",
+      "required": ["jsonrpc", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "method": { "const": "$/cancelRequest" },
+        "params": {
+          "type": "object",
+          "required": ["id"],
+          "properties": {
+            "id": { "$ref": "#/$defs/requestId" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "hostMessage": {
+      "oneOf": [
+        { "$ref": "#/$defs/initializeRequest" },
+        { "$ref": "#/$defs/capabilitiesRequest" },
+        { "$ref": "#/$defs/referenceSearchRequest" },
+        { "$ref": "#/$defs/referenceResolveRequest" },
+        { "$ref": "#/$defs/referenceValidateTargetRequest" },
+        { "$ref": "#/$defs/validatorDiagnosticsRequest" },
+        { "$ref": "#/$defs/shutdownRequest" },
+        { "$ref": "#/$defs/projectChangedNotification" },
+        { "$ref": "#/$defs/cancelRequestNotification" }
+      ]
+    },
+    "referenceLocation": {
+      "type": "object",
+      "required": ["projectId", "documentTypeId", "path"],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/identifier" },
+        "documentTypeId": { "$ref": "#/$defs/identifier" },
+        "path": { "$ref": "#/$defs/relativePath" },
+        "documentId": { "type": "string", "minLength": 1 },
+        "componentId": { "type": "string", "minLength": 1 },
+        "elementKind": { "type": "string", "minLength": 1 },
+        "elementId": { "type": "string", "minLength": 1 },
+        "graphId": { "type": "string", "minLength": 1 },
+        "nodeId": { "type": "string", "minLength": 1 },
+        "portId": { "type": "string", "minLength": 1 },
+        "sheetId": { "type": "string", "minLength": 1 },
+        "rowId": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "referenceCandidate": {
+      "type": "object",
+      "required": ["kind", "target", "value", "title"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/identifier" },
+        "target": { "$ref": "#/$defs/jsonObject" },
+        "value": { "type": ["string", "number"] },
+        "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "location": { "$ref": "#/$defs/referenceLocation" }
+      },
+      "additionalProperties": false
+    },
+    "invalidTargetResult": {
+      "type": "object",
+      "required": ["status", "message", "issues"],
+      "properties": {
+        "status": { "const": "invalidTarget" },
+        "message": { "type": "string", "minLength": 1 },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "message"],
+            "properties": {
+              "path": { "type": "string" },
+              "message": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "providerUnavailableResult": {
+      "type": "object",
+      "required": ["status", "message", "retryable"],
+      "properties": {
+        "status": { "const": "providerUnavailable" },
+        "message": { "type": "string", "minLength": 1 },
+        "retryable": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "referenceSearchResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["status", "candidates"],
+          "properties": {
+            "status": { "const": "ok" },
+            "candidates": { "type": "array", "items": { "$ref": "#/$defs/referenceCandidate" } }
+          },
+          "additionalProperties": false
+        },
+        { "$ref": "#/$defs/invalidTargetResult" },
+        { "$ref": "#/$defs/providerUnavailableResult" }
+      ]
+    },
+    "referenceResolveResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["status", "candidates"],
+          "properties": {
+            "status": { "const": "resolved" },
+            "candidates": {
+              "type": "array", "minItems": 1, "maxItems": 1,
+              "items": { "$ref": "#/$defs/referenceCandidate" }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "candidates"],
+          "properties": {
+            "status": { "const": "missing" },
+            "candidates": { "type": "array", "maxItems": 0 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "candidates"],
+          "properties": {
+            "status": { "const": "ambiguous" },
+            "candidates": {
+              "type": "array", "minItems": 2,
+              "items": { "$ref": "#/$defs/referenceCandidate" }
+            }
+          },
+          "additionalProperties": false
+        },
+        { "$ref": "#/$defs/invalidTargetResult" },
+        { "$ref": "#/$defs/providerUnavailableResult" }
+      ]
+    },
+    "referenceValidateTargetResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["status"],
+          "properties": { "status": { "const": "valid" } },
+          "additionalProperties": false
+        },
+        { "$ref": "#/$defs/invalidTargetResult" },
+        { "$ref": "#/$defs/providerUnavailableResult" }
+      ]
+    },
+    "validatorDiagnosticsResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["status", "diagnostics"],
+          "properties": {
+            "status": { "const": "ok" },
+            "diagnostics": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["documentTypeId", "documentPath", "severity", "code", "path", "message"],
+                "properties": {
+                  "documentTypeId": { "$ref": "#/$defs/identifier" },
+                  "documentPath": { "$ref": "#/$defs/relativePath" },
+                  "severity": { "enum": ["error", "warning"] },
+                  "code": { "$ref": "#/$defs/identifier" },
+                  "path": { "type": "string" },
+                  "message": { "type": "string", "minLength": 1 }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        { "$ref": "#/$defs/providerUnavailableResult" }
+      ]
+    },
+    "successResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["protocolVersion"],
+          "properties": { "protocolVersion": { "const": 1 } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["capabilities"],
+          "properties": { "capabilities": { "$ref": "#/$defs/capabilities" } },
+          "additionalProperties": false
+        },
+        { "$ref": "#/$defs/referenceSearchResult" },
+        { "$ref": "#/$defs/referenceResolveResult" },
+        { "$ref": "#/$defs/referenceValidateTargetResult" },
+        { "$ref": "#/$defs/validatorDiagnosticsResult" },
+        { "$ref": "#/$defs/emptyObject" }
+      ]
+    },
+    "errorData": {
+      "type": "object",
+      "required": ["kind", "retryable"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "parseError", "invalidRequest", "methodNotFound", "invalidParams",
+            "internalError", "providerUnavailable", "protocolVersionMismatch", "protocolViolation"
+          ]
+        },
+        "retryable": { "type": "boolean" },
+        "details": { "$ref": "#/$defs/jsonValue" }
+      },
+      "additionalProperties": false
+    },
+    "structuredError": {
+      "type": "object",
+      "required": ["code", "message", "data"],
+      "properties": {
+        "code": { "enum": [-32700, -32600, -32601, -32602, -32603, -32001, -32002, -32003] },
+        "message": { "type": "string", "minLength": 1 },
+        "data": { "$ref": "#/$defs/errorData" }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            { "properties": { "code": { "const": -32700 }, "data": { "properties": { "kind": { "const": "parseError" } } } } },
+            { "properties": { "code": { "const": -32600 }, "data": { "properties": { "kind": { "const": "invalidRequest" } } } } },
+            { "properties": { "code": { "const": -32601 }, "data": { "properties": { "kind": { "const": "methodNotFound" } } } } },
+            { "properties": { "code": { "const": -32602 }, "data": { "properties": { "kind": { "const": "invalidParams" } } } } },
+            { "properties": { "code": { "const": -32603 }, "data": { "properties": { "kind": { "const": "internalError" } } } } },
+            { "properties": { "code": { "const": -32001 }, "data": { "properties": { "kind": { "const": "providerUnavailable" } } } } },
+            { "properties": { "code": { "const": -32002 }, "data": { "properties": { "kind": { "const": "protocolVersionMismatch" } } } } },
+            { "properties": { "code": { "const": -32003 }, "data": { "properties": { "kind": { "const": "protocolViolation" } } } } }
+          ]
+        }
+      ],
+      "additionalProperties": false
+    },
+    "providerResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["jsonrpc", "id", "result"],
+          "properties": {
+            "jsonrpc": { "const": "2.0" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "result": { "$ref": "#/$defs/successResult" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["jsonrpc", "id", "error"],
+          "properties": {
+            "jsonrpc": { "const": "2.0" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "error": { "$ref": "#/$defs/structuredError" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

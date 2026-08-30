@@ -1,3 +1,5 @@
+import { BUILT_IN_REFERENCE_KINDS } from "../Reference/reference";
+
 export const PROJECT_FILE_NAME = "VisualBridge.project.vbjson";
 export const PROJECT_FILE_GLOB = `**/${PROJECT_FILE_NAME}`;
 export const PROJECT_FORMAT_VERSION = 1;
@@ -15,12 +17,33 @@ export interface TableLayoutDefinition {
   readonly dataStartRow: number;
 }
 
+export interface ProjectProviderReferenceCapability {
+  readonly kinds: readonly string[];
+}
+
+export interface ProjectProviderValidatorCapability {
+  readonly documentTypes: readonly string[];
+}
+
+export interface ProjectProviderCapabilities {
+  readonly reference?: ProjectProviderReferenceCapability;
+  readonly validator?: ProjectProviderValidatorCapability;
+}
+
+export interface ProjectProviderDefinition {
+  readonly id: string;
+  readonly entry: string;
+  readonly args: readonly string[];
+  readonly capabilities: ProjectProviderCapabilities;
+}
+
 export interface VisualBridgeProjectDefinition {
   readonly formatVersion: typeof PROJECT_FORMAT_VERSION;
   readonly projectId: string;
   readonly documentRoots: readonly string[];
   readonly documentTypes: readonly DocumentTypeDefinition[];
   readonly tableLayout?: TableLayoutDefinition;
+  readonly providers: readonly ProjectProviderDefinition[];
 }
 
 export interface ProjectFileIssue {
@@ -60,6 +83,15 @@ export function parseProjectFile(text: string): ProjectFileParseResult {
   const tableLayout = value.tableLayout === undefined
     ? undefined
     : readTableLayout(value.tableLayout, issues);
+  if (value.provider !== undefined) {
+    issues.push({
+      path: "provider",
+      message: "Single 'provider' is not supported; declare the 'providers' array.",
+    });
+  }
+  const providers = value.providers === undefined
+    ? []
+    : readProviders(value.providers, documentTypes, issues);
 
   if (issues.length > 0 || projectId === undefined) {
     return { success: false, issues };
@@ -73,8 +105,203 @@ export function parseProjectFile(text: string): ProjectFileParseResult {
       documentRoots,
       documentTypes,
       ...(tableLayout === undefined ? {} : { tableLayout }),
+      providers,
     },
   };
+}
+
+function readProviders(
+  value: unknown,
+  documentTypes: readonly DocumentTypeDefinition[],
+  issues: ProjectFileIssue[],
+): readonly ProjectProviderDefinition[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    issues.push({ path: "providers", message: "Expected a non-empty array." });
+    return [];
+  }
+
+  const result: ProjectProviderDefinition[] = [];
+  const seenIds = new Set<string>();
+  const seenReferenceKinds = new Set<string>(BUILT_IN_REFERENCE_KINDS);
+  const documentTypeIds = new Set(documentTypes.map((documentType) => documentType.id));
+  value.forEach((entry, index) => {
+    const basePath = `providers[${index}]`;
+    if (!isRecord(entry)) {
+      issues.push({ path: basePath, message: "Expected an object." });
+      return;
+    }
+    rejectUnknownKeys(entry, ["id", "entry", "args", "capabilities"], basePath, issues);
+
+    const id = readIdentifier(entry.id, `${basePath}.id`, issues);
+    const providerEntry = readProviderEntry(entry.entry, `${basePath}.entry`, issues);
+    const args = readStringArray(entry.args, `${basePath}.args`, issues, true);
+    const capabilities = readProviderCapabilities(entry.capabilities, `${basePath}.capabilities`, issues);
+
+    if (capabilities?.reference !== undefined) {
+      capabilities.reference.kinds.forEach((kind, kindIndex) => {
+        if (seenReferenceKinds.has(kind)) {
+          issues.push({
+            path: `${basePath}.capabilities.reference.kinds[${kindIndex}]`,
+            message: BUILT_IN_REFERENCE_KINDS.includes(kind as (typeof BUILT_IN_REFERENCE_KINDS)[number])
+              ? `Reference kind '${kind}' conflicts with a built-in provider.`
+              : `Reference kind '${kind}' is already declared by another provider.`,
+          });
+        } else {
+          seenReferenceKinds.add(kind);
+        }
+      });
+    }
+    if (capabilities?.validator !== undefined) {
+      capabilities.validator.documentTypes.forEach((documentTypeId, documentTypeIndex) => {
+        if (!documentTypeIds.has(documentTypeId)) {
+          issues.push({
+            path: `${basePath}.capabilities.validator.documentTypes[${documentTypeIndex}]`,
+            message: `Unknown document type '${documentTypeId}'.`,
+          });
+        }
+      });
+    }
+
+    if (id !== undefined && seenIds.has(id)) {
+      issues.push({ path: `${basePath}.id`, message: `Duplicate provider id '${id}'.` });
+    }
+    if (id !== undefined) {
+      seenIds.add(id);
+    }
+    if (id !== undefined && providerEntry !== undefined && args !== undefined && capabilities !== undefined) {
+      result.push({ id, entry: providerEntry, args, capabilities });
+    }
+  });
+  return result;
+}
+
+function readProviderEntry(
+  value: unknown,
+  path: string,
+  issues: ProjectFileIssue[],
+): string | undefined {
+  if (typeof value !== "string" || value === "." || !isSafeRelativePath(value) || !value.endsWith(".mjs")) {
+    issues.push({
+      path,
+      message: "Expected a normalized project-relative '.mjs' entry using '/' separators.",
+    });
+    return undefined;
+  }
+  return value;
+}
+
+function readProviderCapabilities(
+  value: unknown,
+  path: string,
+  issues: ProjectFileIssue[],
+): ProjectProviderCapabilities | undefined {
+  if (!isRecord(value)) {
+    issues.push({ path, message: "Expected an object." });
+    return undefined;
+  }
+  rejectUnknownKeys(value, ["reference", "validator"], path, issues);
+
+  let reference: ProjectProviderReferenceCapability | undefined;
+  if (value.reference !== undefined) {
+    const capabilityPath = `${path}.reference`;
+    if (!isRecord(value.reference)) {
+      issues.push({ path: capabilityPath, message: "Expected an object." });
+    } else {
+      rejectUnknownKeys(value.reference, ["kinds"], capabilityPath, issues);
+      const kinds = readIdentifierArray(value.reference.kinds, `${capabilityPath}.kinds`, issues);
+      if (kinds !== undefined) {
+        reference = { kinds };
+      }
+    }
+  }
+
+  let validator: ProjectProviderValidatorCapability | undefined;
+  if (value.validator !== undefined) {
+    const capabilityPath = `${path}.validator`;
+    if (!isRecord(value.validator)) {
+      issues.push({ path: capabilityPath, message: "Expected an object." });
+    } else {
+      rejectUnknownKeys(value.validator, ["documentTypes"], capabilityPath, issues);
+      const documentTypes = readIdentifierArray(
+        value.validator.documentTypes,
+        `${capabilityPath}.documentTypes`,
+        issues,
+      );
+      if (documentTypes !== undefined) {
+        validator = { documentTypes };
+      }
+    }
+  }
+
+  if (reference === undefined && validator === undefined) {
+    issues.push({ path, message: "Expected at least one 'reference' or 'validator' capability." });
+    return undefined;
+  }
+  return {
+    ...(reference === undefined ? {} : { reference }),
+    ...(validator === undefined ? {} : { validator }),
+  };
+}
+
+function readIdentifierArray(
+  value: unknown,
+  path: string,
+  issues: ProjectFileIssue[],
+): readonly string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) {
+    issues.push({ path, message: "Expected a non-empty array of identifiers." });
+    return undefined;
+  }
+  const result: string[] = [];
+  const seen = new Set<string>();
+  value.forEach((entry, index) => {
+    const identifier = readIdentifier(entry, `${path}[${index}]`, issues);
+    if (identifier === undefined) {
+      return;
+    }
+    if (seen.has(identifier)) {
+      issues.push({ path: `${path}[${index}]`, message: `Duplicate identifier '${identifier}'.` });
+      return;
+    }
+    seen.add(identifier);
+    result.push(identifier);
+  });
+  return result;
+}
+
+function readStringArray(
+  value: unknown,
+  path: string,
+  issues: ProjectFileIssue[],
+  allowEmpty: boolean,
+): readonly string[] | undefined {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) {
+    issues.push({ path, message: allowEmpty ? "Expected an array." : "Expected a non-empty array." });
+    return undefined;
+  }
+  const result: string[] = [];
+  value.forEach((entry, index) => {
+    if (typeof entry !== "string") {
+      issues.push({ path: `${path}[${index}]`, message: "Expected a string." });
+      return;
+    }
+    result.push(entry);
+  });
+  return result;
+}
+
+function rejectUnknownKeys(
+  value: Readonly<Record<string, unknown>>,
+  allowed: readonly string[],
+  path: string,
+  issues: ProjectFileIssue[],
+): void {
+  const allowedKeys = new Set(allowed);
+  for (const key of Object.keys(value).sort()) {
+    if (!allowedKeys.has(key)) {
+      issues.push({ path: `${path}.${key}`, message: `Unknown property '${key}'.` });
+    }
+  }
 }
 
 function readTableLayout(

@@ -175,6 +175,27 @@ export class ProjectRegistry implements vscode.Disposable {
     return undefined;
   }
 
+  public async listAuthoringSourcePaths(project: ProjectContext): Promise<readonly string[]> {
+    const paths = new Set<string>([
+      nodePath.posix.basename(project.markerUri.path),
+      ...project.definition.documentTypes.flatMap((documentType) => documentType.catalogs),
+    ]);
+    for (const documentType of project.definition.documentTypes) {
+      for (const include of documentType.include) {
+        const uris = await vscode.workspace.findFiles(new vscode.RelativePattern(project.rootUri, include));
+        for (const uri of uris) {
+          const relativePath = getRelativePath(project.rootUri, uri);
+          if (relativePath !== undefined
+            && documentType.include.some((pattern) => matches(pattern, relativePath))
+            && !documentType.exclude.some((pattern) => matches(pattern, relativePath))) {
+            paths.add(relativePath);
+          }
+        }
+      }
+    }
+    return [...paths].sort(compareOrdinal);
+  }
+
   public dispose(): void {
     if (this.refreshTimer !== undefined) {
       clearTimeout(this.refreshTimer);
@@ -225,6 +246,10 @@ function matches(pattern: string, relativePath: string): boolean {
     dot: true,
     nocase: process.platform === "win32",
   });
+}
+
+function compareOrdinal(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function formatError(error: unknown): string {

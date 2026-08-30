@@ -4,7 +4,7 @@
 
 Reference System 为 Graph、Entity、Structured 和 Table Document 提供同一套跨文档引用契约。字段所属模块只声明“引用什么”，不直接扫描文件、解析业务表或实现选择器。Core 负责稳定契约、Provider 注册、搜索、解析和诊断；VS Code 与 MCP 只负责宿主交互和持久化边界。
 
-当前内置 `document`、`entity.component`、`graph.element` 和 `table.row` 四类 Provider。它们分别引用 Project Document Type 下的稳定 Document ID、Entity 文档中的稳定 Component 实例 ID、Graph 文档内部的稳定元素 ID，以及 Table Type/Sheet 下的有效记录。Unity Asset、运行时实例和项目自定义 Provider 仍是后续能力；当前不增加 Unity Exporter、Importer、Runtime 或 Debug 代码。
+当前内置 `document`、`entity.component`、`graph.element` 和 `table.row` 四类 Provider。它们分别引用 Project Document Type 下的稳定 Document ID、Entity 文档中的稳定 Component 实例 ID、Graph 文档内部的稳定元素 ID，以及 Table Type/Sheet 下的有效记录。Project Provider V1 还能由 Project File 显式声明自定义 kind，并通过独立 stdio 进程接入同一 Reference Service；完整运行与安全契约见 [`ProjectProvider.md`](ProjectProvider.md)。Unity Asset 和运行时实例仍不在当前范围；本阶段不增加 Unity Exporter、Importer、Runtime 或 Debug 代码。
 
 ## 2. 字段契约
 
@@ -85,6 +85,8 @@ Reference Service 注册少量按 `kind` 唯一的 Provider：
 - `resolve` 按严格类型值返回 `resolved`、`missing`、`ambiguous` 或 `providerUnavailable`。
 - `validate` 将文档内 occurrence 转换为统一 `DocumentDiagnostic`。
 
+内置 Provider 与 Project Provider 进入同一个 Registry。Project File Parser 拒绝自定义 kind 与内置 kind 或另一 Project Provider 重名；独立进程返回的 Candidate 还要经过共享 Host 的 kind、target、value、Project 和已声明 Document Location 检查，不能把候选注入其他作用域。
+
 统一诊断代码为：
 
 | Code | Severity | Meaning |
@@ -131,4 +133,4 @@ Graph、Entity、Structured、Table 的读取与校验结果会附加共享 Refe
 
 ## 7. 自动化基线
 
-`npm test` 覆盖 Field Definition 解析、嵌套 occurrence、四个 Provider 的稳定排序与完整定位、严格类型解析、缺失与歧义诊断、Entity / Graph 身份传播、Entity / Graph Editor 定位计划、Table 有效行候选和定位。Entity 定位测试固定验证完整所属文档、组件存在性和 Webview 请求生命周期；Graph 定位测试固定验证 Graph / Node / Interface Port / Dynamic Port 的画布目标以及陈旧完整作用域拒绝。真实 stdio MCP 测试覆盖 Graph Element 预览、Entity Component 提交、错误 `baseHash`、Project 锁与中断恢复；其余目标变换由对应 Built-in/Core 测试固定。测试不包含 Unity。
+`npm test` 覆盖 Field Definition 解析、嵌套 occurrence、四个内置 Provider 的稳定排序与完整定位、严格类型解析、缺失与歧义诊断、自定义 Project Provider 的协议/候选边界、Entity / Graph 身份传播、Entity / Graph Editor 定位计划、Table 有效行候选和定位。真实 stdio MCP 测试覆盖 Project Provider 的默认禁用与显式授权、Graph Element 预览、Entity Component 提交、错误 `baseHash`、Project 锁与中断恢复；真实 Extension Host 分别验证 Trusted 与 Restricted Workspace。测试不包含 Unity。

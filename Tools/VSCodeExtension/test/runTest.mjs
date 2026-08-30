@@ -1,4 +1,4 @@
-import { cp, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ const sourceWorkspacePath = path.join(repositoryPath, "TestData");
 const cachePath = path.join(repositoryPath, ".utmp", "vscode-test");
 const temporaryPath = await mkdtemp(path.join(tmpdir(), TEST_DIRECTORY_PREFIX));
 const workspacePath = path.join(temporaryPath, "workspace");
+const providerStatePath = path.join(temporaryPath, "provider-state");
 const userDataPath = path.join(temporaryPath, "user-data");
 const extensionsPath = path.join(temporaryPath, "extensions");
 
@@ -24,7 +25,16 @@ try {
     mkdir(userDataPath, { recursive: true }),
     mkdir(extensionsPath, { recursive: true }),
     mkdir(cachePath, { recursive: true }),
+    mkdir(providerStatePath, { recursive: true }),
   ]);
+  const providerProjectPath = path.join(
+    workspacePath,
+    "ProviderSemanticProject",
+    "VisualBridge.project.vbjson",
+  );
+  const providerProject = JSON.parse(await readFile(providerProjectPath, "utf8"));
+  providerProject.providers[0].args.push("--state-dir", providerStatePath);
+  await writeFile(providerProjectPath, `${JSON.stringify(providerProject, undefined, 2)}\n`, "utf8");
 
   console.log(`[vscode-host] VS Code ${TEST_VERSION}`);
   console.log(`[vscode-host] Isolated workspace: ${workspacePath}`);
@@ -36,6 +46,7 @@ try {
     extensionTestsEnv: {
       VISUALBRIDGE_TEST_EXTENSION_VERSION: extensionManifest.version,
       VISUALBRIDGE_TEST_WORKSPACE: workspacePath,
+      VISUALBRIDGE_PROVIDER_TEST_STATE_DIR: providerStatePath,
     },
     launchArgs: [
       workspacePath,

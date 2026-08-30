@@ -76,7 +76,7 @@
 - 同一生命周期请求从 VS Code 与 MCP 得到相同预览、冲突结果和确定性输出。
 - 不通过字符串替换、文件后缀猜测或直接修改未知 JSON 实现。
 
-### VB-PU-04 Project Provider V1 — `in_progress`
+### VB-PU-04 Project Provider V1 — `complete`
 
 范围：
 
@@ -96,7 +96,7 @@
 - 测试覆盖 MCP 默认禁用、显式授权启用、非法入口拒绝，以及 Provider 直接改写源文件时的外部变更检测与冲突拒绝。
 - VS Code Workspace Trust 与独立 MCP 的 Provider 授权分别验证；MCP 请求参数不能绕过宿主授权。
 
-### VB-PU-05 Project Settings 与 Catalog Browser — `pending`
+### VB-PU-05 Project Settings 与 Catalog Browser — `in_progress`
 
 范围：
 

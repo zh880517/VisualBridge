@@ -9,6 +9,11 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import {
+  createProviderFixture,
+  readProviderEvents,
+  waitForProviderEvent,
+} from "../../NodeHost/test/providerFixture.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = path.resolve(packageRoot, "../..");
@@ -1480,6 +1485,143 @@ test("MCP stale-lock recovery elects one writer across concurrent processes", as
   });
 });
 
+test("MCP Project Providers stay disabled by default and tools cannot elevate authorization", async () => {
+  const fixture = await createProviderFixture();
+  const running = await startClient(fixture.temporaryRoot);
+  try {
+    const projectFile = `ProviderSemanticProject/VisualBridge.project.vbjson`;
+    const result = await call(running.client, "visualbridge_references", {
+      projectFile,
+      action: "search",
+      kind: "sample.asset",
+      target: { scope: "weapons" },
+      query: "sword",
+      limit: 20,
+    });
+    assert.equal(result.status, "providerUnavailable");
+    assert.deepEqual(result.results, []);
+    assert.deepEqual(await readProviderEvents(fixture.stateDirectory), []);
+  } finally {
+    await running.client.close().catch(() => undefined);
+    await fixture.dispose();
+  }
+});
+
+test("MCP explicit startup authorization enables Provider reference and validator semantics", async () => {
+  const fixture = await createProviderFixture();
+  const running = await startClient(fixture.temporaryRoot, {
+    VISUALBRIDGE_PROVIDER_ENABLED: "1",
+    VISUALBRIDGE_PROVIDER_ALLOWLIST: JSON.stringify([fixture.entryPath]),
+  });
+  try {
+    const projectFile = `ProviderSemanticProject/VisualBridge.project.vbjson`;
+    const references = await call(running.client, "visualbridge_references", {
+      projectFile,
+      action: "search",
+      kind: "sample.asset",
+      target: { scope: "weapons" },
+      query: "sword",
+      limit: 20,
+    });
+    assert.equal(references.status, "ok");
+    assert.deepEqual(references.results.map((candidate) => candidate.value), ["asset.sword"]);
+    assert.equal(Object.hasOwn(references, "candidates"), false);
+
+    const validated = await call(running.client, "visualbridge_document", {
+      action: "validate",
+      projectFile,
+      documentTypeId: "sample.provider.settings",
+      editor: "structured",
+      path: "Config/ProviderSettings.providerconfig",
+    });
+    assert.ok(
+      validated.diagnostics.some((diagnostic) => diagnostic.code === "sample.provider.displayNameReview"),
+      JSON.stringify(validated, undefined, 2),
+    );
+    const sourcePath = path.join(fixture.projectRoot, "Config", "ProviderSettings.providerconfig");
+    const sourceBeforeRejectedOperation = await readFile(sourcePath);
+    const rejected = await call(running.client, "visualbridge_apply_operations", {
+      projectFile,
+      documentTypeId: "sample.provider.settings",
+      editor: "structured",
+      path: "Config/ProviderSettings.providerconfig",
+      baseHash: validated.baseHash,
+      operations: [{
+        type: "structured.setField",
+        fieldId: "displayName",
+        value: "Rejected By Provider",
+      }],
+    });
+    assert.equal(rejected.status, "invalid");
+    assert.ok(rejected.diagnostics.some((diagnostic) => diagnostic.code === "sample.provider.displayNameRejected"));
+    assert.deepEqual(await readFile(sourcePath), sourceBeforeRejectedOperation);
+    const events = await readProviderEvents(fixture.stateDirectory);
+    assert.ok(events.some((event) => event.method === "initialize"));
+    assert.ok(events.some((event) => event.method === "capabilities"));
+    assert.ok(events.some((event) => event.method === "reference/search"));
+    assert.ok(events.some((event) => event.method === "validator/diagnostics"));
+  } finally {
+    await running.client.close().catch(() => undefined);
+    try {
+      await waitForProviderEvent(fixture.stateDirectory, (event) => event.type === "shutdown");
+    } finally {
+      await fixture.dispose();
+    }
+  }
+});
+
+test("MCP rejects non-allowlisted Provider entries and reports direct Authoring writes", async () => {
+  const unauthorized = await createProviderFixture();
+  const unauthorizedClient = await startClient(unauthorized.temporaryRoot, {
+    VISUALBRIDGE_PROVIDER_ENABLED: "1",
+    VISUALBRIDGE_PROVIDER_ALLOWLIST: JSON.stringify([unauthorized.projectFile]),
+  });
+  try {
+    const result = await call(unauthorizedClient.client, "visualbridge_references", {
+      projectFile: "ProviderSemanticProject/VisualBridge.project.vbjson",
+      action: "search",
+      kind: "sample.asset",
+      target: { scope: "weapons" },
+      query: "",
+      limit: 20,
+    });
+    assert.equal(result.status, "providerUnavailable");
+    assert.match(result.message, /not authorized|unavailable/ui);
+    assert.deepEqual(await readProviderEvents(unauthorized.stateDirectory), []);
+  } finally {
+    await unauthorizedClient.client.close().catch(() => undefined);
+    await unauthorized.dispose();
+  }
+
+  const rewriting = await createProviderFixture({
+    mode: "rewriteAuthoring",
+    faultMethod: "validator/diagnostics",
+    rewriteSourceRelative: "Config/ProviderSettings.providerconfig",
+  });
+  const rewritingClient = await startClient(rewriting.temporaryRoot, {
+    VISUALBRIDGE_PROVIDER_ENABLED: "1",
+    VISUALBRIDGE_PROVIDER_ALLOWLIST: JSON.stringify([rewriting.entryPath]),
+  });
+  try {
+    const result = await rewritingClient.client.callTool({
+      name: "visualbridge_document",
+      arguments: {
+        action: "validate",
+        projectFile: "ProviderSemanticProject/VisualBridge.project.vbjson",
+        documentTypeId: "sample.provider.settings",
+        editor: "structured",
+        path: "Config/ProviderSettings.providerconfig",
+      },
+    });
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.error.code, "provider.externalModification");
+    assert.match(result.structuredContent.error.message, /outside the VisualBridge transaction boundary/u);
+  } finally {
+    await rewritingClient.client.close().catch(() => undefined);
+    await rewriting.dispose();
+  }
+});
+
 async function assertNoActiveTransactionArtifacts(projectRoot) {
   const recoveryDirectoryName = ".visualbridge-transaction-recovery";
   const entries = await readdir(projectRoot);
@@ -1506,9 +1648,10 @@ async function withFixture(name, action) {
   }
 }
 
-async function startClient(workspaceRoot) {
+async function startClient(workspaceRoot, environmentOverrides = {}) {
   const environment = Object.fromEntries(Object.entries(process.env).filter((entry) => entry[1] !== undefined));
   environment.VISUALBRIDGE_WORKSPACE = workspaceRoot;
+  Object.assign(environment, environmentOverrides);
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],

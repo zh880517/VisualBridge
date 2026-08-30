@@ -7,7 +7,7 @@ import {
   LIFECYCLE_REQUIRED_MESSAGE,
   REFERENCE_REFACTOR_REQUIRED_MESSAGE,
 } from "../document/lifecycleOperationGuard";
-import type { DocumentDiagnostic } from "@visualbridge/core";
+import type { DocumentDiagnostic, JsonValue } from "@visualbridge/core";
 import {
   GRAPH_EDITOR_ID,
   applyGraphOperations,
@@ -322,6 +322,18 @@ export class GraphEditorSession {
     }
 
     const nextText = serializeGraphDocument(operationResult.document);
+    const providerDiagnostics = await this.references.validateProviderDocument(this.match.project, {
+      documentTypeId: this.match.documentType.id,
+      path: this.match.relativePath,
+      sourceHash: hashText(nextText),
+      content: operationResult.document as unknown as JsonValue,
+    });
+    const providerErrors = providerDiagnostics.filter((diagnostic) => diagnostic.severity === "error");
+    if (providerErrors.length > 0) {
+      this.updateDiagnostics([...catalogResult.diagnostics, ...operationResult.diagnostics, ...providerDiagnostics]);
+      await this.rejectOperation(formatDiagnostics(providerErrors));
+      return;
+    }
     if (nextText === this.document.getText()) {
       await this.panel.webview.postMessage({
         type: "operationCompleted",
@@ -412,7 +424,8 @@ export class GraphEditorSession {
     if (this.disposed) {
       return false;
     }
-    const result = parseGraphDocument(this.document.getText());
+    const sourceText = this.document.getText();
+    const result = parseGraphDocument(sourceText);
     this.updateDiagnostics(result.diagnostics);
     if (!result.success) {
       return this.sendInvalid(result.diagnostics, options);
@@ -431,6 +444,12 @@ export class GraphEditorSession {
             collectGraphReferences(result.document, catalogResult.registry),
           )
         : []),
+      ...await this.references.validateProviderDocument(this.match.project, {
+        documentTypeId: this.match.documentType.id,
+        path: this.match.relativePath,
+        sourceHash: hashText(sourceText),
+        content: result.document as unknown as JsonValue,
+      }),
     ];
     this.updateDiagnostics(diagnostics);
     return this.panel.webview.postMessage({

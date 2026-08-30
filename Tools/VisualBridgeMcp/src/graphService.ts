@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { buildCatalogBundle, type DocumentDiagnostic } from "@visualbridge/core";
+import { buildCatalogBundle, type DocumentDiagnostic, type JsonValue } from "@visualbridge/core";
 import {
   graphCatalogAdapter,
   graphDocumentAdapter,
@@ -208,10 +208,27 @@ export class GraphService {
       if (referenceResult.introducedErrors.length > 0) {
         return { valid: false, diagnostics: referenceResult.introducedErrors };
       }
-      const operationDiagnostics = [...operationResult.diagnostics, ...referenceResult.diagnostics];
+      const nextBytes = Buffer.from(
+        await graphTextDocumentCodec.render(operationResult.document, "", semanticContext),
+        "utf8",
+      );
+      const providerDiagnostics = await this.references.validateProviderDocument(context.project.projectFile, {
+        documentTypeId: context.documentType.id,
+        path: context.path,
+        sourceHash: hashBytes(nextBytes),
+        content: operationResult.document as unknown as JsonValue,
+      });
+      if (providerDiagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+        return { valid: false, diagnostics: providerDiagnostics };
+      }
+      const operationDiagnostics = [
+        ...operationResult.diagnostics,
+        ...referenceResult.diagnostics,
+        ...providerDiagnostics,
+      ];
       return {
         valid: true,
-        nextBytes: Buffer.from(await graphTextDocumentCodec.render(operationResult.document, "", semanticContext), "utf8"),
+        nextBytes,
         diagnostics: operationDiagnostics,
       };
     });
@@ -246,6 +263,12 @@ export class GraphService {
         context.project.projectFile,
         graphDocumentAdapter.collectReferences(parsed.document, semanticContext),
       ),
+      ...await this.references.validateProviderDocument(context.project.projectFile, {
+        documentTypeId: context.documentType.id,
+        path: context.path,
+        sourceHash: baseHash,
+        content: parsed.document as unknown as JsonValue,
+      }),
     ];
     return {
       context,

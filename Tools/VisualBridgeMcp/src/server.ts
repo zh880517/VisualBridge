@@ -14,6 +14,8 @@ import {
   type DocumentLifecycleHostRequest,
 } from "./lifecycleService.js";
 import { pageItems } from "./pagination.js";
+import { readProjectProviderAuthorization } from "./providerAuthorization.js";
+import { McpProjectProviderService } from "./projectProviderService.js";
 import { VisualBridgeMcpError, VisualBridgeWorkspace } from "./projectWorkspace.js";
 import { ReferenceRefactorService } from "./refactorService.js";
 import { VisualBridgeReferenceService, referenceDefinition } from "./referenceService.js";
@@ -25,8 +27,12 @@ const workspaceRoot = process.env.VISUALBRIDGE_WORKSPACE === undefined
   ? process.cwd()
   : path.resolve(process.env.VISUALBRIDGE_WORKSPACE);
 const workspace = await VisualBridgeWorkspace.create(workspaceRoot);
+const providerService = new McpProjectProviderService(
+  workspace,
+  readProjectProviderAuthorization(process.env),
+);
 const tableService = new TableService(workspace);
-const referenceService = new VisualBridgeReferenceService(workspace, tableService);
+const referenceService = new VisualBridgeReferenceService(workspace, tableService, providerService);
 tableService.setReferenceService(referenceService);
 const graphService = new GraphService(workspace, referenceService);
 const entityService = new EntityService(workspace, referenceService);
@@ -100,6 +106,14 @@ function createServer(): McpServer {
             adapterAvailable: adapters.get(documentType.editor) !== undefined,
           })),
           supportedEditors: adapters.listEditors(),
+          projectProviders: {
+            enabled: providerService.authorization.enabled,
+            declared: project.definition.providers.map((provider) => ({
+              id: provider.id,
+              entry: provider.entry,
+              capabilities: provider.capabilities,
+            })),
+          },
         };
       }
       const declared = await workspace.listDeclaredDocuments(project);
@@ -550,8 +564,19 @@ const serverHandle = serveStdio(createServer, {
   onerror: (error) => console.error(`[visualbridge-mcp] ${error.message}`),
 });
 
+let providerShutdown: Promise<void> | undefined;
+const shutdownProviders = (): Promise<void> => {
+  providerShutdown ??= providerService.dispose();
+  return providerShutdown;
+};
+process.stdin.once("end", () => {
+  void shutdownProviders();
+});
+
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
-    void serverHandle.close().finally(() => process.exit(0));
+    void shutdownProviders()
+      .finally(() => serverHandle.close())
+      .finally(() => process.exit(0));
   });
 }

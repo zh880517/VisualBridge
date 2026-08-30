@@ -16,6 +16,7 @@ import {
 } from "./editor/documentEditorProvider";
 import { TABLE_EDITOR_VIEW_TYPE, TableEditorProvider } from "./editor/tableEditorProvider";
 import { ProjectRegistry } from "./project/projectRegistry";
+import { WorkspaceProjectProviderService } from "./provider/workspaceProjectProviderService";
 import {
   REVEAL_REFERENCE_COMMAND,
   WorkspaceReferenceService,
@@ -35,8 +36,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const documentDiagnostics = vscode.languages.createDiagnosticCollection("visualbridge-document");
   const workspaceDiagnostics = vscode.languages.createDiagnosticCollection("visualbridge-workspace");
   const projects = new ProjectRegistry(projectDiagnostics, output);
-  const references = new WorkspaceReferenceService(projects, output);
-  const documents = new WorkspaceDocumentIndex(projects, references, workspaceDiagnostics, output);
+  const projectProviders = new WorkspaceProjectProviderService(projects, output);
+  const references = new WorkspaceReferenceService(projects, output, projectProviders);
+  const documents = new WorkspaceDocumentIndex(
+    projects,
+    references,
+    workspaceDiagnostics,
+    output,
+    projectProviders,
+  );
   const editorProvider = new DocumentEditorProvider(
     context.extensionUri,
     projects,
@@ -323,6 +331,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     documentDiagnostics,
     workspaceDiagnostics,
     projects,
+    projectProviders,
     references,
     documents,
     browser,

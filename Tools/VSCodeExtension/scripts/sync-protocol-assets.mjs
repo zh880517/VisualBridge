@@ -6,6 +6,7 @@ const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, "../../..");
 const schemaNames = [
   "visualbridge-project.schema.json",
+  "visualbridge-project-provider.schema.json",
   "visualbridge-graph.schema.json",
   "visualbridge-graph-catalog.schema.json",
   "visualbridge-entity.schema.json",

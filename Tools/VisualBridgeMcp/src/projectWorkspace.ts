@@ -285,6 +285,29 @@ export class VisualBridgeWorkspace {
     }
     return result;
   }
+
+  public async listAuthoringSourcePaths(project: ProjectContext): Promise<readonly string[]> {
+    const paths = new Set<string>([
+      path.basename(project.absoluteProjectFile),
+      ...project.definition.documentTypes.flatMap((documentType) => documentType.catalogs),
+    ]);
+    const candidates: string[] = [];
+    for (const root of project.definition.documentRoots) {
+      const absoluteRoot = path.resolve(project.projectRoot, ...root.split("/"));
+      ensureInside(project.projectRoot, absoluteRoot, root);
+      await collectPotentialAuthoringFiles(project.projectRoot, absoluteRoot, candidates);
+    }
+    for (const absolutePath of candidates) {
+      const relativePath = path.relative(project.projectRoot, absolutePath).replaceAll("\\", "/");
+      if (project.definition.documentTypes.some((documentType) => (
+        documentType.include.some((pattern) => matches(pattern, relativePath))
+        && !documentType.exclude.some((pattern) => matches(pattern, relativePath))
+      ))) {
+        paths.add(relativePath);
+      }
+    }
+    return [...paths].sort(compareOrdinal);
+  }
 }
 
 export async function resolveExistingProjectPath(project: ProjectContext, relativePath: string): Promise<string> {
@@ -367,6 +390,33 @@ async function collectDocumentFiles(projectRoot: string, directory: string, resu
   }
 }
 
+async function collectPotentialAuthoringFiles(
+  projectRoot: string,
+  directory: string,
+  result: string[],
+): Promise<void> {
+  let resolvedDirectory: string;
+  try {
+    resolvedDirectory = await realpath(directory);
+  } catch {
+    return;
+  }
+  const relativeDirectory = path.relative(projectRoot, resolvedDirectory);
+  if (relativeDirectory === ".." || relativeDirectory.startsWith(`..${path.sep}`) || path.isAbsolute(relativeDirectory)) {
+    return;
+  }
+  const entries = await readdir(resolvedDirectory, { withFileTypes: true });
+  entries.sort((left, right) => compareOrdinal(left.name, right.name));
+  for (const entry of entries) {
+    const entryPath = path.join(resolvedDirectory, entry.name);
+    if ((entry.isFile() || entry.isSymbolicLink()) && !isVisualBridgeTransactionArtifact(entry.name)) {
+      result.push(entryPath);
+    } else if (entry.isDirectory() && !skippedDirectoryNames.has(entry.name)) {
+      await collectPotentialAuthoringFiles(projectRoot, entryPath, result);
+    }
+  }
+}
+
 function isVisualBridgeTransactionArtifact(fileName: string): boolean {
   return fileName === ".visualbridge-transaction.lock"
     || fileName === ".visualbridge-transaction.json"
@@ -401,6 +451,10 @@ function ensureInside(root: string, candidate: string, relativePath: string): vo
 
 function matches(pattern: string, relativePath: string): boolean {
   return minimatch(relativePath, pattern, { dot: true, nocase: process.platform === "win32" });
+}
+
+function compareOrdinal(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function toWorkspacePath(workspaceRoot: string, absolutePath: string): string {

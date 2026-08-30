@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { buildCatalogBundle, type DocumentDiagnostic } from "@visualbridge/core";
+import { buildCatalogBundle, type DocumentDiagnostic, type JsonValue } from "@visualbridge/core";
 import {
   entityCatalogAdapter,
   entityDocumentAdapter,
@@ -205,10 +205,23 @@ export class EntityService {
       if (referenceResult.introducedErrors.length > 0) {
         return { valid: false, diagnostics: referenceResult.introducedErrors };
       }
+      const nextBytes = Buffer.from(
+        await entityTextDocumentCodec.render(operationResult.document, "", semanticContext),
+        "utf8",
+      );
+      const providerDiagnostics = await this.references.validateProviderDocument(context.project.projectFile, {
+        documentTypeId: context.documentType.id,
+        path: context.path,
+        sourceHash: hashBytes(nextBytes),
+        content: operationResult.document as unknown as JsonValue,
+      });
+      if (providerDiagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+        return { valid: false, diagnostics: providerDiagnostics };
+      }
       return {
         valid: true,
-        nextBytes: Buffer.from(await entityTextDocumentCodec.render(operationResult.document, "", semanticContext), "utf8"),
-        diagnostics: [...operationResult.diagnostics, ...referenceResult.diagnostics],
+        nextBytes,
+        diagnostics: [...operationResult.diagnostics, ...referenceResult.diagnostics, ...providerDiagnostics],
       };
     });
   }
@@ -231,6 +244,7 @@ export class EntityService {
         catalog,
       };
     }
+    const baseHash = hashBytes(bytes);
     const diagnostics = [
       ...catalog.diagnostics,
       ...parseResult.diagnostics,
@@ -239,8 +253,14 @@ export class EntityService {
         context.project.projectFile,
         entityDocumentAdapter.collectReferences(parseResult.document, semanticContext),
       ),
+      ...await this.references.validateProviderDocument(context.project.projectFile, {
+        documentTypeId: context.documentType.id,
+        path: context.path,
+        sourceHash: baseHash,
+        content: parseResult.document as unknown as JsonValue,
+      }),
     ];
-    return { context, baseHash: hashBytes(bytes), document: parseResult.document, diagnostics, catalog };
+    return { context, baseHash, document: parseResult.document, diagnostics, catalog };
   }
 
   private async loadCatalog(

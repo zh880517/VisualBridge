@@ -50,14 +50,30 @@ export interface ReferenceResolveRequest {
 
 export interface ReferenceProvider {
   readonly kind: string;
-  validateTarget?(target: Readonly<Record<string, JsonValue>>): string | undefined;
+  validateTarget?(
+    target: Readonly<Record<string, JsonValue>>,
+  ): string | undefined | Promise<string | undefined>;
   search(request: ReferenceSearchRequest): Promise<readonly ReferenceCandidate[]>;
   resolve(request: ReferenceResolveRequest): Promise<readonly ReferenceCandidate[]>;
 }
 
-export interface ReferenceResolution {
-  readonly status: "resolved" | "missing" | "ambiguous" | "providerUnavailable";
+export const BUILT_IN_REFERENCE_KINDS = [
+  "document",
+  "entity.component",
+  "graph.element",
+  "table.row",
+] as const;
+
+export interface ReferenceSearchResult {
+  readonly status: "ok" | "invalidTarget" | "providerUnavailable";
   readonly candidates: readonly ReferenceCandidate[];
+  readonly message?: string;
+}
+
+export interface ReferenceResolution {
+  readonly status: "resolved" | "missing" | "ambiguous" | "invalidTarget" | "providerUnavailable";
+  readonly candidates: readonly ReferenceCandidate[];
+  readonly message?: string;
 }
 
 export class ReferenceService {
@@ -79,16 +95,42 @@ export class ReferenceService {
     query = "",
     limit = 50,
   ): Promise<readonly ReferenceCandidate[]> {
+    return (await this.searchDetailed(definition, query, limit)).candidates;
+  }
+
+  public async searchDetailed(
+    definition: ReferenceDefinition,
+    query = "",
+    limit = 50,
+  ): Promise<ReferenceSearchResult> {
     const provider = this.providers.get(definition.kind);
     if (provider === undefined) {
-      return [];
+      return {
+        status: "providerUnavailable",
+        candidates: [],
+        message: `Reference provider '${definition.kind}' is unavailable.`,
+      };
     }
-    if (provider.validateTarget?.(definition.target) !== undefined) {
-      return [];
+    let invalidTarget: string | undefined;
+    try {
+      invalidTarget = await provider.validateTarget?.(definition.target);
+    } catch (error) {
+      return unavailable(error);
+    }
+    if (invalidTarget !== undefined) {
+      return { status: "invalidTarget", candidates: [], message: invalidTarget };
     }
     const boundedLimit = Math.max(1, Math.min(200, Math.trunc(limit)));
-    const candidates = await provider.search({ target: definition.target, query, limit: boundedLimit });
-    return stableCandidates(candidates.filter((candidate) => candidate.kind === definition.kind)).slice(0, boundedLimit);
+    try {
+      const candidates = await provider.search({ target: definition.target, query, limit: boundedLimit });
+      return {
+        status: "ok",
+        candidates: stableCandidates(candidates.filter((candidate) => candidate.kind === definition.kind))
+          .slice(0, boundedLimit),
+      };
+    } catch (error) {
+      return unavailable(error);
+    }
   }
 
   public async resolve(
@@ -99,13 +141,24 @@ export class ReferenceService {
     if (provider === undefined) {
       return { status: "providerUnavailable", candidates: [] };
     }
-    if (provider.validateTarget?.(definition.target) !== undefined) {
-      return { status: "missing", candidates: [] };
+    let invalidTarget: string | undefined;
+    try {
+      invalidTarget = await provider.validateTarget?.(definition.target);
+    } catch (error) {
+      return unavailableResolution(error);
     }
-    const candidates = stableCandidates(
-      (await provider.resolve({ target: definition.target, value }))
-        .filter((candidate) => candidate.kind === definition.kind && referenceValuesEqual(candidate.value, value)),
-    );
+    if (invalidTarget !== undefined) {
+      return { status: "invalidTarget", candidates: [], message: invalidTarget };
+    }
+    let candidates: readonly ReferenceCandidate[];
+    try {
+      candidates = stableCandidates(
+        (await provider.resolve({ target: definition.target, value }))
+          .filter((candidate) => candidate.kind === definition.kind && referenceValuesEqual(candidate.value, value)),
+      );
+    } catch (error) {
+      return unavailableResolution(error);
+    }
     return {
       status: candidates.length === 0 ? "missing" : candidates.length === 1 ? "resolved" : "ambiguous",
       candidates,
@@ -116,7 +169,17 @@ export class ReferenceService {
     const diagnostics: DocumentDiagnostic[] = [];
     for (const occurrence of occurrences) {
       const provider = this.providers.get(occurrence.definition.kind);
-      const invalidTarget = provider?.validateTarget?.(occurrence.definition.target);
+      let invalidTarget: string | undefined;
+      try {
+        invalidTarget = await provider?.validateTarget?.(occurrence.definition.target);
+      } catch {
+        diagnostics.push(warning(
+          "reference.providerUnavailable",
+          occurrence.path,
+          `Reference provider '${occurrence.definition.kind}' is unavailable; the stored value is preserved.`,
+        ));
+        continue;
+      }
       if (invalidTarget !== undefined) {
         diagnostics.push(error("reference.invalidTarget", occurrence.path, invalidTarget));
         continue;
@@ -144,6 +207,22 @@ export class ReferenceService {
     }
     return diagnostics;
   }
+}
+
+function unavailable(error: unknown): ReferenceSearchResult {
+  return {
+    status: "providerUnavailable",
+    candidates: [],
+    message: error instanceof Error ? error.message : "Reference provider is unavailable.",
+  };
+}
+
+function unavailableResolution(error: unknown): ReferenceResolution {
+  return {
+    status: "providerUnavailable",
+    candidates: [],
+    message: error instanceof Error ? error.message : "Reference provider is unavailable.",
+  };
 }
 
 export function referenceValuesEqual(left: string | number, right: string | number): boolean {

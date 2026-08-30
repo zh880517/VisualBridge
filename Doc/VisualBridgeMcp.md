@@ -12,9 +12,10 @@
 - 通过一个统一入口批量执行 GraphOperation、EntityOperation、StructuredOperation 或 TableOperation。
 - 搜索、解析稳定引用，以及预览和提交项目级引用重构。
 - 通过统一 Lifecycle 入口预览或提交 Document 创建、复制、移动和安全删除。
+- 在启动时显式授权后，复用 Project Provider V1 的自定义 Reference 与 Validator。
 - 使用 `baseHash`、锁、临时载体、替换前复查、原子替换和冲突拒绝保护写入。
 
-当前没有独立 CLI，不启动 Project Provider，不连接 Unity，也不包含 Exporter、Importer、Runtime、Debug、DAP 或 WebSocket 功能。
+当前没有独立 CLI，不连接 Unity，也不包含 Exporter、Importer、Runtime、Debug、DAP 或 WebSocket 功能。Project Provider 默认禁用，只有 Server 启动环境显式启用并给出规范化绝对入口 allowlist 后才运行；Tool 请求不能提升权限。
 
 ## 架构
 
@@ -23,6 +24,7 @@ flowchart LR
   AI[AI Host] -->|stdio MCP| Server[MCP V2 Server]
   Server --> Project[Project Workspace]
   Server --> Registry[MCP Document Adapter Registry]
+  Server --> Provider[Shared Project Provider Host]
   Registry --> G[Graph Adapter]
   Registry --> E[Entity Adapter]
   Registry --> S[Structured Adapter]
@@ -31,6 +33,7 @@ flowchart LR
   E --> Core
   S --> Core
   T --> Core
+  Provider --> Core
   G --> Domains[Built-in Parser / Catalog / Validator / Operation / Serializer]
   E --> Domains
   S --> Domains
@@ -540,7 +543,7 @@ Lifecycle 与普通 Operation 的业务状态：
 
 ## Reference 与 Refactor
 
-`visualbridge_references` 提供 `document`、`entity.component`、`graph.element` 和 `table.row` Provider，区分 `resolved`、`missing`、`ambiguous` 与 `providerUnavailable`。目标使用稳定语义 selector；路径和显示名只出现在返回 Location。
+`visualbridge_references` 始终提供 `document`、`entity.component`、`graph.element` 和 `table.row` 内置 Provider，并在 MCP 启动时授权后注册 Project File 声明的自定义 kind。所有 Provider 都区分 `resolved`、`missing`、`ambiguous` 与 `providerUnavailable`；目标使用稳定语义 selector，路径和显示名只出现在返回 Location。
 
 | kind | target |
 | --- | --- |
@@ -550,6 +553,8 @@ Lifecycle 与普通 Operation 的业务状态：
 | `table.row` | `{ "tableTypeId": string, "sheetId": string, "documentTypeId"?: string }` |
 
 完整 Provider、严格值类型和 Location 规则见 [`ReferenceSystem.md`](ReferenceSystem.md)；项目级目标变换与影响计划见 [`ProjectRefactoring.md`](ProjectRefactoring.md)。
+
+Project Provider 授权只从启动环境读取：`VISUALBRIDGE_PROVIDER_ENABLED=1` 且 `VISUALBRIDGE_PROVIDER_ALLOWLIST` 是入口绝对路径 JSON 数组。默认、`0` 或未设置均禁用；启用但 allowlist 非法时 Server 拒绝启动。声明、PowerShell 示例、进程生命周期、源文件直接写入检测和故障处理见 [`ProjectProvider.md`](ProjectProvider.md)。Provider Validator 诊断会并入 Document read/validate 和 Operation 的修改后校验；Provider error 保留原数据，外部写入冲突拒绝覆盖。
 
 ```json
 {

@@ -13,6 +13,7 @@
     "Document/**/*.ts",
     "Form/**/*.ts",
     "Project/**/*.ts",
+    "Provider/**/*.ts",
     "Reference/**/*.ts",
     "test/**/*.ts"
   ]

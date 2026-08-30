@@ -1,0 +1,8 @@
+{
+  "formatVersion": 1,
+  "documentId": "sample.provider.settings.default",
+  "properties": {
+    "assetId": "asset.sword",
+    "displayName": "Needs Provider Review"
+  }
+}

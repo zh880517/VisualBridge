@@ -8,6 +8,7 @@ import {
   type DocumentDiagnostic,
   type JsonValue,
   type IndexedDocument,
+  type ProjectProviderDocumentSnapshot,
   type ReferenceDefinition,
   type ReferenceOccurrence,
   type ReferenceResolution,
@@ -50,11 +51,13 @@ import {
 } from "./projectWorkspace.js";
 import type { TableService } from "./tableService.js";
 import { loadMcpEntityRegistry } from "./entityRegistry.js";
+import type { McpProjectProviderService } from "./projectProviderService.js";
 
 export class VisualBridgeReferenceService {
   public constructor(
     private readonly workspace: VisualBridgeWorkspace,
     private readonly tables: TableService,
+    private readonly providers?: McpProjectProviderService,
   ) {}
 
   public async query(options: {
@@ -68,13 +71,15 @@ export class VisualBridgeReferenceService {
     const project = await this.workspace.resolveProject(options.projectFile);
     const service = await this.createProjectService(project.projectFile);
     if (options.action === "search") {
-      const results = await service.search(options.definition, options.query ?? "", options.limit);
+      const result = await service.searchDetailed(options.definition, options.query ?? "", options.limit);
       return {
         projectFile: project.projectFile,
         action: options.action,
         definition: options.definition,
         query: options.query ?? "",
-        results,
+        status: result.status,
+        ...(result.message === undefined ? {} : { message: result.message }),
+        results: result.candidates,
       };
     }
     if (options.value === undefined) {
@@ -131,6 +136,25 @@ export class VisualBridgeReferenceService {
     return { diagnostics, introducedErrors };
   }
 
+  public async validateProviderDocument(
+    projectFile: string,
+    snapshot: ProjectProviderDocumentSnapshot,
+  ): Promise<readonly DocumentDiagnostic[]> {
+    if (this.providers === undefined) return [];
+    const project = await this.workspace.resolveProject(projectFile);
+    const result = await this.providers.validateDocuments(project, [snapshot]);
+    if (result.externalModification !== undefined) {
+      throw new VisualBridgeMcpError(
+        "provider.externalModification",
+        result.externalModification.message,
+        { changedPaths: result.externalModification.changedPaths },
+      );
+    }
+    return result.diagnostics.map(({ documentTypeId: _documentTypeId, documentPath: _documentPath, ...diagnostic }) => (
+      diagnostic
+    ));
+  }
+
   public async createProjectService(projectFile: string): Promise<ReferenceService> {
     const project = await this.workspace.resolveProject(projectFile);
     let semanticDocuments: Promise<{
@@ -144,6 +168,7 @@ export class VisualBridgeReferenceService {
       createEntityComponentReferenceProvider(() => loadSemanticDocuments().then((loaded) => loaded.entities)),
       createGraphElementReferenceProvider(() => loadSemanticDocuments().then((loaded) => loaded.graphs)),
       createTableRowReferenceProvider(() => this.tables.loadReferenceDocuments(project.projectFile)),
+      ...await this.providers?.referenceProviders(project) ?? [],
     ]);
   }
 

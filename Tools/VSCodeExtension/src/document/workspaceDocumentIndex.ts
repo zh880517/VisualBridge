@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as nodePath from "node:path";
 import * as vscode from "vscode";
 import {
@@ -9,6 +10,7 @@ import {
   type DocumentTypeDefinition,
   type IndexedDocument,
   type IndexedDocumentReference,
+  type JsonValue,
   type ReferenceOccurrence,
 } from "@visualbridge/core";
 import {
@@ -44,6 +46,7 @@ import { loadGraphCatalogRegistry } from "../catalog/graphCatalogLoader";
 import { loadStructuredCatalogRegistry } from "../catalog/structuredCatalogLoader";
 import { loadTableCatalogRegistry } from "../catalog/tableCatalogLoader";
 import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
+import type { WorkspaceProjectProviderService } from "../provider/workspaceProjectProviderService";
 import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
 
 const SUPPORTED_EDITORS = new Set(["graph", "entity", "structured", "table"]);
@@ -64,6 +67,8 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
   private readonly fileWatchers: vscode.Disposable[] = [];
   private documentsValue: readonly IndexedDocument[] = [];
   private refreshTimer: NodeJS.Timeout | undefined;
+  private refreshPromise: Promise<DocumentIndexRefreshResult> | undefined;
+  private refreshRequested = false;
   private refreshVersion = 0;
   private validationPublished = false;
   private loadingValue = false;
@@ -75,6 +80,7 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
     private readonly references: WorkspaceReferenceService,
     private readonly diagnostics: vscode.DiagnosticCollection,
     private readonly output: vscode.OutputChannel,
+    private readonly providers?: WorkspaceProjectProviderService,
   ) {
     this.disposables.push(
       this.changeEmitter,
@@ -136,6 +142,25 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
   }
 
   public async refresh(): Promise<DocumentIndexRefreshResult> {
+    this.refreshRequested = true;
+    if (this.refreshPromise !== undefined) return this.refreshPromise;
+    const running = (async (): Promise<DocumentIndexRefreshResult> => {
+      let result: DocumentIndexRefreshResult;
+      do {
+        this.refreshRequested = false;
+        result = await this.refreshOnce();
+      } while (this.refreshRequested || result.status === "superseded");
+      return result;
+    })();
+    this.refreshPromise = running;
+    try {
+      return await running;
+    } finally {
+      if (this.refreshPromise === running) this.refreshPromise = undefined;
+    }
+  }
+
+  private async refreshOnce(): Promise<DocumentIndexRefreshResult> {
     if (this.refreshTimer !== undefined) {
       clearTimeout(this.refreshTimer);
       this.refreshTimer = undefined;
@@ -190,7 +215,8 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
         for (const uri of uris) {
           const path = relativeProjectPath(project, uri);
           try {
-            const parsed = parseGraphDocument(await readText(uri));
+            const text = await readText(uri);
+            const parsed = parseGraphDocument(text);
             if (!parsed.success) {
               documents.push(invalidDocument(project, documentType, path, [
                 ...catalog.diagnostics,
@@ -205,6 +231,12 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
               ? collectGraphReferences(parsed.document, catalog.registry)
               : [];
             const referenceResult = await this.resolveReferences(project, occurrences);
+            const providerDiagnostics = await this.providers?.validateDocument(project, {
+              documentTypeId: documentType.id,
+              path,
+              sourceHash: hashText(text),
+              content: parsed.document as unknown as JsonValue,
+            }) ?? [];
             const root = parsed.document.graphs.find((graph) => graph.id === parsed.document.rootGraphId);
             documents.push({
               projectId: project.definition.projectId,
@@ -219,6 +251,7 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
                 ...catalog.diagnostics,
                 ...semanticDiagnostics,
                 ...referenceResult.diagnostics,
+                ...providerDiagnostics,
               ],
               references: referenceResult.references,
             });
@@ -231,7 +264,8 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
         for (const uri of uris) {
           const path = relativeProjectPath(project, uri);
           try {
-            const parsed = parseEntityDocument(await readText(uri));
+            const text = await readText(uri);
+            const parsed = parseEntityDocument(text);
             if (!parsed.success) {
               documents.push(invalidDocument(project, documentType, path, [
                 ...catalog.diagnostics,
@@ -246,6 +280,12 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
               ? collectEntityReferences(parsed.document, catalog.registry)
               : [];
             const referenceResult = await this.resolveReferences(project, occurrences);
+            const providerDiagnostics = await this.providers?.validateDocument(project, {
+              documentTypeId: documentType.id,
+              path,
+              sourceHash: hashText(text),
+              content: parsed.document as unknown as JsonValue,
+            }) ?? [];
             documents.push({
               projectId: project.definition.projectId,
               documentTypeId: documentType.id,
@@ -259,6 +299,7 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
                 ...catalog.diagnostics,
                 ...semanticDiagnostics,
                 ...referenceResult.diagnostics,
+                ...providerDiagnostics,
               ],
               references: referenceResult.references,
             });
@@ -274,7 +315,8 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
         for (const uri of uris) {
           const path = relativeProjectPath(project, uri);
           try {
-            const parsed = parseStructuredDocument(await readText(uri));
+            const text = await readText(uri);
+            const parsed = parseStructuredDocument(text);
             if (!parsed.success) {
               documents.push(invalidDocument(project, documentType, path, [
                 ...catalog.diagnostics,
@@ -289,6 +331,12 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
               ? collectStructuredReferences(parsed.document, catalog.registry, documentType.id)
               : [];
             const referenceResult = await this.resolveReferences(project, occurrences);
+            const providerDiagnostics = await this.providers?.validateDocument(project, {
+              documentTypeId: documentType.id,
+              path,
+              sourceHash: hashText(text),
+              content: parsed.document as unknown as JsonValue,
+            }) ?? [];
             documents.push({
               projectId: project.definition.projectId,
               documentTypeId: documentType.id,
@@ -302,6 +350,7 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
                 ...catalog.diagnostics,
                 ...semanticDiagnostics,
                 ...referenceResult.diagnostics,
+                ...providerDiagnostics,
               ],
               references: referenceResult.references,
             });
@@ -449,6 +498,12 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
       project,
       collectTableReferences(document, tableType),
     );
+    const providerDiagnostics = await this.providers?.validateDocument(project, {
+      documentTypeId: documentType.id,
+      path: sourcePaths[0] ?? "",
+      sourceHash: hashText(JSON.stringify(document)),
+      content: document as unknown as JsonValue,
+    }) ?? [];
     return {
       projectId: project.definition.projectId,
       documentTypeId: documentType.id,
@@ -456,7 +511,7 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
       path: sourcePaths[0] ?? "",
       sourcePaths,
       title: tableType.title,
-      diagnostics: [...diagnostics, ...semanticDiagnostics, ...referenceResult.diagnostics],
+      diagnostics: [...diagnostics, ...semanticDiagnostics, ...referenceResult.diagnostics, ...providerDiagnostics],
       references: referenceResult.references,
     };
   }
@@ -508,6 +563,10 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
   }
 
   private scheduleRefresh(): void {
+    if (this.refreshPromise !== undefined) {
+      this.refreshRequested = true;
+      return;
+    }
     if (this.refreshTimer !== undefined) {
       clearTimeout(this.refreshTimer);
     }
@@ -650,6 +709,10 @@ async function readText(uri: vscode.Uri): Promise<string> {
     return openDocument.getText();
   }
   return new TextDecoder("utf-8", { fatal: true }).decode(await vscode.workspace.fs.readFile(uri));
+}
+
+function hashText(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
 function isXlsx(bytes: Uint8Array): boolean {

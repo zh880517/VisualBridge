@@ -1,0 +1,42 @@
+{
+  "formatVersion": 1,
+  "projectId": "visualbridge.provider-semantics",
+  "documentRoots": [
+    "Config"
+  ],
+  "documentTypes": [
+    {
+      "id": "sample.provider.settings",
+      "editor": "structured",
+      "include": [
+        "Config/**/*.providerconfig"
+      ],
+      "exclude": [],
+      "catalogs": [
+        "Catalog/Provider.vbstructuredcatalog"
+      ]
+    }
+  ],
+  "providers": [
+    {
+      "id": "sample.provider",
+      "entry": "Providers/sample-provider.mjs",
+      "args": [
+        "--mode",
+        "healthy"
+      ],
+      "capabilities": {
+        "reference": {
+          "kinds": [
+            "sample.asset"
+          ]
+        },
+        "validator": {
+          "documentTypes": [
+            "sample.provider.settings"
+          ]
+        }
+      }
+    }
+  ]
+}

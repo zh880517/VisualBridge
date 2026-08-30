@@ -142,6 +142,52 @@ test("reference service searches deterministically and validates resolved, missi
   assert.equal(ambiguous.candidates.length, 2);
 });
 
+test("reference service awaits target validation and keeps invalid or unavailable states distinct", async () => {
+  const invalidProvider: ReferenceProvider = {
+    kind: "sample.item",
+    async validateTarget() {
+      await Promise.resolve();
+      return "Expected target.category.";
+    },
+    async search() {
+      throw new Error("search must not run for an invalid target");
+    },
+    async resolve() {
+      throw new Error("resolve must not run for an invalid target");
+    },
+  };
+  const invalidService = new ReferenceService([invalidProvider]);
+  const definition = { kind: "sample.item", target: {}, allowMissing: false } as const;
+  assert.deepEqual(await invalidService.searchDetailed(definition), {
+    status: "invalidTarget",
+    candidates: [],
+    message: "Expected target.category.",
+  });
+  assert.deepEqual(await invalidService.resolve(definition, "item-1"), {
+    status: "invalidTarget",
+    candidates: [],
+    message: "Expected target.category.",
+  });
+
+  const unavailableService = new ReferenceService([{
+    kind: "sample.offline",
+    async search() {
+      throw new Error("Provider process exited.");
+    },
+    async resolve() {
+      throw new Error("Provider process exited.");
+    },
+  }]);
+  const unavailable = { kind: "sample.offline", target: {}, allowMissing: false } as const;
+  assert.equal((await unavailableService.searchDetailed(unavailable)).status, "providerUnavailable");
+  assert.equal((await unavailableService.resolve(unavailable, "item-1")).status, "providerUnavailable");
+  assert.equal((await unavailableService.validate([{
+    definition: unavailable,
+    value: "item-1",
+    path: "properties.item",
+  }]))[0]?.code, "reference.providerUnavailable");
+});
+
 test("field reference replacement follows nested definitions and materializes defaults", () => {
   const diagnostics: DocumentDiagnostic[] = [];
   const definitions = parseFieldDefinitions([{

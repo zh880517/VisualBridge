@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { readFile } = require("node:fs/promises");
 const path = require("node:path");
 const vscode = require("vscode");
 
@@ -28,6 +29,7 @@ const EXPECTED_COMMANDS = [
 
 exports.run = async function run() {
   const workspacePath = requiredEnvironmentPath("VISUALBRIDGE_TEST_WORKSPACE");
+  const providerStatePath = requiredEnvironmentPath("VISUALBRIDGE_PROVIDER_TEST_STATE_DIR");
   const expectedExtensionVersion = requiredEnvironmentValue("VISUALBRIDGE_TEST_EXTENSION_VERSION");
   await test("opens the isolated VisualBridge workspace", async () => {
     const folders = vscode.workspace.workspaceFolders ?? [];
@@ -49,6 +51,20 @@ exports.run = async function run() {
     return candidate;
   });
   assert.ok(extension);
+
+  await test("runs trusted Project Provider reference and validator requests out of process", async () => {
+    assert.equal(vscode.workspace.isTrusted, true);
+    await vscode.commands.executeCommand("visualbridge.documentBrowser.validateAll");
+    const events = await waitForAsync(
+      async () => readProviderEvents(providerStatePath),
+      (items) => items.some((event) => event.method === "reference/resolve")
+        && items.some((event) => event.method === "validator/diagnostics"),
+      20_000,
+      "Trusted Project Provider requests were not observed.",
+    );
+    assert.ok(events.some((event) => event.method === "initialize"));
+    assert.ok(events.some((event) => event.method === "capabilities"));
+  });
 
   await test("registers the stable host commands", async () => {
     const commands = new Set(await vscode.commands.getCommands(true));
@@ -1177,6 +1193,18 @@ function requiredEnvironmentValue(name) {
     throw new Error(`Environment variable '${name}' is required.`);
   }
   return value;
+}
+
+async function readProviderEvents(stateDirectory) {
+  try {
+    return (await readFile(path.join(stateDirectory, "events.ndjson"), "utf8"))
+      .split(/\r?\n/u)
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line));
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
 }
 
 function normalizeFileSystemPath(value) {

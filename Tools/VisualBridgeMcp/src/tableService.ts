@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   referenceValuesEqual,
   type DocumentDiagnostic,
+  type JsonValue,
   type ReferenceLocation,
   type ReferenceOccurrence,
   type TableLayoutDefinition,
@@ -318,8 +319,29 @@ export class TableService {
         if (referenceResult.introducedErrors.length > 0) {
           return invalidResult(loaded, referenceResult.introducedErrors);
         }
-        const operationDiagnostics = [...operationResult.diagnostics, ...referenceResult.diagnostics];
         const rendered = await this.renderSources(loaded, operationResult.document);
+        const renderedByPath = new Map(rendered.map((entry) => [entry.source.path, entry]));
+        const plannedSources = loaded.sources.map((source) => {
+          const replacement = renderedByPath.get(source.path);
+          return replacement === undefined ? source : { ...source, bytes: replacement.bytes, hash: replacement.hash };
+        });
+        const providerDiagnostics = this.references === undefined ? [] : await this.references.validateProviderDocument(
+          loaded.context.project.projectFile,
+          {
+            documentTypeId: loaded.context.documentType.id,
+            path: loaded.context.path,
+            sourceHash: hashSourceManifest(plannedSources),
+            content: operationResult.document as unknown as JsonValue,
+          },
+        );
+        if (providerDiagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+          return invalidResult(loaded, providerDiagnostics);
+        }
+        const operationDiagnostics = [
+          ...operationResult.diagnostics,
+          ...referenceResult.diagnostics,
+          ...providerDiagnostics,
+        ];
         const changed = rendered.filter((entry) => !entry.bytes.equals(entry.source.bytes));
         if (changed.length === 0) {
           return {
@@ -335,11 +357,7 @@ export class TableService {
           before: entry.source.bytes,
           after: entry.bytes,
         })));
-        const changedByPath = new Map(changed.map((entry) => [entry.source.path, entry]));
-        const nextSources = loaded.sources.map((source) => {
-          const replacement = changedByPath.get(source.path);
-          return replacement === undefined ? source : { ...source, bytes: replacement.bytes, hash: replacement.hash };
-        });
+        const nextSources = plannedSources;
         const nextHash = hashSourceManifest(nextSources);
         return {
           status: "applied",
@@ -625,10 +643,20 @@ export class TableService {
       throw new TableLoadError(context, source.hash, [source], [...catalog.diagnostics, ...parsed.diagnostics]);
     }
     const loadedSource = { ...source, sheetIds: parsed.document.sheets.map((sheet) => sheet.id) };
+    const providerDiagnostics = this.references === undefined ? [] : await this.references.validateProviderDocument(
+      context.project.projectFile,
+      {
+        documentTypeId: context.documentType.id,
+        path: context.path,
+        sourceHash: loadedSource.hash,
+        content: parsed.document as unknown as JsonValue,
+      },
+    );
     const diagnostics = [
       ...catalog.diagnostics,
       ...parsed.diagnostics,
       ...validateTableDocument(parsed.document, catalog.tableType),
+      ...providerDiagnostics,
     ];
     return {
       context,
@@ -687,12 +715,21 @@ export class TableService {
     }
     const document: TableDocument = { format: "csv", sheets };
     diagnostics.push(...validateTableDocument(document, catalog.tableType));
+    const baseHash = hashSourceManifest(sources);
+    if (this.references !== undefined) {
+      diagnostics.push(...await this.references.validateProviderDocument(context.project.projectFile, {
+        documentTypeId: context.documentType.id,
+        path: context.path,
+        sourceHash: baseHash,
+        content: document as unknown as JsonValue,
+      }));
+    }
     return {
       context,
       catalog,
       layout,
       sources,
-      baseHash: hashSourceManifest(sources),
+      baseHash,
       document,
       diagnostics,
     };

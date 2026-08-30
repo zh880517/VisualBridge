@@ -92,6 +92,86 @@
         }
       },
       "additionalProperties": false
+    },
+    "providers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/provider"
+      }
+    }
+  },
+  "not": {
+    "required": ["provider"]
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "provider": {
+      "type": "object",
+      "required": ["id", "entry", "args", "capabilities"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "entry": {
+          "type": "string",
+          "description": "Normalized project-relative built ESM entry launched with the current Node executable.",
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*\\\\)(?!.*//).+\\.mjs$"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "capabilities": {
+          "$ref": "#/$defs/providerCapabilities"
+        }
+      },
+      "additionalProperties": false
+    },
+    "providerCapabilities": {
+      "type": "object",
+      "properties": {
+        "reference": {
+          "type": "object",
+          "required": ["kinds"],
+          "properties": {
+            "kinds": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/identifier"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "validator": {
+          "type": "object",
+          "required": ["documentTypes"],
+          "properties": {
+            "documentTypes": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/identifier"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "anyOf": [
+        { "required": ["reference"] },
+        { "required": ["validator"] }
+      ],
+      "additionalProperties": false
     }
   },
   "additionalProperties": true
