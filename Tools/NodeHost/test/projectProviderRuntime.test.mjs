@@ -317,6 +317,36 @@ test("authorizes declared and canonical Provider entries through a trusted proje
   }
 });
 
+test("authorizes an allowlist entry through a trusted ancestor alias after the project root is canonicalized", async (t) => {
+  const canonicalTemporaryDirectory = await realpath(tmpdir());
+  const canonicalParent = await mkdtemp(path.join(canonicalTemporaryDirectory, "visualbridge-provider-allowlist-parent-"));
+  const aliasParent = path.join(path.dirname(canonicalTemporaryDirectory), `${path.basename(canonicalParent)}-alias`);
+  let fixture;
+  let runtime;
+
+  try {
+    if (!await createDirectoryAlias(t, canonicalParent, aliasParent)) return;
+    fixture = await createProviderFixture({ temporaryDirectory: aliasParent, passPathsInArguments: true });
+    const canonicalProjectRoot = await realpath(fixture.projectRoot);
+    const project = await readProject(canonicalProjectRoot);
+
+    runtime = await ProjectProviderRuntime.create({
+      ...baseOptions(fixture, project.providers[0]),
+      projectRoot: canonicalProjectRoot,
+      allowedEntryPaths: [fixture.entryPath],
+    });
+
+    assert.equal(await runtime.captureEntryHash(), sha256(await readFile(fixture.entryPath)));
+  } finally {
+    if (runtime !== undefined) await safeDispose(runtime);
+    if (fixture !== undefined) await fixture.dispose().catch(() => undefined);
+    await unlink(aliasParent).catch((error) => {
+      if (error?.code !== "ENOENT") throw error;
+    });
+    await rm(canonicalParent, { recursive: true, force: true });
+  }
+});
+
 test("Provider fixtures clean up through a trusted temporary-directory ancestor alias", async (t) => {
   const canonicalTemporaryDirectory = await realpath(tmpdir());
   const canonicalParent = await mkdtemp(path.join(canonicalTemporaryDirectory, "visualbridge-provider-parent-"));
@@ -398,6 +428,23 @@ test("rejects an undeclared allowlist directory alias to the Provider entry", as
   await assert.rejects(
     ProjectProviderRuntime.create({
       ...baseOptions(fixture, project.providers[0]),
+      allowedEntryPaths: [path.join(allowlistDirectory, "sample-provider.mjs")],
+    }),
+    (error) => isRuntimeError(error, "provider.invalidAllowlist"),
+  );
+});
+
+test("rejects an equivalent Provider entry reached through an inner allowlist directory alias", async (t) => {
+  const fixture = await createProviderFixture({ passPathsInArguments: true });
+  t.after(() => fixture.dispose());
+  const allowlistDirectory = path.join(fixture.projectRoot, "EquivalentProviders");
+  if (!await createDirectoryAlias(t, path.join(fixture.projectRoot, "Providers"), allowlistDirectory)) return;
+  const project = await readProject(fixture.projectRoot);
+
+  await assert.rejects(
+    ProjectProviderRuntime.create({
+      ...baseOptions(fixture, project.providers[0]),
+      projectRoot: await realpath(fixture.projectRoot),
       allowedEntryPaths: [path.join(allowlistDirectory, "sample-provider.mjs")],
     }),
     (error) => isRuntimeError(error, "provider.invalidAllowlist"),

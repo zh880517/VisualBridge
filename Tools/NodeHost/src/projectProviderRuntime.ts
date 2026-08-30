@@ -178,7 +178,13 @@ export class ProjectProviderRuntime implements AsyncDisposable {
     const projectRoot = await resolveProjectRoot(declaredProjectRoot);
     const entryPath = await resolveProviderEntry(projectRoot, options.definition.entry);
     const declaredEntryPath = path.resolve(declaredProjectRoot, ...options.definition.entry.split("/"));
-    await assertAllowedEntry(entryPath, declaredEntryPath, options.allowedEntryPaths);
+    await assertAllowedEntry(
+      entryPath,
+      declaredEntryPath,
+      options.definition.entry,
+      projectRoot,
+      options.allowedEntryPaths,
+    );
     validatePositiveTimeout(options.initializeTimeoutMs, "initializeTimeoutMs");
     validatePositiveTimeout(options.requestTimeoutMs, "requestTimeoutMs");
     validatePositiveTimeout(options.shutdownTimeoutMs, "shutdownTimeoutMs");
@@ -943,6 +949,8 @@ async function resolveProviderEntry(projectRoot: string, relativeEntry: string):
 async function assertAllowedEntry(
   entryPath: string,
   declaredEntryPath: string,
+  logicalEntry: string,
+  canonicalProjectRoot: string,
   allowedEntryPaths: readonly string[],
 ): Promise<void> {
   if (allowedEntryPaths.length === 0) {
@@ -980,7 +988,13 @@ async function assertAllowedEntry(
     }
     const allowedIdentity = pathIdentity(path.resolve(allowedPath));
     const resolvedIdentity = pathIdentity(resolved);
-    const isExpectedIdentity = allowedIdentity === declaredEntryIdentity || allowedIdentity === entryIdentity;
+    const isExpectedIdentity = allowedIdentity === declaredEntryIdentity
+      || allowedIdentity === entryIdentity
+      || (resolvedIdentity === entryIdentity && await isTrustedProjectRootEntryIdentity(
+        allowedPath,
+        logicalEntry,
+        canonicalProjectRoot,
+      ));
     if (!isExpectedIdentity && allowedIdentity !== resolvedIdentity) {
       throw new ProjectProviderRuntimeError(
         "provider.invalidAllowlist",
@@ -993,6 +1007,39 @@ async function assertAllowedEntry(
     "provider.entryNotAllowed",
     `Project Provider entry '${entryPath}' is not authorized by the host allowlist.`,
   );
+}
+
+async function isTrustedProjectRootEntryIdentity(
+  allowedPath: string,
+  logicalEntry: string,
+  canonicalProjectRoot: string,
+): Promise<boolean> {
+  const logicalSegments = logicalEntry.split("/");
+  const allowedIdentity = pathIdentity(allowedPath);
+  let allowedProjectRoot = path.resolve(allowedPath);
+  for (const _segment of logicalSegments) allowedProjectRoot = path.dirname(allowedProjectRoot);
+  if (pathIdentity(path.resolve(allowedProjectRoot, ...logicalSegments)) !== allowedIdentity) return false;
+
+  let resolvedAllowedProjectRoot: string;
+  try {
+    resolvedAllowedProjectRoot = await realpath(allowedProjectRoot);
+  } catch {
+    return false;
+  }
+  if (pathIdentity(resolvedAllowedProjectRoot) !== pathIdentity(canonicalProjectRoot)) return false;
+
+  let descendant = allowedProjectRoot;
+  for (const segment of logicalSegments.slice(0, -1)) {
+    descendant = path.join(descendant, segment);
+    let entry: Awaited<ReturnType<typeof lstat>>;
+    try {
+      entry = await lstat(descendant);
+    } catch {
+      return false;
+    }
+    if (entry.isSymbolicLink() || !entry.isDirectory()) return false;
+  }
+  return true;
 }
 
 function parseHostMessage(value: unknown): unknown {
