@@ -709,10 +709,11 @@ function ensureTargetMatchesLogicalPath(projectRoot: string, logicalPath: string
 
 async function ensurePhysicalTarget(projectRoot: string, absolutePath: string, logicalPath: string): Promise<void> {
   const resolvedRoot = await realpath(projectRoot);
+  const expectedResolvedTarget = path.resolve(resolvedRoot, ...logicalPath.split("/"));
   const resolvedParent = await realpath(path.dirname(absolutePath));
   const resolvedTarget = path.join(resolvedParent, path.basename(absolutePath));
   ensureInside(resolvedRoot, resolvedTarget, logicalPath);
-  if (pathIdentity(resolvedTarget) !== pathIdentity(absolutePath)) {
+  if (pathIdentity(resolvedTarget) !== pathIdentity(expectedResolvedTarget)) {
     throw new ProjectTransactionFailure(
       "transaction.pathAlias",
       `Transaction source '${logicalPath}' resolves through a path alias.`,
@@ -733,7 +734,7 @@ async function ensurePhysicalTarget(projectRoot: string, absolutePath: string, l
     );
   }
   const existingTarget = await realpath(absolutePath);
-  if (pathIdentity(existingTarget) !== pathIdentity(absolutePath)) {
+  if (pathIdentity(existingTarget) !== pathIdentity(expectedResolvedTarget)) {
     throw new ProjectTransactionFailure(
       "transaction.pathAlias",
       `Transaction source '${logicalPath}' resolves through a path alias.`,

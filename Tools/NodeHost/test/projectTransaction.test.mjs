@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { lstat, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -166,6 +166,49 @@ test("transaction paths use ordinal Unicode order for mutations and precondition
     );
     await assert.rejects(lstat(targetPath), { code: "ENOENT" });
     await assertNoTransactionArtifacts(projectRoot);
+  });
+});
+
+test("transactions accept a trusted project-root alias", async (context) => {
+  await withTemporaryProject(async (physicalRoot) => {
+    await withTemporaryDirectoryAlias(context, physicalRoot, async (projectRoot) => {
+      const content = bytes("created through trusted root alias");
+      const targetPath = path.join(projectRoot, "created.txt");
+      const result = await withProjectTransaction(projectRoot, (transaction) => transaction.mutate([{
+        path: "created.txt",
+        absolutePath: targetPath,
+        after: content,
+      }]));
+
+      assert.deepEqual(result.mutations, [{ path: "created.txt", hash: hash(content) }]);
+      assert.deepEqual(await readFile(path.join(physicalRoot, "created.txt")), content);
+      await assertNoTransactionArtifacts(physicalRoot);
+    });
+  });
+});
+
+test("directory aliases below a trusted project-root alias remain rejected", async (context) => {
+  await withTemporaryProject(async (physicalRoot) => {
+    await withTemporaryDirectoryAlias(context, physicalRoot, async (projectRoot) => {
+      const physicalDirectory = path.join(physicalRoot, "physical-directory");
+      const aliasedDirectory = path.join(physicalRoot, "aliased-directory");
+      await mkdir(physicalDirectory);
+      await symlink(physicalDirectory, aliasedDirectory, process.platform === "win32" ? "junction" : "dir");
+      const targetPath = path.join(projectRoot, "aliased-directory", "created.txt");
+
+      await assert.rejects(
+        withProjectTransaction(projectRoot, (transaction) => transaction.mutate([{
+          path: "aliased-directory/created.txt",
+          absolutePath: targetPath,
+          after: bytes("must not traverse the inner alias"),
+        }])),
+        (error) => error instanceof ProjectTransactionFailure && error.code === "transaction.pathAlias",
+      );
+
+      await assert.rejects(lstat(path.join(physicalDirectory, "created.txt")), { code: "ENOENT" });
+      assert.equal((await lstat(aliasedDirectory)).isSymbolicLink(), true);
+      await assertNoTransactionArtifacts(physicalRoot);
+    });
   });
 });
 
@@ -406,6 +449,23 @@ async function withTemporaryProject(action) {
     await action(projectRoot);
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
+  }
+}
+
+async function withTemporaryDirectoryAlias(context, targetPath, action) {
+  const aliasParent = await mkdtemp(path.join(tmpdir(), "visualbridge-project-root-alias-"));
+  const aliasPath = path.join(aliasParent, "project");
+  try {
+    try {
+      await symlink(targetPath, aliasPath, process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      if (!["EPERM", "EACCES", "ENOSYS", "ENOTSUP"].includes(error?.code)) throw error;
+      context.skip(`directory aliases are unavailable on this platform (${error.code})`);
+      return;
+    }
+    await action(aliasPath);
+  } finally {
+    await rm(aliasParent, { recursive: true, force: true });
   }
 }
 
