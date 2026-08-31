@@ -550,6 +550,342 @@
         "generation": 1,
         "startedAt": "2026-08-31T12:00:00.000Z"
       }
+    },
+    {
+      "label": "valid hello with graphExecution capability",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "hello",
+        "protocolVersion": 1,
+        "coreVersion": 1,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "capabilities": [
+          "snapshot",
+          "events",
+          "lease",
+          "sources",
+          "graphExecution"
+        ]
+      }
+    },
+    {
+      "label": "valid discovery record with graphExecution capability",
+      "target": "discoveryRecord",
+      "valid": true,
+      "value": {
+        "formatVersion": 1,
+        "protocolVersion": 1,
+        "coreVersion": 1,
+        "instanceId": "editor-44936",
+        "kind": "editor-play",
+        "capabilities": [
+          "snapshot",
+          "events",
+          "lease",
+          "sources",
+          "graphExecution"
+        ],
+        "tcpPort": 4594,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "pid": 44936,
+        "generation": 1,
+        "startedAt": "2026-08-31T12:00:00.000Z"
+      }
+    },
+    {
+      "label": "valid subscribeGraphExecution request",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "request",
+        "requestId": "req-e1",
+        "action": "subscribeGraphExecution",
+        "executionId": "exec-1"
+      }
+    },
+    {
+      "label": "valid unsubscribeGraphExecution request",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "request",
+        "requestId": "req-e2",
+        "action": "unsubscribeGraphExecution",
+        "executionId": "exec-1"
+      }
+    },
+    {
+      "label": "valid getGraphExecutionSnapshot request",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "request",
+        "requestId": "req-e3",
+        "action": "getGraphExecutionSnapshot",
+        "executionId": "exec-1"
+      }
+    },
+    {
+      "label": "valid getGraphExecutionInstances request without filter",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "request",
+        "requestId": "req-e4",
+        "action": "getGraphExecutionInstances"
+      }
+    },
+    {
+      "label": "valid getGraphExecutionInstances request with documentId filter",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "request",
+        "requestId": "req-e5",
+        "action": "getGraphExecutionInstances",
+        "documentId": "sample.unity.encounter.default"
+      }
+    },
+    {
+      "label": "valid ok response with executions",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "response",
+        "requestId": "req-e4",
+        "status": "ok",
+        "executions": [
+          {
+            "executionId": "exec-1",
+            "documentTypeId": "sample.unity.encounter",
+            "documentId": "sample.unity.encounter.default",
+            "graphName": "Encounter",
+            "debugKey": "hero-01",
+            "state": "running",
+            "currentNodeId": "node.encounter.entry",
+            "frameIndex": 120
+          }
+        ]
+      }
+    },
+    {
+      "label": "valid ok response with execution snapshot",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "response",
+        "requestId": "req-e3",
+        "status": "ok",
+        "execution": {
+          "executionId": "exec-1",
+          "documentTypeId": "sample.unity.encounter",
+          "documentId": "sample.unity.encounter.default",
+          "graphName": "Encounter",
+          "debugKey": "",
+          "state": "stopped",
+          "currentNodeId": null,
+          "frameIndex": 340
+        }
+      }
+    },
+    {
+      "label": "valid graphExecution event batch",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "event",
+        "event": "graphExecution",
+        "executionEvents": [
+          {
+            "executionId": "exec-1",
+            "frameIndex": 120,
+            "kind": "instanceStarted"
+          },
+          {
+            "executionId": "exec-1",
+            "frameIndex": 120,
+            "kind": "nodeStart",
+            "nodeId": "node.encounter.entry"
+          },
+          {
+            "executionId": "exec-1",
+            "frameIndex": 121,
+            "kind": "nodeOutput",
+            "nodeId": "node.encounter.entry",
+            "outputIndex": 0
+          },
+          {
+            "executionId": "exec-1",
+            "frameIndex": 121,
+            "kind": "edgeValueChanged",
+            "nodeId": "node.encounter.entry",
+            "outputIndex": 1,
+            "value": "42"
+          },
+          {
+            "executionId": "exec-1",
+            "frameIndex": 340,
+            "kind": "instanceStopped"
+          }
+        ]
+      }
+    },
+    {
+      "label": "valid executionNotFound error response",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "response",
+        "requestId": "req-e6",
+        "status": "error",
+        "error": "runtime.executionNotFound",
+        "detail": "Execution 'exec-404' is not active."
+      }
+    },
+    {
+      "label": "subscribeGraphExecution without executionId is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.missingProperty",
+      "value": {
+        "type": "request",
+        "requestId": "req-e7",
+        "action": "subscribeGraphExecution"
+      }
+    },
+    {
+      "label": "getSnapshot with executionId is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "request",
+        "requestId": "req-e8",
+        "action": "getSnapshot",
+        "executionId": "exec-1"
+      }
+    },
+    {
+      "label": "getGraphExecutionInstances with executionId is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "request",
+        "requestId": "req-e9",
+        "action": "getGraphExecutionInstances",
+        "executionId": "exec-1"
+      }
+    },
+    {
+      "label": "execution instance with invalid state is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "response",
+        "requestId": "req-e10",
+        "status": "ok",
+        "executions": [
+          {
+            "executionId": "exec-1",
+            "documentTypeId": "sample.unity.encounter",
+            "documentId": "sample.unity.encounter.default",
+            "graphName": "Encounter",
+            "debugKey": "hero-01",
+            "state": "paused",
+            "currentNodeId": null,
+            "frameIndex": 10
+          }
+        ]
+      }
+    },
+    {
+      "label": "graphExecution event with empty batch is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "event",
+        "event": "graphExecution",
+        "executionEvents": []
+      }
+    },
+    {
+      "label": "edgeValueChanged event without value is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.missingProperty",
+      "value": {
+        "type": "event",
+        "event": "graphExecution",
+        "executionEvents": [
+          {
+            "executionId": "exec-1",
+            "frameIndex": 121,
+            "kind": "edgeValueChanged",
+            "nodeId": "node.encounter.entry",
+            "outputIndex": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "nodeStart event with outputIndex is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "event",
+        "event": "graphExecution",
+        "executionEvents": [
+          {
+            "executionId": "exec-1",
+            "frameIndex": 120,
+            "kind": "nodeStart",
+            "nodeId": "node.encounter.entry",
+            "outputIndex": 0
+          }
+        ]
+      }
+    },
+    {
+      "label": "ok response with executions and documents is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "response",
+        "requestId": "req-e11",
+        "status": "ok",
+        "executions": [],
+        "documents": []
+      }
+    },
+    {
+      "label": "execution instance with malformed executionId is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "response",
+        "requestId": "req-e12",
+        "status": "ok",
+        "executions": [
+          {
+            "executionId": "execution-1",
+            "documentTypeId": "sample.unity.encounter",
+            "documentId": "sample.unity.encounter.default",
+            "graphName": "Encounter",
+            "debugKey": "hero-01",
+            "state": "running",
+            "currentNodeId": null,
+            "frameIndex": 10
+          }
+        ]
+      }
     }
   ]
 }

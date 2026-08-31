@@ -31,7 +31,7 @@ namespace VisualBridge.Protocol.Generated
         public const string VisualBridgeGraphCatalogSha256 = "b7fb04d60a986b1ba4c1cf95ec3d9655341af0ff24d8ab215052ae172709d0d2";
         public const string VisualBridgePrimitivesSha256 = "23c83a69a9d557916a9e2a0a120c0664fb09fbc86dc96703aa7bc036030dc639";
         public const string VisualBridgeProjectSha256 = "dde9d43f3fdc09ca0978fe0e8650a731726f6490ad1fda2e62023db69b01c3e9";
-        public const string VisualBridgeRuntimeBridgeSha256 = "227129fe4dc28e04ee347541fdfe5ff9228db63e47836e85779fd49b89d37f05";
+        public const string VisualBridgeRuntimeBridgeSha256 = "881c79751d9c450f576bc4c8a5c43960d86e9e01c35e905e3dd1d719c2ecaefc";
         public const string VisualBridgeStructuredCatalogSha256 = "0cae8ab7b7a9aa1159669f0939f7178e5e310056366fe0713165cd87687942fe";
         public const string VisualBridgeStructuredSha256 = "24af3e3ecd5f5481c76ad4e1377d5441d09a238faa37b220dfbc1f6fffc0baf8";
         public const string VisualBridgeTableCatalogSha256 = "05e0fea3c73f1290cab52ef4ecbacd79d96ad074232794453fa3ac3f90680f7c";
@@ -1052,46 +1052,61 @@ namespace VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge
         [DataMember(Name = "detail", IsRequired = false, EmitDefaultValue = false, Order = 5)]
         public string? Detail { get; set; }
 
-        [DataMember(Name = "documentTypeIds", IsRequired = false, EmitDefaultValue = false, Order = 6)]
+        [DataMember(Name = "documentId", IsRequired = false, EmitDefaultValue = false, Order = 6)]
+        public string? DocumentId { get; set; }
+
+        [DataMember(Name = "documentTypeIds", IsRequired = false, EmitDefaultValue = false, Order = 7)]
         public IReadOnlyList<string>? DocumentTypeIds { get; set; }
 
-        [DataMember(Name = "documents", IsRequired = false, EmitDefaultValue = false, Order = 7)]
+        [DataMember(Name = "documents", IsRequired = false, EmitDefaultValue = false, Order = 8)]
         public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge.DocumentSnapshot>? Documents { get; set; }
 
-        [DataMember(Name = "error", IsRequired = false, EmitDefaultValue = false, Order = 8)]
+        [DataMember(Name = "error", IsRequired = false, EmitDefaultValue = false, Order = 9)]
         public string? Error { get; set; }
 
-        [DataMember(Name = "event", IsRequired = false, EmitDefaultValue = false, Order = 9)]
+        [DataMember(Name = "event", IsRequired = false, EmitDefaultValue = false, Order = 10)]
         public string? Event { get; set; }
 
-        [DataMember(Name = "generation", IsRequired = false, EmitDefaultValue = false, Order = 10)]
+        [DataMember(Name = "execution", IsRequired = false, EmitDefaultValue = false, Order = 11)]
+        public VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge.GraphExecutionInstance? Execution { get; set; }
+
+        [DataMember(Name = "executionEvents", IsRequired = false, EmitDefaultValue = false, Order = 12)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge.GraphExecutionEvent>? ExecutionEvents { get; set; }
+
+        [DataMember(Name = "executionId", IsRequired = false, EmitDefaultValue = false, Order = 13)]
+        public string? ExecutionId { get; set; }
+
+        [DataMember(Name = "executions", IsRequired = false, EmitDefaultValue = false, Order = 14)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge.GraphExecutionInstance>? Executions { get; set; }
+
+        [DataMember(Name = "generation", IsRequired = false, EmitDefaultValue = false, Order = 15)]
         public int? Generation { get; set; }
 
-        [DataMember(Name = "instanceId", IsRequired = false, EmitDefaultValue = false, Order = 11)]
+        [DataMember(Name = "instanceId", IsRequired = false, EmitDefaultValue = false, Order = 16)]
         public string? InstanceId { get; set; }
 
-        [DataMember(Name = "kind", IsRequired = false, EmitDefaultValue = false, Order = 12)]
+        [DataMember(Name = "kind", IsRequired = false, EmitDefaultValue = false, Order = 17)]
         public string? Kind { get; set; }
 
-        [DataMember(Name = "protocolVersion", IsRequired = false, EmitDefaultValue = false, Order = 13)]
+        [DataMember(Name = "protocolVersion", IsRequired = false, EmitDefaultValue = false, Order = 18)]
         public int? ProtocolVersion { get; set; }
 
-        [DataMember(Name = "requestId", IsRequired = false, EmitDefaultValue = false, Order = 14)]
+        [DataMember(Name = "requestId", IsRequired = false, EmitDefaultValue = false, Order = 19)]
         public string? RequestId { get; set; }
 
-        [DataMember(Name = "sources", IsRequired = false, EmitDefaultValue = false, Order = 15)]
+        [DataMember(Name = "sources", IsRequired = false, EmitDefaultValue = false, Order = 20)]
         public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge.DocumentSource>? Sources { get; set; }
 
-        [DataMember(Name = "startedAt", IsRequired = false, EmitDefaultValue = false, Order = 16)]
+        [DataMember(Name = "startedAt", IsRequired = false, EmitDefaultValue = false, Order = 21)]
         public string? StartedAt { get; set; }
 
-        [DataMember(Name = "status", IsRequired = false, EmitDefaultValue = false, Order = 17)]
+        [DataMember(Name = "status", IsRequired = false, EmitDefaultValue = false, Order = 22)]
         public string? Status { get; set; }
 
-        [DataMember(Name = "token", IsRequired = false, EmitDefaultValue = false, Order = 18)]
+        [DataMember(Name = "token", IsRequired = false, EmitDefaultValue = false, Order = 23)]
         public string? Token { get; set; }
 
-        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 19)]
+        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 24)]
         public string Type { get; set; } = null!;
     }
 
@@ -1185,14 +1200,67 @@ namespace VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge
     [DataContract]
     public sealed class EventMessage
     {
-        [DataMember(Name = "documents", IsRequired = true, EmitDefaultValue = true, Order = 0)]
-        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge.DocumentSnapshot> Documents { get; set; } = Array.Empty<VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge.DocumentSnapshot>();
+        [DataMember(Name = "documents", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge.DocumentSnapshot>? Documents { get; set; }
 
         [DataMember(Name = "event", IsRequired = true, EmitDefaultValue = true, Order = 1)]
         public string Event { get; set; } = null!;
 
-        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        [DataMember(Name = "executionEvents", IsRequired = false, EmitDefaultValue = false, Order = 2)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge.GraphExecutionEvent>? ExecutionEvents { get; set; }
+
+        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 3)]
         public string Type { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class GraphExecutionEvent
+    {
+        [DataMember(Name = "executionId", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public string ExecutionId { get; set; } = null!;
+
+        [DataMember(Name = "frameIndex", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public int FrameIndex { get; set; }
+
+        [DataMember(Name = "kind", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public string Kind { get; set; } = null!;
+
+        [DataMember(Name = "nodeId", IsRequired = false, EmitDefaultValue = false, Order = 3)]
+        public string? NodeId { get; set; }
+
+        [DataMember(Name = "outputIndex", IsRequired = false, EmitDefaultValue = false, Order = 4)]
+        public int? OutputIndex { get; set; }
+
+        [DataMember(Name = "value", IsRequired = false, EmitDefaultValue = false, Order = 5)]
+        public string? Value { get; set; }
+    }
+
+    [DataContract]
+    public sealed class GraphExecutionInstance
+    {
+        [DataMember(Name = "currentNodeId", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public string CurrentNodeId { get; set; } = null!;
+
+        [DataMember(Name = "debugKey", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string DebugKey { get; set; } = null!;
+
+        [DataMember(Name = "documentId", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public string DocumentId { get; set; } = null!;
+
+        [DataMember(Name = "documentTypeId", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        public string DocumentTypeId { get; set; } = null!;
+
+        [DataMember(Name = "executionId", IsRequired = true, EmitDefaultValue = true, Order = 4)]
+        public string ExecutionId { get; set; } = null!;
+
+        [DataMember(Name = "frameIndex", IsRequired = true, EmitDefaultValue = true, Order = 5)]
+        public int FrameIndex { get; set; }
+
+        [DataMember(Name = "graphName", IsRequired = true, EmitDefaultValue = true, Order = 6)]
+        public string GraphName { get; set; } = null!;
+
+        [DataMember(Name = "state", IsRequired = true, EmitDefaultValue = true, Order = 7)]
+        public string State { get; set; } = null!;
     }
 
     [DataContract]
@@ -1229,16 +1297,22 @@ namespace VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge
         [DataMember(Name = "error", IsRequired = false, EmitDefaultValue = false, Order = 2)]
         public string? Error { get; set; }
 
-        [DataMember(Name = "requestId", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        [DataMember(Name = "execution", IsRequired = false, EmitDefaultValue = false, Order = 3)]
+        public VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge.GraphExecutionInstance? Execution { get; set; }
+
+        [DataMember(Name = "executions", IsRequired = false, EmitDefaultValue = false, Order = 4)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge.GraphExecutionInstance>? Executions { get; set; }
+
+        [DataMember(Name = "requestId", IsRequired = true, EmitDefaultValue = true, Order = 5)]
         public string RequestId { get; set; } = null!;
 
-        [DataMember(Name = "sources", IsRequired = false, EmitDefaultValue = false, Order = 4)]
+        [DataMember(Name = "sources", IsRequired = false, EmitDefaultValue = false, Order = 6)]
         public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge.DocumentSource>? Sources { get; set; }
 
-        [DataMember(Name = "status", IsRequired = true, EmitDefaultValue = true, Order = 5)]
+        [DataMember(Name = "status", IsRequired = true, EmitDefaultValue = true, Order = 7)]
         public string Status { get; set; } = null!;
 
-        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 6)]
+        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 8)]
         public string Type { get; set; } = null!;
     }
 
@@ -1248,13 +1322,19 @@ namespace VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge
         [DataMember(Name = "action", IsRequired = true, EmitDefaultValue = true, Order = 0)]
         public string Action { get; set; } = null!;
 
-        [DataMember(Name = "documentTypeIds", IsRequired = false, EmitDefaultValue = false, Order = 1)]
+        [DataMember(Name = "documentId", IsRequired = false, EmitDefaultValue = false, Order = 1)]
+        public string? DocumentId { get; set; }
+
+        [DataMember(Name = "documentTypeIds", IsRequired = false, EmitDefaultValue = false, Order = 2)]
         public IReadOnlyList<string>? DocumentTypeIds { get; set; }
 
-        [DataMember(Name = "requestId", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        [DataMember(Name = "executionId", IsRequired = false, EmitDefaultValue = false, Order = 3)]
+        public string? ExecutionId { get; set; }
+
+        [DataMember(Name = "requestId", IsRequired = true, EmitDefaultValue = true, Order = 4)]
         public string RequestId { get; set; } = null!;
 
-        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 5)]
         public string Type { get; set; } = null!;
     }
 

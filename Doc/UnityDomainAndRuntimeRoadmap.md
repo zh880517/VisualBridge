@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 检查适配器）已关闭，**阶段 A 与阶段 B 全部完成**——VB-UX-00 至 VB-UX-12 已关闭；阶段 C（远程与设备连接）经项目方 2026-08-31 决策明确推迟（见第 6 节）。**2026-08-31 新增阶段 D（Graph 执行过程可视化，VB-UX-13~16）**：项目方确认游戏侧 Graph 执行引擎与执行观察需求，设计已逐项讨论冻结（见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 19 章），当前待执行。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 检查适配器）已关闭，**阶段 A 与阶段 B 全部完成**——VB-UX-00 至 VB-UX-12 已关闭；阶段 C（远程与设备连接）经项目方 2026-08-31 决策明确推迟（见第 6 节）。**2026-08-31 新增阶段 D（Graph 执行过程可视化，VB-UX-13~16）**：项目方确认游戏侧 Graph 执行引擎与执行观察需求，设计已逐项讨论冻结（见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 19 章）；VB-UX-13（协议扩展）已关闭，VB-UX-14~16 待执行。
 
 本阶段分四段：
 
@@ -353,15 +353,21 @@ Exit criteria：
 - 执行引擎与 `.vbflow` → 游戏执行数据的导入器均归游戏侧；VisualBridge 仓库不引入节点调度/求值语义（`VisualBridge.Runtime` 定位以 VB-UX-07 冻结结论为准）。
 - 不占租约的观察语义不得削弱既有租约模型；Editor Bridge open/reveal E2E 与阶段 A/B 全部门槛在每个任务后保持通过。
 
-### VB-UX-13 Runtime Bridge Graph 执行协议扩展 — `pending`
+### VB-UX-13 Runtime Bridge Graph 执行协议扩展 — `complete`
 
 依赖：VB-UX-12（协议与 fixtures 基线）。
 
 范围：
 
-- Runtime Bridge Schema 纯增量扩展（§19.3）：请求动作 `getGraphExecutionInstances` / `subscribeGraphExecution` / `unsubscribeGraphExecution` / `getGraphExecutionSnapshot`（浅快照）、事件消息 `graphExecution`（批量数组，逐条携带 `instanceId`/`frameIndex`/`nodeStableId`）、按需新增错误码进分类法。
-- fixtures 三方一致（AJV / Unity 严格校验器 / 扩展宿主）：新增用例与既有 36 例共存；`contract-manifest` 的 `versions.runtimeBridge` 递增，`coreVersion` 不变。
-- TS 协议镜像与 Unity 校验器同步实现，能力枚举等常量三方一致。
+- Runtime Bridge Schema 纯增量扩展（§19.3）：请求动作 `getGraphExecutionInstances` / `subscribeGraphExecution` / `unsubscribeGraphExecution` / `getGraphExecutionSnapshot`（浅快照）、事件消息 `graphExecution`（批量数组 `executionEvents`，逐条携带 `executionId`/`frameIndex`/`nodeId`）、新增 `graphExecution` 能力与 `runtime.executionNotFound` 错误码。
+- fixtures 三方一致（AJV / Unity 严格校验器 / 扩展宿主）：新增 20 例与既有 36 例共存（合计 56）。
+- TS 协议镜像与 Unity 校验器同步实现，能力枚举等常量三方一致；MCP 协议镜像解析侧同步接受新能力值。
+
+版本策略落地裁定（替代规划期表述）：扩展为**能力门控纯增量**，沿用 VB-UX-10 增补 lease/sources 的先例——`protocolVersion`、发现记录 `formatVersion` 与 manifest `versions.runtimeBridge` 均保持 1（规划期「versions.runtimeBridge 递增」与该注册值绑定发现记录 formatVersion 的既有断言冲突，递增会破坏既有客户端记录解析，故不采用）；wire 字段命名 `executionId`（区别于 Runtime 实例 `instanceId`）。
+
+实施与验证记录：2026-08-31 完成。Schema 新增 `graphExecutionInstance` / `graphExecutionEvent` $defs（字段与事件类型耦合由 allOf const 条件表达）、请求三字段（`documentTypeIds`/`documentId`/`executionId`）与动作耦合约束、ok 响应四种互斥载荷（documents/sources/executions/execution）、事件消息双形态（artifactsChanged / graphExecution）。C# 生成器条件展开只支持 const 判别值，条件块按动作/事件类型逐值展开。TS 镜像与 Unity 校验器错误码语义对齐（含 JSON null 语义）；MCP 镜像 `KNOWN_CAPABILITIES`（解析侧）与 `CLIENT_CAPABILITIES`（hello 声称侧，不含 graphExecution）分离。
+
+验证记录：AJV 56 例（generate.mjs）；Unity EditMode 152/152（parity fixture 56 例 + 新增请求/响应/事件往返测试 2 个）；隔离 Extension Host 全部通过（含 Runtime Bridge parity 测试）；`npm run check`、根 `npm test` 全工作区通过；三个 Unity csproj `dotnet build` 零警告零错误；`check:docs` 通过。
 
 Exit criteria：
 

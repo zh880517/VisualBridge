@@ -94,6 +94,95 @@ namespace VisualBridge.Runtime
     }
 
     /// <summary>
+    /// 一个 Graph 执行实例（graphExecutionInstance）：游戏侧某个执行者
+    /// （debugKey）对一张图文档的一次运行；executionId 由采集门面分配。
+    /// 同时是 getGraphExecutionSnapshot 的浅快照载荷（当前节点 + 运行
+    /// 状态，不含变量池 dump）。
+    /// </summary>
+    public sealed class VisualBridgeRuntimeGraphExecutionInstance
+    {
+        public string ExecutionId { get; internal set; }
+
+        public string DocumentTypeId { get; internal set; }
+
+        public string DocumentId { get; internal set; }
+
+        public string GraphName { get; internal set; }
+
+        public string DebugKey { get; internal set; }
+
+        public string State { get; internal set; }
+
+        /// <summary>当前节点的稳定 ID；无当前节点时为 null。</summary>
+        public string CurrentNodeId { get; internal set; }
+
+        public int FrameIndex { get; internal set; }
+
+        internal JObject ToJson()
+        {
+            return new JObject
+            {
+                ["executionId"] = ExecutionId,
+                ["documentTypeId"] = DocumentTypeId,
+                ["documentId"] = DocumentId,
+                ["graphName"] = GraphName,
+                ["debugKey"] = DebugKey,
+                ["state"] = State,
+                ["currentNodeId"] = CurrentNodeId == null ? JValue.CreateNull() : new JValue(CurrentNodeId),
+                ["frameIndex"] = FrameIndex,
+            };
+        }
+    }
+
+    /// <summary>
+    /// 单条 Graph 执行观察事件（graphExecutionEvent）；NodeId 是
+    /// VisualBridge 文档的稳定节点 ID，字段出现与事件类型耦合。
+    /// </summary>
+    public sealed class VisualBridgeRuntimeGraphExecutionEvent
+    {
+        public string ExecutionId { get; internal set; }
+
+        public int FrameIndex { get; internal set; }
+
+        public string Kind { get; internal set; }
+
+        /// <summary>实例生命周期事件不带节点。</summary>
+        public string NodeId { get; internal set; }
+
+        /// <summary>仅 nodeOutput / edgeValueChanged 携带。</summary>
+        public int? OutputIndex { get; internal set; }
+
+        /// <summary>仅 edgeValueChanged 携带（引擎侧字符串化的值）。</summary>
+        public string Value { get; internal set; }
+
+        internal JObject ToJson()
+        {
+            var value = new JObject
+            {
+                ["executionId"] = ExecutionId,
+                ["frameIndex"] = FrameIndex,
+                ["kind"] = Kind,
+            };
+            if (NodeId != null)
+            {
+                value["nodeId"] = NodeId;
+            }
+
+            if (OutputIndex.HasValue)
+            {
+                value["outputIndex"] = OutputIndex.Value;
+            }
+
+            if (Value != null)
+            {
+                value["value"] = Value;
+            }
+
+            return value;
+        }
+    }
+
+    /// <summary>
     /// 已通过校验的 Runtime Bridge 消息；wire 校验在填充本模型之前
     /// 由 <see cref="VisualBridgeRuntimeBridgeValidator"/> 完成。
     /// </summary>
@@ -125,11 +214,26 @@ namespace VisualBridge.Runtime
 
         public IReadOnlyList<string> DocumentTypeIds { get; internal set; }
 
+        /// <summary>getGraphExecutionInstances 的可选图文档过滤。</summary>
+        public string DocumentId { get; internal set; }
+
+        /// <summary>subscribe/unsubscribe/getGraphExecutionSnapshot 的执行实例 ID。</summary>
+        public string ExecutionId { get; internal set; }
+
         public bool IsOk { get; internal set; }
 
         public IReadOnlyList<VisualBridgeRuntimeDocumentSnapshot> Documents { get; internal set; }
 
         public IReadOnlyList<VisualBridgeRuntimeDocumentSource> Sources { get; internal set; }
+
+        /// <summary>getGraphExecutionInstances ok 响应的实例列表。</summary>
+        public IReadOnlyList<VisualBridgeRuntimeGraphExecutionInstance> Executions { get; internal set; }
+
+        /// <summary>getGraphExecutionSnapshot ok 响应的浅快照。</summary>
+        public VisualBridgeRuntimeGraphExecutionInstance Execution { get; internal set; }
+
+        /// <summary>graphExecution 事件的批量载荷。</summary>
+        public IReadOnlyList<VisualBridgeRuntimeGraphExecutionEvent> ExecutionEvents { get; internal set; }
 
         public string EventName { get; internal set; }
 
@@ -171,8 +275,9 @@ namespace VisualBridge.Runtime
         // 无点段（./ ../）、无重复斜杠、无尾斜杠。
         private static readonly Regex NormalizedPathPattern = new Regex("^(?!/)(?!.*:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*/$).+$", RegexOptions.Compiled);
         private static readonly Regex Sha256Pattern = new Regex("^[a-f0-9]{64}$", RegexOptions.Compiled);
+        private static readonly Regex ExecutionIdPattern = new Regex("^exec-[0-9]+$", RegexOptions.Compiled);
 
-        private static readonly HashSet<string> Capabilities = new HashSet<string>(StringComparer.Ordinal) { "snapshot", "events", "lease", "sources" };
+        private static readonly HashSet<string> Capabilities = new HashSet<string>(StringComparer.Ordinal) { "snapshot", "events", "lease", "sources", "graphExecution" };
         private static readonly HashSet<string> InstanceKinds = new HashSet<string>(StringComparer.Ordinal) { "editor-play", "player" };
         private static readonly HashSet<string> RequestActions = new HashSet<string>(StringComparer.Ordinal)
         {
@@ -180,11 +285,27 @@ namespace VisualBridge.Runtime
             "acquireLease",
             "releaseLease",
             "getDocumentSources",
+            "getGraphExecutionInstances",
+            "subscribeGraphExecution",
+            "unsubscribeGraphExecution",
+            "getGraphExecutionSnapshot",
+        };
+
+        private static readonly HashSet<string> GraphExecutionStates = new HashSet<string>(StringComparer.Ordinal) { "running", "stopped" };
+        private static readonly HashSet<string> GraphExecutionEventKinds = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "instanceStarted",
+            "instanceStopped",
+            "nodeStart",
+            "nodeOutput",
+            "dataNode",
+            "edgeValueChanged",
         };
 
         private static readonly HashSet<string> ErrorCodes = new HashSet<string>(StringComparer.Ordinal)
         {
             "runtime.capabilityMissing",
+            "runtime.executionNotFound",
             "runtime.internalError",
             "runtime.invalidJson",
             "runtime.invalidMessage",
@@ -359,6 +480,14 @@ namespace VisualBridge.Runtime
                     {
                         value["documentTypeIds"] = new JArray(message.DocumentTypeIds);
                     }
+                    if (message.DocumentId != null)
+                    {
+                        value["documentId"] = message.DocumentId;
+                    }
+                    if (message.ExecutionId != null)
+                    {
+                        value["executionId"] = message.ExecutionId;
+                    }
                     break;
                 case VisualBridgeRuntimeBridgeMessageType.Response:
                     value["type"] = "response";
@@ -366,7 +495,8 @@ namespace VisualBridge.Runtime
                     value["status"] = message.IsOk ? "ok" : "error";
                     if (message.IsOk)
                     {
-                        // documents 与 sources 互斥；都缺省为租约 ok（无载荷）。
+                        // documents / sources / executions / execution 互斥；都缺省为
+                        // 租约与订阅控制的 ok（无载荷）。
                         if (message.Sources != null)
                         {
                             var sources = new JArray();
@@ -387,6 +517,20 @@ namespace VisualBridge.Runtime
 
                             value["documents"] = documents;
                         }
+                        else if (message.Executions != null)
+                        {
+                            var executions = new JArray();
+                            foreach (var execution in message.Executions)
+                            {
+                                executions.Add(execution.ToJson());
+                            }
+
+                            value["executions"] = executions;
+                        }
+                        else if (message.Execution != null)
+                        {
+                            value["execution"] = message.Execution.ToJson();
+                        }
                     }
                     else
                     {
@@ -400,13 +544,27 @@ namespace VisualBridge.Runtime
                 case VisualBridgeRuntimeBridgeMessageType.Event:
                     value["type"] = "event";
                     value["event"] = message.EventName;
-                    var eventDocuments = new JArray();
-                    foreach (var document in message.Documents ?? Array.Empty<VisualBridgeRuntimeDocumentSnapshot>())
+                    if (message.EventName == "graphExecution")
                     {
-                        eventDocuments.Add(document.ToJson());
+                        var executionEvents = new JArray();
+                        foreach (var executionEvent in message.ExecutionEvents ?? Array.Empty<VisualBridgeRuntimeGraphExecutionEvent>())
+                        {
+                            executionEvents.Add(executionEvent.ToJson());
+                        }
+
+                        value["executionEvents"] = executionEvents;
+                    }
+                    else
+                    {
+                        var eventDocuments = new JArray();
+                        foreach (var document in message.Documents ?? Array.Empty<VisualBridgeRuntimeDocumentSnapshot>())
+                        {
+                            eventDocuments.Add(document.ToJson());
+                        }
+
+                        value["documents"] = eventDocuments;
                     }
 
-                    value["documents"] = eventDocuments;
                     break;
                 case VisualBridgeRuntimeBridgeMessageType.Error:
                     value["type"] = "error";
@@ -556,6 +714,87 @@ namespace VisualBridge.Runtime
                 Type = VisualBridgeRuntimeBridgeMessageType.Event,
                 EventName = "artifactsChanged",
                 Documents = documents,
+            };
+        }
+
+        /// <summary>getGraphExecutionInstances 请求；documentId 过滤可空。</summary>
+        public static VisualBridgeRuntimeBridgeMessage CreateGraphExecutionInstancesRequest(string requestId, string documentId)
+        {
+            return new VisualBridgeRuntimeBridgeMessage
+            {
+                Type = VisualBridgeRuntimeBridgeMessageType.Request,
+                RequestId = requestId,
+                Action = "getGraphExecutionInstances",
+                DocumentId = documentId,
+            };
+        }
+
+        /// <summary>subscribe/unsubscribeGraphExecution 请求（必须携带 executionId）。</summary>
+        public static VisualBridgeRuntimeBridgeMessage CreateGraphExecutionSubscriptionRequest(string requestId, string action, string executionId)
+        {
+            if (action != "subscribeGraphExecution" && action != "unsubscribeGraphExecution")
+            {
+                throw new ArgumentException("Subscription action must be 'subscribeGraphExecution' or 'unsubscribeGraphExecution'.", nameof(action));
+            }
+
+            return new VisualBridgeRuntimeBridgeMessage
+            {
+                Type = VisualBridgeRuntimeBridgeMessageType.Request,
+                RequestId = requestId,
+                Action = action,
+                ExecutionId = executionId,
+            };
+        }
+
+        /// <summary>getGraphExecutionSnapshot 请求（浅快照）。</summary>
+        public static VisualBridgeRuntimeBridgeMessage CreateGraphExecutionSnapshotRequest(string requestId, string executionId)
+        {
+            return new VisualBridgeRuntimeBridgeMessage
+            {
+                Type = VisualBridgeRuntimeBridgeMessageType.Request,
+                RequestId = requestId,
+                Action = "getGraphExecutionSnapshot",
+                ExecutionId = executionId,
+            };
+        }
+
+        /// <summary>getGraphExecutionInstances ok 响应：仅携带 executions 数组。</summary>
+        public static VisualBridgeRuntimeBridgeMessage CreateGraphExecutionInstancesResponse(string requestId, IReadOnlyList<VisualBridgeRuntimeGraphExecutionInstance> executions)
+        {
+            return new VisualBridgeRuntimeBridgeMessage
+            {
+                Type = VisualBridgeRuntimeBridgeMessageType.Response,
+                RequestId = requestId,
+                IsOk = true,
+                Executions = executions,
+            };
+        }
+
+        /// <summary>getGraphExecutionSnapshot ok 响应：仅携带 execution 浅快照。</summary>
+        public static VisualBridgeRuntimeBridgeMessage CreateGraphExecutionSnapshotResponse(string requestId, VisualBridgeRuntimeGraphExecutionInstance execution)
+        {
+            return new VisualBridgeRuntimeBridgeMessage
+            {
+                Type = VisualBridgeRuntimeBridgeMessageType.Response,
+                RequestId = requestId,
+                IsOk = true,
+                Execution = execution,
+            };
+        }
+
+        /// <summary>graphExecution 批量事件；载荷必须非空。</summary>
+        public static VisualBridgeRuntimeBridgeMessage CreateGraphExecutionEvent(IReadOnlyList<VisualBridgeRuntimeGraphExecutionEvent> executionEvents)
+        {
+            if (executionEvents == null || executionEvents.Count == 0)
+            {
+                throw new ArgumentException("Graph execution event batches must not be empty.", nameof(executionEvents));
+            }
+
+            return new VisualBridgeRuntimeBridgeMessage
+            {
+                Type = VisualBridgeRuntimeBridgeMessageType.Event,
+                EventName = "graphExecution",
+                ExecutionEvents = executionEvents,
             };
         }
 
@@ -712,7 +951,7 @@ namespace VisualBridge.Runtime
 
         private static VisualBridgeRuntimeBridgeMessage ValidateRequest(JObject value)
         {
-            RequireOnlyKeys(value, "$", new[] { "type", "requestId", "action" }, new[] { "documentTypeIds" });
+            RequireOnlyKeys(value, "$", new[] { "type", "requestId", "action" }, new[] { "documentTypeIds", "documentId", "executionId" });
             var requestId = RequireRequestId(value);
             var actionToken = value["action"];
             if (actionToken == null)
@@ -731,11 +970,68 @@ namespace VisualBridge.Runtime
                 throw Error("runtime.unknownRequest", "$.action", $"Unknown request action '{action}'.");
             }
 
-            // Schema allOf 约束：documentTypeIds 仅 getSnapshot 允许携带。
+            // 字段与动作耦合（Schema allOf）：documentTypeIds 仅 getSnapshot、
+            // documentId 仅 getGraphExecutionInstances、executionId 仅执行订阅三动作。
             var filterToken = value["documentTypeIds"];
             if (filterToken != null && action != "getSnapshot")
             {
                 throw Error("runtime.invalidMessage", "$.documentTypeIds", $"Action '{action}' must not carry documentTypeIds.");
+            }
+
+            var documentIdToken = value["documentId"];
+            if (documentIdToken != null && action != "getGraphExecutionInstances")
+            {
+                throw Error("runtime.invalidMessage", "$.documentId", $"Action '{action}' must not carry documentId.");
+            }
+
+            var requiresExecutionId = action == "subscribeGraphExecution" || action == "unsubscribeGraphExecution" || action == "getGraphExecutionSnapshot";
+            var executionIdToken = value["executionId"];
+            if (executionIdToken != null && !requiresExecutionId)
+            {
+                throw Error("runtime.invalidMessage", "$.executionId", $"Action '{action}' must not carry executionId.");
+            }
+
+            if (requiresExecutionId)
+            {
+                if (executionIdToken == null)
+                {
+                    throw Error("runtime.missingProperty", "$.executionId", "Missing property 'executionId'.");
+                }
+
+                if (executionIdToken.Type != JTokenType.String || !ExecutionIdPattern.IsMatch(executionIdToken.Value<string>()))
+                {
+                    throw Error("runtime.invalidMessage", "$.executionId", "Expected an 'exec-<n>' execution identifier.");
+                }
+
+                return new VisualBridgeRuntimeBridgeMessage
+                {
+                    Type = VisualBridgeRuntimeBridgeMessageType.Request,
+                    RequestId = requestId,
+                    Action = action,
+                    ExecutionId = executionIdToken.Value<string>(),
+                };
+            }
+
+            if (action == "getGraphExecutionInstances")
+            {
+                string documentId = null;
+                if (documentIdToken != null)
+                {
+                    if (documentIdToken.Type != JTokenType.String || !StableIdPattern.IsMatch(documentIdToken.Value<string>()))
+                    {
+                        throw Error("runtime.invalidMessage", "$.documentId", "Expected a graph document identifier.");
+                    }
+
+                    documentId = documentIdToken.Value<string>();
+                }
+
+                return new VisualBridgeRuntimeBridgeMessage
+                {
+                    Type = VisualBridgeRuntimeBridgeMessageType.Request,
+                    RequestId = requestId,
+                    Action = action,
+                    DocumentId = documentId,
+                };
             }
 
             IReadOnlyList<string> documentTypeIds = null;
@@ -777,7 +1073,7 @@ namespace VisualBridge.Runtime
 
         private static VisualBridgeRuntimeBridgeMessage ValidateResponse(JObject value)
         {
-            RequireOnlyKeys(value, "$", new[] { "type", "requestId", "status" }, new[] { "documents", "sources", "error", "detail" });
+            RequireOnlyKeys(value, "$", new[] { "type", "requestId", "status" }, new[] { "documents", "sources", "executions", "execution", "error", "detail" });
             var requestId = RequireRequestId(value);
             var statusToken = value["status"];
             if (statusToken == null)
@@ -798,12 +1094,16 @@ namespace VisualBridge.Runtime
                     throw Error("runtime.invalidMessage", "$", "An ok response must not carry error fields.");
                 }
 
-                // documents 与 sources 互斥；都缺省为租约 ok（无载荷响应）。
+                // documents / sources / executions / execution 互斥；都缺省为
+                // 租约与订阅控制的 ok（无载荷响应）。
                 var hasDocuments = value.Property("documents", StringComparison.Ordinal) != null;
                 var hasSources = value.Property("sources", StringComparison.Ordinal) != null;
-                if (hasDocuments && hasSources)
+                var hasExecutions = value.Property("executions", StringComparison.Ordinal) != null;
+                var hasExecution = value.Property("execution", StringComparison.Ordinal) != null;
+                var payloadCount = (hasDocuments ? 1 : 0) + (hasSources ? 1 : 0) + (hasExecutions ? 1 : 0) + (hasExecution ? 1 : 0);
+                if (payloadCount > 1)
                 {
-                    throw Error("runtime.invalidMessage", "$", "An ok response must not carry both documents and sources.");
+                    throw Error("runtime.invalidMessage", "$", "An ok response must carry at most one payload shape.");
                 }
 
                 if (hasDocuments)
@@ -828,6 +1128,33 @@ namespace VisualBridge.Runtime
                     };
                 }
 
+                if (hasExecutions)
+                {
+                    return new VisualBridgeRuntimeBridgeMessage
+                    {
+                        Type = VisualBridgeRuntimeBridgeMessageType.Response,
+                        RequestId = requestId,
+                        IsOk = true,
+                        Executions = ValidateGraphExecutionInstances(value["executions"], "$.executions"),
+                    };
+                }
+
+                if (hasExecution)
+                {
+                    if (!(value["execution"] is JObject execution))
+                    {
+                        throw Error("runtime.invalidMessage", "$.execution", "Expected a graph execution instance object.");
+                    }
+
+                    return new VisualBridgeRuntimeBridgeMessage
+                    {
+                        Type = VisualBridgeRuntimeBridgeMessageType.Response,
+                        RequestId = requestId,
+                        IsOk = true,
+                        Execution = ValidateGraphExecutionInstance(execution, "$.execution"),
+                    };
+                }
+
                 return new VisualBridgeRuntimeBridgeMessage
                 {
                     Type = VisualBridgeRuntimeBridgeMessageType.Response,
@@ -838,9 +1165,10 @@ namespace VisualBridge.Runtime
 
             if (status == "error")
             {
-                if (value.Property("documents", StringComparison.Ordinal) != null || value.Property("sources", StringComparison.Ordinal) != null)
+                if (value.Property("documents", StringComparison.Ordinal) != null || value.Property("sources", StringComparison.Ordinal) != null
+                    || value.Property("executions", StringComparison.Ordinal) != null || value.Property("execution", StringComparison.Ordinal) != null)
                 {
-                    throw Error("runtime.invalidMessage", "$", "An error response must not carry documents or sources.");
+                    throw Error("runtime.invalidMessage", "$", "An error response must not carry a payload.");
                 }
 
                 var errorToken = value["error"];
@@ -912,39 +1240,268 @@ namespace VisualBridge.Runtime
 
         private static VisualBridgeRuntimeBridgeMessage ValidateEvent(JObject value)
         {
-            RequireOnlyKeys(value, "$", "type", "event", "documents");
             var eventToken = value["event"];
             if (eventToken == null)
             {
                 throw Error("runtime.missingProperty", "$.event", "Missing property 'event'.");
             }
 
-            if (eventToken.Type != JTokenType.String || eventToken.Value<string>() != "artifactsChanged")
+            if (eventToken.Type != JTokenType.String)
             {
-                throw Error("runtime.invalidMessage", "$.event", "Expected event 'artifactsChanged'.");
+                throw Error("runtime.invalidMessage", "$.event", "Expected an event string.");
             }
 
-            if (!(value["documents"] is JArray documentsArray))
+            var eventName = eventToken.Value<string>();
+            if (eventName == "artifactsChanged")
             {
-                throw Error("runtime.invalidMessage", "$.documents", "Expected a documents array.");
-            }
-
-            var documents = new List<VisualBridgeRuntimeDocumentSnapshot>(documentsArray.Count);
-            for (var index = 0; index < documentsArray.Count; index++)
-            {
-                if (!(documentsArray[index] is JObject document))
+                RequireOnlyKeys(value, "$", "type", "event", "documents");
+                if (!(value["documents"] is JArray documentsArray))
                 {
-                    throw Error("runtime.invalidMessage", $"$.documents[{index}]", "Expected a document snapshot object.");
+                    throw Error("runtime.invalidMessage", "$.documents", "Expected a documents array.");
                 }
 
-                documents.Add(ValidateDocumentSnapshot(document, $"$.documents[{index}]"));
+                var documents = new List<VisualBridgeRuntimeDocumentSnapshot>(documentsArray.Count);
+                for (var index = 0; index < documentsArray.Count; index++)
+                {
+                    if (!(documentsArray[index] is JObject document))
+                    {
+                        throw Error("runtime.invalidMessage", $"$.documents[{index}]", "Expected a document snapshot object.");
+                    }
+
+                    documents.Add(ValidateDocumentSnapshot(document, $"$.documents[{index}]"));
+                }
+
+                return new VisualBridgeRuntimeBridgeMessage
+                {
+                    Type = VisualBridgeRuntimeBridgeMessageType.Event,
+                    EventName = "artifactsChanged",
+                    Documents = documents,
+                };
             }
 
-            return new VisualBridgeRuntimeBridgeMessage
+            if (eventName == "graphExecution")
             {
-                Type = VisualBridgeRuntimeBridgeMessageType.Event,
-                EventName = "artifactsChanged",
-                Documents = documents,
+                RequireOnlyKeys(value, "$", "type", "event", "executionEvents");
+                if (!(value["executionEvents"] is JArray eventsArray) || eventsArray.Count == 0)
+                {
+                    throw Error("runtime.invalidMessage", "$.executionEvents", "Expected a non-empty execution event array.");
+                }
+
+                var executionEvents = new List<VisualBridgeRuntimeGraphExecutionEvent>(eventsArray.Count);
+                for (var index = 0; index < eventsArray.Count; index++)
+                {
+                    if (!(eventsArray[index] is JObject executionEvent))
+                    {
+                        throw Error("runtime.invalidMessage", $"$.executionEvents[{index}]", "Expected a graph execution event object.");
+                    }
+
+                    executionEvents.Add(ValidateGraphExecutionEvent(executionEvent, $"$.executionEvents[{index}]"));
+                }
+
+                return new VisualBridgeRuntimeBridgeMessage
+                {
+                    Type = VisualBridgeRuntimeBridgeMessageType.Event,
+                    EventName = "graphExecution",
+                    ExecutionEvents = executionEvents,
+                };
+            }
+
+            throw Error("runtime.invalidMessage", "$.event", $"Unknown event '{eventName}'.");
+        }
+
+        private static IReadOnlyList<VisualBridgeRuntimeGraphExecutionInstance> ValidateGraphExecutionInstances(JToken token, string path)
+        {
+            if (!(token is JArray instancesArray))
+            {
+                throw Error("runtime.invalidMessage", path, "Expected an executions array.");
+            }
+
+            var instances = new List<VisualBridgeRuntimeGraphExecutionInstance>(instancesArray.Count);
+            for (var index = 0; index < instancesArray.Count; index++)
+            {
+                if (!(instancesArray[index] is JObject instance))
+                {
+                    throw Error("runtime.invalidMessage", $"{path}[{index}]", "Expected a graph execution instance object.");
+                }
+
+                instances.Add(ValidateGraphExecutionInstance(instance, $"{path}[{index}]"));
+            }
+
+            return instances;
+        }
+
+        internal static VisualBridgeRuntimeGraphExecutionInstance ValidateGraphExecutionInstance(JObject value, string path)
+        {
+            RequireOnlyKeys(value, path, "executionId", "documentTypeId", "documentId", "graphName", "debugKey", "state", "currentNodeId", "frameIndex");
+            var executionId = RequireString(value, "executionId", path + ".executionId");
+            if (!ExecutionIdPattern.IsMatch(executionId))
+            {
+                throw Error("runtime.invalidMessage", path + ".executionId", "Expected an 'exec-<n>' execution identifier.");
+            }
+
+            var documentTypeId = RequireString(value, "documentTypeId", path + ".documentTypeId");
+            if (!StableIdPattern.IsMatch(documentTypeId))
+            {
+                throw Error("runtime.invalidMessage", path + ".documentTypeId", "Expected a stable document type identifier.");
+            }
+
+            var documentId = RequireString(value, "documentId", path + ".documentId");
+            if (!StableIdPattern.IsMatch(documentId))
+            {
+                throw Error("runtime.invalidMessage", path + ".documentId", "Expected a stable document identifier.");
+            }
+
+            var graphName = RequireString(value, "graphName", path + ".graphName");
+            if (graphName.Length < 1 || graphName.Length > 256)
+            {
+                throw Error("runtime.invalidMessage", path + ".graphName", "Expected a graph name of 1 to 256 characters.");
+            }
+
+            var debugKey = RequireString(value, "debugKey", path + ".debugKey");
+            if (debugKey.Length > 256)
+            {
+                throw Error("runtime.invalidMessage", path + ".debugKey", "Expected a debug key of at most 256 characters.");
+            }
+
+            var state = RequireString(value, "state", path + ".state");
+            if (!GraphExecutionStates.Contains(state))
+            {
+                throw Error("runtime.invalidMessage", path + ".state", "Expected an execution state 'running' or 'stopped'.");
+            }
+
+            var currentNodeIdToken = value["currentNodeId"];
+            string currentNodeId = null;
+            if (currentNodeIdToken != null && currentNodeIdToken.Type != JTokenType.Null)
+            {
+                if (currentNodeIdToken.Type != JTokenType.String || !StableIdPattern.IsMatch(currentNodeIdToken.Value<string>()))
+                {
+                    throw Error("runtime.invalidMessage", path + ".currentNodeId", "Expected a node identifier or null.");
+                }
+
+                currentNodeId = currentNodeIdToken.Value<string>();
+            }
+
+            var frameIndex = RequireInteger(value, "frameIndex", path + ".frameIndex");
+            if (frameIndex < 0)
+            {
+                throw Error("runtime.invalidMessage", path + ".frameIndex", "Expected a non-negative frame index.");
+            }
+
+            return new VisualBridgeRuntimeGraphExecutionInstance
+            {
+                ExecutionId = executionId,
+                DocumentTypeId = documentTypeId,
+                DocumentId = documentId,
+                GraphName = graphName,
+                DebugKey = debugKey,
+                State = state,
+                CurrentNodeId = currentNodeId,
+                FrameIndex = frameIndex,
+            };
+        }
+
+        internal static VisualBridgeRuntimeGraphExecutionEvent ValidateGraphExecutionEvent(JObject value, string path)
+        {
+            RequireOnlyKeys(value, path, new[] { "executionId", "frameIndex", "kind" }, new[] { "nodeId", "outputIndex", "value" });
+            var executionId = RequireString(value, "executionId", path + ".executionId");
+            if (!ExecutionIdPattern.IsMatch(executionId))
+            {
+                throw Error("runtime.invalidMessage", path + ".executionId", "Expected an 'exec-<n>' execution identifier.");
+            }
+
+            var frameIndex = RequireInteger(value, "frameIndex", path + ".frameIndex");
+            if (frameIndex < 0)
+            {
+                throw Error("runtime.invalidMessage", path + ".frameIndex", "Expected a non-negative frame index.");
+            }
+
+            var kind = RequireString(value, "kind", path + ".kind");
+            if (!GraphExecutionEventKinds.Contains(kind))
+            {
+                throw Error("runtime.invalidMessage", path + ".kind", "Expected a graph execution event kind.");
+            }
+
+            var requiresNodeId = kind == "nodeStart" || kind == "nodeOutput" || kind == "dataNode" || kind == "edgeValueChanged";
+            var requiresOutputIndex = kind == "nodeOutput" || kind == "edgeValueChanged";
+            var requiresValue = kind == "edgeValueChanged";
+            var nodeIdToken = value["nodeId"];
+            if (nodeIdToken != null && !requiresNodeId)
+            {
+                throw Error("runtime.invalidMessage", path + ".nodeId", $"Event kind '{kind}' must not carry a nodeId.");
+            }
+
+            var outputIndexToken = value["outputIndex"];
+            if (outputIndexToken != null && !requiresOutputIndex)
+            {
+                throw Error("runtime.invalidMessage", path + ".outputIndex", $"Event kind '{kind}' must not carry an outputIndex.");
+            }
+
+            var valueToken = value["value"];
+            if (valueToken != null && !requiresValue)
+            {
+                throw Error("runtime.invalidMessage", path + ".value", $"Event kind '{kind}' must not carry a value.");
+            }
+
+            string nodeId = null;
+            if (requiresNodeId)
+            {
+                if (nodeIdToken == null)
+                {
+                    throw Error("runtime.missingProperty", path + ".nodeId", "Missing property 'nodeId'.");
+                }
+
+                if (nodeIdToken.Type != JTokenType.String || !StableIdPattern.IsMatch(nodeIdToken.Value<string>()))
+                {
+                    throw Error("runtime.invalidMessage", path + ".nodeId", "Expected a node identifier.");
+                }
+
+                nodeId = nodeIdToken.Value<string>();
+            }
+
+            int? outputIndex = null;
+            if (requiresOutputIndex)
+            {
+                if (outputIndexToken == null)
+                {
+                    throw Error("runtime.missingProperty", path + ".outputIndex", "Missing property 'outputIndex'.");
+                }
+
+                if (outputIndexToken.Type != JTokenType.Integer || outputIndexToken.Value<int>() < 0)
+                {
+                    throw Error("runtime.invalidMessage", path + ".outputIndex", "Expected a non-negative output index.");
+                }
+
+                outputIndex = outputIndexToken.Value<int>();
+            }
+
+            string eventValue = null;
+            if (requiresValue)
+            {
+                if (valueToken == null)
+                {
+                    throw Error("runtime.missingProperty", path + ".value", "Missing property 'value'.");
+                }
+
+                if (valueToken.Type != JTokenType.String)
+                {
+                    throw Error("runtime.invalidMessage", path + ".value", "Expected a value string.");
+                }
+
+                eventValue = valueToken.Value<string>();
+                if (eventValue.Length < 1 || eventValue.Length > 4096)
+                {
+                    throw Error("runtime.invalidMessage", path + ".value", "Expected a value string of 1 to 4096 characters.");
+                }
+            }
+
+            return new VisualBridgeRuntimeGraphExecutionEvent
+            {
+                ExecutionId = executionId,
+                FrameIndex = frameIndex,
+                Kind = kind,
+                NodeId = nodeId,
+                OutputIndex = outputIndex,
+                Value = eventValue,
             };
         }
 

@@ -11,9 +11,13 @@ export const RUNTIME_BRIDGE_DISCOVERY_FORMAT_VERSION = 1;
 export const RUNTIME_BRIDGE_DISCOVERY_DIRECTORY = "visualbridge-runtime";
 
 // 全能力 hello：MCP 客户端声明支持全部能力，具体可用性由实例 welcome 返回。
+// MCP 客户端不消费 graphExecution（执行观察属 VS Code 扩展），但解析侧
+// 必须接受该能力值——实例发现记录会通告它。
 const CLIENT_CAPABILITIES = ["snapshot", "events", "lease", "sources"] as const;
+const KNOWN_CAPABILITIES = ["snapshot", "events", "lease", "sources", "graphExecution"] as const;
 const ERROR_CODES = new Set([
   "runtime.capabilityMissing",
+  "runtime.executionNotFound",
   "runtime.internalError",
   "runtime.invalidJson",
   "runtime.invalidMessage",
@@ -38,7 +42,7 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const NORMALIZED_SOURCE_PATH_PATTERN = /^(?!\/)(?![A-Za-z]:\/)(?!.*:)(?!.*(?:^|\/)\.{1,2}(?:\/|$))(?!.*\\)(?!.*\/\/)(?:[^/]+\/)*[^/]+$/;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
-export type RuntimeBridgeCapability = (typeof CLIENT_CAPABILITIES)[number];
+export type RuntimeBridgeCapability = (typeof KNOWN_CAPABILITIES)[number];
 export type RuntimeInstanceKind = "editor-play" | "player";
 export type RuntimeStaleReason = "runtime.staleRecord" | "runtime.deadPid";
 
@@ -477,7 +481,7 @@ function requireCapabilities(record: Record<string, unknown>): readonly RuntimeB
     throw new RuntimeBridgeClientError("runtime.invalidMessage", "$.capabilities: Expected a non-empty capability list.");
   }
   const capabilities = value.map((entry) => {
-    if (typeof entry !== "string" || !(CLIENT_CAPABILITIES as readonly string[]).includes(entry)) {
+    if (typeof entry !== "string" || !(KNOWN_CAPABILITIES as readonly string[]).includes(entry)) {
       throw new RuntimeBridgeClientError("runtime.invalidMessage", "$.capabilities: Expected runtime capability names.");
     }
     return entry as RuntimeBridgeCapability;

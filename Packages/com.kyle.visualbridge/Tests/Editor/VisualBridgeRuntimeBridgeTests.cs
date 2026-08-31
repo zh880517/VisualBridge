@@ -23,6 +23,61 @@ namespace VisualBridge.Editor.Tests
             new System.Text.RegularExpressions.Regex("^[a-f0-9]{64}$");
 
         [Test]
+        public void GraphExecutionRequestsRoundTripThroughTheValidator()
+        {
+            var instancesRequest = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator
+                .CreateGraphExecutionInstancesRequest("req-e1", "sample.unity.encounter.default").ToLine();
+            var parsedInstances = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(instancesRequest);
+            Assert.That(parsedInstances.Action, Is.EqualTo("getGraphExecutionInstances"));
+            Assert.That(parsedInstances.DocumentId, Is.EqualTo("sample.unity.encounter.default"));
+
+            var unfilteredRequest = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator
+                .CreateGraphExecutionInstancesRequest("req-e2", null).ToLine();
+            var parsedUnfiltered = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(unfilteredRequest);
+            Assert.That(parsedUnfiltered.DocumentId, Is.Null);
+
+            var subscribeRequest = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator
+                .CreateGraphExecutionSubscriptionRequest("req-e3", "subscribeGraphExecution", "exec-1").ToLine();
+            var parsedSubscribe = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(subscribeRequest);
+            Assert.That(parsedSubscribe.Action, Is.EqualTo("subscribeGraphExecution"));
+            Assert.That(parsedSubscribe.ExecutionId, Is.EqualTo("exec-1"));
+
+            var snapshotRequest = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator
+                .CreateGraphExecutionSnapshotRequest("req-e4", "exec-7").ToLine();
+            var parsedSnapshot = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(snapshotRequest);
+            Assert.That(parsedSnapshot.Action, Is.EqualTo("getGraphExecutionSnapshot"));
+            Assert.That(parsedSnapshot.ExecutionId, Is.EqualTo("exec-7"));
+        }
+
+        [Test]
+        public void GraphExecutionResponsesAndEventsRoundTripThroughTheValidator()
+        {
+            // 解析 → 序列化 → 再解析，覆盖 executions / execution / graphExecution
+            // 三种新载荷的 wire 形状（模型构造是 internal，经由解析路径构造）。
+            var executionsLine = "{\"type\":\"response\",\"requestId\":\"req-1\",\"status\":\"ok\",\"executions\":[{\"executionId\":\"exec-1\",\"documentTypeId\":\"sample.unity.encounter\",\"documentId\":\"sample.unity.encounter.default\",\"graphName\":\"Encounter\",\"debugKey\":\"hero-01\",\"state\":\"running\",\"currentNodeId\":\"node.entry\",\"frameIndex\":12}]}";
+            var reparsedExecutions = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(
+                VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(executionsLine).ToLine());
+            Assert.That(reparsedExecutions.Executions.Count, Is.EqualTo(1));
+            Assert.That(reparsedExecutions.Executions[0].ExecutionId, Is.EqualTo("exec-1"));
+            Assert.That(reparsedExecutions.Executions[0].CurrentNodeId, Is.EqualTo("node.entry"));
+
+            var executionLine = "{\"type\":\"response\",\"requestId\":\"req-2\",\"status\":\"ok\",\"execution\":{\"executionId\":\"exec-1\",\"documentTypeId\":\"sample.unity.encounter\",\"documentId\":\"sample.unity.encounter.default\",\"graphName\":\"Encounter\",\"debugKey\":\"\",\"state\":\"stopped\",\"currentNodeId\":null,\"frameIndex\":40}}";
+            var reparsedExecution = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(
+                VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(executionLine).ToLine());
+            Assert.That(reparsedExecution.Execution, Is.Not.Null);
+            Assert.That(reparsedExecution.Execution.State, Is.EqualTo("stopped"));
+            Assert.That(reparsedExecution.Execution.CurrentNodeId, Is.Null);
+
+            var eventLine = "{\"type\":\"event\",\"event\":\"graphExecution\",\"executionEvents\":[{\"executionId\":\"exec-1\",\"frameIndex\":12,\"kind\":\"nodeStart\",\"nodeId\":\"node.entry\"},{\"executionId\":\"exec-1\",\"frameIndex\":12,\"kind\":\"edgeValueChanged\",\"nodeId\":\"node.entry\",\"outputIndex\":1,\"value\":\"42\"}]}";
+            var reparsedEvent = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(
+                VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(eventLine).ToLine());
+            Assert.That(reparsedEvent.EventName, Is.EqualTo("graphExecution"));
+            Assert.That(reparsedEvent.ExecutionEvents.Count, Is.EqualTo(2));
+            Assert.That(reparsedEvent.ExecutionEvents[1].Value, Is.EqualTo("42"));
+            Assert.That(reparsedEvent.ExecutionEvents[1].OutputIndex, Is.EqualTo(1));
+        }
+
+        [Test]
         public void RuntimeSchemaAndValidatorShareParityFixture()
         {
             var fixtureAsset = AssetDatabase.LoadAssetAtPath<TextAsset>(
@@ -30,7 +85,7 @@ namespace VisualBridge.Editor.Tests
             Assert.That(fixtureAsset, Is.Not.Null);
             var root = ParseWithoutDateCoercion(fixtureAsset.text);
             var cases = (JArray)root["cases"];
-            Assert.That(cases.Count, Is.EqualTo(36));
+            Assert.That(cases.Count, Is.EqualTo(56));
             foreach (var testCase in cases.Cast<JObject>())
             {
                 var value = testCase["value"] as JObject;

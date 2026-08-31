@@ -51,7 +51,7 @@ Protocol/contract-manifest.json
 | `visualbridge-authoring-contracts` | Reference、Refactor、Lifecycle、Transaction 与统一 Document transport。 |
 | `visualbridge-unity-integration-profile` | Unity Project 内固定 Profile V1；显式关联一个 Authoring Project、Structured Catalog export units 与 `Library/VisualBridge/Compiled` 派生输出根。语义权威在 Unity Profile loader。 |
 | `visualbridge-editor-bridge` | 最小 Editor Bridge V1：Unity Editor 客户端与 VS Code 扩展宿主服务器间的 NDJSON 消息（hello/welcome、open/reveal、response/error）与 per-window discovery 记录。首版只有 open/reveal 能力；传输与信任边界冻结在 Unity 接入架构第 12 章。 |
-| `visualbridge-runtime-bridge` | Runtime Bridge V1：Unity Runtime 实例与宿主客户端间的 NDJSON 消息（hello/welcome、快照/租约/Source 映射请求响应、artifactsChanged 事件、连接级 error）与 per-instance 发现记录。语义冻结在 Unity 接入架构第 17/18 章。 |
+| `visualbridge-runtime-bridge` | Runtime Bridge V1：Unity Runtime 实例与宿主客户端间的 NDJSON 消息（hello/welcome、快照/租约/Source 映射请求响应、artifactsChanged 事件、连接级 error）与 per-instance 发现记录；Graph 执行观察为能力门控的纯增量扩展（`graphExecution` 能力：执行实例枚举/订阅/浅快照请求与 `graphExecution` 批量事件，不做断点）。语义冻结在 Unity 接入架构第 17/18/19 章。 |
 | `visualbridge-mcp-tools` | 八个 stdio MCP Tool 的严格输入/输出信封。 |
 
 Graph、Entity、Structured、Table Catalog 中重复出现的 Field/value-shape 序列化定义是冻结后的公共 wire shape；编辑器语义只有一份，权威实现位于 Core Form model 和 `Editors/Form`。Schema parity 不是四个文件的文本或 bytes 相等检查：生成器会把四个 Catalog 的 10 个共享 `$defs` 解析后做结构 `deepEqual`，还会以同一组正反例行为矩阵分别执行四个 validator。最小 scalar、递归 object/array、结构化 select 和 number Reference 等正例必须全部接受；空白标题、重复 alias、错误递归 shape、缺失 select option 等反例必须全部拒绝。结构不同或任一 validator 的接受/拒绝结果不同都构成 drift。Host 或 Unity 不得据此复制另一套字段编辑规则。Table 的语义传输仍是 JSON 值，但 CSV family 与 XLSX 是 Host Codec 边界，其物理格式不由 JSON Schema 描述。

@@ -609,19 +609,19 @@ DAP 适配器以**只检查会话**形态落地（范围裁定与 18.3 一致—
 
 - **执行实例**：游戏侧上报 `(graphId, graphName, debugKey)`（debugKey 为游戏侧执行者标识，如角色）→ VisualBridge 分配 `instanceId`；实例停止上报 `instanceId`。同一张图可被多个执行者并发执行，每个 Start 一个实例。
 - **事件类型**：`instanceStarted` / `instanceStopped` / `nodeStart` / `nodeOutput` / `dataNode` / `edgeValueChanged`。
-- **字段**：每条事件携带 `instanceId`、`frameIndex`（逐条携带，非整批一个）、`nodeStableId`（VisualBridge 文档稳定 ID）；端口类事件含 `outputIndex`；值变化事件含值字符串。回放支持**事件级与帧级**两种步进粒度，同帧事件保持原始顺序。
+- **字段**：每条事件携带 `executionId`（执行实例 ID，区别于 Runtime 实例的 `instanceId`）、`frameIndex`（逐条携带，非整批一个）、`nodeId`（VisualBridge 文档稳定节点 ID）；端口类事件含 `outputIndex`；值变化事件含值字符串。回放支持**事件级与帧级**两种步进粒度，同帧事件保持原始顺序。
 - **单实例跟踪**：页面一次只跟一个执行实例，实例列表可切换；事件按 `instanceId` 分流，不聚合混显。
 
 ### 19.3 协议扩展（Runtime Bridge 纯增量）
 
-- 新请求动作：`getGraphExecutionInstances`（可选按图 ID 过滤，返回实例 ID、图 ID、图名、debugKey、运行状态、当前节点、frameIndex）、`subscribeGraphExecution` / `unsubscribeGraphExecution`（按实例 ID；退订即停采）、`getGraphExecutionSnapshot`（浅快照：实例元信息 + 当前节点 + 运行状态，不含变量池 dump——边的值由事件流补齐，游戏侧 provider 缝无需状态查询能力）。
-- 新事件消息 `graphExecution`：**批量数组**承载，冲刷节奏「每 100ms 或满 64 条，先到先冲」；不要求同帧送达（项目方确认）。
+- 新请求动作：`getGraphExecutionInstances`（可选按 `documentId` 过滤，返回执行实例列表：`executionId`、`documentTypeId`/`documentId`、图名、`debugKey`、运行状态、当前节点、`frameIndex`）、`subscribeGraphExecution` / `unsubscribeGraphExecution`（按 `executionId`；退订即停采）、`getGraphExecutionSnapshot`（浅快照：实例元信息 + 当前节点 + 运行状态，不含变量池 dump——边的值由事件流补齐，游戏侧 provider 缝无需状态查询能力）。
+- 新事件消息 `graphExecution`：**批量数组**承载（载荷键 `executionEvents`，非空），冲刷节奏「每 100ms 或满 64 条，先到先冲」；不要求同帧送达（项目方确认）。
 - **权限语义：观察者级别，不占租约**——与 `getSnapshot`/`artifactsChanged` 同级；多个客户端可并行观察同一实例，与 DAP 租约、MCP 连接互不影响。
-- Schema 纪律：`coreVersion` 不变，Runtime Bridge schema 版本递增；fixtures 三方（AJV / Unity 严格校验器 / 扩展宿主）一致；新增错误码（如实例不存在）进入错误分类法。
+- Schema 纪律（VB-UX-13 落地裁定，2026-08-31）：**能力门控的纯增量扩展**——新增 `graphExecution` 能力值与 `runtime.executionNotFound` 错误码，全部新消息由能力门控；沿用 VB-UX-10 增补 lease/sources 的先例，`protocolVersion`、发现记录 `formatVersion` 与 manifest `versions.runtimeBridge` 均保持 1（该注册值绑定发现记录 formatVersion，递增即破坏既有客户端的记录解析，与纯增量目标冲突）。fixtures 三方（AJV / Unity 严格校验器 / 扩展宿主）一致，56 例共存于既有 parity fixture；MCP 侧协议镜像同步接受新能力值（其 hello 声称集仍为四能力——MCP 不消费执行观察）。
 
 ### 19.4 Unity 侧采集缝
 
-- `VisualBridge.Runtime` 提供静态门面 `VisualBridgeGraphExecutionCapture`：`OnInstanceStarted(graphId, graphName, debugKey, out instanceId)` / `OnInstanceStopped` / `OnNodeStart` / `OnNodeOutput` / `OnDataNode` / `OnEdgeValueChanged`（均含 instanceId + frameIndex，节点参数用 nodeStableId）。**实例 ID 由 VisualBridge 分配**，游戏侧不自造 ID 体系。
+- `VisualBridge.Runtime` 提供静态门面 `VisualBridgeGraphExecutionCapture`：`OnInstanceStarted(documentTypeId, documentId, graphName, debugKey, out executionId)` / `OnInstanceStopped(executionId)` / `OnNodeStart` / `OnNodeOutput` / `OnDataNode` / `OnEdgeValueChanged`（均含 executionId + frameIndex，节点参数用 VisualBridge 稳定节点 ID）。**执行实例 ID（`exec-<n>`）由 VisualBridge 分配**，游戏侧不自造 ID 体系。
 - **零订阅零开销**：`static bool` 快速路径，无人订阅时全部方法直接返回；不采用参考实现的 `[Conditional]` 编译宏——无需重编译即可开关。
 - 采集与传输解耦：门面只负责收集进缓冲；订阅驱动的转发由现有 `VisualBridgeRuntimeBridgeServer` 通道承载（与 `artifactsChanged` 同级生命周期）。mid-play domain reload 语义沿用第 17 章（generation/心跳）。
 - **游戏侧职责**：写一个小适配器实现其引擎自身的 debug provider 接口，把事件转发到上述门面；引擎与 VisualBridge 互不引用。

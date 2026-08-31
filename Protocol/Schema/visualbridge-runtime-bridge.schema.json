@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://visualbridge.dev/schema/visualbridge-runtime-bridge.schema.json",
   "title": "VisualBridge Runtime Bridge V1",
-  "description": "Local NDJSON message contracts between the VS Code runtime bridge client and a Unity Runtime instance listener (Editor Play mode or same-machine Player), plus the per-instance discovery record published at <temp>/visualbridge-runtime/<instanceId>.json. The hello/welcome/error shapes realize the shared bridge protocol core (coreVersion 1) established by the Editor Bridge; this channel carries runtime snapshots and artifact-change events only and defines no debug messages.",
+  "description": "Local NDJSON message contracts between the VS Code runtime bridge client and a Unity Runtime instance listener (Editor Play mode or same-machine Player), plus the per-instance discovery record published at <temp>/visualbridge-runtime/<instanceId>.json. The hello/welcome/error shapes realize the shared bridge protocol core (coreVersion 1) established by the Editor Bridge; this channel carries runtime snapshots, artifact-change events, and capability-gated graph execution observation (subscribe + batched execution events, no breakpoints). Execution-level debug messages (breakpoints, call stacks, variable evaluation) remain out of scope by design.",
   "oneOf": [
     {
       "$ref": "#/$defs/helloMessage"
@@ -63,7 +63,8 @@
         "snapshot",
         "events",
         "lease",
-        "sources"
+        "sources",
+        "graphExecution"
       ]
     },
     "capabilityList": {
@@ -77,6 +78,7 @@
     "errorCode": {
       "enum": [
         "runtime.capabilityMissing",
+        "runtime.executionNotFound",
         "runtime.internalError",
         "runtime.invalidJson",
         "runtime.invalidMessage",
@@ -167,7 +169,7 @@
     },
     "snapshotRequest": {
       "type": "object",
-      "description": "Client request paired with a response by requestId: snapshot queries, debug lease control, and document source mapping.",
+      "description": "Client request paired with a response by requestId: snapshot queries, debug lease control, document source mapping, and graph execution observation (capability 'graphExecution').",
       "required": [
         "type",
         "requestId",
@@ -185,7 +187,11 @@
             "getSnapshot",
             "acquireLease",
             "releaseLease",
-            "getDocumentSources"
+            "getDocumentSources",
+            "getGraphExecutionInstances",
+            "subscribeGraphExecution",
+            "unsubscribeGraphExecution",
+            "getGraphExecutionSnapshot"
           ]
         },
         "documentTypeIds": {
@@ -195,6 +201,16 @@
           "items": {
             "$ref": "visualbridge-primitives.schema.json#/$defs/stableId"
           }
+        },
+        "documentId": {
+          "type": "string",
+          "description": "Optional graph document filter for getGraphExecutionInstances.",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "executionId": {
+          "type": "string",
+          "description": "Graph execution instance identifier assigned by the runtime; required by subscribe/unsubscribe/getGraphExecutionSnapshot.",
+          "pattern": "^exec-[0-9]+$"
         }
       },
       "additionalProperties": false,
@@ -214,6 +230,145 @@
                 "documentTypeIds"
               ]
             }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "getGraphExecutionInstances"
+              }
+            }
+          },
+          "then": {},
+          "else": {
+            "not": {
+              "required": [
+                "documentId"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "getGraphExecutionInstances"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "executionId"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "getSnapshot"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "executionId"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "acquireLease"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "executionId"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "releaseLease"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "executionId"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "getDocumentSources"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "executionId"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "subscribeGraphExecution"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "executionId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "unsubscribeGraphExecution"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "executionId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "getGraphExecutionSnapshot"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "executionId"
+            ]
           }
         }
       ]
@@ -275,18 +430,43 @@
               "items": {
                 "$ref": "#/$defs/documentSource"
               }
+            },
+            "executions": {
+              "type": "array",
+              "description": "Active graph execution instances for getGraphExecutionInstances.",
+              "items": {
+                "$ref": "#/$defs/graphExecutionInstance"
+              }
+            },
+            "execution": {
+              "description": "Shallow snapshot for getGraphExecutionSnapshot.",
+              "$ref": "#/$defs/graphExecutionInstance"
             }
           },
           "additionalProperties": false,
-          "description": "Successful response: snapshot requests carry documents, source requests carry sources, lease requests carry neither.",
+          "description": "Successful response: exactly one payload shape - documents (snapshot), sources (source mapping), executions (instance list), execution (shallow snapshot), or no payload (lease and subscription control).",
           "oneOf": [
             {
               "required": [
                 "documents"
               ],
               "not": {
-                "required": [
-                  "sources"
+                "anyOf": [
+                  {
+                    "required": [
+                      "sources"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "executions"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "execution"
+                    ]
+                  }
                 ]
               }
             },
@@ -295,8 +475,70 @@
                 "sources"
               ],
               "not": {
-                "required": [
-                  "documents"
+                "anyOf": [
+                  {
+                    "required": [
+                      "documents"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "executions"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "execution"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "required": [
+                "executions"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "documents"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sources"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "execution"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "required": [
+                "execution"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "documents"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sources"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "executions"
+                    ]
+                  }
                 ]
               }
             },
@@ -311,6 +553,16 @@
                   {
                     "required": [
                       "sources"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "executions"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "execution"
                     ]
                   }
                 ]
@@ -350,28 +602,57 @@
       ]
     },
     "eventMessage": {
-      "type": "object",
-      "description": "Unsolicited notification pushed by the runtime instance to a connected client with the events capability.",
-      "required": [
-        "type",
-        "event",
-        "documents"
-      ],
-      "properties": {
-        "type": {
-          "const": "event"
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "Compiled artifact change notification pushed to a connected client with the events capability.",
+          "required": [
+            "type",
+            "event",
+            "documents"
+          ],
+          "properties": {
+            "type": {
+              "const": "event"
+            },
+            "event": {
+              "const": "artifactsChanged"
+            },
+            "documents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/documentSnapshot"
+              }
+            }
+          },
+          "additionalProperties": false
         },
-        "event": {
-          "const": "artifactsChanged"
-        },
-        "documents": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/documentSnapshot"
-          }
+        {
+          "type": "object",
+          "description": "Batched graph execution events pushed to a client subscribed to an execution instance (capability 'graphExecution'); flushed every 100ms or 64 events.",
+          "required": [
+            "type",
+            "event",
+            "executionEvents"
+          ],
+          "properties": {
+            "type": {
+              "const": "event"
+            },
+            "event": {
+              "const": "graphExecution"
+            },
+            "executionEvents": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/graphExecutionEvent"
+              }
+            }
+          },
+          "additionalProperties": false
         }
-      },
-      "additionalProperties": false
+      ]
     },
     "errorMessage": {
       "type": "object",
@@ -479,6 +760,265 @@
         }
       },
       "additionalProperties": false
+    },
+    "graphExecutionInstance": {
+      "type": "object",
+      "description": "One graph execution instance: a single run of one graph document by one game-side executor (debugKey); executionId is assigned by the runtime capture facade. Also serves as the shallow snapshot payload (current node + running state, no variable dump).",
+      "required": [
+        "executionId",
+        "documentTypeId",
+        "documentId",
+        "graphName",
+        "debugKey",
+        "state",
+        "currentNodeId",
+        "frameIndex"
+      ],
+      "properties": {
+        "executionId": {
+          "type": "string",
+          "pattern": "^exec-[0-9]+$"
+        },
+        "documentTypeId": {
+          "$ref": "visualbridge-primitives.schema.json#/$defs/stableId"
+        },
+        "documentId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "graphName": {
+          "type": "string",
+          "description": "Game-side display name of the executed graph.",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "debugKey": {
+          "type": "string",
+          "description": "Game-side executor identity (for example which character runs the graph); may be empty.",
+          "maxLength": 256
+        },
+        "state": {
+          "enum": [
+            "running",
+            "stopped"
+          ]
+        },
+        "currentNodeId": {
+          "description": "Stable node identifier of the current node, or null when the execution has no current node.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "frameIndex": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "graphExecutionEvent": {
+      "type": "object",
+      "description": "One execution observation event; nodeId is the VisualBridge document's stable node identifier. Field presence is coupled to the event kind.",
+      "required": [
+        "executionId",
+        "frameIndex",
+        "kind"
+      ],
+      "properties": {
+        "executionId": {
+          "type": "string",
+          "pattern": "^exec-[0-9]+$"
+        },
+        "frameIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "enum": [
+            "instanceStarted",
+            "instanceStopped",
+            "nodeStart",
+            "nodeOutput",
+            "dataNode",
+            "edgeValueChanged"
+          ]
+        },
+        "nodeId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "outputIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "value": {
+          "type": "string",
+          "description": "Stringified value carried by a data edge, provided by the game-side engine.",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "instanceStarted"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "nodeId"
+                  ]
+                },
+                {
+                  "required": [
+                    "outputIndex"
+                  ]
+                },
+                {
+                  "required": [
+                    "value"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "instanceStopped"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "nodeId"
+                  ]
+                },
+                {
+                  "required": [
+                    "outputIndex"
+                  ]
+                },
+                {
+                  "required": [
+                    "value"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "nodeStart"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "nodeId"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "outputIndex"
+                  ]
+                },
+                {
+                  "required": [
+                    "value"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "dataNode"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "nodeId"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "outputIndex"
+                  ]
+                },
+                {
+                  "required": [
+                    "value"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "nodeOutput"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "nodeId",
+              "outputIndex"
+            ],
+            "not": {
+              "required": [
+                "value"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "edgeValueChanged"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "nodeId",
+              "outputIndex",
+              "value"
+            ]
+          }
+        }
+      ]
     }
   }
 }

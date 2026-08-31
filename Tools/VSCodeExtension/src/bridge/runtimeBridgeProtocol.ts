@@ -3,12 +3,13 @@ export const RUNTIME_BRIDGE_CORE_VERSION = 1;
 export const RUNTIME_BRIDGE_DISCOVERY_FORMAT_VERSION = 1;
 export const RUNTIME_BRIDGE_DISCOVERY_DIRECTORY = "visualbridge-runtime";
 
-export type RuntimeBridgeCapability = "snapshot" | "events" | "lease" | "sources";
+export type RuntimeBridgeCapability = "snapshot" | "events" | "lease" | "sources" | "graphExecution";
 
-export const RUNTIME_BRIDGE_CAPABILITIES: readonly RuntimeBridgeCapability[] = ["snapshot", "events", "lease", "sources"];
+export const RUNTIME_BRIDGE_CAPABILITIES: readonly RuntimeBridgeCapability[] = ["snapshot", "events", "lease", "sources", "graphExecution"];
 
 export const RUNTIME_BRIDGE_ERROR_CODES = [
   "runtime.capabilityMissing",
+  "runtime.executionNotFound",
   "runtime.internalError",
   "runtime.invalidJson",
   "runtime.invalidMessage",
@@ -55,7 +56,15 @@ export interface RuntimeBridgeWelcomeMessage {
   readonly startedAt: string;
 }
 
-export type RuntimeBridgeRequestAction = "getSnapshot" | "acquireLease" | "releaseLease" | "getDocumentSources";
+export type RuntimeBridgeRequestAction =
+  | "getSnapshot"
+  | "acquireLease"
+  | "releaseLease"
+  | "getDocumentSources"
+  | "getGraphExecutionInstances"
+  | "subscribeGraphExecution"
+  | "unsubscribeGraphExecution"
+  | "getGraphExecutionSnapshot";
 
 export interface RuntimeBridgeSnapshotRequest {
   readonly type: "request";
@@ -76,6 +85,27 @@ export interface RuntimeBridgeSourcesRequest {
   readonly action: "getDocumentSources";
 }
 
+export interface RuntimeBridgeGraphExecutionInstancesRequest {
+  readonly type: "request";
+  readonly requestId: string;
+  readonly action: "getGraphExecutionInstances";
+  readonly documentId?: string;
+}
+
+export interface RuntimeBridgeGraphExecutionSubscriptionRequest {
+  readonly type: "request";
+  readonly requestId: string;
+  readonly action: "subscribeGraphExecution" | "unsubscribeGraphExecution";
+  readonly executionId: string;
+}
+
+export interface RuntimeBridgeGraphExecutionSnapshotRequest {
+  readonly type: "request";
+  readonly requestId: string;
+  readonly action: "getGraphExecutionSnapshot";
+  readonly executionId: string;
+}
+
 export interface RuntimeBridgeDocumentSource {
   readonly documentTypeId: string;
   readonly documentId: string;
@@ -90,17 +120,47 @@ export interface RuntimeBridgeDocumentSnapshot {
   readonly data: Record<string, unknown>;
 }
 
+export type RuntimeBridgeGraphExecutionState = "running" | "stopped";
+
+export interface RuntimeBridgeGraphExecutionInstance {
+  readonly executionId: string;
+  readonly documentTypeId: string;
+  readonly documentId: string;
+  readonly graphName: string;
+  readonly debugKey: string;
+  readonly state: RuntimeBridgeGraphExecutionState;
+  readonly currentNodeId: string | null;
+  readonly frameIndex: number;
+}
+
+export type RuntimeBridgeGraphExecutionEventKind =
+  | "instanceStarted"
+  | "instanceStopped"
+  | "nodeStart"
+  | "nodeOutput"
+  | "dataNode"
+  | "edgeValueChanged";
+
+export interface RuntimeBridgeGraphExecutionEvent {
+  readonly executionId: string;
+  readonly frameIndex: number;
+  readonly kind: RuntimeBridgeGraphExecutionEventKind;
+  readonly nodeId?: string;
+  readonly outputIndex?: number;
+  readonly value?: string;
+}
+
 export type RuntimeBridgeResponseMessage =
-  | { readonly type: "response"; readonly requestId: string; readonly status: "ok"; readonly documents: readonly RuntimeBridgeDocumentSnapshot[]; readonly sources?: undefined }
-  | { readonly type: "response"; readonly requestId: string; readonly status: "ok"; readonly sources: readonly RuntimeBridgeDocumentSource[]; readonly documents?: undefined }
-  | { readonly type: "response"; readonly requestId: string; readonly status: "ok"; readonly documents?: undefined; readonly sources?: undefined }
+  | { readonly type: "response"; readonly requestId: string; readonly status: "ok"; readonly documents: readonly RuntimeBridgeDocumentSnapshot[]; readonly sources?: undefined; readonly executions?: undefined; readonly execution?: undefined }
+  | { readonly type: "response"; readonly requestId: string; readonly status: "ok"; readonly sources: readonly RuntimeBridgeDocumentSource[]; readonly documents?: undefined; readonly executions?: undefined; readonly execution?: undefined }
+  | { readonly type: "response"; readonly requestId: string; readonly status: "ok"; readonly executions: readonly RuntimeBridgeGraphExecutionInstance[]; readonly documents?: undefined; readonly sources?: undefined; readonly execution?: undefined }
+  | { readonly type: "response"; readonly requestId: string; readonly status: "ok"; readonly execution: RuntimeBridgeGraphExecutionInstance; readonly documents?: undefined; readonly sources?: undefined; readonly executions?: undefined }
+  | { readonly type: "response"; readonly requestId: string; readonly status: "ok"; readonly documents?: undefined; readonly sources?: undefined; readonly executions?: undefined; readonly execution?: undefined }
   | { readonly type: "response"; readonly requestId: string; readonly status: "error"; readonly error: RuntimeBridgeErrorCode; readonly detail?: string };
 
-export interface RuntimeBridgeEventMessage {
-  readonly type: "event";
-  readonly event: "artifactsChanged";
-  readonly documents: readonly RuntimeBridgeDocumentSnapshot[];
-}
+export type RuntimeBridgeEventMessage =
+  | { readonly type: "event"; readonly event: "artifactsChanged"; readonly documents: readonly RuntimeBridgeDocumentSnapshot[] }
+  | { readonly type: "event"; readonly event: "graphExecution"; readonly executionEvents: readonly RuntimeBridgeGraphExecutionEvent[] };
 
 export interface RuntimeBridgeErrorMessage {
   readonly type: "error";
@@ -114,6 +174,9 @@ export type RuntimeBridgeMessage =
   | RuntimeBridgeSnapshotRequest
   | RuntimeBridgeLeaseRequest
   | RuntimeBridgeSourcesRequest
+  | RuntimeBridgeGraphExecutionInstancesRequest
+  | RuntimeBridgeGraphExecutionSubscriptionRequest
+  | RuntimeBridgeGraphExecutionSnapshotRequest
   | RuntimeBridgeResponseMessage
   | RuntimeBridgeEventMessage
   | RuntimeBridgeErrorMessage;
@@ -137,10 +200,20 @@ const STABLE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const TOKEN_PATTERN = /^[0-9a-f]{48,64}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const INSTANCE_ID_PATTERN = /^(editor|player)-[0-9]+$/;
+const EXECUTION_ID_PATTERN = /^exec-[0-9]+$/;
 const STARTED_AT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 const DOCUMENT_KIND_PATTERN = /^visualbridge\.(structured|entity|table|graph)\.compiled$/;
 const ERROR_CODE_SET = new Set<string>(RUNTIME_BRIDGE_ERROR_CODES);
 const CAPABILITY_SET = new Set<string>(RUNTIME_BRIDGE_CAPABILITIES);
+const GRAPH_EXECUTION_STATE_SET = new Set<string>(["running", "stopped"]);
+const GRAPH_EXECUTION_EVENT_KIND_SET = new Set<string>([
+  "instanceStarted",
+  "instanceStopped",
+  "nodeStart",
+  "nodeOutput",
+  "dataNode",
+  "edgeValueChanged",
+]);
 
 export function isRuntimeBridgeErrorCode(value: string): value is RuntimeBridgeErrorCode {
   return ERROR_CODE_SET.has(value);
@@ -271,16 +344,49 @@ function parseWelcome(record: Record<string, unknown>): RuntimeBridgeWelcomeMess
   return { type: "welcome", protocolVersion, coreVersion, instanceId, kind, generation, capabilities: requireCapabilities(record, "$.capabilities"), startedAt };
 }
 
-function parseRequest(record: Record<string, unknown>): RuntimeBridgeSnapshotRequest | RuntimeBridgeLeaseRequest | RuntimeBridgeSourcesRequest {
-  requireOnlyKeys(record, "$", ["type", "requestId", "action", "documentTypeIds"]);
+function parseRequest(record: Record<string, unknown>): RuntimeBridgeMessage {
+  requireOnlyKeys(record, "$", ["type", "requestId", "action", "documentTypeIds", "documentId", "executionId"]);
   const requestId = requireRequestId(record);
   const action = requireString(record, "action", "$.action");
-  if (action !== "getSnapshot" && action !== "acquireLease" && action !== "releaseLease" && action !== "getDocumentSources") {
+  if (action !== "getSnapshot" && action !== "acquireLease" && action !== "releaseLease" && action !== "getDocumentSources"
+    && action !== "getGraphExecutionInstances" && action !== "subscribeGraphExecution"
+    && action !== "unsubscribeGraphExecution" && action !== "getGraphExecutionSnapshot") {
     throw new RuntimeBridgeProtocolError("runtime.unknownRequest", "$.action", `Unknown request action '${action}'.`);
   }
 
   if (action !== "getSnapshot" && record.documentTypeIds !== undefined) {
     throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.documentTypeIds", "Only getSnapshot accepts a document type filter.");
+  }
+
+  if (action !== "getGraphExecutionInstances" && record.documentId !== undefined) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.documentId", "Only getGraphExecutionInstances accepts a document filter.");
+  }
+
+  const requiresExecutionId = action === "subscribeGraphExecution" || action === "unsubscribeGraphExecution" || action === "getGraphExecutionSnapshot";
+  if (!requiresExecutionId && record.executionId !== undefined) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.executionId", "Only graph execution subscribe, unsubscribe, and snapshot requests accept an executionId.");
+  }
+
+  if (requiresExecutionId) {
+    const executionId = requireString(record, "executionId", "$.executionId");
+    if (!EXECUTION_ID_PATTERN.test(executionId)) {
+      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.executionId", "Expected an 'exec-<n>' execution identifier.");
+    }
+
+    return { type: "request", requestId, action, executionId };
+  }
+
+  if (action === "getGraphExecutionInstances") {
+    if (record.documentId === undefined) {
+      return { type: "request", requestId, action };
+    }
+
+    const documentId = record.documentId;
+    if (typeof documentId !== "string" || !STABLE_ID_PATTERN.test(documentId)) {
+      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.documentId", "Expected a graph document identifier.");
+    }
+
+    return { type: "request", requestId, action, documentId };
   }
 
   if (action !== "getSnapshot") {
@@ -315,12 +421,14 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const NORMALIZED_PATH_PATTERN = /^(?!\/)(?![A-Za-z]:\/)(?!.*:)(?!.*(?:^|\/)\.{1,2}(?:\/|$))(?!.*\\)(?!.*\/\/)(?:[^/]+\/)*[^/]+$/;
 
 function parseResponse(record: Record<string, unknown>): RuntimeBridgeResponseMessage {
-  requireOnlyKeys(record, "$", ["type", "requestId", "status", "documents", "sources", "error", "detail"]);
+  requireOnlyKeys(record, "$", ["type", "requestId", "status", "documents", "sources", "executions", "execution", "error", "detail"]);
   const requestId = requireRequestId(record);
   const status = requireString(record, "status", "$.status");
   if (status === "ok") {
-    if (record.documents !== undefined && record.sources !== undefined) {
-      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$", "documents and sources are mutually exclusive.");
+    const payloadKeys = ["documents", "sources", "executions", "execution"] as const;
+    const present = payloadKeys.filter((key) => record[key] !== undefined);
+    if (present.length > 1) {
+      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$", "documents, sources, executions, and execution are mutually exclusive.");
     }
 
     if (record.documents !== undefined) {
@@ -337,6 +445,18 @@ function parseResponse(record: Record<string, unknown>): RuntimeBridgeResponseMe
       }
 
       return { type: "response", requestId, status, sources: record.sources.map((entry) => parseDocumentSource(entry)) };
+    }
+
+    if (record.executions !== undefined) {
+      if (!Array.isArray(record.executions)) {
+        throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.executions", "Expected an executions array.");
+      }
+
+      return { type: "response", requestId, status, executions: record.executions.map((entry) => parseGraphExecutionInstance(entry)) };
+    }
+
+    if (record.execution !== undefined) {
+      return { type: "response", requestId, status, execution: parseGraphExecutionInstance(record.execution) };
     }
 
     return { type: "response", requestId, status };
@@ -359,17 +479,26 @@ function parseResponse(record: Record<string, unknown>): RuntimeBridgeResponseMe
 }
 
 function parseEvent(record: Record<string, unknown>): RuntimeBridgeEventMessage {
-  requireOnlyKeys(record, "$", ["type", "event", "documents"]);
   const event = requireString(record, "event", "$.event");
-  if (event !== "artifactsChanged") {
-    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.event", `Unknown event '${event}'.`);
+  if (event === "artifactsChanged") {
+    requireOnlyKeys(record, "$", ["type", "event", "documents"]);
+    if (!Array.isArray(record.documents)) {
+      throw new RuntimeBridgeProtocolError("runtime.missingProperty", "$.documents", "Expected a documents array.");
+    }
+
+    return { type: "event", event, documents: record.documents.map((entry) => parseDocumentSnapshot(entry)) };
   }
 
-  if (!Array.isArray(record.documents)) {
-    throw new RuntimeBridgeProtocolError("runtime.missingProperty", "$.documents", "Expected a documents array.");
+  if (event === "graphExecution") {
+    requireOnlyKeys(record, "$", ["type", "event", "executionEvents"]);
+    if (!Array.isArray(record.executionEvents) || record.executionEvents.length === 0) {
+      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.executionEvents", "Expected a non-empty execution event array.");
+    }
+
+    return { type: "event", event, executionEvents: record.executionEvents.map((entry) => parseGraphExecutionEvent(entry)) };
   }
 
-  return { type: "event", event, documents: record.documents.map((entry) => parseDocumentSnapshot(entry)) };
+  throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.event", `Unknown event '${event}'.`);
 }
 
 function parseError(record: Record<string, unknown>): RuntimeBridgeErrorMessage {
@@ -384,6 +513,129 @@ function parseError(record: Record<string, unknown>): RuntimeBridgeErrorMessage 
   }
 
   return { type: "error", code, ...(record.detail === undefined ? {} : { detail: record.detail as string }) };
+}
+
+function parseGraphExecutionInstance(value: unknown): RuntimeBridgeGraphExecutionInstance {
+  const record = requireObject(value);
+  requireOnlyKeys(record, "$", ["executionId", "documentTypeId", "documentId", "graphName", "debugKey", "state", "currentNodeId", "frameIndex"]);
+  const executionId = requireString(record, "executionId", "$.executionId");
+  if (!EXECUTION_ID_PATTERN.test(executionId)) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.executionId", "Expected an 'exec-<n>' execution identifier.");
+  }
+
+  const documentTypeId = requireString(record, "documentTypeId", "$.documentTypeId");
+  if (!STABLE_ID_PATTERN.test(documentTypeId)) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.documentTypeId", "Expected a document type identifier.");
+  }
+
+  const documentId = requireString(record, "documentId", "$.documentId");
+  if (!STABLE_ID_PATTERN.test(documentId)) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.documentId", "Expected a document identifier.");
+  }
+
+  const graphName = requireString(record, "graphName", "$.graphName");
+  if (graphName.length < 1 || graphName.length > 256) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.graphName", "Expected a graph name of 1 to 256 characters.");
+  }
+
+  const debugKey = requireString(record, "debugKey", "$.debugKey");
+  if (debugKey.length > 256) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.debugKey", "Expected a debug key of at most 256 characters.");
+  }
+
+  const state = requireString(record, "state", "$.state");
+  if (!GRAPH_EXECUTION_STATE_SET.has(state)) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.state", "Expected an execution state 'running' or 'stopped'.");
+  }
+
+  const currentNodeIdToken = record.currentNodeId;
+  if (currentNodeIdToken === undefined) {
+    throw new RuntimeBridgeProtocolError("runtime.missingProperty", "$.currentNodeId", "Missing property 'currentNodeId'.");
+  }
+
+  let currentNodeId: string | null = null;
+  if (currentNodeIdToken !== null) {
+    if (typeof currentNodeIdToken !== "string" || !STABLE_ID_PATTERN.test(currentNodeIdToken)) {
+      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.currentNodeId", "Expected a node identifier or null.");
+    }
+
+    currentNodeId = currentNodeIdToken;
+  }
+
+  const frameIndex = requireInteger(record, "frameIndex", "$.frameIndex");
+  if (frameIndex < 0) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.frameIndex", "Expected a non-negative frame index.");
+  }
+
+  return { executionId, documentTypeId, documentId, graphName, debugKey, state: state as RuntimeBridgeGraphExecutionState, currentNodeId, frameIndex };
+}
+
+function parseGraphExecutionEvent(value: unknown): RuntimeBridgeGraphExecutionEvent {
+  const record = requireObject(value);
+  requireOnlyKeys(record, "$", ["executionId", "frameIndex", "kind", "nodeId", "outputIndex", "value"]);
+  const executionId = requireString(record, "executionId", "$.executionId");
+  if (!EXECUTION_ID_PATTERN.test(executionId)) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.executionId", "Expected an 'exec-<n>' execution identifier.");
+  }
+
+  const frameIndex = requireInteger(record, "frameIndex", "$.frameIndex");
+  if (frameIndex < 0) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.frameIndex", "Expected a non-negative frame index.");
+  }
+
+  const kind = requireString(record, "kind", "$.kind");
+  if (!GRAPH_EXECUTION_EVENT_KIND_SET.has(kind)) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.kind", "Expected a graph execution event kind.");
+  }
+  const eventKind = kind as RuntimeBridgeGraphExecutionEventKind;
+
+  const requiresNodeId = kind === "nodeStart" || kind === "nodeOutput" || kind === "dataNode" || kind === "edgeValueChanged";
+  const requiresOutputIndex = kind === "nodeOutput" || kind === "edgeValueChanged";
+  const requiresValue = kind === "edgeValueChanged";
+  if (!requiresNodeId && record.nodeId !== undefined) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.nodeId", `Event kind '${kind}' must not carry a nodeId.`);
+  }
+
+  if (!requiresOutputIndex && record.outputIndex !== undefined) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.outputIndex", `Event kind '${kind}' must not carry an outputIndex.`);
+  }
+
+  if (!requiresValue && record.value !== undefined) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.value", `Event kind '${kind}' must not carry a value.`);
+  }
+
+  let nodeId: string | undefined;
+  if (requiresNodeId) {
+    nodeId = requireString(record, "nodeId", "$.nodeId");
+    if (!STABLE_ID_PATTERN.test(nodeId)) {
+      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.nodeId", "Expected a node identifier.");
+    }
+  }
+
+  let outputIndex: number | undefined;
+  if (requiresOutputIndex) {
+    outputIndex = requireInteger(record, "outputIndex", "$.outputIndex");
+    if (outputIndex < 0) {
+      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.outputIndex", "Expected a non-negative output index.");
+    }
+  }
+
+  let eventValue: string | undefined;
+  if (requiresValue) {
+    eventValue = requireString(record, "value", "$.value");
+    if (eventValue.length < 1 || eventValue.length > 4096) {
+      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.value", "Expected a value string of 1 to 4096 characters.");
+    }
+  }
+
+  return {
+    executionId,
+    frameIndex,
+    kind: eventKind,
+    ...(nodeId === undefined ? {} : { nodeId }),
+    ...(outputIndex === undefined ? {} : { outputIndex }),
+    ...(eventValue === undefined ? {} : { value: eventValue }),
+  };
 }
 
 function parseDocumentSource(value: unknown): RuntimeBridgeDocumentSource {

@@ -278,7 +278,7 @@
     {
       "file": "Schema/visualbridge-runtime-bridge.schema.json",
       "id": "https://visualbridge.dev/schema/visualbridge-runtime-bridge.schema.json",
-      "sha256": "227129fe4dc28e04ee347541fdfe5ff9228db63e47836e85779fd49b89d37f05",
+      "sha256": "881c79751d9c450f576bc4c8a5c43960d86e9e01c35e905e3dd1d719c2ecaefc",
       "definitions": [
         "capability",
         "capabilityList",
@@ -290,6 +290,8 @@
         "errorMessage",
         "eventMessage",
         "generation",
+        "graphExecutionEvent",
+        "graphExecutionInstance",
         "helloMessage",
         "instanceId",
         "instanceKind",
