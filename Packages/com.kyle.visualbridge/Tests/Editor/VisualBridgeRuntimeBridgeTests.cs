@@ -140,7 +140,7 @@ namespace VisualBridge.Editor.Tests
                     Assert.That(welcome.Generation, Is.EqualTo(3));
                     Assert.That(welcome.ProtocolVersion, Is.EqualTo(1));
                     Assert.That(welcome.CoreVersion, Is.EqualTo(1));
-                    Assert.That(welcome.Capabilities, Is.EquivalentTo(new[] { "snapshot", "events", "lease", "sources" }));
+                    Assert.That(welcome.Capabilities, Is.EquivalentTo(new[] { "snapshot", "events", "lease", "sources", "graphExecution" }));
                     Assert.That(welcome.StartedAt, Is.Not.Null.And.Not.Empty);
 
                     client.Send(RequestLine("req-1", null));
@@ -684,6 +684,252 @@ namespace VisualBridge.Editor.Tests
             }
         }
 
+        [Test]
+        public void GraphExecutionLifecycleAndZeroSubscriberFastPath()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-42001"))
+                using (var client = ConnectGraphExecutionClient(server, ClientInstanceId))
+                {
+                    Assert.That(VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.IsTracking, Is.True);
+                    Assert.That(VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.IsSubscribed, Is.False);
+
+                    // 无订阅：实例列表仍可查询（生命周期追踪常开）。
+                    var executionId = StartExecution("sample.test.encounter.default", "hero-01");
+                    client.Send(GraphExecutionInstancesLine("req-i1", "sample.test.encounter.default"));
+                    var instances = client.ReadMessage();
+                    Assert.That(instances.IsOk, Is.True);
+                    Assert.That(instances.Executions.Count, Is.EqualTo(1));
+                    Assert.That(instances.Executions[0].ExecutionId, Is.EqualTo(executionId));
+                    Assert.That(instances.Executions[0].DebugKey, Is.EqualTo("hero-01"));
+                    Assert.That(instances.Executions[0].State, Is.EqualTo("running"));
+
+                    // 无订阅：节点事件走快速路径——不更新当前节点、不进缓冲。
+                    VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnNodeStart(executionId, "node.entry", 5);
+                    client.Send(GraphExecutionSnapshotLine("req-s1", executionId));
+                    var staleSnapshot = client.ReadMessage();
+                    Assert.That(staleSnapshot.IsOk, Is.True);
+                    Assert.That(staleSnapshot.Execution.CurrentNodeId, Is.Null);
+
+                    // 订阅后：ok + 合成 instanceStarted 开流标记。
+                    client.Send(GraphExecutionSubscribeLine("req-sub1", "subscribeGraphExecution", executionId));
+                    Assert.That(client.ReadMessage().IsOk, Is.True);
+                    var opened = client.WaitForEvent("graphExecution", TimeSpan.FromSeconds(2));
+                    Assert.That(opened, Is.Not.Null, "Subscribe must open the stream with a synthetic instanceStarted event.");
+                    Assert.That(opened.ExecutionEvents.Count, Is.EqualTo(1));
+                    Assert.That(opened.ExecutionEvents[0].Kind, Is.EqualTo("instanceStarted"));
+                    Assert.That(VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.IsSubscribed, Is.True);
+
+                    // 有订阅：同一节点事件更新浅快照的当前节点。
+                    VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnNodeStart(executionId, "node.entry", 5);
+                    client.Send(GraphExecutionSnapshotLine("req-s2", executionId));
+                    var snapshot = client.ReadMessage();
+                    Assert.That(snapshot.IsOk, Is.True);
+                    Assert.That(snapshot.Execution.CurrentNodeId, Is.EqualTo("node.entry"));
+                    Assert.That(snapshot.Execution.FrameIndex, Is.EqualTo(5));
+
+                    // 退订：幂等 ok，之后节点事件不再录制。
+                    client.Send(GraphExecutionSubscribeLine("req-un1", "unsubscribeGraphExecution", executionId));
+                    Assert.That(client.ReadMessage().IsOk, Is.True);
+                    VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnNodeStart(executionId, "node.other", 6);
+                    Assert.That(client.WaitForEvent("graphExecution", TimeSpan.FromMilliseconds(400)), Is.Null,
+                        "Node events must not be captured after the last subscriber unsubscribes.");
+                    Assert.That(VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.IsSubscribed, Is.False);
+                }
+
+                // 服务端全部停止后追踪关闭，实例开始被忽略。
+                Assert.That(VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.IsTracking, Is.False);
+                Assert.That(
+                    VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnInstanceStarted(
+                        "sample.test.encounter", "sample.test.encounter.default", "Encounter", "hero-01", out _),
+                    Is.False);
+            }
+            finally
+            {
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        [Test]
+        public void GraphExecutionSubscribeDeliversBatchedNodeEvents()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-42002"))
+                using (var client = ConnectGraphExecutionClient(server, ClientInstanceId))
+                {
+                    var executionId = StartExecution("sample.test.encounter.default", "hero-01");
+                    client.Send(GraphExecutionSubscribeLine("req-sub", "subscribeGraphExecution", executionId));
+                    Assert.That(client.ReadMessage().IsOk, Is.True);
+                    Assert.That(client.WaitForEvent("graphExecution", TimeSpan.FromSeconds(2)), Is.Not.Null);
+
+                    VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnNodeStart(executionId, "node.entry", 10);
+                    VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnNodeOutput(executionId, "node.entry", 0, 11);
+                    VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnDataNode(executionId, "node.value", 11);
+                    VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnEdgeValueChanged(executionId, "node.value", 1, "42", 12);
+
+                    var batch = client.WaitForEvent("graphExecution", TimeSpan.FromSeconds(2));
+                    Assert.That(batch, Is.Not.Null);
+                    var kinds = batch.ExecutionEvents.Select(e => e.Kind).ToList();
+                    Assert.That(kinds, Is.EqualTo(new[] { "nodeStart", "nodeOutput", "dataNode", "edgeValueChanged" }));
+                    Assert.That(batch.ExecutionEvents[0].NodeId, Is.EqualTo("node.entry"));
+                    Assert.That(batch.ExecutionEvents[0].FrameIndex, Is.EqualTo(10));
+                    Assert.That(batch.ExecutionEvents[1].OutputIndex, Is.EqualTo(0));
+                    Assert.That(batch.ExecutionEvents[3].Value, Is.EqualTo("42"));
+                    Assert.That(batch.ExecutionEvents.All(e => e.ExecutionId == executionId), Is.True);
+                }
+            }
+            finally
+            {
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        [Test]
+        public void GraphExecutionFlushesEarlyAtThreshold()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-42003"))
+                using (var client = ConnectGraphExecutionClient(server, ClientInstanceId))
+                {
+                    var executionId = StartExecution("sample.test.encounter.default", "hero-02");
+                    client.Send(GraphExecutionSubscribeLine("req-sub", "subscribeGraphExecution", executionId));
+                    Assert.That(client.ReadMessage().IsOk, Is.True);
+                    Assert.That(client.WaitForEvent("graphExecution", TimeSpan.FromSeconds(2)), Is.Not.Null);
+
+                    // 满 64 条提前唤醒执行泵，不必等满 100ms。
+                    for (var index = 0; index < 64; index++)
+                    {
+                        VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnNodeStart(executionId, "node." + index, 100 + index);
+                    }
+
+                    var batch = client.WaitForEvent("graphExecution", TimeSpan.FromSeconds(2));
+                    Assert.That(batch, Is.Not.Null);
+                    Assert.That(batch.ExecutionEvents[0].Kind, Is.EqualTo("nodeStart"));
+                    Assert.That(batch.ExecutionEvents[0].NodeId, Is.EqualTo("node.0"));
+                }
+            }
+            finally
+            {
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        [Test]
+        public void GraphExecutionInstanceStopClearsSubscriptionAndSnapshot()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-42004"))
+                using (var client = ConnectGraphExecutionClient(server, ClientInstanceId))
+                {
+                    var executionId = StartExecution("sample.test.encounter.default", "hero-03");
+                    client.Send(GraphExecutionSubscribeLine("req-sub", "subscribeGraphExecution", executionId));
+                    Assert.That(client.ReadMessage().IsOk, Is.True);
+                    Assert.That(client.WaitForEvent("graphExecution", TimeSpan.FromSeconds(2)), Is.Not.Null);
+
+                    VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnInstanceStopped(executionId);
+                    var stopped = client.WaitForEvent("graphExecution", TimeSpan.FromSeconds(2));
+                    Assert.That(stopped, Is.Not.Null);
+                    Assert.That(stopped.ExecutionEvents.Any(e => e.Kind == "instanceStopped"), Is.True);
+
+                    // 实例停止：订阅与快照随即失效，重复退订仍幂等 ok。
+                    client.Send(GraphExecutionSnapshotLine("req-snap", executionId));
+                    var notFound = client.ReadMessage();
+                    Assert.That(notFound.IsOk, Is.False);
+                    Assert.That(notFound.ErrorCode, Is.EqualTo("runtime.executionNotFound"));
+                    client.Send(GraphExecutionSubscribeLine("req-sub2", "subscribeGraphExecution", executionId));
+                    var reSubscribe = client.ReadMessage();
+                    Assert.That(reSubscribe.IsOk, Is.False);
+                    Assert.That(reSubscribe.ErrorCode, Is.EqualTo("runtime.executionNotFound"));
+                    client.Send(GraphExecutionSubscribeLine("req-un", "unsubscribeGraphExecution", executionId));
+                    Assert.That(client.ReadMessage().IsOk, Is.True);
+                }
+            }
+            finally
+            {
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        [Test]
+        public void GraphExecutionInstancesFilterAndUnknownExecution()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-42005"))
+                using (var client = ConnectGraphExecutionClient(server, ClientInstanceId))
+                {
+                    var encounter = StartExecution("sample.test.encounter.default", "hero-01");
+                    var branch = StartExecution("sample.test.encounter.branch.default", "hero-02");
+
+                    client.Send(GraphExecutionInstancesLine("req-all", null));
+                    var all = client.ReadMessage();
+                    Assert.That(all.IsOk, Is.True);
+                    Assert.That(all.Executions.Count, Is.EqualTo(2));
+
+                    client.Send(GraphExecutionInstancesLine("req-one", "sample.test.encounter.default"));
+                    var filtered = client.ReadMessage();
+                    Assert.That(filtered.IsOk, Is.True);
+                    Assert.That(filtered.Executions.Count, Is.EqualTo(1));
+                    Assert.That(filtered.Executions[0].ExecutionId, Is.EqualTo(encounter));
+
+                    // 未开始的执行实例：订阅与快照都 executionNotFound。
+                    client.Send(GraphExecutionSubscribeLine("req-unknown", "subscribeGraphExecution", "exec-999"));
+                    var unknown = client.ReadMessage();
+                    Assert.That(unknown.IsOk, Is.False);
+                    Assert.That(unknown.ErrorCode, Is.EqualTo("runtime.executionNotFound"));
+                    client.Send(GraphExecutionSnapshotLine("req-unknown2", "exec-999"));
+                    Assert.That(client.ReadMessage().ErrorCode, Is.EqualTo("runtime.executionNotFound"));
+
+                    // 测试清理：停止两个实例避免跨测试残留（服务端 Dispose 也会清理）。
+                    VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnInstanceStopped(encounter);
+                    VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnInstanceStopped(branch);
+                }
+            }
+            finally
+            {
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        [Test]
+        public void GraphExecutionObserversAreLeaseFreeAndMultiClient()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-42006"))
+                using (var first = ConnectGraphExecutionClient(server, ClientInstanceId))
+                using (var second = ConnectGraphExecutionClient(server, ClientInstanceIdB))
+                {
+                    var executionId = StartExecution("sample.test.encounter.default", "hero-04");
+                    first.Send(GraphExecutionSubscribeLine("req-f", "subscribeGraphExecution", executionId));
+                    Assert.That(first.ReadMessage().IsOk, Is.True);
+                    Assert.That(first.WaitForEvent("graphExecution", TimeSpan.FromSeconds(2)), Is.Not.Null);
+                    second.Send(GraphExecutionSubscribeLine("req-s", "subscribeGraphExecution", executionId));
+                    Assert.That(second.ReadMessage().IsOk, Is.True);
+                    Assert.That(second.WaitForEvent("graphExecution", TimeSpan.FromSeconds(2)), Is.Not.Null);
+
+                    // 观察者语义：无租约也能订阅；两个客户端同时观察同一实例。
+                    VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnNodeStart(executionId, "node.entry", 3);
+                    Assert.That(first.WaitForEvent("graphExecution", TimeSpan.FromSeconds(2)), Is.Not.Null);
+                    Assert.That(second.WaitForEvent("graphExecution", TimeSpan.FromSeconds(2)), Is.Not.Null);
+                }
+            }
+            finally
+            {
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
         private static VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer StartServer(
             string artifactsRoot, string instanceId, int generation = 1)
         {
@@ -707,6 +953,44 @@ namespace VisualBridge.Editor.Tests
         {
             return VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator
                 .CreateLeaseRequest(requestId, action).ToLine();
+        }
+
+        private static string GraphExecutionSubscribeLine(string requestId, string action, string executionId)
+        {
+            return VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator
+                .CreateGraphExecutionSubscriptionRequest(requestId, action, executionId).ToLine();
+        }
+
+        private static string GraphExecutionInstancesLine(string requestId, string documentId)
+        {
+            return VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator
+                .CreateGraphExecutionInstancesRequest(requestId, documentId).ToLine();
+        }
+
+        private static string GraphExecutionSnapshotLine(string requestId, string executionId)
+        {
+            return VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator
+                .CreateGraphExecutionSnapshotRequest(requestId, executionId).ToLine();
+        }
+
+        private static RuntimeBridgeTestClient ConnectGraphExecutionClient(
+            VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer server, string clientInstanceId)
+        {
+            var client = RuntimeBridgeTestClient.Connect(server.TcpPort);
+            client.Send(HelloLine(ValidToken, new[] { "snapshot", "events", "graphExecution" }, clientInstanceId));
+            Assert.That(client.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+            return client;
+        }
+
+        /// <summary>开始一个执行实例并返回其 ID（tracking 处于开启状态时）。</summary>
+        private static string StartExecution(string documentId, string debugKey)
+        {
+            Assert.That(
+                VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnInstanceStarted(
+                    "sample.test.encounter", documentId, "Encounter", debugKey, out var executionId),
+                Is.True,
+                "OnInstanceStarted must register while a server is running.");
+            return executionId;
         }
 
         private static string SourcesRequestLine(string requestId)

@@ -12,20 +12,23 @@ namespace VisualBridge.Runtime
 {
     /// <summary>
     /// Runtime Bridge 服务端：监听 127.0.0.1、执行 token 首条消息握手、
-    /// 应答 getSnapshot / 租约控制 / getDocumentSources、轮询产物目录并向
-    /// 订阅客户端推送 artifactsChanged，并按第 17 章语义发布/心跳/清理发现记录。
-    /// 单控制者租约（VB-UX-10）：同一时刻至多一个连接持有 debug 租约，
-    /// 租约绑定连接，连接断开自动释放；getSnapshot 不受租约约束（观察者语义）。
+    /// 应答 getSnapshot / 租约控制 / getDocumentSources / Graph 执行观察
+    /// （实例枚举、订阅、浅快照）、轮询产物目录并向订阅客户端推送
+    /// artifactsChanged、按「满 64 条或 100ms」冲刷执行事件，并按第 17 章
+    /// 语义发布/心跳/清理发现记录。单控制者租约（VB-UX-10）：同一时刻至多
+    /// 一个连接持有 debug 租约，租约绑定连接，连接断开自动释放；
+    /// getSnapshot 与 Graph 执行观察不受租约约束（观察者语义）。
     /// 本类是服务端（每连接独立线程，允许并发客户端），与客户端的
     /// 单线程同步请求/响应模型不冲突；Runtime 程序集禁止 Unity API，
     /// 日志走可选回调。
     /// </summary>
     public sealed class VisualBridgeRuntimeBridgeServer : IDisposable
     {
-        public static readonly string[] AdvertisedCapabilities = { "snapshot", "events", "lease", "sources" };
+        public static readonly string[] AdvertisedCapabilities = { "snapshot", "events", "lease", "sources", "graphExecution" };
 
         private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(1);
         private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(1);
+        private static readonly TimeSpan ExecutionFlushInterval = TimeSpan.FromMilliseconds(100);
         private const int DisposeJoinTimeoutMs = 2000;
 
         private readonly string instanceId;
@@ -45,6 +48,7 @@ namespace VisualBridge.Runtime
         private readonly Thread acceptThread;
         private readonly Thread heartbeatThread;
         private readonly Thread pollThread;
+        private readonly Thread executionPumpThread;
         private volatile bool stopping;
         private bool disposed;
 
@@ -55,6 +59,8 @@ namespace VisualBridge.Runtime
             public readonly object WriteGate = new object();
             public bool WantsEvents;
             public string ClientInstanceId;
+            /// <summary>当前订阅的执行实例 ID；null 表示未订阅（单实例跟踪）。</summary>
+            public string SubscribedExecutionId;
             public readonly StringBuilder LineBuffer = new StringBuilder();
             public readonly byte[] ReadBuffer = new byte[8192];
         }
@@ -86,12 +92,18 @@ namespace VisualBridge.Runtime
             TcpPort = ((IPEndPoint)listener.LocalEndpoint).Port;
             WriteDiscoveryRecord();
 
+            // 执行采集门面是进程级单例：服务端运行期间开启生命周期追踪。
+            // mid-play domain reload 窗口内新旧服务端短暂共存时共享同一
+            // 注册表与缓冲，事件由先冲刷的泵负责投递（窗口极短，可接受）。
+            VisualBridgeGraphExecutionCapture.SetTracking(true);
             acceptThread = new Thread(AcceptLoop) { IsBackground = true, Name = "visualbridge-runtime-accept" };
             heartbeatThread = new Thread(HeartbeatLoop) { IsBackground = true, Name = "visualbridge-runtime-heartbeat" };
             pollThread = new Thread(PollLoop) { IsBackground = true, Name = "visualbridge-runtime-poll" };
+            executionPumpThread = new Thread(ExecutionPumpLoop) { IsBackground = true, Name = "visualbridge-runtime-execution-pump" };
             acceptThread.Start();
             heartbeatThread.Start();
             pollThread.Start();
+            executionPumpThread.Start();
         }
 
         public string InstanceId => instanceId;
@@ -155,9 +167,13 @@ namespace VisualBridge.Runtime
                 leaseHolder = null;
             }
 
+            VisualBridgeGraphExecutionCapture.SetSubscribed(false);
+            VisualBridgeGraphExecutionCapture.SetTracking(false);
+
             JoinThread(acceptThread);
             JoinThread(heartbeatThread);
             JoinThread(pollThread);
+            JoinThread(executionPumpThread);
             try
             {
                 File.Delete(recordPath);
@@ -300,6 +316,7 @@ namespace VisualBridge.Runtime
                 }
 
                 ReleaseLeaseOnDisconnect(connection);
+                UpdateExecutionSubscriptionState();
                 CloseConnection(connection);
             }
         }
@@ -314,6 +331,24 @@ namespace VisualBridge.Runtime
                     leaseHolder = null;
                 }
             }
+        }
+
+        /// <summary>订阅状态变化后同步采集门面；无任何订阅者时停止事件录制。</summary>
+        private void UpdateExecutionSubscriptionState()
+        {
+            lock (connectionsGate)
+            {
+                foreach (var connection in connections)
+                {
+                    if (connection.SubscribedExecutionId != null)
+                    {
+                        VisualBridgeGraphExecutionCapture.SetSubscribed(true);
+                        return;
+                    }
+                }
+            }
+
+            VisualBridgeGraphExecutionCapture.SetSubscribed(false);
         }
 
         private void RequestLoop(Connection connection)
@@ -395,6 +430,18 @@ namespace VisualBridge.Runtime
                     return;
                 case "getDocumentSources":
                     RespondToSourcesRequest(connection, request);
+                    return;
+                case "getGraphExecutionInstances":
+                    RespondToGraphExecutionInstances(connection, request);
+                    return;
+                case "subscribeGraphExecution":
+                    RespondToSubscribeGraphExecution(connection, request);
+                    return;
+                case "unsubscribeGraphExecution":
+                    RespondToUnsubscribeGraphExecution(connection, request);
+                    return;
+                case "getGraphExecutionSnapshot":
+                    RespondToGraphExecutionSnapshot(connection, request);
                     return;
                 default:
                     SendLine(connection, VisualBridgeRuntimeBridgeValidator
@@ -532,6 +579,178 @@ namespace VisualBridge.Runtime
                 SendLine(connection, VisualBridgeRuntimeBridgeValidator
                     .CreateResponseError(request.RequestId, "runtime.internalError", exception.Message)
                     .ToLine());
+            }
+        }
+
+        /// <summary>getGraphExecutionInstances：返回运行中实例（可选 documentId 过滤），无需订阅。</summary>
+        private void RespondToGraphExecutionInstances(Connection connection, VisualBridgeRuntimeBridgeMessage request)
+        {
+            var instances = VisualBridgeGraphExecutionCapture.ListInstances(request.DocumentId);
+            SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                .CreateGraphExecutionInstancesResponse(request.RequestId, instances)
+                .ToLine());
+        }
+
+        /// <summary>subscribeGraphExecution：实例不存在 → executionNotFound；成功即开录并合成 instanceStarted 开流标记。</summary>
+        private void RespondToSubscribeGraphExecution(Connection connection, VisualBridgeRuntimeBridgeMessage request)
+        {
+            var instance = VisualBridgeGraphExecutionCapture.GetSnapshot(request.ExecutionId);
+            if (instance == null)
+            {
+                SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                    .CreateResponseError(request.RequestId, "runtime.executionNotFound", $"Execution '{request.ExecutionId}' is not active.")
+                    .ToLine());
+                return;
+            }
+
+            lock (connectionsGate)
+            {
+                // 单实例跟踪：新订阅覆盖旧订阅。
+                connection.SubscribedExecutionId = request.ExecutionId;
+            }
+
+            VisualBridgeGraphExecutionCapture.SetSubscribed(true);
+            SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                .CreateLeaseResponse(request.RequestId)
+                .ToLine());
+            // 开流标记：合成 instanceStarted 事件，让客户端的会话记录有明确起点。
+            SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                .CreateGraphExecutionEvent(new[]
+                {
+                    new VisualBridgeRuntimeGraphExecutionEvent
+                    {
+                        ExecutionId = request.ExecutionId,
+                        FrameIndex = instance.FrameIndex,
+                        Kind = "instanceStarted",
+                    },
+                })
+                .ToLine());
+        }
+
+        /// <summary>unsubscribeGraphExecution：幂等 ok；最后一个订阅者退出即停止事件录制。</summary>
+        private void RespondToUnsubscribeGraphExecution(Connection connection, VisualBridgeRuntimeBridgeMessage request)
+        {
+            lock (connectionsGate)
+            {
+                if (string.Equals(connection.SubscribedExecutionId, request.ExecutionId, StringComparison.Ordinal))
+                {
+                    connection.SubscribedExecutionId = null;
+                }
+            }
+
+            UpdateExecutionSubscriptionState();
+            SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                .CreateLeaseResponse(request.RequestId)
+                .ToLine());
+        }
+
+        /// <summary>getGraphExecutionSnapshot：浅快照（实例元信息 + 当前节点 + 运行状态）；实例不在注册表 → executionNotFound。</summary>
+        private void RespondToGraphExecutionSnapshot(Connection connection, VisualBridgeRuntimeBridgeMessage request)
+        {
+            var instance = VisualBridgeGraphExecutionCapture.GetSnapshot(request.ExecutionId);
+            if (instance == null)
+            {
+                SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                    .CreateResponseError(request.RequestId, "runtime.executionNotFound", $"Execution '{request.ExecutionId}' is not active.")
+                    .ToLine());
+                return;
+            }
+
+            SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                .CreateGraphExecutionSnapshotResponse(request.RequestId, instance)
+                .ToLine());
+        }
+
+        /// <summary>
+        /// 执行泵：等待门面缓冲（满 64 条提前唤醒，至多 100ms），按执行实例
+        /// 分组推送 graphExecution 批量事件；投递 instanceStopped 后清除对应
+        /// 订阅（实例已死，客户端应切换实例），无订阅者时停止录制。
+        /// </summary>
+        private void ExecutionPumpLoop()
+        {
+            var drained = new List<VisualBridgeRuntimeGraphExecutionEvent>();
+            while (!stopping)
+            {
+                drained.Clear();
+                if (!VisualBridgeGraphExecutionCapture.WaitAndDrain(ExecutionFlushInterval, drained))
+                {
+                    continue;
+                }
+
+                BroadcastGraphExecution(drained);
+            }
+        }
+
+        private void BroadcastGraphExecution(List<VisualBridgeRuntimeGraphExecutionEvent> events)
+        {
+            // 按执行实例分组（保持事件原始顺序）。
+            var batches = new Dictionary<string, List<VisualBridgeRuntimeGraphExecutionEvent>>(StringComparer.Ordinal);
+            foreach (var executionEvent in events)
+            {
+                if (!batches.TryGetValue(executionEvent.ExecutionId, out var batch))
+                {
+                    batch = new List<VisualBridgeRuntimeGraphExecutionEvent>();
+                    batches[executionEvent.ExecutionId] = batch;
+                }
+
+                batch.Add(executionEvent);
+            }
+
+            foreach (var entry in batches)
+            {
+                var containsStopped = false;
+                foreach (var executionEvent in entry.Value)
+                {
+                    if (executionEvent.Kind == "instanceStopped")
+                    {
+                        containsStopped = true;
+                        break;
+                    }
+                }
+
+                var line = VisualBridgeRuntimeBridgeValidator.CreateGraphExecutionEvent(entry.Value).ToLine();
+                List<Connection> subscribers;
+                var stoppedSubscribers = new List<Connection>();
+                lock (connectionsGate)
+                {
+                    subscribers = new List<Connection>(connections);
+                    if (containsStopped)
+                    {
+                        // 实例停止：清除对应订阅（最后一批仍需送达），之后无订阅者即停止录制。
+                        foreach (var connection in subscribers)
+                        {
+                            if (string.Equals(connection.SubscribedExecutionId, entry.Key, StringComparison.Ordinal))
+                            {
+                                connection.SubscribedExecutionId = null;
+                                stoppedSubscribers.Add(connection);
+                            }
+                        }
+                    }
+                }
+
+                foreach (var connection in subscribers)
+                {
+                    var isTarget = stoppedSubscribers.Contains(connection)
+                        || string.Equals(connection.SubscribedExecutionId, entry.Key, StringComparison.Ordinal);
+                    if (!isTarget)
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        WriteLine(connection, line);
+                    }
+                    catch (Exception exception) when (exception is IOException || exception is ObjectDisposedException || exception is SocketException)
+                    {
+                        CloseConnection(connection);
+                    }
+                }
+
+                if (containsStopped)
+                {
+                    UpdateExecutionSubscriptionState();
+                }
             }
         }
 

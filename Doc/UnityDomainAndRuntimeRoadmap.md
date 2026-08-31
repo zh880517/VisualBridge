@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 检查适配器）已关闭，**阶段 A 与阶段 B 全部完成**——VB-UX-00 至 VB-UX-12 已关闭；阶段 C（远程与设备连接）经项目方 2026-08-31 决策明确推迟（见第 6 节）。**2026-08-31 新增阶段 D（Graph 执行过程可视化，VB-UX-13~16）**：项目方确认游戏侧 Graph 执行引擎与执行观察需求，设计已逐项讨论冻结（见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 19 章）；VB-UX-13（协议扩展）已关闭，VB-UX-14~16 待执行。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 检查适配器）已关闭，**阶段 A 与阶段 B 全部完成**——VB-UX-00 至 VB-UX-12 已关闭；阶段 C（远程与设备连接）经项目方 2026-08-31 决策明确推迟（见第 6 节）。**2026-08-31 新增阶段 D（Graph 执行过程可视化，VB-UX-13~16）**：项目方确认游戏侧 Graph 执行引擎与执行观察需求，设计已逐项讨论冻结（见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 19 章）；VB-UX-13（协议扩展）与 VB-UX-14（Unity 采集门面与订阅转发）已关闭，VB-UX-15/16 待执行。
 
 本阶段分四段：
 
@@ -374,7 +374,7 @@ Exit criteria：
 - `check:docs`、`check:protocol`、`check:mcp` 通过；三方 parity fixtures 全部通过（Unity EditMode + 扩展宿主）。
 - 既有协议用例零回归；协议扩展不改动任何已冻结消息的字段语义。
 
-### VB-UX-14 Unity 采集门面与订阅转发 — `pending`
+### VB-UX-14 Unity 采集门面与订阅转发 — `complete`
 
 依赖：VB-UX-13。
 
@@ -385,10 +385,16 @@ Exit criteria：
 - EditMode 测试以假采集器（直接调用门面，模拟游戏引擎事件序列）覆盖实例生命周期、事件分流、批量冲刷节奏与退订停采。
 - 游戏侧接入指南进入 `Doc/`：稳定 ID 映射规则、适配器形态示例（引擎 provider 接口 → 采集门面转发）。
 
+实施与验证记录：2026-08-31 完成。新增 `Runtime/Bridge/VisualBridgeGraphExecutionCapture.cs`：执行实例注册表 + 待发缓冲 + `Monitor` 唤醒的执行泵缝；生命周期追踪（实例起止）在服务端运行期间常开（实例列表无需订阅即可查询，否则会出现「无人订阅→无实例可订阅」死锁），节点级高频事件仅在存在订阅者时进缓冲（无订阅零分配快速路径）；缓冲上限 16384 条（滞后丢最旧）。服务端新增 `graphExecution` 通告能力、执行泵线程（满 64 条提前唤醒/至多 100ms 冲刷）、四个请求处理（实例枚举 documentId 过滤、订阅——成功即开录并合成 instanceStarted 开流标记、幂等退订、浅快照 executionNotFound）、instanceStopped 投递后自动清除对应订阅并在无订阅者时停录、断开连接同步停录。已知边界：mid-play reload 窗口内新旧服务端共享进程级门面（事件由先冲刷的泵投递，窗口极短）。接入指南 `UnityGraphExecutionDebug.md` 落地（API 表、FlowGraph provider 适配器示例、UID 映射规则）。
+
+验证记录：EditMode 158/158（新增 6 个测试：生命周期+无订阅快速路径、批量事件顺序/字段、64 条提前冲刷、实例停止清除订阅与快照、documentId 过滤与未知实例、多客户端无租约观察；服务端通告能力断言更新为 5 项）；三个 csproj `dotnet build` 零警告零错误；Runtime E2E（发现/快照/租约/漂移/artifactsChanged/DAP 全过）与 Editor Bridge open/reveal E2E 回归通过。
+
 Exit criteria：
 
 - `dotnet build`（runtime + editor csproj）通过；EditMode 全部通过；Runtime E2E（既有）与 Bridge E2E 回归通过。
 - 零订阅路径有性能断言（无订阅时门面方法无分配、不进缓冲）。
+
+落地说明：零订阅快速路径以**语义断言**验证（无订阅时节点事件不更新浅快照当前节点、退订后 WaitForEvent 超时无事件、IsSubscribed 状态翻转），未做 GC 分配计测量——EditMode 下 GC 计量不稳定，语义断言足以钉死快速路径行为（进缓冲即必然可见于事件流与快照）。
 
 ### VB-UX-15 VS Code 订阅服务与会话记录 — `pending`
 
