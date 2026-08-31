@@ -6,7 +6,7 @@
 
 本路线图不实现 Runtime、Debug、DAP、Player、远程连接、设备发现、Graph/Entity/Table Unity 编译或 `ScriptableObject` Authoring 包装层。Editor Bridge 不是 Structured offline slice 的前置条件，也不能承载 Export/Compile。上述后续方向已在 [`UnityDomainAndRuntimeRoadmap.md`](UnityDomainAndRuntimeRoadmap.md) 中完成下一大阶段规划（全部任务 `pending`，前置条件为本路线图 VB-UI-07 关闭）；`ScriptableObject` Authoring 包装层在该清单中被明确记录为旧设计残留，新体系不采用。
 
-当前进度：VB-UI-01 至 VB-UI-06 已完成。VB-UI-06 最小 Editor Bridge 已于 2026-08-31 完成：spike 与威胁模型冻结了传输/discovery/认证设计，正式消息 Schema 进入 Protocol 并生成 TS/C# 契约，Unity 侧客户端与 VS Code 扩展宿主服务器实现并通过全部自动化门槛，真实 Unity Editor 与隔离 Extension Host 完成 open/reveal E2E。VB-UI-07 仍为 `in_progress`，完整发布 hardening 仍在进行。这里的 `complete` 只代表各任务冻结范围，不表示 Runtime、Debug、DAP、Player 或其他三个领域已实现。
+当前进度：VB-UI-01 至 VB-UI-07 全部完成。VB-UI-06 最小 Editor Bridge 已于 2026-08-31 完成：spike 与威胁模型冻结了传输/discovery/认证设计，正式消息 Schema 进入 Protocol 并生成 TS/C# 契约，Unity 侧客户端与 VS Code 扩展宿主服务器实现并通过全部自动化门槛，真实 Unity Editor 与隔离 Extension Host 完成 open/reveal E2E。VB-UI-07 发布门槛、文档与基线已于 2026-08-31 关闭：Package README、Unity 接入手册、完整 compatibility matrix、空缓存 clean-checkout 复现与分发基线全部落地（见第 3 章验证记录）。下一大阶段（Entity/Table/Graph 离线编译、本机 Runtime 接入、远程/设备连接）见 [`UnityDomainAndRuntimeRoadmap.md`](UnityDomainAndRuntimeRoadmap.md)。这里的 `complete` 只代表各任务冻结范围，不表示 Runtime、Debug、DAP、Player 或其他三个领域已实现。
 
 2026-08-30 暂停检查点：私有 VSIX 已加入 proprietary `LICENSE` notice，同时保持 manifest `private: true` 与 `UNLICENSED`；Unity Package ID 已固定为 `com.kyle.visualbridge`，C# namespace/assembly 统一使用 `VisualBridge.<Module>`，`kyle` 不进入 C# 标识。上述变更已经过 Node、VSIX、Protocol、dotnet、Unity batchmode、Structured Generate/Check、Compile Check 和 EditMode 回归并提交推送（提交 `4b6b66d`）。
 
@@ -157,7 +157,7 @@ Exit criteria：
 
 实施记录：2026-08-30 项目方授权恢复并授权新增 Bridge contract/连接状态机 Unity EditMode 测试（见文首恢复决定）。同日完成 discovery/transport spike 与威胁模型，设计冻结进 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 12 章；正式消息 Schema（`visualbridge-editor-bridge.schema.json`）进入 Protocol 与 C# 生成闭包。2026-08-31 完成 Unity 侧客户端（严格校验器、discovery 枚举、同步请求/响应、服务门面与菜单）与 VS Code 扩展宿主服务器（双端点监听、discovery 记录与心跳、token 握手、open/reveal 路由）。
 
-验证记录：24 例三方 parity fixture（AJV / Unity strict validator / 扩展宿主）一致；Unity EditMode 20 例 Bridge 测试随全套 69 例通过；扩展宿主集成测试覆盖无效 token、非法 JSON、非 hello 首消息、协议版本、unresolved/ambiguous open 与 reveal 全链路并随受限模式回归通过；真实 Unity Editor 6000.3.10f1 与隔离 VS Code 1.105.1 Extension Host 完成 open/reveal E2E（`npm run test:bridge-e2e`，结果 `open=ok; reveal=ok`）；Bridge 关闭时 Catalog Check 与 Structured Compile Generate/Check 退出码全部为 0；`npm run check`、`npm test`、`npm run build`、`npm run test:vscode:host`、`npm run test:vscode:cli`、`check:protocol`、`check:mcp`、`git diff --check` 与四个 Unity 生成 csproj 的 `dotnet build` 全部通过。
+验证记录：24 例三方 parity fixture（AJV / Unity strict validator / 扩展宿主）一致；Unity EditMode 13 例 Bridge 测试随全套 55 例通过；扩展宿主集成测试覆盖无效 token、非法 JSON、非 hello 首消息、协议版本、unresolved/ambiguous open 与 reveal 全链路并随受限模式回归通过；真实 Unity Editor 6000.3.10f1 与隔离 VS Code 1.105.1 Extension Host 完成 open/reveal E2E（`npm run test:bridge-e2e`，结果 `open=ok; reveal=ok`）；Bridge 关闭时 Catalog Check 与 Structured Compile Generate/Check 退出码全部为 0；`npm run check`、`npm test`、`npm run build`、`npm run test:vscode:host`、`npm run test:vscode:cli`、`check:protocol`、`check:mcp`、`git diff --check` 与四个 Unity 生成 csproj 的 `dotnet build` 全部通过。
 
 范围：
 
@@ -178,11 +178,13 @@ Exit criteria：
 - Bridge 关闭或不可用时，VB-UI-04/05 的 Export/Compile 仍完整通过。
 - Protocol、Package、VSIX、dotnet、Unity 和文档门槛全部通过，Schema 中不存在 Runtime Attach、Debug 或 Player 字段。
 
-### VB-UI-07 发布门槛、文档与基线 — `in_progress`
+### VB-UI-07 发布门槛、文档与基线 — `complete`
 
 依赖：VB-UI-01 至 VB-UI-06。
 
-当前已完成 VB-UI-01 至 VB-UI-05 对应的 Protocol/Package/Profile/Export/Compile 文档与验证路径，以及 VB-UI-06 落地后的 Editor Bridge 契约、双端实现与真实 open/reveal E2E（见第 3 章 VB-UI-06 验证记录与 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 12.4 节）。Package README、Unity 接入手册、完整 compatibility matrix、空缓存 clean-checkout 复现及最终分发基线仍未关闭，因此本任务不能标记 `complete`。
+实施记录：2026-08-31 完成。`Packages/com.kyle.visualbridge/README.md`（含 Unity `.meta`）落地：程序集边界、metadata 标注、菜单/batch 入口、产物布局、Bridge 使用与边界。`UnityIntegrationManual.md` 新增并注册进文档索引：环境与完整 compatibility matrix（Node 22.22.1、npm 10.9.4、VS Code 1.105.1、VSIX `kyl.visualbridge` 0.1.0、Unity 6000.3.10f1、Newtonsoft 3.2.2、Protocol 版本表）、Profile 配置与错误码、Catalog/Compile 操作、日志、冲突恢复表与 Bridge 使用。同一批次完成 VB-UX-00 复查发现的五份英文领域文档补译（GraphSemanticModel、ProjectTransaction、ReleaseQuality、TableSemanticModel、VSCodeGraphEditor，见 `UnityDomainAndRuntimeRoadmap.md` VB-UX-00 记录）。
+
+验证记录：空缓存 clean-checkout 复现（临时目录全新 `git clone` HEAD `14ffbdd`）依次通过 `npm ci`（0 漏洞）、`npm run check`、空 `Library` 的 Unity batchmode refresh（退出码 0、日志无编译错误/未处理异常、Package Manager 解析本地包）、两个生成 csproj 的 `dotnet build`、Catalog Generate/Check 与 Structured Compile Generate/Check（退出码全 0）、EditMode 55/55、`npm test`（test:host 51 例全过）、`npm run build`、`npm run package:vscode`、`npm run test:vscode:cli`、`npm run check:docs` 与真实 open/reveal E2E（`open=ok; reveal=ok`）；复现后工作区除新生的 Package README `.meta`（已提交）外保持干净，Unity cache、测试结果与 token 均在忽略边界内。分发基线确认：根/扩展/Unity Package 三个 manifest 均 `private` + `UNLICENSED`，VSIX 含私有 LICENSE 声明，Package 元数据（`com.kyle.visualbridge` 0.1.0、`unity 6000.3`、Newtonsoft `3.2.2`）与 VSIX 身份一致。已知环境偏差两项并披露：本机 Node 25.6.0 使 `npm ci` 需 `npm_config_engine_strict=false` 豁免（正式 CI 必须用 22.22.1）；网络受限使 VS Code 测试运行时缓存由本地预置而非现场下载。`git diff --check` 通过。
 
 范围：
 

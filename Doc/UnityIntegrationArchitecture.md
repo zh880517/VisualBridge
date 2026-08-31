@@ -393,9 +393,9 @@ Structured offline slice 已关闭：
 - Exporter canonical source snapshot、`sourceHash`、Generate/Check 与原子提交由确定性测试锁定；
 - Compiler artifact、source mapping 与 managed manifest 当前固定为 `Library/VisualBridge/Compiled` 内部 Editor 格式，由 Compiler 测试锁定，尚未升级为公开跨语言 Schema。
 
-仍待 VB-UI-06/07 关闭：
+已随 VB-UI-06/07 关闭（2026-08-31）：
 
-- Editor Bridge 的 discovery、transport、authentication、message Schema 与真实 open/reveal E2E；
-- Protocol、Package、VSIX、generator、compiler 与未来 Bridge 的完整发布兼容矩阵、空缓存复现和分发基线。
+- Editor Bridge 的 discovery、transport、authentication、message Schema 与真实 open/reveal E2E（见第 12 章）；
+- Protocol、Package、VSIX、generator、compiler 与 Bridge 的完整发布兼容矩阵、空缓存 clean-checkout 复现和分发基线（兼容矩阵见 [`UnityIntegrationManual.md`](UnityIntegrationManual.md)，复现与基线记录见 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md) VB-UI-07）。
 
 仍待条目必须在对应路线图任务中通过正式 contract、实现和自动验证关闭，不能由实现私有约定长期替代；offline artifact 若将来跨越 Editor 内部边界，也必须先进入正式 Schema。
