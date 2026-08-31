@@ -134,6 +134,108 @@ exports.run = async function run() {
     );
     assert.equal(closed.leaseHeld, false);
   });
+
+  await test("drives graph execution debug through the Graph editor with live Unity events", async () => {
+    // Unity 侧执行模拟器持续上报 Encounter 图的节点/边事件（VB-UX-16）。
+    const encounterUri = vscode.Uri.file(path.join(
+      repositoryRoot, "UnityProject", "VisualBridgeAuthoring", "Graphs", "Encounter.vbflow"));
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", encounterUri, "visualbridge.documentEditor");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", encounterUri),
+        (ready) => ready === true,
+        30_000,
+        "The Graph editor did not become ready for the execution debug E2E.",
+      );
+
+      await vscode.commands.executeCommand("visualbridge.test.sendGraphEditorDebugMessage", encounterUri, {
+        type: "requestGraphExecutionInstances",
+        requestId: "e2e-graph-debug-list",
+      });
+      const listed = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorDebugState", encounterUri),
+        (state) => state?.runtimeConnected === true && state?.instanceCount >= 1,
+        60_000,
+        "The debug controller did not discover the Unity execution instance.",
+      );
+      const executionId = listed.instanceIds[0];
+      assert.ok(executionId, "No execution instance id was listed for the Encounter graph.");
+
+      await vscode.commands.executeCommand("visualbridge.test.sendGraphEditorDebugMessage", encounterUri, {
+        type: "subscribeGraphExecution",
+        requestId: "e2e-graph-debug-subscribe",
+        executionId,
+      });
+      const live = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorDebugState", encounterUri),
+        (state) => state?.subscribedExecutionId === executionId
+          && state?.lastWebviewAck !== undefined
+          && state.lastWebviewAck.eventCount >= 1
+          && typeof state.lastWebviewAck.executingNodeId === "string"
+          && state.lastWebviewAck.executingNodeId.length > 0
+          && state.lastWebviewAck.mode === "follow",
+        60_000,
+        "The Webview did not acknowledge live Unity execution events.",
+      );
+      const liveNodeId = live.lastWebviewAck.executingNodeId;
+      assert.equal(live.lastWebviewAck.cursor, live.lastWebviewAck.eventCount - 1,
+        "The follow-mode cursor must track the latest Unity event.");
+      console.log(`[runtime-e2e] execution debug live: execution=${executionId} node=${liveNodeId} events=${live.lastWebviewAck.eventCount}`);
+
+      // 退订停采：断开连接后事件不再累计。
+      await vscode.commands.executeCommand("visualbridge.test.sendGraphEditorDebugMessage", encounterUri, {
+        type: "unsubscribeGraphExecution",
+        requestId: "e2e-graph-debug-unsubscribe",
+      });
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorDebugState", encounterUri),
+        (state) => state?.subscribedExecutionId === undefined && state?.runtimeConnected === false,
+        30_000,
+        "The debug controller did not unsubscribe and disconnect.",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+
+      // 切换实例：模拟器保持实例存活，重新订阅后事件从低计数恢复增长。
+      await vscode.commands.executeCommand("visualbridge.test.sendGraphEditorDebugMessage", encounterUri, {
+        type: "requestGraphExecutionInstances",
+        requestId: "e2e-graph-debug-relist",
+      });
+      const relisted = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorDebugState", encounterUri),
+        (state) => state?.runtimeConnected === true && state?.instanceCount >= 1,
+        60_000,
+        "The debug controller did not re-discover the Unity execution instance.",
+      );
+      await vscode.commands.executeCommand("visualbridge.test.sendGraphEditorDebugMessage", encounterUri, {
+        type: "subscribeGraphExecution",
+        requestId: "e2e-graph-debug-resubscribe",
+        executionId: relisted.instanceIds[0],
+      });
+      const resumed = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorDebugState", encounterUri),
+        (state) => state?.subscribedExecutionId === relisted.instanceIds[0]
+          && state?.lastWebviewAck !== undefined
+          && state.lastWebviewAck.eventCount >= 1,
+        60_000,
+        "The Webview did not resume execution events after re-subscribing.",
+      );
+      assert.ok(resumed.lastWebviewAck.eventCount <= 5,
+        `Re-subscription must start from a fresh recording (events=${resumed.lastWebviewAck.eventCount}); `
+        + "a large count means events kept accumulating while unsubscribed.");
+      await vscode.commands.executeCommand("visualbridge.test.sendGraphEditorDebugMessage", encounterUri, {
+        type: "unsubscribeGraphExecution",
+        requestId: "e2e-graph-debug-final-unsubscribe",
+      });
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorDebugState", encounterUri),
+        (state) => state?.subscribedExecutionId === undefined && state?.runtimeConnected === false,
+        30_000,
+        "The debug controller did not release the final subscription.",
+      );
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+    }
+  });
 };
 
 async function test(name, action) {

@@ -2,7 +2,7 @@
 
 ## 1. 文档定位
 
-本文是**游戏侧引擎**接入 VisualBridge Graph 执行观察链路的操作指南：如何把引擎的图执行事件转发到 VisualBridge 采集门面，以及稳定 ID 映射规则。设计语义（范围裁决、事件模型、订阅与权限）冻结在 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 19 章；协议契约见 [`ProtocolContracts.md`](ProtocolContracts.md) 的 `visualbridge-runtime-bridge` 条目。本文不覆盖 VS Code 侧的页面交互（属扩展实现）。
+本文是**游戏侧引擎**接入 VisualBridge Graph 执行观察链路的操作指南：如何把引擎的图执行事件转发到 VisualBridge 采集门面，以及稳定 ID 映射规则。设计语义（范围裁决、事件模型、订阅与权限）冻结在 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 19 章；协议契约见 [`ProtocolContracts.md`](ProtocolContracts.md) 的 `visualbridge-runtime-bridge` 条目。VS Code 侧页面交互已实现（Graph 编辑器「执行调试」入口：实例选择、实时高亮/边流光/值显示与时间轴回放），其交互语义见同章 §19.5。
 
 链路全景：游戏引擎执行图 → 引擎 debug provider 适配器转发 → `VisualBridgeGraphExecutionCapture` 采集门面（分配执行实例 ID、维护实例注册表、按订阅缓冲事件）→ Runtime Bridge 协议（`graphExecution` 批量事件）→ VS Code Graph 页面实时跟踪与回放。**只观察、不做断点**；执行引擎归游戏侧，VisualBridge 不实现节点调度或求值。
 

@@ -441,7 +441,48 @@ type HostMessage =
   | { readonly type: "operationCompleted"; readonly documentVersion: number; readonly changed: boolean }
   | { readonly type: "operationRejected"; readonly message: string }
   | { readonly type: "requestReady"; readonly webviewToken: string }
+  | { readonly type: "graphExecutionInstances"; readonly requestId: string; readonly executions: readonly GraphDebugExecution[]; readonly runtimeConnected: boolean; readonly runtimeInstanceId?: string }
+  | { readonly type: "graphExecutionSubscribed"; readonly requestId: string; readonly ok: boolean; readonly execution?: GraphDebugExecution; readonly error?: string }
+  | { readonly type: "graphExecutionUnsubscribed"; readonly requestId: string }
+  | { readonly type: "graphExecutionEvents"; readonly events: readonly GraphDebugEvent[]; readonly totalEvents: number; readonly stopped: boolean }
+  | { readonly type: "graphExecutionStopped"; readonly executionId: string; readonly totalEvents: number }
+  | {
+      readonly type: "graphExecutionDebugState";
+      readonly requestId: string;
+      readonly subscribed: boolean;
+      readonly execution?: GraphDebugExecution;
+      readonly events: readonly GraphDebugEvent[];
+      readonly stopped: boolean;
+    }
   | GraphRevealRequest;
+
+/** 执行实例浅描述（§19.5 实例选择器数据）。 */
+interface GraphDebugExecution {
+  readonly executionId: string;
+  readonly documentTypeId: string;
+  readonly documentId: string;
+  readonly graphName: string;
+  readonly debugKey: string;
+  readonly state: string;
+  readonly currentNodeId: string | null;
+  readonly frameIndex: number;
+}
+
+/** 会话内留存的执行事件（宿主增量推送累计）。 */
+interface GraphDebugEvent {
+  readonly index: number;
+  readonly frameIndex: number;
+  readonly kind: string;
+  readonly nodeId?: string;
+  readonly outputIndex?: number;
+  readonly value?: string;
+}
+
+/** 当前执行节点高亮（时间轴光标推导；replay 为回放态）。 */
+interface GraphDebugHighlight {
+  readonly executingNodeId: string | null;
+  readonly replay: boolean;
+}
 
 interface VsCodeApi {
   postMessage(message: unknown): void;
@@ -463,6 +504,8 @@ const GraphNodeTypeVisibilityContext = createContext(true);
 const GraphNodeIdVisibilityContext = createContext(false);
 const GraphDataTypesContext = createContext<readonly DataTypeDefinition[]>([]);
 const GraphRevealContext = createContext<GraphRevealPlan | undefined>(undefined);
+const GraphDebugContext = createContext<GraphDebugHighlight | undefined>(undefined);
+let graphDebugRequestIdCounter = 0;
 const nodeTypes = {
   visualBridgeNode: VisualBridgeNode,
   visualBridgeInterface: VisualBridgeInterfaceNode,
@@ -473,6 +516,7 @@ function VisualBridgeNode({ data, selected }: NodeProps<GraphFlowNode>): React.J
   const showNodeTypes = useContext(GraphNodeTypeVisibilityContext);
   const showNodeIds = useContext(GraphNodeIdVisibilityContext);
   const reveal = useContext(GraphRevealContext);
+  const debug = useContext(GraphDebugContext);
   if (data.flavor !== "node") {
     return <article className="graph-node">Invalid node</article>;
   }
@@ -505,8 +549,10 @@ function VisualBridgeNode({ data, selected }: NodeProps<GraphFlowNode>): React.J
   const revealed = reveal?.graphId === data.graphId
     && (reveal.elementKind === "node" || reveal.elementKind === "dynamicPort")
     && reveal.nodeId === data.model.id;
+  const executing = debug?.executingNodeId !== null && debug?.executingNodeId !== undefined
+    && debug.executingNodeId === data.model.id;
   return (
-    <article className={`graph-node${selected ? " selected" : ""}${revealed ? " revealed" : ""}${data.model.kind === "subgraph" ? " subgraph" : ""}`}>
+    <article className={`graph-node${selected ? " selected" : ""}${revealed ? " revealed" : ""}${executing ? ` executing${debug?.replay === true ? " executing-replay" : ""}` : ""}${data.model.kind === "subgraph" ? " subgraph" : ""}`}>
       <header className="graph-node-header" title={data.model.title || data.typeTitle}>
         <span className={`graph-node-icon${data.nodeType?.icon === undefined ? " empty" : ""}`} aria-hidden="true">
           {data.nodeType?.icon ?? ""}
@@ -1468,6 +1514,24 @@ function GraphEditorApp(): React.JSX.Element {
     readonly plan: GraphRevealPlan;
   }>();
   const [revealedElement, setRevealedElement] = useState<GraphRevealPlan>();
+  // 执行调试状态（§19.5）：光标仅在回放态有意义，实时态恒等于事件末尾。
+  const [debugDrawerOpen, setDebugDrawerOpen] = useState(false);
+  const [debugInstances, setDebugInstances] = useState<readonly GraphDebugExecution[]>([]);
+  const [debugRuntimeConnected, setDebugRuntimeConnected] = useState(false);
+  const [debugRuntimeInstanceId, setDebugRuntimeInstanceId] = useState<string>();
+  const [debugExecution, setDebugExecution] = useState<GraphDebugExecution>();
+  const [debugEvents, setDebugEvents] = useState<readonly GraphDebugEvent[]>([]);
+  const [debugStopped, setDebugStopped] = useState(false);
+  const [debugCursor, setDebugCursor] = useState(-1);
+  const [debugFollow, setDebugFollow] = useState(true);
+  const [debugFlash, setDebugFlash] = useState<{
+    readonly keys: ReadonlySet<string>;
+    readonly nodeIds: ReadonlySet<string>;
+  }>();
+  const debugEventsRef = useRef<readonly GraphDebugEvent[]>([]);
+  const debugCursorRef = useRef(-1);
+  const debugFollowRef = useRef(true);
+  const debugFlashTimerRef = useRef<number | undefined>(undefined);
 
   const activeGraph = useMemo(
     () => graphDocument?.graphs.find((graph) => graph.id === activeGraphId),
@@ -1522,6 +1586,71 @@ function GraphEditorApp(): React.JSX.Element {
     updateSelection(undefined);
     setContextMenu(undefined);
   }, [updateSelection]);
+
+  const postDebugAck = useCallback((mode: "follow" | "replay"): void => {
+    const events = debugEventsRef.current;
+    const cursor = debugFollowRef.current ? events.length - 1 : debugCursorRef.current;
+    vscode.postMessage({
+      type: "graphDebugAck",
+      eventCount: events.length,
+      cursor,
+      executingNodeId: computeGraphDebugView(events, cursor).executingNodeId,
+      mode,
+    });
+  }, []);
+
+  // 实时态边流光：最近一批 nodeOutput/edgeValueChanged 事件在短窗口内点亮对应边。
+  const applyDebugFlash = useCallback((events: readonly GraphDebugEvent[]): void => {
+    const keys = new Set<string>();
+    const nodeIds = new Set<string>();
+    for (const event of events) {
+      if ((event.kind === "nodeOutput" || event.kind === "edgeValueChanged") && event.nodeId !== undefined) {
+        nodeIds.add(event.nodeId);
+        if (event.outputIndex !== undefined) {
+          keys.add(`${event.nodeId}:${event.outputIndex}`);
+        }
+      }
+    }
+    if (keys.size === 0 && nodeIds.size === 0) {
+      return;
+    }
+    setDebugFlash({ keys, nodeIds });
+    if (debugFlashTimerRef.current !== undefined) {
+      window.clearTimeout(debugFlashTimerRef.current);
+    }
+    debugFlashTimerRef.current = window.setTimeout(() => {
+      setDebugFlash(undefined);
+      debugFlashTimerRef.current = undefined;
+    }, 600);
+  }, []);
+
+  const requestDebugInstances = useCallback((): void => {
+    vscode.postMessage({ type: "requestGraphExecutionInstances", requestId: nextGraphDebugRequestId() });
+  }, []);
+
+  const subscribeDebugExecution = useCallback((executionId: string): void => {
+    vscode.postMessage({
+      type: "subscribeGraphExecution",
+      requestId: nextGraphDebugRequestId(),
+      executionId,
+    });
+  }, []);
+
+  const unsubscribeDebugExecution = useCallback((): void => {
+    vscode.postMessage({ type: "unsubscribeGraphExecution", requestId: nextGraphDebugRequestId() });
+  }, []);
+
+  const enterDebugReplay = useCallback((cursor: number): void => {
+    debugFollowRef.current = false;
+    debugCursorRef.current = cursor;
+    setDebugFollow(false);
+    setDebugCursor(cursor);
+  }, []);
+
+  const enterDebugFollow = useCallback((): void => {
+    debugFollowRef.current = true;
+    setDebugFollow(true);
+  }, []);
 
   const postOperations = useCallback((
     operations: readonly GraphOperation[],
@@ -1660,6 +1789,73 @@ function GraphEditorApp(): React.JSX.Element {
       if (message.type === "requestReady") {
         webviewToken = message.webviewToken;
         vscode.postMessage({ type: "ready", instanceId: webviewInstanceId });
+        // epoch 重置后全量再水化执行调试状态（§19.5 断开语义）。
+        vscode.postMessage({ type: "requestGraphExecutionDebugState", requestId: nextGraphDebugRequestId() });
+        return;
+      }
+      if (message.type === "graphExecutionInstances") {
+        setDebugInstances(message.executions);
+        setDebugRuntimeConnected(message.runtimeConnected);
+        setDebugRuntimeInstanceId(message.runtimeInstanceId);
+        return;
+      }
+      if (message.type === "graphExecutionSubscribed") {
+        if (message.ok) {
+          debugEventsRef.current = [];
+          debugCursorRef.current = -1;
+          debugFollowRef.current = true;
+          setDebugEvents([]);
+          setDebugCursor(-1);
+          setDebugFollow(true);
+          setDebugStopped(false);
+          setDebugExecution(message.execution);
+        } else {
+          setStatus({ message: `执行调试订阅失败：${message.error ?? "未知错误"}`, error: true });
+        }
+        return;
+      }
+      if (message.type === "graphExecutionUnsubscribed") {
+        debugEventsRef.current = [];
+        debugCursorRef.current = -1;
+        debugFollowRef.current = true;
+        setDebugEvents([]);
+        setDebugCursor(-1);
+        setDebugFollow(true);
+        setDebugStopped(false);
+        setDebugExecution(undefined);
+        setDebugFlash(undefined);
+        return;
+      }
+      if (message.type === "graphExecutionEvents") {
+        debugEventsRef.current = [...debugEventsRef.current, ...message.events];
+        setDebugEvents(debugEventsRef.current);
+        if (message.stopped) {
+          setDebugStopped(true);
+        }
+        if (debugFollowRef.current) {
+          applyDebugFlash(message.events);
+        }
+        postDebugAck(debugFollowRef.current ? "follow" : "replay");
+        return;
+      }
+      if (message.type === "graphExecutionStopped") {
+        // 实例停止：自动停在记录末尾，可从实例列表切换新实例。
+        setDebugStopped(true);
+        debugFollowRef.current = true;
+        setDebugFollow(true);
+        postDebugAck("follow");
+        return;
+      }
+      if (message.type === "graphExecutionDebugState") {
+        debugEventsRef.current = message.subscribed ? message.events : [];
+        debugCursorRef.current = -1;
+        debugFollowRef.current = true;
+        setDebugEvents(debugEventsRef.current);
+        setDebugCursor(-1);
+        setDebugFollow(true);
+        setDebugStopped(message.stopped);
+        setDebugExecution(message.subscribed ? message.execution : undefined);
+        postDebugAck("follow");
         return;
       }
       if (referenceBridge.handleMessage(message)) {
@@ -1833,9 +2029,12 @@ function GraphEditorApp(): React.JSX.Element {
       if (revealTimerRef.current !== undefined) {
         window.clearTimeout(revealTimerRef.current);
       }
+      if (debugFlashTimerRef.current !== undefined) {
+        window.clearTimeout(debugFlashTimerRef.current);
+      }
       referenceBridge.dispose();
     };
-  }, [pasteClipboardPayload, updateSelection]);
+  }, [applyDebugFlash, pasteClipboardPayload, postDebugAck, updateSelection]);
 
   useEffect(() => {
     if (pendingRevealRequest === undefined) {
@@ -1882,6 +2081,20 @@ function GraphEditorApp(): React.JSX.Element {
     setPendingRevealRequest(undefined);
   }, [graphDocument, invalidDiagnostics.length, pendingRevealRequest, updateSelection]);
 
+  const debugCursorEffective = debugFollow ? debugEvents.length - 1 : debugCursor;
+  const debugView = useMemo(
+    () => computeGraphDebugView(debugEvents, debugCursorEffective),
+    [debugCursorEffective, debugEvents],
+  );
+  const debugHighlight: GraphDebugHighlight = {
+    executingNodeId: debugView.executingNodeId,
+    replay: !debugFollow,
+  };
+  const debugEdgeInfo = useMemo(() => ({
+    values: debugView.edgeValues,
+    ...(debugFlash === undefined ? {} : { flashKeys: debugFlash.keys, flashNodeIds: debugFlash.nodeIds }),
+  }), [debugFlash, debugView.edgeValues]);
+
   useEffect(() => {
     if (graphDocument === undefined || activeGraph === undefined) {
       setFlowNodes([]);
@@ -1891,9 +2104,9 @@ function GraphEditorApp(): React.JSX.Element {
     }
     const currentSelection = selectedRef.current;
     setFlowNodes(toFlowNodes(graphDocument, activeGraph, catalogRegistry, currentSelection, commitNode, postOperations, setStatus));
-    setFlowEdges(activeGraph.edges.map((edge) => toFlowEdge(edge, currentSelection, graphDocument, activeGraph, catalogRegistry)));
+    setFlowEdges(activeGraph.edges.map((edge) => toFlowEdge(edge, currentSelection, graphDocument, activeGraph, catalogRegistry, debugEdgeInfo)));
     setFlowGraphId(activeGraph.id);
-  }, [activeGraph, catalogRegistry, commitNode, graphDocument, postOperations]);
+  }, [activeGraph, catalogRegistry, commitNode, debugEdgeInfo, graphDocument, postOperations]);
 
   useEffect(() => {
     if (activeReveal === undefined
@@ -2516,6 +2729,14 @@ function GraphEditorApp(): React.JSX.Element {
           />
           <span>显示节点 ID</span>
         </label>
+        <button
+          type="button"
+          className={`secondary${debugDrawerOpen ? " active" : ""}`}
+          title="打开执行调试面板（观察当前图的运行时执行实例）"
+          onClick={() => setDebugDrawerOpen((open) => !open)}
+        >
+          执行调试
+        </button>
         <span className="graph-toolbar-spacer" />
         <span
           className={`graph-save-state ${saveState.kind}`}
@@ -2545,6 +2766,7 @@ function GraphEditorApp(): React.JSX.Element {
                   <GraphNodeTypeVisibilityContext.Provider value={showNodeTypes}>
                     <GraphNodeIdVisibilityContext.Provider value={showNodeIds}>
                       <GraphRevealContext.Provider value={revealedElement}>
+                        <GraphDebugContext.Provider value={debugHighlight}>
                         <ReactFlow<GraphFlowNode, GraphFlowEdge>
                           nodes={flowNodes}
                           edges={flowEdges}
@@ -2582,6 +2804,7 @@ function GraphEditorApp(): React.JSX.Element {
                           <MiniMap pannable zoomable nodeStrokeWidth={3} />
                           <Controls showInteractive={false} />
                         </ReactFlow>
+                        </GraphDebugContext.Provider>
                       </GraphRevealContext.Provider>
                     </GraphNodeIdVisibilityContext.Provider>
                   </GraphNodeTypeVisibilityContext.Provider>
@@ -2610,6 +2833,24 @@ function GraphEditorApp(): React.JSX.Element {
                   />
                 )}
               </aside>
+              {debugDrawerOpen && (
+                <GraphDebugPanel
+                  runtimeConnected={debugRuntimeConnected}
+                  runtimeInstanceId={debugRuntimeInstanceId}
+                  instances={debugInstances}
+                  execution={debugExecution}
+                  events={debugEvents}
+                  stopped={debugStopped}
+                  follow={debugFollow}
+                  cursor={debugCursorEffective}
+                  executingNodeId={debugView.executingNodeId}
+                  onRefresh={requestDebugInstances}
+                  onSubscribe={subscribeDebugExecution}
+                  onUnsubscribe={unsubscribeDebugExecution}
+                  onCursorChange={enterDebugReplay}
+                  onFollow={enterDebugFollow}
+                />
+              )}
             </main>
           )}
 
@@ -2778,6 +3019,242 @@ function withWebviewToken(message: unknown, token: string | undefined): unknown 
   return token === undefined || typeof message !== "object" || message === null || Array.isArray(message)
     ? message
     : { ...message, webviewToken: token };
+}
+
+function nextGraphDebugRequestId(): string {
+  return `graph-debug-${++graphDebugRequestIdCounter}`;
+}
+
+const GRAPH_DEBUG_EXECUTING_KINDS = new Set(["nodeStart", "nodeOutput", "dataNode", "edgeValueChanged"]);
+
+/** 从事件前缀（0..cursor）推导当前执行节点与数据边最近值（§19.5 实时态/回放态共用）。 */
+function computeGraphDebugView(
+  events: readonly GraphDebugEvent[],
+  cursor: number,
+): { readonly executingNodeId: string | null; readonly edgeValues: ReadonlyMap<string, string> } {
+  const limit = Math.min(cursor, events.length - 1);
+  let executingNodeId: string | null = null;
+  const edgeValues = new Map<string, string>();
+  for (let index = 0; index <= limit; index += 1) {
+    const event = events[index];
+    if (event === undefined) {
+      continue;
+    }
+    if (GRAPH_DEBUG_EXECUTING_KINDS.has(event.kind) && event.nodeId !== undefined) {
+      executingNodeId = event.nodeId;
+    }
+    if (event.kind === "edgeValueChanged" && event.nodeId !== undefined && event.outputIndex !== undefined) {
+      edgeValues.set(`${event.nodeId}:${event.outputIndex}`, event.value ?? "");
+    }
+  }
+  return { executingNodeId, edgeValues };
+}
+
+/** 连续同帧切片起点序列（帧级步进单位；到达顺序，不重排）。 */
+function graphDebugFrameStarts(events: readonly GraphDebugEvent[]): readonly number[] {
+  const starts: number[] = [];
+  let index = 0;
+  while (index < events.length) {
+    starts.push(index);
+    const frameIndex = events[index]?.frameIndex;
+    index += 1;
+    while (index < events.length && events[index]?.frameIndex === frameIndex) {
+      index += 1;
+    }
+  }
+  return starts;
+}
+
+function graphDebugFramePosition(starts: readonly number[], cursor: number): number {
+  let position = -1;
+  for (let index = 0; index < starts.length; index += 1) {
+    const start = starts[index];
+    if (start === undefined || start > cursor) {
+      break;
+    }
+    position = index;
+  }
+  return position;
+}
+
+function previousGraphDebugFrameStart(events: readonly GraphDebugEvent[], cursor: number): number | undefined {
+  const starts = graphDebugFrameStarts(events);
+  const position = graphDebugFramePosition(starts, cursor);
+  return position > 0 ? starts[position - 1] : undefined;
+}
+
+function nextGraphDebugFrameStart(events: readonly GraphDebugEvent[], cursor: number): number | undefined {
+  const starts = graphDebugFrameStarts(events);
+  const position = graphDebugFramePosition(starts, cursor);
+  return position >= 0 && position + 1 < starts.length ? starts[position + 1] : undefined;
+}
+
+function GraphDebugPanel({
+  runtimeConnected,
+  runtimeInstanceId,
+  instances,
+  execution,
+  events,
+  stopped,
+  follow,
+  cursor,
+  executingNodeId,
+  onRefresh,
+  onSubscribe,
+  onUnsubscribe,
+  onCursorChange,
+  onFollow,
+}: {
+  readonly runtimeConnected: boolean;
+  readonly runtimeInstanceId?: string | undefined;
+  readonly instances: readonly GraphDebugExecution[];
+  readonly execution?: GraphDebugExecution | undefined;
+  readonly events: readonly GraphDebugEvent[];
+  readonly stopped: boolean;
+  readonly follow: boolean;
+  readonly cursor: number;
+  readonly executingNodeId: string | null;
+  readonly onRefresh: () => void;
+  readonly onSubscribe: (executionId: string) => void;
+  readonly onUnsubscribe: () => void;
+  readonly onCursorChange: (cursor: number) => void;
+  readonly onFollow: () => void;
+}): React.JSX.Element {
+  const lastEvent = cursor >= 0 ? events[cursor] : undefined;
+  const maxCursor = Math.max(0, events.length - 1);
+  const stepTo = (next: number): void => onCursorChange(Math.max(0, Math.min(maxCursor, next)));
+  return (
+    <section className="graph-debug-panel" aria-label="执行调试">
+      <header className="graph-debug-panel-header">
+        <span className="graph-debug-panel-title">执行调试</span>
+        <span className={`graph-debug-runtime${runtimeConnected ? " connected" : ""}`}>
+          {runtimeConnected ? `运行时：${runtimeInstanceId ?? "已连接"}` : "未发现运行时实例"}
+        </span>
+        <button type="button" className="secondary" onClick={onRefresh}>刷新</button>
+      </header>
+      {execution === undefined ? (
+        <div className="graph-debug-section">
+          <div className="graph-debug-section-title">实例列表</div>
+          {instances.length === 0
+            ? <div className="graph-debug-empty">当前图暂无执行实例</div>
+            : instances.map((instance) => (
+              <div key={instance.executionId} className="graph-debug-instance">
+                <span className="graph-debug-instance-key" title={instance.executionId}>
+                  {instance.debugKey || instance.executionId}
+                </span>
+                <span className="graph-debug-instance-state">{instance.state}</span>
+                <span className="graph-debug-instance-node" title="当前节点">
+                  {instance.currentNodeId ?? "—"}
+                </span>
+                <span className="graph-debug-instance-frame">帧 {instance.frameIndex}</span>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={instance.state !== "running"}
+                  onClick={() => onSubscribe(instance.executionId)}
+                >
+                  跟踪
+                </button>
+              </div>
+            ))}
+        </div>
+      ) : (
+        <div className="graph-debug-section">
+          <div className="graph-debug-section-title">
+            跟踪中 · {execution.graphName || execution.executionId}
+            {execution.debugKey.length > 0 ? ` · ${execution.debugKey}` : ""}
+          </div>
+          <div className="graph-debug-stats">
+            <span title="当前执行节点">当前节点：{executingNodeId ?? "—"}</span>
+            <span title="当前事件帧号">帧 {lastEvent?.frameIndex ?? execution.frameIndex}</span>
+            <span title="会话事件数">事件 {events.length}</span>
+            {stopped && <span className="graph-debug-stopped">实例已停止</span>}
+          </div>
+          <button type="button" className="danger full" onClick={onUnsubscribe}>停止调试</button>
+          {stopped && (
+            <div className="graph-debug-switch">
+              <span>实例已停止，可切换新实例：</span>
+              <div className="graph-debug-instance-list">
+                {instances.map((instance) => (
+                  <button
+                    key={instance.executionId}
+                    type="button"
+                    className="secondary"
+                    disabled={instance.state !== "running"}
+                    onClick={() => onSubscribe(instance.executionId)}
+                  >
+                    {instance.debugKey || instance.executionId}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {execution !== undefined && events.length > 0 && (
+        <div className="graph-debug-section">
+          <div className="graph-debug-section-title">
+            时间轴 {follow ? "（实时）" : "（回放）"}
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={maxCursor}
+            value={Math.max(0, cursor)}
+            aria-label="执行事件时间轴"
+            onChange={(event) => onCursorChange(Number(event.target.value))}
+          />
+          <div className="graph-debug-steps">
+            <button
+              type="button"
+              className="secondary"
+              title="上一帧"
+              onClick={() => stepTo(previousGraphDebugFrameStart(events, cursor) ?? 0)}
+            >
+              ⏮上一帧
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              title="上一事件"
+              onClick={() => stepTo(cursor - 1)}
+            >
+              ◀上一事件
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              title="下一事件"
+              onClick={() => stepTo(cursor + 1)}
+            >
+              ▶下一事件
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              title="下一帧"
+              onClick={() => stepTo(nextGraphDebugFrameStart(events, cursor) ?? maxCursor)}
+            >
+              ⏭下一帧
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={follow}
+              onClick={onFollow}
+            >
+              回到实时
+            </button>
+          </div>
+          <div className="graph-debug-event">
+            {lastEvent === undefined
+              ? "暂无事件"
+              : `${lastEvent.kind}${lastEvent.nodeId === undefined ? "" : ` · ${lastEvent.nodeId}`} · 帧 ${lastEvent.frameIndex}${lastEvent.value === undefined ? "" : ` · ${lastEvent.value}`}`}
+          </div>
+        </div>
+      )}
+    </section>
+  );
 }
 
 function GraphInspector({
@@ -3215,12 +3692,19 @@ function toFlowNodes(
   return nodes;
 }
 
+interface GraphDebugEdgeInfo {
+  readonly values: ReadonlyMap<string, string>;
+  readonly flashKeys?: ReadonlySet<string>;
+  readonly flashNodeIds?: ReadonlySet<string>;
+}
+
 function toFlowEdge(
   edge: GraphEdgeModel,
   selected: Selection | undefined,
   document: GraphDocument,
   graph: GraphDefinition,
   catalogRegistry: GraphCatalogRegistry,
+  debug?: GraphDebugEdgeInfo,
 ): GraphFlowEdge {
   const sourceCanvasNodeId = edge.source.kind === "node" ? edge.source.nodeId : INTERFACE_INPUT_NODE_ID;
   const sourcePort = findCanvasPort(
@@ -3234,6 +3718,34 @@ function toFlowEdge(
   const dataColor = edge.kind === "data"
     ? resolveGraphDataTypeColor(sourcePort?.dataTypeId, catalogRegistry.dataTypes)
     : undefined;
+  // 执行调试：数据边最近值标签 + 刚经过边的流光；端口序映射不可靠时退化为按源节点点亮。
+  let label: string | undefined;
+  let edgeClassName = `graph-edge-${edge.kind}`;
+  if (debug !== undefined && edge.source.kind === "node") {
+    const sourceNodeId = edge.source.nodeId;
+    const node = graph.nodes.find((candidate) => candidate.id === sourceNodeId);
+    if (node !== undefined) {
+      const nodeType = node.nodeTypeId === undefined
+        ? undefined
+        : resolveNodeTypeDefinition(catalogRegistry, node.nodeTypeId);
+      const dataOutputs = portsForNode(document, graph, node, nodeType)
+        .filter((port) => port.kind === "data" && port.direction === "output");
+      const canonicalPortId = canonicalCanvasPortId(edge.source, graph, catalogRegistry);
+      const outputIndex = dataOutputs.findIndex((port) => port.id === canonicalPortId);
+      if (outputIndex >= 0) {
+        const key = `${sourceNodeId}:${outputIndex}`;
+        if (edge.kind === "data") {
+          label = debug.values.get(key);
+        }
+        if (debug.flashKeys?.has(key) === true) {
+          edgeClassName += " graph-edge-active";
+        }
+      }
+      if (debug.flashNodeIds?.has(sourceNodeId) === true) {
+        edgeClassName += " graph-edge-active";
+      }
+    }
+  }
   return {
     id: edge.id,
     type: "default",
@@ -3242,7 +3754,8 @@ function toFlowEdge(
     target: edge.target.kind === "node" ? edge.target.nodeId : INTERFACE_OUTPUT_NODE_ID,
     targetHandle: canonicalCanvasPortId(edge.target, graph, catalogRegistry),
     data: { model: edge },
-    className: `graph-edge-${edge.kind}`,
+    className: edgeClassName,
+    ...(label === undefined ? {} : { label }),
     ...(dataColor === undefined ? {} : { style: { stroke: dataColor } }),
     markerEnd: { type: MarkerType.ArrowClosed, ...(dataColor === undefined ? {} : { color: dataColor }) },
     selected: selected?.edgeIds.includes(edge.id) ?? false,

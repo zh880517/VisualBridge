@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 检查适配器）已关闭，**阶段 A 与阶段 B 全部完成**——VB-UX-00 至 VB-UX-12 已关闭；阶段 C（远程与设备连接）经项目方 2026-08-31 决策明确推迟（见第 6 节）。**2026-08-31 新增阶段 D（Graph 执行过程可视化，VB-UX-13~16）**：项目方确认游戏侧 Graph 执行引擎与执行观察需求，设计已逐项讨论冻结（见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 19 章）；VB-UX-13（协议扩展）、VB-UX-14（Unity 采集门面与订阅转发）与 VB-UX-15（VS Code 订阅服务与会话记录）已关闭，VB-UX-16（页面 UI 与 E2E）待执行。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 检查适配器）已关闭，**阶段 A 与阶段 B 全部完成**——VB-UX-00 至 VB-UX-12 已关闭；阶段 C（远程与设备连接）经项目方 2026-08-31 决策明确推迟（见第 6 节）。**2026-08-31 新增阶段 D（Graph 执行过程可视化，VB-UX-13~16）**：项目方确认游戏侧 Graph 执行引擎与执行观察需求，设计已逐项讨论冻结（见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 19 章）；**阶段 D 全部任务已关闭**——VB-UX-13（协议扩展）、VB-UX-14（Unity 采集门面与订阅转发）、VB-UX-15（VS Code 订阅服务与会话记录）、VB-UX-16（Graph 页面执行调试 UI 与 E2E）均于同日完成并通过全部门槛。
 
 本阶段分四段：
 
@@ -415,7 +415,7 @@ Exit criteria：
 - 扩展宿主测试（假 Runtime 实例）覆盖订阅/退订/批量事件乱序到达/实例停止/多客户端并行观察不占租约。
 - `npm run check`、`npm test` 全工作区通过。
 
-### VB-UX-16 Graph 页面执行调试 UI 与 E2E — `pending`
+### VB-UX-16 Graph 页面执行调试 UI 与 E2E — `complete`
 
 依赖：VB-UX-14、VB-UX-15。
 
@@ -425,10 +425,18 @@ Exit criteria：
 - 实时态（当前节点高亮、经过边流光、数据边最近值）与回放态（时间轴、事件级/帧级步进、回到实时、实例停止收尾与切换）；Webview 组件选型遵循仓库规范（AGENTS.md）。
 - 停止调试/关闭页面即退订。
 
+实施与验证记录：2026-08-31 完成。宿主侧新增 `GraphExecutionDebugController`（每会话一个，持有**独立于 DAP 的 RuntimeBridgeService 连接**——观察者语义可并行观察的落地）；五个新 webview 消息（实例枚举/订阅/退订/状态重建，requestId 关联）+ 增量 `graphExecutionEvents` 推送 + `graphExecutionStopped` 收尾；订阅回复先于事件转发（Webview 依回复重置本地累计，防开流标记丢失）。Webview 侧：工具栏「执行调试」开关 + 左下调试面板（运行时状态/实例列表/跟踪中/时间轴 ⏮◀▶⏭ 与回到实时）；`GraphDebugContext` 节点高亮（`executing` 描边 + 仅实时态呼吸动画，回放态静态描边，reduced-motion 回退）；数据边最近值标签 + `graph-edge-active` 短暂流光（(源节点, 输出序号) 精确匹配 + 节点级回退）；纯函数 `computeGraphDebugView` 由事件前缀计算当前节点与边值，回放游标事件级/帧级步进；epoch 重置后经状态重建消息再水合。实现偏差记录：调试面板落在画布左下浮层（检查器壳被 GraphInspector 占满）；宿主侧按文档 documentId 过滤实例（解析失败回退不过滤）。
+
+E2E：宿主测试新增「drives graph execution debug through the Graph editor session」（假 Runtime 实例 + 真实 Graph 编辑器：枚举/订阅/ack 断言 executingNodeId 与 follow 模式/退订断言/服务端收到 unsubscribe，关闭编辑器后再 server.close）；Unity 侧 `VisualBridgeRuntimeBridgeBatch` 增加托管 Play 模拟器（读真实编译产物取 documentTypeId/documentId/节点稳定 ID，300ms 循环驱动采集门面）；Runtime E2E 第 6 测（真实 Unity Play + 隔离 Extension Host：Encounter.vbflow 打开 → 实例发现 → 订阅 → 真实事件流 ack（exec-1/welcome）→ 退订停采 → 重订阅切换 → 终止退订）。
+
+验证记录（全部本机复跑）：`npm run check` 0 错误；隔离 Extension Host 56/56；EditMode 158/158；Runtime E2E 6/6（真实 Unity Play）；Editor Bridge open/reveal E2E 回归通过；根 `npm test` 全工作区通过；`dotnet build`（runtime/editor/tests csproj）零警告零错误；`git diff --check` 干净。
+
 Exit criteria：
 
 - 真实 Unity Play 实例 + 隔离 Extension Host E2E：attach → 事件驱动高亮/值显示 → 回放步进 → 切换实例 → 退订停采断言。
 - Editor Bridge open/reveal E2E、阶段 A/B 全部门槛回归通过；`check:docs` 的命令/编辑器清单同步更新。
+
+落地说明：回放步进的游标是 Webview 本地状态，E2E 以 `graphDebugAck`（事件数/游标/当前节点/模式）作为 Webview 处理与高亮计算的断言钩子（沿用 reveal ack 先例）；`visualbridge.test.*` 测试命令不进 package.json 命令清单，22 命令门禁计数不变。
 
 ## 8. 强制工作流与验证门槛
 

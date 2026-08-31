@@ -2742,6 +2742,224 @@ exports.run = async function run() {
       await rm(discoveryDirectory, { recursive: true, force: true });
     }
   });
+
+  await test("drives graph execution debug through the Graph editor session", async () => {
+    // 真实 Graph 编辑器 + 假 Runtime 实例：页面执行调试链路（§19.5）端到端。
+    const graphUri = vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "Graph", "SemanticSample.vbgraph"));
+    // 实例 ID 必须符合 editor-<pid> 约定（发现记录解析会拒绝其他形态）。
+    const instanceId = `editor-${process.pid}`;
+    const discoveryDirectory = await mkdtemp(path.join(tmpdir(), "visualbridge-runtime-graph-debug-"));
+    const recordPath = path.join(discoveryDirectory, `${instanceId}.json`);
+    const token = createHash("sha256").update(`graph-debug-${instanceId}`).digest("hex");
+    const startedAt = new Date().toISOString();
+    const capabilities = ["snapshot", "events", "lease", "sources", "graphExecution"];
+    // documentId 与 SemanticSample.vbgraph 一致：宿主按当前文档过滤实例。
+    const executionInstance = {
+      executionId: "exec-1",
+      documentTypeId: "logicGraph",
+      documentId: "semantic-sample",
+      graphName: "Semantic Sample",
+      debugKey: "hero-01",
+      state: "running",
+      currentNodeId: null,
+      frameIndex: 0,
+    };
+    let executionActive = true;
+    const subscribers = new Set();
+    const actions = [];
+    const send = (socket, message) => socket.write(`${JSON.stringify(message)}\n`);
+    const pushBatch = (events) => {
+      for (const socket of subscribers) {
+        send(socket, { type: "event", event: "graphExecution", executionEvents: events });
+      }
+    };
+    const server = net.createServer((socket) => {
+      socket.setEncoding("utf8");
+      let buffer = "";
+      let handshake = false;
+      socket.on("data", (chunk) => {
+        buffer += chunk;
+        let index;
+        while ((index = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, index);
+          buffer = buffer.slice(index + 1);
+          if (line.trim().length === 0) continue;
+          const message = JSON.parse(line);
+          if (!handshake) {
+            if (message.type === "hello" && message.token === token && message.protocolVersion === 1) {
+              handshake = true;
+              send(socket, {
+                type: "welcome",
+                protocolVersion: 1,
+                coreVersion: 1,
+                instanceId,
+                kind: "editor-play",
+                generation: 1,
+                capabilities,
+                startedAt,
+              });
+            } else {
+              send(socket, { type: "error", code: "runtime.invalidToken" });
+              socket.destroy();
+            }
+            continue;
+          }
+
+          if (message.type !== "request") continue;
+          actions.push({ action: message.action });
+          if (message.action === "getGraphExecutionInstances") {
+            const executions = executionActive
+              && (message.documentId === undefined || message.documentId === executionInstance.documentId)
+                ? [executionInstance]
+                : [];
+            send(socket, { type: "response", requestId: message.requestId, status: "ok", executions });
+          } else if (message.action === "getGraphExecutionSnapshot") {
+            if (executionActive && message.executionId === "exec-1") {
+              send(socket, { type: "response", requestId: message.requestId, status: "ok", execution: executionInstance });
+            } else {
+              send(socket, { type: "response", requestId: message.requestId, status: "error", error: "runtime.executionNotFound" });
+            }
+          } else if (message.action === "subscribeGraphExecution") {
+            if (executionActive && message.executionId === "exec-1") {
+              subscribers.add(socket);
+              send(socket, { type: "response", requestId: message.requestId, status: "ok" });
+              send(socket, {
+                type: "event",
+                event: "graphExecution",
+                executionEvents: [{ executionId: "exec-1", frameIndex: 0, kind: "instanceStarted" }],
+              });
+            } else {
+              send(socket, { type: "response", requestId: message.requestId, status: "error", error: "runtime.executionNotFound" });
+            }
+          } else if (message.action === "unsubscribeGraphExecution") {
+            subscribers.delete(socket);
+            send(socket, { type: "response", requestId: message.requestId, status: "ok" });
+          } else {
+            send(socket, { type: "response", requestId: message.requestId, status: "error", error: "runtime.unknownRequest" });
+          }
+        }
+      });
+      socket.on("close", () => {
+        subscribers.delete(socket);
+      });
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const tcpPort = server.address().port;
+    const writeRecord = () => writeFile(recordPath, `${JSON.stringify({
+      formatVersion: 1,
+      protocolVersion: 1,
+      coreVersion: 1,
+      instanceId,
+      kind: "editor-play",
+      capabilities,
+      tcpPort,
+      token,
+      pid: process.pid,
+      generation: 1,
+      startedAt,
+    })}\n`, "utf8");
+    await writeRecord();
+    const heartbeat = setInterval(() => {
+      void writeRecord();
+    }, 2000);
+
+    const previousRuntimeDirectory = process.env.VISUALBRIDGE_TEST_RUNTIME_DIR;
+    process.env.VISUALBRIDGE_TEST_RUNTIME_DIR = discoveryDirectory;
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", graphUri, "visualbridge.documentEditor");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", graphUri),
+        (ready) => ready === true,
+        20_000,
+        "The Graph editor did not become ready for the execution debug test.",
+      );
+
+      // 实例枚举：控制器自动连接假实例，并按当前文档过滤出执行实例。
+      await vscode.commands.executeCommand("visualbridge.test.sendGraphEditorDebugMessage", graphUri, {
+        type: "requestGraphExecutionInstances",
+        requestId: "graph-debug-list-1",
+      });
+      const listed = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorDebugState", graphUri),
+        (state) => state?.runtimeConnected === true && state?.instanceCount === 1,
+        20_000,
+        "The debug controller did not connect and list the execution instance.",
+      );
+      assert.deepEqual(listed.instanceIds, ["exec-1"]);
+      assert.equal(listed.runtimeInstanceId, instanceId);
+      assert.equal(listed.subscribedExecutionId, undefined);
+
+      // 订阅：合成 instanceStarted 开流，随后事件驱动 Webview 高亮并回执 ack。
+      await vscode.commands.executeCommand("visualbridge.test.sendGraphEditorDebugMessage", graphUri, {
+        type: "subscribeGraphExecution",
+        requestId: "graph-debug-sub-1",
+        executionId: "exec-1",
+      });
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorDebugState", graphUri),
+        (state) => state?.subscribedExecutionId === "exec-1" && state?.totalEvents >= 1,
+        20_000,
+        "The debug controller did not subscribe to the execution instance.",
+      );
+      pushBatch([{ executionId: "exec-1", frameIndex: 3, kind: "nodeStart", nodeId: "step_a" }]);
+      const liveAck = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorDebugState", graphUri),
+        (state) => state?.lastWebviewAck !== undefined
+          && state.lastWebviewAck.executingNodeId === "step_a"
+          && state.lastWebviewAck.mode === "follow",
+        20_000,
+        "The Webview did not acknowledge the live execution events.",
+      );
+      assert.equal(liveAck.subscribedExecutionId, "exec-1");
+      assert.ok(liveAck.lastWebviewAck.eventCount >= 2, "The acknowledged event count must include the open-stream marker.");
+      assert.ok(liveAck.lastWebviewAck.cursor === liveAck.lastWebviewAck.eventCount - 1,
+        "The follow-mode cursor must track the latest event.");
+
+      // 再推一批：实时态光标继续跟随事件末尾。
+      pushBatch([
+        { executionId: "exec-1", frameIndex: 4, kind: "nodeOutput", nodeId: "step_a", outputIndex: 0 },
+        { executionId: "exec-1", frameIndex: 5, kind: "nodeStart", nodeId: "step_b" },
+      ]);
+      const followed = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorDebugState", graphUri),
+        (state) => state?.lastWebviewAck?.executingNodeId === "step_b" && state.lastWebviewAck.eventCount >= 4,
+        20_000,
+        "The Webview did not follow the subsequent execution events.",
+      );
+      assert.equal(followed.lastWebviewAck.mode, "follow");
+      assert.equal(followed.lastWebviewAck.cursor, followed.lastWebviewAck.eventCount - 1);
+
+      // 退订：会话摘除订阅并断开控制器的 Runtime 连接；服务端收到 unsubscribe。
+      await vscode.commands.executeCommand("visualbridge.test.sendGraphEditorDebugMessage", graphUri, {
+        type: "unsubscribeGraphExecution",
+        requestId: "graph-debug-unsub-1",
+      });
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorDebugState", graphUri),
+        (state) => state?.subscribedExecutionId === undefined && state?.runtimeConnected === false,
+        20_000,
+        "The debug controller did not unsubscribe and disconnect.",
+      );
+      assert.ok(actions.some((entry) => entry.action === "unsubscribeGraphExecution"),
+        "The fake runtime instance did not receive unsubscribeGraphExecution.");
+
+      executionActive = false;
+    } finally {
+      // 先关闭编辑器（会话 dispose 断开控制器连接）：server.close() 等待全部连接结束。
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorDebugState", graphUri),
+        (state) => state === undefined || state?.runtimeConnected === false,
+        10_000,
+        "The Graph editor session did not release its runtime connection on close.",
+      ).catch(() => undefined);
+      clearInterval(heartbeat);
+      if (previousRuntimeDirectory === undefined) delete process.env.VISUALBRIDGE_TEST_RUNTIME_DIR;
+      else process.env.VISUALBRIDGE_TEST_RUNTIME_DIR = previousRuntimeDirectory;
+      await new Promise((resolve) => server.close(resolve));
+      await rm(discoveryDirectory, { recursive: true, force: true });
+    }
+  });
 };
 
 async function assertEditorRoute(workspacePath, segments, expectedViewType, openCommand) {

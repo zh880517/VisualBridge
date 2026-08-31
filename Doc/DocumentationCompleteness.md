@@ -4,7 +4,7 @@
 
 本矩阵是 VisualBridge Unity 接入前 Authoring 基线的最终审计入口。每一项已实现能力都必须同时具备可追踪设计、必要流程图、使用说明、机器契约和自动验证；空项意味着文档里程碑未完成。路线图和提交说明不能替代本矩阵引用的正式资料。
 
-矩阵只覆盖由 `v0.1.0` 固化的本地 Authoring 基线。当前已实现的 Unity 四领域离线编译（Structured/Entity/Table/Graph）、最小 Editor Bridge 与本机 Runtime 检查链路（发现、Runtime Bridge 协议、租约调试语义、DAP 检查适配器、MCP 运行时工具）由 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 与 [`UnityDomainAndRuntimeRoadmap.md`](UnityDomainAndRuntimeRoadmap.md) 独立审计；Unity Player、远程/设备连接（阶段 C，项目方推迟）、WebSocket、Project Discovery File 和独立产品 CLI 仍为未来工作，不以占位 Schema 伪装成已完成能力，Graph 执行过程可视化（阶段 D）的规划见 [`UnityDomainAndRuntimeRoadmap.md`](UnityDomainAndRuntimeRoadmap.md)。
+矩阵只覆盖由 `v0.1.0` 固化的本地 Authoring 基线。当前已实现的 Unity 四领域离线编译（Structured/Entity/Table/Graph）、最小 Editor Bridge 与本机 Runtime 检查链路（发现、Runtime Bridge 协议、租约调试语义、DAP 检查适配器、MCP 运行时工具）由 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 与 [`UnityDomainAndRuntimeRoadmap.md`](UnityDomainAndRuntimeRoadmap.md) 独立审计；Unity Player、远程/设备连接（阶段 C，项目方推迟）、WebSocket、Project Discovery File 和独立产品 CLI 仍为未来工作，不以占位 Schema 伪装成已完成能力，Graph 执行过程可视化（阶段 D：协议、采集、订阅与页面）已全部落地。
 
 ## 2. 完整性矩阵
 

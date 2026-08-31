@@ -251,6 +251,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         (uri: vscode.Uri) => editorProvider.getGraphEditorTestState(uri),
       ),
       vscode.commands.registerCommand(
+        "visualbridge.test.getGraphEditorDebugState",
+        (uri: vscode.Uri) => editorProvider.getGraphEditorDebugState(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.sendGraphEditorDebugMessage",
+        (uri: vscode.Uri, message: unknown) => editorProvider.sendGraphEditorDebugMessage(uri, message),
+      ),
+      vscode.commands.registerCommand(
         "visualbridge.test.getEntityEditorState",
         (uri: vscode.Uri) => editorProvider.getEntityEditorTestState(uri),
       ),

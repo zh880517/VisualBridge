@@ -133,7 +133,7 @@ Table 是纯消费方：Unity 侧没有 Table Exporter，catalog（`.vbtablecata
 - 菜单：**Tools / VisualBridge/Runtime Bridge/Start in Play Mode**、**Status**。E2E：`npm run test:runtime-e2e`（batchmode Play + 隔离 Extension Host，覆盖发现/快照/事件全链路）。
 - DAP 检查会话：VS Code 调试 UI 以 `visualbridge-runtime` 类型 attach 到 Runtime 实例（attach 时持调试租约），变量树展示运行时快照与 `__sourcePath`/`__sourceDrifted`；断点不受支持（只检查会话，见架构文档 §18.3/18.5）。
 - MCP 检查工具：stdio MCP Server 暴露只读的 `visualbridge_runtime` 工具（`listInstances` / `getSnapshot` / `getDocumentSources`），漂移由 MCP 侧对照工作区 Authoring 字节计算；每次调用独立连接、断开即释放租约，与 DAP 检查会话并存（并发时后来者得到 `runtime.leaseDenied`）。
-- Graph 执行观察（阶段 D，VB-UX-13/14）：服务端通告 `graphExecution` 能力；游戏侧引擎经 [`UnityGraphExecutionDebug.md`](UnityGraphExecutionDebug.md) 的采集门面上报执行事件，客户端可订阅单个执行实例接收 `graphExecution` 批量事件（观察者语义，不占租约）。
+- Graph 执行观察（阶段 D，VB-UX-13/14）：服务端通告 `graphExecution` 能力；游戏侧引擎经 [`UnityGraphExecutionDebug.md`](UnityGraphExecutionDebug.md) 的采集门面上报执行事件，客户端可订阅单个执行实例接收 `graphExecution` 批量事件（观察者语义，不占租约）；Graph 编辑器页内「执行调试」入口提供实例选择、实时高亮/边流光/数据边值显示与时间轴回放（事件级/帧级步进）。
 
 ## 6. Structured Compile
 

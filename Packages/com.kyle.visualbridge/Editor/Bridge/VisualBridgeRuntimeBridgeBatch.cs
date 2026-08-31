@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Sockets;
 using System.Text;
+using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -14,7 +16,9 @@ namespace VisualBridge.Editor
     /// 进入 Play → host 启动 server → 内联简客户端连接自身完成
     /// hello/welcome/getSnapshot 往返 → 写结构化结果文件后退出。
     /// 事件链路（artifactsChanged）由 EditMode 测试覆盖：编译产物在
-    /// Play 会话中不变，E2E 内改产物目录不可行。
+    /// Play 会话中不变，E2E 内改产物目录不可行。托管模式（RunHostedPlayMode）
+    /// 另挂一个 Play 模式执行模拟器：持续上报编译图的节点/边执行事件，
+    /// 供 VS Code 侧 Graph 页面执行调试 E2E（VB-UX-16）消费。
     /// </summary>
     // InitializeOnLoad 让静态构造在每次 domain reload 后执行，
     // 否则 Step/HostedStep 在进入 Play 的 reload 后不会重新挂接。
@@ -36,6 +40,16 @@ namespace VisualBridge.Editor
         private const string HostedQuitPathKey = "VisualBridge.RuntimeBridgeHostedE2E.QuitPath";
         private const string HostedDeadlineKey = "VisualBridge.RuntimeBridgeHostedE2E.DeadlineTicks";
         private const string HostedStoppingKey = "VisualBridge.RuntimeBridgeHostedE2E.Stopping";
+
+        // Play 模式执行模拟器（VB-UX-16 E2E）：从编译产物取真实图身份与节点 ID，
+        // 周期上报节点/边事件直到退出信号；实例保持存活供切换订阅测试。
+        private const string HostedSimStartedKey = "VisualBridge.RuntimeBridgeHostedE2E.SimStarted";
+        private const string HostedSimExecutionIdKey = "VisualBridge.RuntimeBridgeHostedE2E.SimExecutionId";
+        private const string HostedSimNodeIdsKey = "VisualBridge.RuntimeBridgeHostedE2E.SimNodeIds";
+        private const string HostedSimCursorKey = "VisualBridge.RuntimeBridgeHostedE2E.SimCursor";
+        private const string HostedSimFrameKey = "VisualBridge.RuntimeBridgeHostedE2E.SimFrame";
+        private const string HostedSimNextTickKey = "VisualBridge.RuntimeBridgeHostedE2E.SimNextTick";
+        private const int HostedSimTickMs = 300;
 
         static VisualBridgeRuntimeBridgeBatch()
         {
@@ -143,6 +157,129 @@ namespace VisualBridge.Editor
                 VisualBridgeRuntimeBridgeHost.StopServer("hosted e2e finished");
                 UnityEngine.Debug.Log("[runtime-bridge] hosted play mode E2E finished.");
                 EditorApplication.Exit(SuccessExitCode);
+                return;
+            }
+
+            if (EditorApplication.isPlaying)
+            {
+                StepExecutionSimulator();
+            }
+        }
+
+        /// <summary>
+        /// 托管 E2E 的执行事件源：首帧解析编译图产物并登记执行实例，
+        /// 之后每 300ms 轮转节点上报 nodeStart，间或上报 edgeValueChanged。
+        /// </summary>
+        private static void StepExecutionSimulator()
+        {
+            if (VisualBridgeRuntimeBridgeHost.CurrentServer == null)
+            {
+                return;
+            }
+
+            if (!SessionState.GetBool(HostedSimStartedKey, false))
+            {
+                StartExecutionSimulator();
+                return;
+            }
+
+            var nextTickTicks = SessionState.GetString(HostedSimNextTickKey, "0");
+            if (!long.TryParse(nextTickTicks, out var nextTick) || DateTime.UtcNow.Ticks < nextTick)
+            {
+                return;
+            }
+
+            SessionState.SetString(HostedSimNextTickKey, DateTime.UtcNow.AddMilliseconds(HostedSimTickMs).Ticks.ToString());
+            var executionId = SessionState.GetString(HostedSimExecutionIdKey, null);
+            var nodeIds = (SessionState.GetString(HostedSimNodeIdsKey, "") ?? string.Empty)
+                .Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+            if (string.IsNullOrEmpty(executionId) || nodeIds.Length == 0)
+            {
+                return;
+            }
+
+            var cursor = SessionState.GetInt(HostedSimCursorKey, 0);
+            var frame = SessionState.GetInt(HostedSimFrameKey, 1);
+            var nodeId = nodeIds[cursor % nodeIds.Length];
+            VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnNodeStart(executionId, nodeId, frame);
+            if (cursor % 3 == 1)
+            {
+                VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnEdgeValueChanged(
+                    executionId, nodeId, 0, "frame " + frame, frame);
+            }
+
+            SessionState.SetInt(HostedSimCursorKey, cursor + 1);
+            SessionState.SetInt(HostedSimFrameKey, frame + 1);
+        }
+
+        private static void StartExecutionSimulator()
+        {
+            try
+            {
+                var snapshot = VisualBridge.Runtime.VisualBridgeRuntimeArtifactStore.Snapshot(
+                    VisualBridgeRuntimeBridgeHost.ArtifactsRoot());
+                VisualBridge.Runtime.VisualBridgeRuntimeDocumentSnapshot graphDocument = null;
+                foreach (var document in snapshot)
+                {
+                    if (document.Kind == "visualbridge.graph.compiled")
+                    {
+                        graphDocument = document;
+                        break;
+                    }
+                }
+
+                if (graphDocument == null)
+                {
+                    UnityEngine.Debug.LogWarning("[runtime-bridge] no compiled graph artifact found for the execution simulator.");
+                    return;
+                }
+
+                // 节点参数使用编译产物内的稳定节点 ID（§2 稳定 ID 映射）。
+                var nodeIds = new List<string>();
+                var graphs = graphDocument.Data?["graphs"] as JArray;
+                var firstGraph = graphs != null && graphs.Count > 0 ? graphs[0] as JObject : null;
+                var nodes = firstGraph?["nodes"] as JArray;
+                if (nodes != null)
+                {
+                    foreach (var node in nodes)
+                    {
+                        var nodeId = (node as JObject)?["id"]?.ToString();
+                        if (!string.IsNullOrEmpty(nodeId))
+                        {
+                            nodeIds.Add(nodeId);
+                            if (nodeIds.Count >= 4)
+                            {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (nodeIds.Count == 0)
+                {
+                    UnityEngine.Debug.LogWarning("[runtime-bridge] the compiled graph artifact carries no node ids.");
+                    return;
+                }
+
+                var graphName = firstGraph?["title"]?.ToString() ?? graphDocument.DocumentId;
+                if (!VisualBridge.Runtime.VisualBridgeGraphExecutionCapture.OnInstanceStarted(
+                    graphDocument.DocumentTypeId, graphDocument.DocumentId, graphName, "hero-e2e", out var executionId))
+                {
+                    UnityEngine.Debug.LogWarning("[runtime-bridge] execution capture is not tracking; simulator not started.");
+                    return;
+                }
+
+                SessionState.SetString(HostedSimExecutionIdKey, executionId);
+                SessionState.SetString(HostedSimNodeIdsKey, string.Join(";", nodeIds));
+                SessionState.SetInt(HostedSimCursorKey, 0);
+                SessionState.SetInt(HostedSimFrameKey, 1);
+                SessionState.SetString(HostedSimNextTickKey, DateTime.UtcNow.AddMilliseconds(HostedSimTickMs).Ticks.ToString());
+                SessionState.SetBool(HostedSimStartedKey, true);
+                UnityEngine.Debug.Log($"[runtime-bridge] execution simulator started: executionId={executionId} nodes={nodeIds.Count}");
+            }
+            catch (Exception exception)
+            {
+                UnityEngine.Debug.LogError($"[runtime-bridge] failed to start the execution simulator: {exception.Message}");
             }
         }
 

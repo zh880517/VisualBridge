@@ -51,6 +51,10 @@ button.secondary:hover:not(:disabled) {
   background: var(--vscode-button-secondaryHoverBackground);
 }
 
+button.secondary.active {
+  outline: 1px solid var(--vscode-focusBorder);
+}
+
 button.danger {
   color: var(--vscode-button-foreground);
   background: var(--vscode-errorForeground);
@@ -169,6 +173,7 @@ button:disabled {
 }
 
 .graph-content {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
   min-height: 0;
@@ -225,6 +230,197 @@ button:disabled {
     animation: none;
     outline: 3px solid var(--vscode-focusBorder);
     outline-offset: 4px;
+  }
+}
+
+/* 执行调试（§19.5）：当前执行节点持续高亮，实时态附加呼吸动画（回放态静止）。 */
+.graph-node.executing {
+  box-shadow:
+    0 0 0 2px var(--vscode-charts-green, #4ec94e),
+    0 3px 10px rgba(0, 0, 0, 0.22);
+}
+
+.graph-node.executing:not(.executing-replay) {
+  animation: graph-debug-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes graph-debug-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 2px var(--vscode-charts-green, #4ec94e),
+      0 3px 10px rgba(0, 0, 0, 0.22);
+  }
+
+  50% {
+    box-shadow:
+      0 0 0 4px var(--vscode-charts-green, #4ec94e),
+      0 4px 14px rgba(0, 0, 0, 0.28);
+  }
+}
+
+/* 刚经过的边短暂流光。 */
+.react-flow__edge.graph-edge-active .react-flow__edge-path {
+  stroke: var(--vscode-charts-green, #4ec94e);
+  stroke-width: 3.5;
+}
+
+/* 数据边最近值标签：小号弱化文字。 */
+.react-flow__edge-text {
+  font-size: 10px;
+  fill: var(--vscode-descriptionForeground);
+}
+
+.graph-debug-panel {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 360px;
+  max-height: 58%;
+  padding: 12px;
+  overflow: auto;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 5px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  color: var(--vscode-editorWidget-foreground);
+}
+
+.graph-debug-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.graph-debug-panel-title {
+  font-weight: 600;
+}
+
+.graph-debug-runtime {
+  flex: 1;
+  overflow: hidden;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-debug-runtime.connected::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  background: var(--vscode-testing-iconPassed, #73c991);
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.graph-debug-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.graph-debug-section-title {
+  color: var(--vscode-sideBarTitle-foreground);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.graph-debug-empty {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.graph-debug-instance {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.graph-debug-instance-key {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-debug-instance-state,
+.graph-debug-instance-frame {
+  color: var(--vscode-descriptionForeground);
+}
+
+.graph-debug-instance-node {
+  overflow: hidden;
+  max-width: 120px;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-debug-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.graph-debug-stopped {
+  color: var(--vscode-errorForeground);
+  font-weight: 600;
+}
+
+.graph-debug-switch {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.graph-debug-instance-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.graph-debug-panel input[type="range"] {
+  width: 100%;
+  margin: 0;
+}
+
+.graph-debug-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.graph-debug-steps button {
+  min-height: 24px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.graph-debug-event {
+  overflow: hidden;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .graph-node.executing:not(.executing-replay) {
+    animation: none;
   }
 }
 

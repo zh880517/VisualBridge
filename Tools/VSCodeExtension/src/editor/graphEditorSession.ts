@@ -27,6 +27,7 @@ import { loadGraphCatalogRegistry } from "../catalog/graphCatalogLoader";
 import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
 import { handleReferenceMessage } from "../reference/referenceMessages";
 import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
+import { GraphExecutionDebugController, type GraphExecutionDebugTestState } from "./graphExecutionDebugController";
 import { WebviewEpoch } from "./webviewEpoch";
 
 const OVERWRITE = "覆盖";
@@ -47,6 +48,11 @@ interface WebviewMessage {
   readonly value?: unknown;
   readonly found?: unknown;
   readonly message?: unknown;
+  readonly executionId?: unknown;
+  readonly eventCount?: unknown;
+  readonly cursor?: unknown;
+  readonly executingNodeId?: unknown;
+  readonly mode?: unknown;
 }
 
 interface GraphStateOptions {
@@ -67,6 +73,7 @@ export class GraphEditorSession {
   private readonly webviewEpoch = new WebviewEpoch();
   private readonly revealMailbox = new GraphRevealMailbox();
   private lastRevealResult: { readonly target: GraphRevealTarget; readonly found: boolean } | undefined;
+  private readonly debugController: GraphExecutionDebugController;
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -77,7 +84,17 @@ export class GraphEditorSession {
     private readonly references: WorkspaceReferenceService,
     private readonly publishDiagnostics: (diagnostics: readonly vscode.Diagnostic[]) => void,
     private readonly output: vscode.OutputChannel,
-  ) {}
+  ) {
+    // 执行调试使用独立 Runtime 连接（观察者语义），不与 DAP 检查会话共享。
+    this.debugController = new GraphExecutionDebugController({
+      postMessage: (message) => this.postMessage(message),
+      getDocumentId: () => {
+        const parseResult = parseGraphDocument(this.document.getText());
+        return parseResult.success ? parseResult.document.documentId : undefined;
+      },
+      output: (line) => this.output.appendLine(`[graph-debug] ${line}`),
+    });
+  }
 
   public async open(): Promise<void> {
     this.baseDiskTextHash = await this.readDiskTextHash();
@@ -215,6 +232,27 @@ export class GraphEditorSession {
     await operation;
   }
 
+  /** 测试注入执行调试消息（带 epoch token，与真实 Webview 消息同路径）。 */
+  public async sendDebugMessageForTest(message: unknown): Promise<void> {
+    const webviewToken = this.webviewEpoch.currentToken;
+    if (!this.isReady || webviewToken === undefined) {
+      throw new Error("No ready Graph editor session was found.");
+    }
+    const webviewEpoch = this.webviewEpoch.capture();
+    const operation = this.operationQueue
+      .catch(() => undefined)
+      .then(() => this.handleMessage({
+        ...(message as { readonly type?: unknown }),
+        webviewToken,
+      }, webviewEpoch));
+    this.operationQueue = operation;
+    await operation;
+  }
+
+  public get debugTestState(): GraphExecutionDebugTestState {
+    return this.debugController.testState;
+  }
+
   public get testState(): {
     readonly ready: boolean;
     readonly readyGeneration: number;
@@ -222,6 +260,7 @@ export class GraphEditorSession {
     readonly active: boolean;
     readonly visible: boolean;
     readonly lastRevealResult?: { readonly target: GraphRevealTarget; readonly found: boolean };
+    readonly debugState?: GraphExecutionDebugTestState;
   } {
     const state = {
       ready: this.webviewReady && this.webviewEpoch.isReady && !this.disposed,
@@ -229,6 +268,7 @@ export class GraphEditorSession {
       active: this.panel.active,
       visible: this.panel.visible,
       ...(this.lastRevealResult === undefined ? {} : { lastRevealResult: this.lastRevealResult }),
+      debugState: this.debugController.testState,
     };
     const readyToken = this.webviewEpoch.isReady ? this.webviewEpoch.currentToken : undefined;
     return readyToken === undefined ? state : { ...state, readyToken };
@@ -277,6 +317,14 @@ export class GraphEditorSession {
     }
     if (message.type === "readClipboard") {
       await this.postMessage({ type: "clipboardData", text: await vscode.env.clipboard.readText() });
+      return;
+    }
+    if (message.type === "requestGraphExecutionInstances"
+      || message.type === "subscribeGraphExecution"
+      || message.type === "unsubscribeGraphExecution"
+      || message.type === "requestGraphExecutionDebugState"
+      || message.type === "graphDebugAck") {
+      await this.debugController.handleWebviewMessage(message);
       return;
     }
     if (message.type !== "applyOperations") {
@@ -683,6 +731,8 @@ export class GraphEditorSession {
     this.disposed = true;
     this.webviewEpoch.invalidate();
     this.webviewReady = false;
+    // 关闭页面即退订：断开执行调试的 Runtime 连接（§19.5 断开语义）。
+    this.debugController.dispose();
     for (const disposable of this.catalogDisposables.splice(0)) {
       disposable.dispose();
     }

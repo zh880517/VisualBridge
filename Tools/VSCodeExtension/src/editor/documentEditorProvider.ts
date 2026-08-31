@@ -9,6 +9,7 @@ import { STRUCTURED_EDITOR_ID } from "@visualbridge/structured";
 import { TABLE_EDITOR_ID } from "@visualbridge/table";
 import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
 import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
+import type { GraphExecutionDebugTestState } from "./graphExecutionDebugController";
 import { EntityEditorSession } from "./entityEditorSession";
 import { GraphEditorSession } from "./graphEditorSession";
 import { StructuredEditorSession } from "./structuredEditorSession";
@@ -218,21 +219,22 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
       readonly target: GraphRevealTarget;
       readonly found: boolean;
     }[];
+    readonly debugStates: readonly GraphExecutionDebugTestState[];
   } {
     const uriKey = uri.toString();
-    const states = [...this.graphSessions.get(uriKey) ?? []].map((session) => session.testState);
+    const sessions = [...this.graphSessions.get(uriKey) ?? []];
+    const states = sessions.map((session) => session.testState);
     return {
       sessionCount: states.length,
       readySessionCount: states.filter((state) => state.ready).length,
       activeSessionCount: states.filter((state) => state.active).length,
       visibleSessionCount: states.filter((state) => state.visible).length,
-      sessionIds: [...this.graphSessions.get(uri.toString()) ?? []].map(
-        (session) => session.testSessionId,
-      ),
+      sessionIds: sessions.map((session) => session.testSessionId),
       readyTokens: states.flatMap((state) => state.readyToken === undefined ? [] : [state.readyToken]),
       lastRevealResults: states.flatMap((state) => (
         state.lastRevealResult === undefined ? [] : [state.lastRevealResult]
       )),
+      debugStates: sessions.map((session) => session.debugTestState),
       maxReadyGeneration: states.reduce(
         (maximum, state) => Math.max(maximum, state.readyGeneration),
         0,
@@ -240,6 +242,19 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
       diagnosticOwnerCount: this.sessionDiagnostics.get(uriKey)?.size ?? 0,
       publishedDiagnosticCount: this.diagnostics.get(uri)?.length ?? 0,
     };
+  }
+
+  /** 首个 Graph 会话的执行调试状态（测试轮询用）。 */
+  public getGraphEditorDebugState(uri: vscode.Uri): GraphExecutionDebugTestState | undefined {
+    const session = [...this.graphSessions.get(uri.toString()) ?? []][0];
+    return session === undefined ? undefined : session.debugTestState;
+  }
+
+  /** 向首个 Graph 会话注入执行调试消息（带 token，与真实 Webview 同路径）。 */
+  public async sendGraphEditorDebugMessage(uri: vscode.Uri, message: unknown): Promise<void> {
+    const session = [...this.graphSessions.get(uri.toString()) ?? []][0];
+    if (session === undefined) throw new Error("No active graph editor session was found.");
+    await session.sendDebugMessageForTest(message);
   }
 
   public getEntityEditorTestState(uri: vscode.Uri): {
