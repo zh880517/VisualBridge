@@ -96,6 +96,14 @@ Entity 领域的 Catalog 导出与 Structured 共用 Profile 与验证门槛，�
 - 前置：Entity Catalog Check 必须无 drift（`compile.catalogDrift`），否则先重跑 Catalog Generate 并提交。
 - 语义：文档按 entity DocumentType 唯一路由；`entityTypeId`/`componentTypeId` 必须在声明的 Catalog 中唯一解析，组件组必须在 entityType 的 `allowedComponentGroupIds` 白名单内（空白名单即全不允许）；缺失字段以 Catalog 默认值物化进产物；产物布局与 Structured 相同（`documents/`、`mappings/`），但使用独立的 `manifest.entity.json`，两套编译互不接管对方托管集。失败不破坏上次有效产物；stale 产物在 Generate 时清理、Check 时计为 drift。
 
+## 5.2 Graph Catalog Export
+
+Graph 领域的 Catalog 导出按 `.vbgraphcatalog` 扩展名路由到 `VisualBridgeGraphCatalogExporter`，输出 Graph Catalog V4（不接受旧版本）：
+
+- metadata：assembly 级 `VisualBridgeGraphCatalog(catalogId, title)` 与 `VisualBridgeGraphDataType(id, title)`（可选 Color/Accepts）；类型级 `VisualBridgeGraphType`（Usage/SupportedCatalogIds/PortConnectionInput/Output/AllowedNodeTypeIds/Tags/Traits/AllowSubgraphs/AllowedSubgraphTypeIds）、`VisualBridgeNodeType`（category/MenuPath/Tags/Traits/SubgraphGraphTypeIds）与 graphType 类上的 `VisualBridgeGraphNodeConstraint`/`VisualBridgeGraphInitialNode`；字段级 `VisualBridgePort`（flow/data 端口，data 端口 DataTypeId 由 CLR 类型推导）与 `VisualBridgeDynamicPortGroup`（List<T> 动态端口组，list/element 模式）。
+- 入口：菜单 **Tools / VisualBridge / Generate Graph Catalogs**；batchmode `VisualBridge.Editor.VisualBridgeGraphCatalogBatch.Generate` / `.Check`。
+- 语义：graphType/nodeType/dataType 身份全局无歧义；C# 全名只进 `source.typeName`；typed subgraph 节点禁止 flow 端口；端口与字段分离（同字段双声明报错）；三方 parity fixture（AJV / Unity 校验器 / 扩展宿主）锁定契约。
+
 ## 5.3 Table Compile（CSV family）
 
 Table 是纯消费方：Unity 侧没有 Table Exporter，catalog（`.vbtablecatalog`）由 VS Code 侧创作并提交；Unity 只编译 CSV family 文档（`.xlsx` 以 `table.xlsxUnsupported` 拒绝——OOXML 解析不在 V1 依赖边界内）：

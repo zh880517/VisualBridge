@@ -287,7 +287,7 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static JObject BuildValueDefinition(
+        internal static JObject BuildValueDefinition(
             Type type,
             FieldMetadata metadata,
             HashSet<Type> recursionStack,
@@ -1492,7 +1492,7 @@ namespace VisualBridge.Editor
             public string Description { get; set; }
         }
 
-        private sealed class FieldMetadata
+        internal sealed class FieldMetadata
         {
             public string Id { get; set; }
             public string Title { get; set; }

@@ -327,7 +327,7 @@
     {
       "file": "Schema/visualbridge-unity-integration-profile.schema.json",
       "id": "https://visualbridge.dev/schema/visualbridge-unity-integration-profile.schema.json",
-      "sha256": "8bb83a17fa223158cf60b0d5cea460c53f8cd6a57b9cadee4d3734233eba582e",
+      "sha256": "53b4f6ca22c63bd97e155b99b9340a68c5c46a4afdae740ac8387bb69872e2ca",
       "definitions": [
         "catalogExport",
         "identifier",

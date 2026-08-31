@@ -4,7 +4,8 @@
   "documentRoots": [
     "Config",
     "Entities",
-    "Tables"
+    "Tables",
+    "Graphs"
   ],
   "documentTypes": [
     {
@@ -38,6 +39,17 @@
       "exclude": [],
       "catalogs": [
         "Catalog/Gameplay.vbtablecatalog"
+      ]
+    },
+    {
+      "id": "sample.unity.encounter",
+      "editor": "graph",
+      "include": [
+        "Graphs/**/*.vbflow"
+      ],
+      "exclude": [],
+      "catalogs": [
+        "Catalog/Gameplay.vbgraphcatalog"
       ]
     }
   ],

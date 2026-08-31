@@ -28,12 +28,13 @@ namespace VisualBridge.Protocol.Generated
         public const string VisualBridgeCatalogSourceSha256 = "56f5fb5cdbbc911c178eb8500e8f2279bdf8ded0c652f2db5da23d1d37a179c4";
         public const string VisualBridgeEditorBridgeSha256 = "bc12ffd457f2d0babc08d6525fd6e10362ef845ad691ba42833d2c0a4860a640";
         public const string VisualBridgeEntityCatalogSha256 = "9d9501dca2b2e62946a42368b3406f8ae8b9f8154b94f5311b429d3160bec593";
+        public const string VisualBridgeGraphCatalogSha256 = "b7fb04d60a986b1ba4c1cf95ec3d9655341af0ff24d8ab215052ae172709d0d2";
         public const string VisualBridgePrimitivesSha256 = "23c83a69a9d557916a9e2a0a120c0664fb09fbc86dc96703aa7bc036030dc639";
         public const string VisualBridgeProjectSha256 = "dde9d43f3fdc09ca0978fe0e8650a731726f6490ad1fda2e62023db69b01c3e9";
         public const string VisualBridgeStructuredCatalogSha256 = "0cae8ab7b7a9aa1159669f0939f7178e5e310056366fe0713165cd87687942fe";
         public const string VisualBridgeStructuredSha256 = "24af3e3ecd5f5481c76ad4e1377d5441d09a238faa37b220dfbc1f6fffc0baf8";
         public const string VisualBridgeTableCatalogSha256 = "05e0fea3c73f1290cab52ef4ecbacd79d96ad074232794453fa3ac3f90680f7c";
-        public const string VisualBridgeUnityIntegrationProfileSha256 = "8bb83a17fa223158cf60b0d5cea460c53f8cd6a57b9cadee4d3734233eba582e";
+        public const string VisualBridgeUnityIntegrationProfileSha256 = "53b4f6ca22c63bd97e155b99b9340a68c5c46a4afdae740ac8387bb69872e2ca";
 
         public static readonly IReadOnlyList<VisualBridgeSchemaContract> Contracts =
             new VisualBridgeSchemaContract[]
@@ -41,6 +42,7 @@ namespace VisualBridge.Protocol.Generated
                 new VisualBridgeSchemaContract("Schema/visualbridge-catalog-source.schema.json", "https://visualbridge.dev/schema/visualbridge-catalog-source.schema.json", VisualBridgeCatalogSourceSha256),
                 new VisualBridgeSchemaContract("Schema/visualbridge-editor-bridge.schema.json", "https://visualbridge.dev/schema/visualbridge-editor-bridge.schema.json", VisualBridgeEditorBridgeSha256),
                 new VisualBridgeSchemaContract("Schema/visualbridge-entity-catalog.schema.json", "https://visualbridge.dev/schema/visualbridge-entity-catalog.schema.json", VisualBridgeEntityCatalogSha256),
+                new VisualBridgeSchemaContract("Schema/visualbridge-graph-catalog.schema.json", "https://visualbridge.dev/schema/visualbridge-graph-catalog.schema.json", VisualBridgeGraphCatalogSha256),
                 new VisualBridgeSchemaContract("Schema/visualbridge-primitives.schema.json", "https://visualbridge.dev/schema/visualbridge-primitives.schema.json", VisualBridgePrimitivesSha256),
                 new VisualBridgeSchemaContract("Schema/visualbridge-project.schema.json", "https://visualbridge.dev/schema/visualbridge-project.schema.json", VisualBridgeProjectSha256),
                 new VisualBridgeSchemaContract("Schema/visualbridge-structured-catalog.schema.json", "https://visualbridge.dev/schema/visualbridge-structured-catalog.schema.json", VisualBridgeStructuredCatalogSha256),
@@ -457,6 +459,402 @@ namespace VisualBridge.Protocol.Generated.VisualBridgeEntityCatalog
 
         [DataMember(Name = "reference", IsRequired = false, EmitDefaultValue = false, Order = 5)]
         public VisualBridge.Protocol.Generated.VisualBridgeEntityCatalog.Reference? Reference { get; set; }
+
+        [DataMember(Name = "valueType", IsRequired = true, EmitDefaultValue = true, Order = 6)]
+        public string ValueType { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class ValueShape
+    {
+    }
+}
+
+namespace VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog
+{
+    // JSON Schema：https://visualbridge.dev/schema/visualbridge-graph-catalog.schema.json
+    [DataContract]
+    public sealed class Root
+    {
+        [DataMember(Name = "catalogId", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public string CatalogId { get; set; } = null!;
+
+        [DataMember(Name = "dataTypes", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.RootDataTypesItem> DataTypes { get; set; } = Array.Empty<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.RootDataTypesItem>();
+
+        [DataMember(Name = "formatVersion", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public int FormatVersion { get; set; }
+
+        [DataMember(Name = "graphTypes", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.GraphType> GraphTypes { get; set; } = Array.Empty<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.GraphType>();
+
+        [DataMember(Name = "nodeTypes", IsRequired = true, EmitDefaultValue = true, Order = 4)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.NodeType> NodeTypes { get; set; } = Array.Empty<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.NodeType>();
+
+        [DataMember(Name = "source", IsRequired = true, EmitDefaultValue = true, Order = 5)]
+        public VisualBridge.Protocol.Generated.VisualBridgeCatalogSource.Root Source { get; set; } = null!;
+
+        [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 6)]
+        public string Title { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class DynamicPortGroup
+    {
+        [DataMember(Name = "aliases", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public IReadOnlyList<string>? Aliases { get; set; }
+
+        [DataMember(Name = "description", IsRequired = false, EmitDefaultValue = false, Order = 1)]
+        public string? Description { get; set; }
+
+        [DataMember(Name = "id", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public string Id { get; set; } = null!;
+
+        [DataMember(Name = "item", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        public VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.ValueDefinition Item { get; set; } = null!;
+
+        [DataMember(Name = "listPortMode", IsRequired = false, EmitDefaultValue = false, Order = 4)]
+        public string? ListPortMode { get; set; }
+
+        [DataMember(Name = "maxItems", IsRequired = false, EmitDefaultValue = false, Order = 5)]
+        public int? MaxItems { get; set; }
+
+        [DataMember(Name = "port", IsRequired = true, EmitDefaultValue = true, Order = 6)]
+        public VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.DynamicPortTemplate Port { get; set; } = null!;
+
+        [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 7)]
+        public string Title { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class DynamicPortTemplate
+    {
+        [DataMember(Name = "dataTypeId", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public string? DataTypeId { get; set; }
+
+        [DataMember(Name = "direction", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string Direction { get; set; } = null!;
+
+        [DataMember(Name = "kind", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public string Kind { get; set; } = null!;
+
+        [DataMember(Name = "maxConnections", IsRequired = false, EmitDefaultValue = false, Order = 3)]
+        public int? MaxConnections { get; set; }
+    }
+
+    [DataContract]
+    public sealed class Editor
+    {
+        [DataMember(Name = "integer", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public bool? Integer { get; set; }
+
+        [DataMember(Name = "kind", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string Kind { get; set; } = null!;
+
+        [DataMember(Name = "max", IsRequired = false, EmitDefaultValue = false, Order = 2)]
+        public double? Max { get; set; }
+
+        [DataMember(Name = "min", IsRequired = false, EmitDefaultValue = false, Order = 3)]
+        public double? Min { get; set; }
+
+        [DataMember(Name = "options", IsRequired = false, EmitDefaultValue = false, Order = 4)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.EditorOption>? Options { get; set; }
+
+        [DataMember(Name = "readOnly", IsRequired = false, EmitDefaultValue = false, Order = 5)]
+        public bool? ReadOnly { get; set; }
+
+        [DataMember(Name = "step", IsRequired = false, EmitDefaultValue = false, Order = 6)]
+        public double? Step { get; set; }
+    }
+
+    [DataContract]
+    public sealed class EditorOption
+    {
+        [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public string Title { get; set; } = null!;
+
+        [DataMember(Name = "value", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public object? Value { get; set; }
+    }
+
+    [DataContract]
+    public sealed class Field
+    {
+        [DataMember(Name = "aliases", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public IReadOnlyList<string>? Aliases { get; set; }
+
+        [DataMember(Name = "dataTypeId", IsRequired = false, EmitDefaultValue = false, Order = 1)]
+        public string? DataTypeId { get; set; }
+
+        [DataMember(Name = "defaultValue", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public object? DefaultValue { get; set; }
+
+        [DataMember(Name = "description", IsRequired = false, EmitDefaultValue = false, Order = 3)]
+        public string? Description { get; set; }
+
+        [DataMember(Name = "editor", IsRequired = false, EmitDefaultValue = false, Order = 4)]
+        public VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.Editor? Editor { get; set; }
+
+        [DataMember(Name = "fields", IsRequired = false, EmitDefaultValue = false, Order = 5)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.Field>? Fields { get; set; }
+
+        [DataMember(Name = "id", IsRequired = true, EmitDefaultValue = true, Order = 6)]
+        public string Id { get; set; } = null!;
+
+        [DataMember(Name = "item", IsRequired = false, EmitDefaultValue = false, Order = 7)]
+        public VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.ValueDefinition? Item { get; set; }
+
+        [DataMember(Name = "reference", IsRequired = false, EmitDefaultValue = false, Order = 8)]
+        public VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.Reference? Reference { get; set; }
+
+        [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 9)]
+        public string Title { get; set; } = null!;
+
+        [DataMember(Name = "valueType", IsRequired = true, EmitDefaultValue = true, Order = 10)]
+        public string ValueType { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class GraphType
+    {
+        [DataMember(Name = "aliases", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public IReadOnlyList<string>? Aliases { get; set; }
+
+        [DataMember(Name = "allowSubgraphs", IsRequired = false, EmitDefaultValue = false, Order = 1)]
+        public bool? AllowSubgraphs { get; set; }
+
+        [DataMember(Name = "allowedNodeSelectors", IsRequired = false, EmitDefaultValue = false, Order = 2)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.NodeSelector>? AllowedNodeSelectors { get; set; }
+
+        [DataMember(Name = "allowedSubgraphTypeIds", IsRequired = false, EmitDefaultValue = false, Order = 3)]
+        public IReadOnlyList<string>? AllowedSubgraphTypeIds { get; set; }
+
+        [DataMember(Name = "description", IsRequired = false, EmitDefaultValue = false, Order = 4)]
+        public string? Description { get; set; }
+
+        [DataMember(Name = "id", IsRequired = true, EmitDefaultValue = true, Order = 5)]
+        public string Id { get; set; } = null!;
+
+        [DataMember(Name = "initialNodes", IsRequired = false, EmitDefaultValue = false, Order = 6)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.InitialNode>? InitialNodes { get; set; }
+
+        [DataMember(Name = "nodeConstraints", IsRequired = false, EmitDefaultValue = false, Order = 7)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.NodeConstraint>? NodeConstraints { get; set; }
+
+        [DataMember(Name = "portConnectionRules", IsRequired = true, EmitDefaultValue = true, Order = 8)]
+        public VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.PortConnectionRules PortConnectionRules { get; set; } = null!;
+
+        [DataMember(Name = "properties", IsRequired = true, EmitDefaultValue = true, Order = 9)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.Field> Properties { get; set; } = Array.Empty<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.Field>();
+
+        [DataMember(Name = "source", IsRequired = false, EmitDefaultValue = false, Order = 10)]
+        public VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.NodeSource? Source { get; set; }
+
+        [DataMember(Name = "supportedCatalogIds", IsRequired = true, EmitDefaultValue = true, Order = 11)]
+        public IReadOnlyList<string> SupportedCatalogIds { get; set; } = Array.Empty<string>();
+
+        [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 12)]
+        public string Title { get; set; } = null!;
+
+        [DataMember(Name = "usage", IsRequired = false, EmitDefaultValue = false, Order = 13)]
+        public string? Usage { get; set; }
+    }
+
+    [DataContract]
+    public sealed class InitialNode
+    {
+        [DataMember(Name = "nodeTypeId", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public string NodeTypeId { get; set; } = null!;
+
+        [DataMember(Name = "title", IsRequired = false, EmitDefaultValue = false, Order = 1)]
+        public string? Title { get; set; }
+    }
+
+    [DataContract]
+    public sealed class NodeConstraint
+    {
+        [DataMember(Name = "id", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public string Id { get; set; } = null!;
+
+        [DataMember(Name = "maxInstances", IsRequired = false, EmitDefaultValue = false, Order = 1)]
+        public int? MaxInstances { get; set; }
+
+        [DataMember(Name = "minInstances", IsRequired = false, EmitDefaultValue = false, Order = 2)]
+        public int? MinInstances { get; set; }
+
+        [DataMember(Name = "selector", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        public VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.NodeSelector Selector { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class NodeSelector
+    {
+        [DataMember(Name = "nodeTypeIds", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public IReadOnlyList<string>? NodeTypeIds { get; set; }
+
+        [DataMember(Name = "tags", IsRequired = false, EmitDefaultValue = false, Order = 1)]
+        public IReadOnlyList<string>? Tags { get; set; }
+
+        [DataMember(Name = "traits", IsRequired = false, EmitDefaultValue = false, Order = 2)]
+        public IReadOnlyList<string>? Traits { get; set; }
+    }
+
+    [DataContract]
+    public sealed class NodeSource
+    {
+        [DataMember(Name = "assemblyName", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public string? AssemblyName { get; set; }
+
+        [DataMember(Name = "providerId", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string ProviderId { get; set; } = null!;
+
+        [DataMember(Name = "typeName", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public string TypeName { get; set; } = null!;
+
+        [DataMember(Name = "wrapperTypeName", IsRequired = false, EmitDefaultValue = false, Order = 3)]
+        public string? WrapperTypeName { get; set; }
+    }
+
+    [DataContract]
+    public sealed class NodeType
+    {
+        [DataMember(Name = "aliases", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public IReadOnlyList<string>? Aliases { get; set; }
+
+        [DataMember(Name = "category", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string Category { get; set; } = null!;
+
+        [DataMember(Name = "dynamicPortGroups", IsRequired = false, EmitDefaultValue = false, Order = 2)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.DynamicPortGroup>? DynamicPortGroups { get; set; }
+
+        [DataMember(Name = "icon", IsRequired = false, EmitDefaultValue = false, Order = 3)]
+        public string? Icon { get; set; }
+
+        [DataMember(Name = "id", IsRequired = true, EmitDefaultValue = true, Order = 4)]
+        public string Id { get; set; } = null!;
+
+        [DataMember(Name = "menuPath", IsRequired = false, EmitDefaultValue = false, Order = 5)]
+        public IReadOnlyList<string>? MenuPath { get; set; }
+
+        [DataMember(Name = "ports", IsRequired = true, EmitDefaultValue = true, Order = 6)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.Port> Ports { get; set; } = Array.Empty<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.Port>();
+
+        [DataMember(Name = "properties", IsRequired = true, EmitDefaultValue = true, Order = 7)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.Field> Properties { get; set; } = Array.Empty<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.Field>();
+
+        [DataMember(Name = "source", IsRequired = false, EmitDefaultValue = false, Order = 8)]
+        public VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.NodeSource? Source { get; set; }
+
+        [DataMember(Name = "subgraph", IsRequired = false, EmitDefaultValue = false, Order = 9)]
+        public VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.SubgraphNodeContract? Subgraph { get; set; }
+
+        [DataMember(Name = "tags", IsRequired = false, EmitDefaultValue = false, Order = 10)]
+        public IReadOnlyList<string>? Tags { get; set; }
+
+        [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 11)]
+        public string Title { get; set; } = null!;
+
+        [DataMember(Name = "traits", IsRequired = false, EmitDefaultValue = false, Order = 12)]
+        public IReadOnlyList<string>? Traits { get; set; }
+    }
+
+    [DataContract]
+    public sealed class Port
+    {
+        [DataMember(Name = "aliases", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public IReadOnlyList<string>? Aliases { get; set; }
+
+        [DataMember(Name = "dataTypeId", IsRequired = false, EmitDefaultValue = false, Order = 1)]
+        public string? DataTypeId { get; set; }
+
+        [DataMember(Name = "description", IsRequired = false, EmitDefaultValue = false, Order = 2)]
+        public string? Description { get; set; }
+
+        [DataMember(Name = "direction", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        public string Direction { get; set; } = null!;
+
+        [DataMember(Name = "id", IsRequired = true, EmitDefaultValue = true, Order = 4)]
+        public string Id { get; set; } = null!;
+
+        [DataMember(Name = "kind", IsRequired = true, EmitDefaultValue = true, Order = 5)]
+        public string Kind { get; set; } = null!;
+
+        [DataMember(Name = "maxConnections", IsRequired = false, EmitDefaultValue = false, Order = 6)]
+        public int? MaxConnections { get; set; }
+
+        [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 7)]
+        public string Title { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class PortConnectionRules
+    {
+        [DataMember(Name = "input", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public string Input { get; set; } = null!;
+
+        [DataMember(Name = "output", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string Output { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class Reference
+    {
+        [DataMember(Name = "allowMissing", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public bool? AllowMissing { get; set; }
+
+        [DataMember(Name = "kind", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string Kind { get; set; } = null!;
+
+        [DataMember(Name = "target", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public IReadOnlyDictionary<string, object?> Target { get; set; } = new Dictionary<string, object?>();
+    }
+
+    [DataContract]
+    public sealed class RootDataTypesItem
+    {
+        [DataMember(Name = "accepts", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public IReadOnlyList<string>? Accepts { get; set; }
+
+        [DataMember(Name = "acceptsAnySource", IsRequired = false, EmitDefaultValue = false, Order = 1)]
+        public bool? AcceptsAnySource { get; set; }
+
+        [DataMember(Name = "color", IsRequired = false, EmitDefaultValue = false, Order = 2)]
+        public string? Color { get; set; }
+
+        [DataMember(Name = "id", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        public string Id { get; set; } = null!;
+
+        [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 4)]
+        public string Title { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class SubgraphNodeContract
+    {
+        [DataMember(Name = "graphTypeIds", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public IReadOnlyList<string>? GraphTypeIds { get; set; }
+    }
+
+    [DataContract]
+    public sealed class ValueDefinition
+    {
+        [DataMember(Name = "dataTypeId", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public string? DataTypeId { get; set; }
+
+        [DataMember(Name = "defaultValue", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public object? DefaultValue { get; set; }
+
+        [DataMember(Name = "editor", IsRequired = false, EmitDefaultValue = false, Order = 2)]
+        public VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.Editor? Editor { get; set; }
+
+        [DataMember(Name = "fields", IsRequired = false, EmitDefaultValue = false, Order = 3)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.Field>? Fields { get; set; }
+
+        [DataMember(Name = "item", IsRequired = false, EmitDefaultValue = false, Order = 4)]
+        public VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.ValueDefinition? Item { get; set; }
+
+        [DataMember(Name = "reference", IsRequired = false, EmitDefaultValue = false, Order = 5)]
+        public VisualBridge.Protocol.Generated.VisualBridgeGraphCatalog.Reference? Reference { get; set; }
 
         [DataMember(Name = "valueType", IsRequired = true, EmitDefaultValue = true, Order = 6)]
         public string ValueType { get; set; } = null!;

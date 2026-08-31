@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：VB-UX-00 至 VB-UX-04（语言规范、Entity Catalog Export、Entity Import/Compile、Adapter API 复核决策、Table Import/Compile）已完成，VB-UX-05（Graph Catalog V4 Exporter）待开始。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：VB-UX-00 至 VB-UX-05（语言规范、Entity Catalog Export、Entity Import/Compile、Adapter API 复核决策、Table Import/Compile、Graph Catalog V4 Exporter）已完成，VB-UX-06（Graph Import/Compile）待开始。
 
 本阶段分三段：
 
@@ -162,7 +162,7 @@ Exit criteria：
 - 消费语义只来自 Catalog 定义；载体（CSV/XLSX）内部结构不进入任何决策路径，有测试锁定。
 - 编译闭环、负面路径、全部 Node/dotnet/Unity/docs 门槛与产物设计留档要求同 VB-UX-02。
 
-### VB-UX-05 Graph Catalog V4 Exporter — `in_progress`
+### VB-UX-05 Graph Catalog V4 Exporter — `complete`
 
 依赖：VB-UX-04。
 
@@ -172,13 +172,15 @@ Exit criteria：
 - C# 全名只作为 `source` 追踪信息；端口身份、连接规则与 List port mode 按领域正式文档映射。
 - Schema 进 Protocol、batch Generate/Check 与 EditMode 测试模式同 VB-UX-01。
 
+实施与验证记录：2026-08-31 完成。设计冻结进 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 13.5 节；`visualbridge-graph-catalog.schema.json` 进入 Protocol C# 生成闭包（第十个命名空间），Profile 扩展名路由放开 `.vbgraphcatalog`。`VisualBridge.Runtime` 新增 13 个类型（8 个 attribute + 5 个枚举）；`VisualBridgeGraphCatalogExporter`（两遍处理、data 端口 DataTypeId 由 CLR 类型推导、端口按声明序、绑定校验镜像 Entity）+ 严格校验器 + batch/菜单。三方 parity fixture `visualbridge-graph-catalog-cases.json`（18 例）由 AJV（generate.mjs `verifyGraphCatalogExamples`）、Unity 校验器（EditMode `GraphSchemaAndValidatorShareParityFixture`）与扩展宿主（`visualbridge.test.parseGraphCatalog` 命令 + host 测试）共同消费。开发宿主样例（Encounter root graphType、Encounter Branch subgraph、Log/Compare/MessageList/EncounterBranchCall 节点、flow/data 端口、list 动态端口组）经 batchmode Generate/Check 产出提交 Catalog，并通过 Node 生产 `parseGraphCatalog`/`buildGraphCatalogRegistry`（含 selector/subgraph/端口/动态组语义）校验。EditMode 新增 16 例随全套 114/114 通过；`npm run check:protocol`、`dotnet build`、`npm run check` 通过。
+
 Exit criteria：
 
 - Graph Catalog V4 Schema/生成契约进 Protocol 闭包并通过漂移检查。
 - 端口身份、连接规则、typed subgraph 与实例约束的正反例 fixture 三方 parity（AJV / Unity strict validator / 扩展宿主）通过。
 - 全部 Node/dotnet/Unity/docs 门槛通过；产物设计留档进入架构文档。
 
-### VB-UX-06 Graph Import / Compile — `pending`
+### VB-UX-06 Graph Import / Compile — `in_progress`
 
 依赖：VB-UX-05。
 

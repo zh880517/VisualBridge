@@ -63,8 +63,8 @@
             { "$ref": "#/$defs/projectRelativePath" },
             {
               "type": "string",
-              "description": "The file extension routes the export unit: .vbstructuredcatalog uses the Structured Catalog Exporter, .vbentitycatalog uses the Entity Catalog Exporter.",
-              "pattern": "\\.(vbstructuredcatalog|vbentitycatalog)$"
+              "description": "The file extension routes the export unit: .vbstructuredcatalog uses the Structured Catalog Exporter, .vbentitycatalog uses the Entity Catalog Exporter, .vbgraphcatalog uses the Graph Catalog Exporter.",
+              "pattern": "\\.(vbstructuredcatalog|vbentitycatalog|vbgraphcatalog)$"
             }
           ]
         },

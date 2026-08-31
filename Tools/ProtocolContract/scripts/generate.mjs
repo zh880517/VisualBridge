@@ -47,6 +47,7 @@ schemas.forEach(({ name, schema }) => {
 verifyContractExamples(ajv);
 await verifyUnityIntegrationProfileExamples(ajv);
 await verifyEditorBridgeExamples(ajv);
+await verifyGraphCatalogExamples(ajv);
 verifySharedFormSchemaParity(ajv);
 await verifyImplementationRegistry();
 
@@ -241,6 +242,41 @@ async function verifyEditorBridgeExamples(compiler) {
     );
     if (!testCase.valid) {
       assert.equal(typeof testCase.loaderCode, "string", `${testCase.label} requires a loaderCode.`);
+    }
+  }
+}
+
+async function verifyGraphCatalogExamples(compiler) {
+  const catalogId = "https://visualbridge.dev/schema/visualbridge-graph-catalog.schema.json";
+  const validator = requireValidator(compiler, catalogId);
+  assert.equal(contractManifest.versions.graphCatalog, 4, "Graph Catalog version registry drift.");
+  const graphSchema = schemas.find((entry) => entry.name === "visualbridge-graph-catalog.schema.json")?.schema;
+  assert.equal(
+    graphSchema?.properties?.formatVersion?.const,
+    contractManifest.versions.graphCatalog,
+    "Graph Catalog formatVersion drift.",
+  );
+  const fixturePath = path.join(
+    repositoryRoot,
+    "Packages",
+    "com.kyle.visualbridge",
+    "Tests",
+    "Fixtures",
+    "visualbridge-graph-catalog-cases.json",
+  );
+  const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
+  assert.equal(Array.isArray(fixture.cases), true, "Graph Catalog parity fixture must declare cases.");
+  assert.equal(fixture.cases.length >= 12, true, "Graph Catalog parity fixture must declare at least 12 cases.");
+  for (const testCase of fixture.cases) {
+    assert.equal(typeof testCase.label, "string", "Graph Catalog fixture case requires a label.");
+    assert.equal(typeof testCase.valid, "boolean", `${testCase.label} requires a boolean valid flag.`);
+    assert.equal(
+      validator(testCase.value),
+      testCase.valid,
+      `${testCase.label} Schema parity drift: ${JSON.stringify(validator.errors)}`,
+    );
+    if (!testCase.valid) {
+      assert.equal(typeof testCase.validatorCode, "string", `${testCase.label} requires a validatorCode.`);
     }
   }
 }

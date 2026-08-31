@@ -1,0 +1,842 @@
+{
+  "cases": [
+    {
+      "label": "valid root graphType with ports and connection rules",
+      "valid": true,
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [
+          {
+            "id": "fixture.number",
+            "title": "Number"
+          },
+          {
+            "id": "fixture.text",
+            "title": "Text",
+            "color": "#3366CC",
+            "accepts": [
+              "fixture.number"
+            ]
+          },
+          {
+            "id": "fixture.textlist",
+            "title": "Text List",
+            "acceptsAnySource": true
+          }
+        ],
+        "graphTypes": [
+          {
+            "id": "fixture.flow",
+            "aliases": [
+              "fixture.flow.legacy"
+            ],
+            "title": "Flow",
+            "usage": "root",
+            "source": {
+              "providerId": "unity.csharp",
+              "typeName": "Fixture.FlowGraph"
+            },
+            "supportedCatalogIds": [
+              "fixture.graph"
+            ],
+            "portConnectionRules": {
+              "input": "single",
+              "output": "multiple"
+            },
+            "allowedNodeSelectors": [
+              {
+                "nodeTypeIds": [
+                  "fixture.node.log"
+                ],
+                "tags": [
+                  "fixture.tag.core"
+                ],
+                "traits": [
+                  "fixture.trait.pure"
+                ]
+              }
+            ],
+            "properties": [],
+            "nodeConstraints": [
+              {
+                "id": "fixture.constraint.log",
+                "selector": {
+                  "nodeTypeIds": [
+                    "fixture.node.log"
+                  ]
+                },
+                "minInstances": 0,
+                "maxInstances": 4
+              }
+            ],
+            "initialNodes": [
+              {
+                "nodeTypeId": "fixture.node.log",
+                "title": "Start"
+              }
+            ],
+            "allowSubgraphs": false
+          }
+        ],
+        "nodeTypes": [
+          {
+            "id": "fixture.node.log",
+            "aliases": [
+              "fixture.node.print"
+            ],
+            "title": "Log",
+            "category": "Logic",
+            "menuPath": [
+              "Logic",
+              "Log"
+            ],
+            "tags": [
+              "fixture.tag.core"
+            ],
+            "traits": [
+              "fixture.trait.pure"
+            ],
+            "source": {
+              "providerId": "unity.csharp",
+              "typeName": "Fixture.LogNode"
+            },
+            "ports": [
+              {
+                "id": "fixture.port.exec.in",
+                "title": "Exec In",
+                "kind": "flow",
+                "direction": "input"
+              },
+              {
+                "id": "fixture.port.exec.out",
+                "title": "Exec Out",
+                "kind": "flow",
+                "direction": "output",
+                "maxConnections": 1
+              },
+              {
+                "id": "fixture.port.message",
+                "title": "Message",
+                "kind": "data",
+                "direction": "input",
+                "dataTypeId": "fixture.text"
+              }
+            ],
+            "properties": []
+          }
+        ]
+      }
+    },
+    {
+      "label": "valid dynamic port groups in list and element modes",
+      "valid": true,
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [
+          {
+            "id": "fixture.number",
+            "title": "Number"
+          },
+          {
+            "id": "fixture.text",
+            "title": "Text"
+          },
+          {
+            "id": "fixture.textlist",
+            "title": "Text List"
+          }
+        ],
+        "graphTypes": [
+          {
+            "id": "fixture.flow",
+            "title": "Flow",
+            "supportedCatalogIds": [
+              "fixture.graph"
+            ],
+            "portConnectionRules": {
+              "input": "multiple",
+              "output": "multiple"
+            },
+            "properties": []
+          }
+        ],
+        "nodeTypes": [
+          {
+            "id": "fixture.node.pipeline",
+            "title": "Pipeline",
+            "category": "Logic",
+            "ports": [
+              {
+                "id": "fixture.port.count",
+                "title": "Count",
+                "kind": "data",
+                "direction": "input",
+                "dataTypeId": "fixture.number"
+              }
+            ],
+            "dynamicPortGroups": [
+              {
+                "id": "fixture.group.inputs",
+                "title": "Inputs",
+                "port": {
+                  "kind": "data",
+                  "direction": "input",
+                  "dataTypeId": "fixture.textlist"
+                },
+                "item": {
+                  "valueType": "string",
+                  "dataTypeId": "fixture.text",
+                  "defaultValue": ""
+                },
+                "maxItems": 8
+              },
+              {
+                "id": "fixture.group.outputs",
+                "aliases": [
+                  "fixture.group.out"
+                ],
+                "title": "Outputs",
+                "description": "Element mode outputs.",
+                "listPortMode": "element",
+                "port": {
+                  "kind": "data",
+                  "direction": "input",
+                  "dataTypeId": "fixture.text"
+                },
+                "item": {
+                  "valueType": "string",
+                  "dataTypeId": "fixture.text",
+                  "defaultValue": ""
+                }
+              }
+            ],
+            "properties": []
+          }
+        ]
+      }
+    },
+    {
+      "label": "valid subgraph graphType and typed subgraph nodeType",
+      "valid": true,
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [
+          {
+            "id": "fixture.number",
+            "title": "Number"
+          }
+        ],
+        "graphTypes": [
+          {
+            "id": "fixture.root",
+            "title": "Root",
+            "supportedCatalogIds": [
+              "fixture.graph",
+              "fixture.other"
+            ],
+            "portConnectionRules": {
+              "input": "multiple",
+              "output": "multiple"
+            },
+            "properties": []
+          },
+          {
+            "id": "fixture.sub",
+            "title": "Sub",
+            "usage": "subgraph",
+            "supportedCatalogIds": [
+              "fixture.graph"
+            ],
+            "portConnectionRules": {
+              "input": "multiple",
+              "output": "multiple"
+            },
+            "properties": [],
+            "allowedSubgraphTypeIds": [
+              "fixture.sub"
+            ]
+          }
+        ],
+        "nodeTypes": [
+          {
+            "id": "fixture.node.container",
+            "title": "Container",
+            "category": "Flow",
+            "subgraph": {
+              "graphTypeIds": [
+                "fixture.sub"
+              ]
+            },
+            "ports": [
+              {
+                "id": "fixture.port.value",
+                "title": "Value",
+                "kind": "data",
+                "direction": "input",
+                "dataTypeId": "fixture.number"
+              }
+            ],
+            "properties": []
+          }
+        ]
+      }
+    },
+    {
+      "label": "unsupported format version",
+      "valid": false,
+      "validatorCode": "catalog.unsupportedVersion",
+      "value": {
+        "formatVersion": 3,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [
+          {
+            "id": "fixture.number",
+            "title": "Number"
+          }
+        ],
+        "graphTypes": [
+          {
+            "id": "fixture.flow",
+            "title": "Flow",
+            "supportedCatalogIds": [
+              "fixture.graph"
+            ],
+            "portConnectionRules": {
+              "input": "multiple",
+              "output": "multiple"
+            },
+            "properties": []
+          }
+        ],
+        "nodeTypes": []
+      }
+    },
+    {
+      "label": "missing graphTypes",
+      "valid": false,
+      "validatorCode": "catalog.missingProperty",
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [
+          {
+            "id": "fixture.number",
+            "title": "Number"
+          }
+        ],
+        "nodeTypes": []
+      }
+    },
+    {
+      "label": "data port without dataTypeId",
+      "valid": false,
+      "validatorCode": "catalog.missingProperty",
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [
+          {
+            "id": "fixture.text",
+            "title": "Text"
+          }
+        ],
+        "graphTypes": [
+          {
+            "id": "fixture.flow",
+            "title": "Flow",
+            "supportedCatalogIds": [
+              "fixture.graph"
+            ],
+            "portConnectionRules": {
+              "input": "multiple",
+              "output": "multiple"
+            },
+            "properties": []
+          }
+        ],
+        "nodeTypes": [
+          {
+            "id": "fixture.node.log",
+            "title": "Log",
+            "category": "Logic",
+            "ports": [
+              {
+                "id": "fixture.port.message",
+                "title": "Message",
+                "kind": "data",
+                "direction": "input"
+              }
+            ],
+            "properties": []
+          }
+        ]
+      }
+    },
+    {
+      "label": "flow port with dataTypeId",
+      "valid": false,
+      "validatorCode": "catalog.invalidPort",
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [
+          {
+            "id": "fixture.text",
+            "title": "Text"
+          }
+        ],
+        "graphTypes": [
+          {
+            "id": "fixture.flow",
+            "title": "Flow",
+            "supportedCatalogIds": [
+              "fixture.graph"
+            ],
+            "portConnectionRules": {
+              "input": "multiple",
+              "output": "multiple"
+            },
+            "properties": []
+          }
+        ],
+        "nodeTypes": [
+          {
+            "id": "fixture.node.log",
+            "title": "Log",
+            "category": "Logic",
+            "ports": [
+              {
+                "id": "fixture.port.exec.in",
+                "title": "Exec In",
+                "kind": "flow",
+                "direction": "input",
+                "dataTypeId": "fixture.text"
+              }
+            ],
+            "properties": []
+          }
+        ]
+      }
+    },
+    {
+      "label": "empty supportedCatalogIds",
+      "valid": false,
+      "validatorCode": "catalog.invalidArray",
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [],
+        "graphTypes": [
+          {
+            "id": "fixture.flow",
+            "title": "Flow",
+            "supportedCatalogIds": [],
+            "portConnectionRules": {
+              "input": "multiple",
+              "output": "multiple"
+            },
+            "properties": []
+          }
+        ],
+        "nodeTypes": []
+      }
+    },
+    {
+      "label": "portConnectionRules missing input",
+      "valid": false,
+      "validatorCode": "catalog.missingProperty",
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [],
+        "graphTypes": [
+          {
+            "id": "fixture.flow",
+            "title": "Flow",
+            "supportedCatalogIds": [
+              "fixture.graph"
+            ],
+            "portConnectionRules": {
+              "output": "multiple"
+            },
+            "properties": []
+          }
+        ],
+        "nodeTypes": []
+      }
+    },
+    {
+      "label": "nodeConstraint without instances",
+      "valid": false,
+      "validatorCode": "catalog.missingProperty",
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [],
+        "graphTypes": [
+          {
+            "id": "fixture.flow",
+            "title": "Flow",
+            "supportedCatalogIds": [
+              "fixture.graph"
+            ],
+            "portConnectionRules": {
+              "input": "multiple",
+              "output": "multiple"
+            },
+            "properties": [],
+            "nodeConstraints": [
+              {
+                "id": "fixture.constraint.log",
+                "selector": {
+                  "nodeTypeIds": [
+                    "fixture.node.log"
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "nodeTypes": []
+      }
+    },
+    {
+      "label": "allowSubgraphs false with allowedSubgraphTypeIds",
+      "valid": false,
+      "validatorCode": "catalog.invalidMetadata",
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [],
+        "graphTypes": [
+          {
+            "id": "fixture.flow",
+            "title": "Flow",
+            "supportedCatalogIds": [
+              "fixture.graph"
+            ],
+            "portConnectionRules": {
+              "input": "multiple",
+              "output": "multiple"
+            },
+            "properties": [],
+            "allowSubgraphs": false,
+            "allowedSubgraphTypeIds": [
+              "fixture.sub"
+            ]
+          }
+        ],
+        "nodeTypes": []
+      }
+    },
+    {
+      "label": "unknown root property",
+      "valid": false,
+      "validatorCode": "catalog.unknownProperty",
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [],
+        "graphTypes": [],
+        "nodeTypes": [],
+        "unexpected": true
+      }
+    },
+    {
+      "label": "invalid dataType color",
+      "valid": false,
+      "validatorCode": "catalog.invalidColor",
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [
+          {
+            "id": "fixture.number",
+            "title": "Number",
+            "color": "#GGHHII"
+          }
+        ],
+        "graphTypes": [],
+        "nodeTypes": []
+      }
+    },
+    {
+      "label": "invalid dataType identifier",
+      "valid": false,
+      "validatorCode": "catalog.invalidIdentifier",
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [
+          {
+            "id": "-fixture.number",
+            "title": "Number"
+          }
+        ],
+        "graphTypes": [],
+        "nodeTypes": []
+      }
+    },
+    {
+      "label": "invalid usage value",
+      "valid": false,
+      "validatorCode": "catalog.invalidEnum",
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [],
+        "graphTypes": [
+          {
+            "id": "fixture.flow",
+            "title": "Flow",
+            "usage": "everywhere",
+            "supportedCatalogIds": [
+              "fixture.graph"
+            ],
+            "portConnectionRules": {
+              "input": "multiple",
+              "output": "multiple"
+            },
+            "properties": []
+          }
+        ],
+        "nodeTypes": []
+      }
+    },
+    {
+      "label": "invalid listPortMode value",
+      "valid": false,
+      "validatorCode": "catalog.invalidEnum",
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [
+          {
+            "id": "fixture.text",
+            "title": "Text"
+          }
+        ],
+        "graphTypes": [
+          {
+            "id": "fixture.flow",
+            "title": "Flow",
+            "supportedCatalogIds": [
+              "fixture.graph"
+            ],
+            "portConnectionRules": {
+              "input": "multiple",
+              "output": "multiple"
+            },
+            "properties": []
+          }
+        ],
+        "nodeTypes": [
+          {
+            "id": "fixture.node.pipeline",
+            "title": "Pipeline",
+            "category": "Logic",
+            "ports": [],
+            "dynamicPortGroups": [
+              {
+                "id": "fixture.group.inputs",
+                "title": "Inputs",
+                "listPortMode": "entries",
+                "port": {
+                  "kind": "data",
+                  "direction": "input",
+                  "dataTypeId": "fixture.text"
+                },
+                "item": {
+                  "valueType": "string",
+                  "dataTypeId": "fixture.text",
+                  "defaultValue": ""
+                }
+              }
+            ],
+            "properties": []
+          }
+        ]
+      }
+    },
+    {
+      "label": "port maxConnections zero",
+      "valid": false,
+      "validatorCode": "catalog.invalidNumber",
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [],
+        "graphTypes": [
+          {
+            "id": "fixture.flow",
+            "title": "Flow",
+            "supportedCatalogIds": [
+              "fixture.graph"
+            ],
+            "portConnectionRules": {
+              "input": "multiple",
+              "output": "multiple"
+            },
+            "properties": []
+          }
+        ],
+        "nodeTypes": [
+          {
+            "id": "fixture.node.log",
+            "title": "Log",
+            "category": "Logic",
+            "ports": [
+              {
+                "id": "fixture.port.exec.out",
+                "title": "Exec Out",
+                "kind": "flow",
+                "direction": "output",
+                "maxConnections": 0
+              }
+            ],
+            "properties": []
+          }
+        ]
+      }
+    },
+    {
+      "label": "nodeSelector without dimensions",
+      "valid": false,
+      "validatorCode": "catalog.missingProperty",
+      "value": {
+        "formatVersion": 4,
+        "catalogId": "fixture.graph",
+        "title": "Fixture Graph Catalog",
+        "source": {
+          "status": "current",
+          "providerId": "unity.csharp",
+          "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dataTypes": [],
+        "graphTypes": [
+          {
+            "id": "fixture.flow",
+            "title": "Flow",
+            "supportedCatalogIds": [
+              "fixture.graph"
+            ],
+            "portConnectionRules": {
+              "input": "multiple",
+              "output": "multiple"
+            },
+            "allowedNodeSelectors": [
+              {}
+            ],
+            "properties": []
+          }
+        ],
+        "nodeTypes": []
+      }
+    }
+  ]
+}

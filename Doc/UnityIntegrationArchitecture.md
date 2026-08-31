@@ -416,6 +416,18 @@ Table 是第一个纯消费方切片：Unity 侧不建立 Table Exporter（权�
 
 落地与验证记录（同日）：`VisualBridgeTableCompiler`/`VisualBridgeTableCompilerBatch`（菜单 Generate/Check Table Compiled Data）按上述设计实现；`VisualBridgeAuthoringProject` 暴露 `TableLayout`。EditMode 新增 14 例（确定性双跑、默认值物化与 mapping origin、drift 不写盘、stale 生命周期、keepFirst/keepLast、delimited 解码、tableTypeUnknown、missingColumn、duplicateKey、duplicatePartitionKey、xlsxUnsupported、tableLayoutMissing、invalidCell、失败保留产物）随全套 98/98 通过。开发宿主样例（`Gameplay.vbtablecatalog` + `Tables/Skills_Main.csv`）经 batchmode Generate/Check 产出 `sample.unity.skills` 产物（rowId `skills:Skills_Main:key-101` 与 VS Code 约定一致），table catalog 经 Node 生产 `parseTableCatalog`/`buildTableCatalogRegistry`/`matchTableSheetDefinitions` 校验。已知实现边界：keepLast 为原位替换（TS 侧为删除后 append，仅中间插入其他行时顺序不同）；rowDisplayNamePattern 仅校验占位符形状（不校验列引用，编译器不消费该 pattern）；解码后 cell 不执行 editor 数值约束（与权威 cellCodec 一致）。Project File 变更（如新增 table documentType）会改变 `projectSha256` 输入，全部编译器按输入 Hash 语义报 drift，需统一重新 Generate——这是设计内行为。
 
+### 13.5 Graph Catalog V4 Export 设计记录（VB-UX-05，2026-08-31）
+
+Graph 是契约面最大的领域切片，输出 Graph Catalog V4（`formatVersion 4`，不接受旧版本）。设计：
+
+- **metadata API**（`VisualBridge.Runtime` 新增）：assembly 级 `VisualBridgeGraphCatalogAttribute(catalogId, title)`（每程序集一个 graph catalog）与 `VisualBridgeGraphDataTypeAttribute(id, title)`（AllowMultiple，可选 Color/AcceptsAnySource/Accepts——root `dataTypes` 需显式声明，因 title 必填无法自动推导）；类型级 `VisualBridgeGraphTypeAttribute(catalogId, id, title)`（命名参数 Aliases/Description/Usage(root|subgraph|any)/SupportedCatalogIds/PortConnectionInput/PortConnectionOutput/AllowedNodeTypeIds/AllowedNodeTags/AllowedNodeTraits/AllowSubgraphs/AllowedSubgraphTypeIds）；`VisualBridgeNodeTypeAttribute(catalogId, id, title, category)`（Aliases/Description/Icon/MenuPath/Tags/Traits）；graphType 类上的 AllowMultiple `VisualBridgeGraphNodeConstraintAttribute(id, nodeTypeId, MinInstances, MaxInstances)` 与 `VisualBridgeGraphInitialNodeAttribute(nodeTypeId, title)`；字段级 `VisualBridgePortAttribute(id, title, kind, direction)`（Aliases/Description/DataTypeId/MaxConnections——data 端口 DataTypeId 缺省时由 CLR 类型映射 int/float/string/bool 推导，flow 端口禁止）与 `VisualBridgeDynamicPortGroupAttribute(id, title, direction, listPortMode)`（MaxItems/DataTypeId——item 由 `List<T>` 元素类型经共享字段模型推导）。
+- **selector 映射**：graphType 的 AllowedNodeTypeIds/AllowedNodeTags/AllowedNodeTraits 生成单个 nodeSelector（nodeTypeIds OR、tags OR、traits AND、三维 AND——与 VS Code `matchesNodeSelector` 语义一致）；nodeConstraint 的 selector V1 仅支持 nodeTypeId 形态。
+- **typed subgraph**：nodeType 带 `SubgraphGraphTypeIds`（`VisualBridgeNodeTypeAttribute` 命名参数）时导出 `subgraph.graphTypeIds`；静态/动态 flow 端口禁止（Schema 约束，校验器执行）。
+- **端口与字段分离**：`[VisualBridgePort]` 字段是端口声明，不进入 properties（与 Schema 的 ports/properties 分离一致）；同一字段同时声明 Port 与 Field 报 `catalog.duplicateMetadata`。
+- **身份**：graphType/nodeType/dataType/port/dynamicPortGroup 的 id+aliases 各自全局无歧义；C# 全名只进 `source.typeName`。supportedCatalogIds 必须包含自身 catalog 且引用已声明 catalog（跨 catalog 引用由 VS Code Registry 校验，导出侧校验自引用与已知 catalog 集合）。
+- **复用与校验**：Exporter 复用 Structured Exporter 的 internal 共享层（BuildFields/序列化/原子写/两遍处理）；严格校验器 `VisualBridgeGraphCatalogValidator` 镜像 Schema（复用共享字段校验）；三方 parity fixture（AJV / Unity validator / 扩展宿主）覆盖端口身份、连接规则、typed subgraph 与实例约束的正反例。
+- **绑定校验**：graph catalog 输出（`.vbgraphcatalog` 扩展名路由）必须被 `editor == "graph"` 的 DocumentType 声明；Profile Schema pattern 放开三种 catalog 扩展名。
+
 ## 14. 命令与验证层级
 
 当前仓库没有独立发布的 VisualBridge CLI。命令行入口是 Protocol npm script 与 Unity batchmode `-executeMethod`，菜单和 batch wrapper 调用相同的 Exporter/Compiler 服务，不建立第二套业务规则：

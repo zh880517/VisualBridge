@@ -1,0 +1,310 @@
+{
+  "formatVersion": 4,
+  "catalogId": "sample.unity.graph",
+  "title": "Unity Gameplay Graphs",
+  "source": {
+    "status": "current",
+    "providerId": "unity.csharp",
+    "sourceHash": "f4bb378477924eeb52a3771c8707469d5863c0a4bdeba90373f5fdf8775f0ac3"
+  },
+  "dataTypes": [
+    {
+      "id": "bool",
+      "title": "Boolean"
+    },
+    {
+      "id": "int",
+      "title": "Integer"
+    },
+    {
+      "id": "list.string",
+      "title": "Text List"
+    },
+    {
+      "id": "string",
+      "title": "Text"
+    }
+  ],
+  "graphTypes": [
+    {
+      "id": "sample.unity.encounter",
+      "aliases": [],
+      "title": "Encounter",
+      "usage": "root",
+      "source": {
+        "providerId": "unity.csharp",
+        "typeName": "VisualBridge.Sample.EncounterGraph, Assembly-CSharp"
+      },
+      "supportedCatalogIds": [
+        "sample.unity.graph"
+      ],
+      "portConnectionRules": {
+        "input": "single",
+        "output": "multiple"
+      },
+      "allowedNodeSelectors": [
+        {
+          "tags": [
+            "sample.unity"
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "id": "title",
+          "title": "Title",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "string",
+          "defaultValue": "Encounter",
+          "editor": {
+            "kind": "text",
+            "readOnly": false,
+            "integer": false
+          }
+        }
+      ],
+      "allowSubgraphs": false
+    },
+    {
+      "id": "sample.unity.encounter.branch",
+      "aliases": [],
+      "title": "Encounter Branch",
+      "usage": "subgraph",
+      "source": {
+        "providerId": "unity.csharp",
+        "typeName": "VisualBridge.Sample.EncounterBranchGraph, Assembly-CSharp"
+      },
+      "supportedCatalogIds": [
+        "sample.unity.graph"
+      ],
+      "portConnectionRules": {
+        "input": "single",
+        "output": "multiple"
+      },
+      "allowedNodeSelectors": [
+        {
+          "tags": [
+            "sample.unity"
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "id": "condition",
+          "title": "Condition",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "string",
+          "defaultValue": "true",
+          "editor": {
+            "kind": "text",
+            "readOnly": false,
+            "integer": false
+          }
+        }
+      ]
+    }
+  ],
+  "nodeTypes": [
+    {
+      "id": "sample.unity.node.compare",
+      "aliases": [],
+      "title": "Compare Value",
+      "category": "Logic",
+      "menuPath": [
+        "Logic",
+        "Compare"
+      ],
+      "tags": [
+        "sample.unity"
+      ],
+      "traits": [],
+      "source": {
+        "providerId": "unity.csharp",
+        "typeName": "VisualBridge.Sample.CompareNode, Assembly-CSharp"
+      },
+      "ports": [
+        {
+          "id": "execIn",
+          "aliases": [],
+          "title": "Exec In",
+          "kind": "flow",
+          "direction": "input"
+        },
+        {
+          "id": "valueIn",
+          "aliases": [],
+          "title": "Value In",
+          "kind": "data",
+          "direction": "input",
+          "dataTypeId": "int"
+        },
+        {
+          "id": "trueOut",
+          "aliases": [],
+          "title": "True Out",
+          "kind": "flow",
+          "direction": "output"
+        },
+        {
+          "id": "falseOut",
+          "aliases": [],
+          "title": "False Out",
+          "kind": "flow",
+          "direction": "output"
+        },
+        {
+          "id": "resultOut",
+          "aliases": [],
+          "title": "Result Out",
+          "kind": "data",
+          "direction": "output",
+          "dataTypeId": "bool"
+        }
+      ],
+      "properties": [
+        {
+          "id": "threshold",
+          "title": "Threshold",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "int",
+          "defaultValue": 10,
+          "editor": {
+            "kind": "number",
+            "readOnly": false,
+            "integer": true,
+            "min": -2147483648,
+            "max": 2147483647
+          }
+        }
+      ]
+    },
+    {
+      "id": "sample.unity.node.encounter.branch",
+      "aliases": [],
+      "title": "Encounter Branch Call",
+      "category": "Subgraph",
+      "menuPath": [],
+      "tags": [
+        "sample.unity"
+      ],
+      "traits": [],
+      "source": {
+        "providerId": "unity.csharp",
+        "typeName": "VisualBridge.Sample.EncounterBranchNode, Assembly-CSharp"
+      },
+      "subgraph": {
+        "graphTypeIds": [
+          "sample.unity.encounter.branch"
+        ]
+      },
+      "ports": [
+        {
+          "id": "dataIn",
+          "aliases": [],
+          "title": "Data In",
+          "kind": "data",
+          "direction": "input",
+          "dataTypeId": "string"
+        }
+      ],
+      "properties": []
+    },
+    {
+      "id": "sample.unity.node.log",
+      "aliases": [],
+      "title": "Log Message",
+      "category": "Logic",
+      "menuPath": [
+        "Logic",
+        "Log"
+      ],
+      "tags": [
+        "sample.unity"
+      ],
+      "traits": [],
+      "source": {
+        "providerId": "unity.csharp",
+        "typeName": "VisualBridge.Sample.LogNode, Assembly-CSharp"
+      },
+      "ports": [
+        {
+          "id": "execIn",
+          "aliases": [],
+          "title": "Exec In",
+          "kind": "flow",
+          "direction": "input"
+        },
+        {
+          "id": "execOut",
+          "aliases": [],
+          "title": "Exec Out",
+          "kind": "flow",
+          "direction": "output"
+        }
+      ],
+      "properties": [
+        {
+          "id": "message",
+          "title": "Message",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "string",
+          "defaultValue": "Hello",
+          "editor": {
+            "kind": "text",
+            "readOnly": false,
+            "integer": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "sample.unity.node.message.list",
+      "aliases": [],
+      "title": "Message List",
+      "category": "Logic",
+      "menuPath": [
+        "Logic",
+        "Message List"
+      ],
+      "tags": [
+        "sample.unity"
+      ],
+      "traits": [],
+      "source": {
+        "providerId": "unity.csharp",
+        "typeName": "VisualBridge.Sample.MessageListNode, Assembly-CSharp"
+      },
+      "ports": [
+        {
+          "id": "execIn",
+          "aliases": [],
+          "title": "Exec In",
+          "kind": "flow",
+          "direction": "input"
+        }
+      ],
+      "dynamicPortGroups": [
+        {
+          "id": "messages",
+          "aliases": [],
+          "title": "Messages",
+          "port": {
+            "kind": "data",
+            "direction": "input",
+            "dataTypeId": "list.string"
+          },
+          "item": {
+            "valueType": "string",
+            "dataTypeId": "string",
+            "defaultValue": ""
+          }
+        }
+      ],
+      "properties": []
+    }
+  ]
+}

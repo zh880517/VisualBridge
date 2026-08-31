@@ -5,6 +5,7 @@ import type {
   ReferenceLocation,
 } from "@visualbridge/core";
 import { TABLE_EDITOR_ID } from "@visualbridge/table";
+import { parseGraphCatalog } from "@visualbridge/graph";
 import { CatalogBrowser } from "./catalog/catalogBrowser";
 import { createDocument } from "./commands/createDocument";
 import { createEntityDocument } from "./commands/createEntityDocument";
@@ -627,6 +628,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
           return { ok: false, code: "bridge.internalError", jsonPath: "$" };
         }
+      }),
+      vscode.commands.registerCommand("visualbridge.test.parseGraphCatalog", (value: unknown) => {
+        const result = parseGraphCatalog(JSON.stringify(value));
+        return { ok: result.success === true };
       }),
     );
   }

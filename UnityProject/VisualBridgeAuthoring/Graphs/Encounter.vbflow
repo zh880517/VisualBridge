@@ -1,0 +1,62 @@
+{
+  "formatVersion": 3,
+  "documentId": "sample.unity.encounter.opening",
+  "rootGraphId": "root",
+  "graphs": [
+    {
+      "id": "root",
+      "graphTypeId": "sample.unity.encounter",
+      "title": "Opening Encounter",
+      "properties": {
+        "title": "Opening Encounter"
+      },
+      "interfacePorts": [],
+      "nodes": [
+        {
+          "kind": "node",
+          "id": "welcome",
+          "nodeTypeId": "sample.unity.node.log",
+          "title": "Welcome",
+          "position": {
+            "x": 80,
+            "y": 80
+          },
+          "properties": {
+            "message": "Welcome to VisualBridge"
+          },
+          "dynamicPorts": []
+        },
+        {
+          "kind": "node",
+          "id": "compare",
+          "nodeTypeId": "sample.unity.node.compare",
+          "title": "Compare",
+          "position": {
+            "x": 320,
+            "y": 80
+          },
+          "properties": {
+            "threshold": 10
+          },
+          "dynamicPorts": []
+        }
+      ],
+      "edges": [
+        {
+          "id": "welcome-to-compare",
+          "kind": "flow",
+          "source": {
+            "kind": "node",
+            "nodeId": "welcome",
+            "portId": "execOut"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "compare",
+            "portId": "execIn"
+          }
+        }
+      ]
+    }
+  ]
+}

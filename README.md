@@ -83,6 +83,8 @@ $unityProject = (Resolve-Path .\UnityProject).Path
 & $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeStructuredCatalogBatch.Check -logFile "$env:TEMP\visualbridge-catalog-check.log"
 & $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeEntityCatalogBatch.Generate -logFile "$env:TEMP\visualbridge-entity-catalog-generate.log"
 & $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeEntityCatalogBatch.Check -logFile "$env:TEMP\visualbridge-entity-catalog-check.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeGraphCatalogBatch.Generate -logFile "$env:TEMP\visualbridge-graph-catalog-generate.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeGraphCatalogBatch.Check -logFile "$env:TEMP\visualbridge-graph-catalog-check.log"
 & $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeStructuredCompilerBatch.Generate -logFile "$env:TEMP\visualbridge-compile-generate.log"
 & $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeStructuredCompilerBatch.Check -logFile "$env:TEMP\visualbridge-compile-check.log"
 & $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeEntityCompilerBatch.Generate -logFile "$env:TEMP\visualbridge-entity-compile-generate.log"

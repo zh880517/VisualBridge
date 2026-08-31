@@ -20,6 +20,19 @@
         "VisualBridge.Sample.HealthComponent, Assembly-CSharp",
         "VisualBridge.Sample.MovementComponent, Assembly-CSharp"
       ]
+    },
+    {
+      "catalogId": "sample.unity.graph",
+      "title": "Unity Gameplay Graphs",
+      "output": "VisualBridgeAuthoring/Catalog/Gameplay.vbgraphcatalog",
+      "types": [
+        "VisualBridge.Sample.EncounterGraph, Assembly-CSharp",
+        "VisualBridge.Sample.EncounterBranchGraph, Assembly-CSharp",
+        "VisualBridge.Sample.LogNode, Assembly-CSharp",
+        "VisualBridge.Sample.CompareNode, Assembly-CSharp",
+        "VisualBridge.Sample.MessageListNode, Assembly-CSharp",
+        "VisualBridge.Sample.EncounterBranchNode, Assembly-CSharp"
+      ]
     }
   ],
   "compileOutputRoot": "Library/VisualBridge/Compiled"

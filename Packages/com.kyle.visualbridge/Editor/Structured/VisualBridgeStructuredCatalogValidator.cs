@@ -123,7 +123,7 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static void ValidateValueDefinition(JObject definition, string path)
+        internal static void ValidateValueDefinition(JObject definition, string path)
         {
             var valueType = RequireString(definition["valueType"], path + ".valueType");
             if (!ValueTypes.Contains(valueType))
