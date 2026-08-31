@@ -113,6 +113,15 @@ Table 是纯消费方：Unity 侧没有 Table Exporter，catalog（`.vbtablecata
 - 语义：nameKey 列映射、cell encoding（scalar/json/delimited）、key column 与 rowId（`{sheetDefinitionId}:{物理名}:key-{值}`）、跨分区有效行去重（error/keepFirst/keepLast）全部复刻 VS Code 权威语义；产物按 documentType 聚合为 `documents/{projectId}/{documentTypeId}/{tableTypeId}.vbcompiled.json` + mapping + `manifest.table.json`。
 - 注意：Project File 任何变更都会改变 `projectSha256`，三个编译器（Structured/Entity/Table）都会按输入 Hash 报 drift，需统一重新 Generate。
 
+## 5.4 Graph Compile
+
+`.vbflow` 等 graph 文档由 `VisualBridgeGraphCompiler` 编译：
+
+- 入口：菜单 **Tools / VisualBridge / Generate Graph Compiled Data**、**Check Graph Compiled Data**；batchmode `VisualBridge.Editor.VisualBridgeGraphCompilerBatch.Generate` / `.Check`（退出码 `0`/`1`/`2`）。
+- 前置：Graph Catalog Check 无 drift（`compile.catalogDrift`）。
+- 语义：文档按 graph DocumentType 唯一路由（不要求 documentType.id 对应 graphType——root 图的 `graphTypeId` 自行解析校验）；VS Code 侧的全部 error 级文档校验在编译器为 fail-closed（身份唯一、边方向/kind/dataType/连接上限、节点允许性、subgraph 白名单与调用类型匹配、实例约束、动态端口、接口端口），warning 级类型别名静默 canonical 化进产物；缺失节点/图属性物化 Catalog 默认值（mapping 记 `origin: metadataDefault`）。
+- 产物：`documents/{projectId}/{documentTypeId}/{documentId}.vbcompiled.json`（保留节点 position 与 subgraphId，节点/边按 id 排序）+ mapping + `manifest.graph.json`，与其他三域 manifest 共存。
+
 ## 6. Structured Compile
 
 输入是 Authoring Project（Project File + Structured 文档）+ 已提交 Catalog + Integration Profile。入口：

@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：VB-UX-00 至 VB-UX-05（语言规范、Entity Catalog Export、Entity Import/Compile、Adapter API 复核决策、Table Import/Compile、Graph Catalog V4 Exporter）已完成，VB-UX-06（Graph Import/Compile）待开始。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态 spike）为阶段 B 首个任务，待开始。
 
 本阶段分三段：
 
@@ -180,7 +180,7 @@ Exit criteria：
 - 端口身份、连接规则、typed subgraph 与实例约束的正反例 fixture 三方 parity（AJV / Unity strict validator / 扩展宿主）通过。
 - 全部 Node/dotnet/Unity/docs 门槛通过；产物设计留档进入架构文档。
 
-### VB-UX-06 Graph Import / Compile — `in_progress`
+### VB-UX-06 Graph Import / Compile — `complete`
 
 依赖：VB-UX-05。
 
@@ -188,6 +188,10 @@ Exit criteria：
 
 - Graph 实例文档 → 确定性派生产物 + source mapping，唯一路由、原子性与失败恢复对齐 VB-UX-02。
 - 任务验收含第三次真实切片后的 Adapter API 边界轻量复核：确认 VB-UX-03 的决策仍然成立，若被推翻须先修订架构文档再继续。
+
+实施与验证记录：2026-08-31 完成。产物形态设计先行冻结进 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 13.6 节（不要求 documentType.id 解析 graphType——对齐 VS Code 语义，root 图 graphTypeId 自行校验；VS Code warning 级类型别名在编译器静默 canonical 化、未知类型 fail-closed；缺失属性物化默认值）。实现 `VisualBridgeGraphCompiler`/`VisualBridgeGraphCompilerBatch`，零新增 private→internal（Entity/Table 建立的共享层原样承载第三切片——**第三次 Adapter API 轻量复核结论：VB-UX-03 决策 B 成立，见架构文档 §13.3 追加记录**）。
+
+验证记录：EditMode 新增 19 例（确定性双跑、默认值物化与 alias canonical 化、Check 不写盘、stale 生命周期、subgraph 正路径、11 个错误码负路径含连接规则/端口方向/kind/dataType/上限、失败保留产物、Batch 契约）随全套 133/133 通过；batchmode 垂直切片：Graph Compile Generate/Check 与 Structured/Entity/Table 编译、Graph Catalog 共六项退出码全 0；样例 `Encounter.vbflow` 编译产物经二次运行字节一致校验，四套 manifest 共存互不干扰；`dotnet build` 0 错误。
 
 Exit criteria：
 
@@ -203,7 +207,7 @@ Exit criteria：
 - 不得向 Editor Bridge Schema 添加 Runtime/Debug/Player 字段；Editor Bridge 的 open/reveal E2E 必须在阶段 B 每个任务后保持通过。
 - 多实例、多窗口、Domain Reload 场景沿用显式选择与实例 generation 模式，不建立全局「当前 Unity」。
 
-### VB-UX-07 Runtime 产物形态 spike 与冻结决策 — `pending`
+### VB-UX-07 Runtime 产物形态 spike 与冻结决策 — `in_progress`
 
 依赖：VB-UX-06。
 

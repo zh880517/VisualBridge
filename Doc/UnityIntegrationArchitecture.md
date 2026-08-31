@@ -404,6 +404,8 @@ Entity 编译镜像 Structured Compiler 的生命周期与事务语义，由 `Vi
 
 **边界声明**：Table（VB-UX-04）与 Graph（VB-UX-05/06）继续按 per-domain batch 服务模式实施——各自实现 Exporter/Compiler/Batch/菜单，经 internal 成员复用共享字段构建、序列化、Hash 与事务实现，不新增公开注册点，也不把 internal 共享层当作公开契约对待。
 
+第三次轻量复核（VB-UX-06 验收项，2026-08-31）：Graph Compiler（第三个、也是契约面最大的切片）实现时**零新增 private→internal 改动**——Entity/Table 建立的共享层（字段构建、序列化、Hash、事务、路径校验，约 20 个 internal 成员）原样承载了 Graph 的全部生命周期需求。VB-UX-03 的方案 B 决策成立，无需修订；internal 共享层在四个领域全部落地后结构稳定，若未来重开决策（见重开条件）可整体提取而不破坏既有切片。
+
 ### 13.4 Table Import / Compile 设计记录（VB-UX-04，2026-08-31）
 
 Table 是第一个纯消费方切片：Unity 侧不建立 Table Exporter（权威数据在 VS Code 侧的 Table 文档与 Catalog），只实现编译。产物形态设计（任务前置结论）：
@@ -427,6 +429,18 @@ Graph 是契约面最大的领域切片，输出 Graph Catalog V4（`formatVersi
 - **身份**：graphType/nodeType/dataType/port/dynamicPortGroup 的 id+aliases 各自全局无歧义；C# 全名只进 `source.typeName`。supportedCatalogIds 必须包含自身 catalog 且引用已声明 catalog（跨 catalog 引用由 VS Code Registry 校验，导出侧校验自引用与已知 catalog 集合）。
 - **复用与校验**：Exporter 复用 Structured Exporter 的 internal 共享层（BuildFields/序列化/原子写/两遍处理）；严格校验器 `VisualBridgeGraphCatalogValidator` 镜像 Schema（复用共享字段校验）；三方 parity fixture（AJV / Unity validator / 扩展宿主）覆盖端口身份、连接规则、typed subgraph 与实例约束的正反例。
 - **绑定校验**：graph catalog 输出（`.vbgraphcatalog` 扩展名路由）必须被 `editor == "graph"` 的 DocumentType 声明；Profile Schema pattern 放开三种 catalog 扩展名。
+
+### 13.6 Graph Import / Compile 设计记录（VB-UX-06，2026-08-31）
+
+Graph 编译镜像既有 Compiler 生命周期，由 `VisualBridgeGraphCompiler` 承载；产物形态设计（任务前置结论）：
+
+- **路由**：`.vbflow` 等 graph 文档按 `editor == "graph"` 的 DocumentType include/exclude 唯一路由。**与 Entity/Table 不同，不要求 documentType.id 解析到 graphType**——VS Code 侧创建文档时 root graphType 由作者从 catalog 选择，documentType.id 仅作显示；编译器改为校验每个文档 root graph 的 `graphTypeId` 在声明 catalog 中解析为非 subgraph graphType（`compile.graphTypeUnknown`，usage 校验 `compile.invalidGraphTypeUsage`）。
+- **fail-closed 边界**：VS Code 文档诊断中 warning 级的「未知类型」在编译器为错误（无法物化与校验）——`compile.nodeTypeUnknown`/`compile.graphTypeUnknown`；error 级语义全部复刻：身份唯一（graphId/nodeId/edgeId/interfacePortId/dynamicPortId 全文档唯一、duplicateSemanticConnection/Property）、边校验（方向、kind、dataType 可赋值性、有效连接上限=min(graphType 规则, 端口 maxConnections)）、节点允许性（selector 匹配、subgraph 白名单与调用类型匹配、接口端口冲突）、实例约束、动态端口（组解析、上限、身份冲突）、接口端口（data/flow 规则、根图禁 dynamic）、属性值校验。
+- **canonical 化与默认值**：nodeType/graphType/port 引用经别名解析为 canonical id 进产物；节点与图的缺失属性以 Catalog defaultValue 物化（mapping 记 `origin: metadataDefault`），未知属性报 `compile.unknownField`（对齐 Entity）。
+- **产物结构**：`documents/{projectId}/{documentTypeId}/{documentId}.vbcompiled.json`（kind `visualbridge.graph.compiled`；`data` 为 `{graphs:[{id, graphTypeId, title, properties, interfacePorts, nodes, edges}]}`——保留 position（文档 required 字段、无权威分类将其排除在业务数据外）、节点/边按 id 排序、properties 键按 canonical ID 排序）；`mappings/.../{documentId}.vbsource.json`（逐属性 `{sourcePath, artifactPath, origin}`）；`manifest.graph.json`（kind `visualbridge.graph.compileManifest`）。Catalog drift 检查走 `VisualBridgeGraphCatalogExporter` Check（graph catalog 由 Unity 导出，对齐 Entity Compiler）。
+- **Registry**：复用 `VisualBridgeGraphCatalogValidator` 校验单 catalog，另做跨 catalog 的 nodeType/graphType/dataType 身份合并与冲突检测（对应 VS Code `buildGraphCatalogRegistry` 语义）。
+
+落地与验证记录（同日）：`VisualBridgeGraphCompiler`/`VisualBridgeGraphCompilerBatch`（菜单 Generate/Check Graph Compiled Data）按上述设计实现，VS Code `graph.*` 诊断到编译器 `compile.*` 错误码的映射表留档于实现（warning 级类型别名一律静默 canonical 化、未知类型 fail-closed）。EditMode 新增 19 例（确定性双跑、默认值物化与 alias canonical 化、Check 不写盘、stale 生命周期、subgraph 正路径、11 个错误码负路径、失败保留产物、Batch 契约）随全套 133/133 通过；batchmode 垂直切片：Graph Compile Generate/Check 与 Structured/Entity/Table 编译、Graph Catalog 全部退出码 0；样例 `Encounter.vbflow` 编译产物与 mapping 经二次运行字节一致校验，四套 manifest（structured/entity/table/graph）共存互不干扰。产物 subgraph 节点保留 `subgraphId`（与 position 同理：文档 required 字段，无权威分类排除）。
 
 ## 14. 命令与验证层级
 

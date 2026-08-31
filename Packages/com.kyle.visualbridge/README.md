@@ -49,6 +49,8 @@ Catalog 来源是显式 metadata 的普通 `class` / `struct`；C# 全名只作 
 - **Tools / VisualBridge / Check Entity Compiled Data**
 - **Tools / VisualBridge / Generate Table Compiled Data**
 - **Tools / VisualBridge / Check Table Compiled Data**
+- **Tools / VisualBridge / Generate Graph Compiled Data**
+- **Tools / VisualBridge / Check Graph Compiled Data**
 
 batchmode 入口（退出码统一 `0` 成功、`1` 失败、`2` Check 发现 drift）：
 
@@ -58,8 +60,9 @@ batchmode 入口（退出码统一 `0` 成功、`1` 失败、`2` Check 发现 dr
 - `VisualBridge.Editor.VisualBridgeStructuredCompilerBatch.Generate` / `.Check`
 - `VisualBridge.Editor.VisualBridgeEntityCompilerBatch.Generate` / `.Check`
 - `VisualBridge.Editor.VisualBridgeTableCompilerBatch.Generate` / `.Check`
+- `VisualBridge.Editor.VisualBridgeGraphCompilerBatch.Generate` / `.Check`
 
-Profile 的 `catalogExports[].output` 扩展名决定路由：`.vbstructuredcatalog` 走 Structured Exporter，`.vbentitycatalog` 走 Entity Exporter，`.vbgraphcatalog` 走 Graph Exporter（Graph Catalog V4：Graph/Node Type、端口、连接规则、typed subgraph 与实例约束由 `VisualBridgeGraphType`/`NodeType`/`Port`/`DynamicPortGroup` 等 attribute 声明）。Entity 侧 metadata 为 assembly 级 `VisualBridgeEntityCatalog` / `VisualBridgeEntityComponentGroup` 与类型级 `VisualBridgeEntityType` / `VisualBridgeEntityComponent`（字段沿用 `VisualBridgeField`），导出 Component Group、Entity Type 与 Component Type；`.vbentity` 文档由 Entity Compiler 编译为同布局产物（独立 `manifest.entity.json`），文档校验为纯 JSON 级对照 Catalog 定义并物化默认值。Table 为纯消费方：`.vbtablecatalog` 由 VS Code 侧创作提交，CSV family 文档由 Table Compiler 按权威语义（nameKey 映射、cell encoding、分区有效行）编译（独立 `manifest.table.json`；XLSX 不在 V1 支持范围）。
+Profile 的 `catalogExports[].output` 扩展名决定路由：`.vbstructuredcatalog` 走 Structured Exporter，`.vbentitycatalog` 走 Entity Exporter，`.vbgraphcatalog` 走 Graph Exporter（Graph Catalog V4：Graph/Node Type、端口、连接规则、typed subgraph 与实例约束由 `VisualBridgeGraphType`/`NodeType`/`Port`/`DynamicPortGroup` 等 attribute 声明）。Entity 侧 metadata 为 assembly 级 `VisualBridgeEntityCatalog` / `VisualBridgeEntityComponentGroup` 与类型级 `VisualBridgeEntityType` / `VisualBridgeEntityComponent`（字段沿用 `VisualBridgeField`），导出 Component Group、Entity Type 与 Component Type；`.vbentity` 文档由 Entity Compiler 编译为同布局产物（独立 `manifest.entity.json`），文档校验为纯 JSON 级对照 Catalog 定义并物化默认值。Table 为纯消费方：`.vbtablecatalog` 由 VS Code 侧创作提交，CSV family 文档由 Table Compiler 按权威语义（nameKey 映射、cell encoding、分区有效行）编译（独立 `manifest.table.json`；XLSX 不在 V1 支持范围）。Graph 实例文档由 Graph Compiler 编译（fail-closed 复刻全部 error 级文档校验、别名 canonical 化、默认值物化；独立 `manifest.graph.json`）。
 
 编译产物布局在 `Library/VisualBridge/Compiled` 下：`manifest.json`（Structured）/ `manifest.entity.json`（Entity）、`documents/<projectId>/<documentTypeId>/<documentId>.vbcompiled.json`、`mappings/<projectId>/<documentTypeId>/<documentId>.vbsource.json`。失败不会破坏上次有效产物。
 
@@ -75,6 +78,6 @@ EditMode 测试位于 `Tests/Editor/`，用 Unity Test Framework 的 EditMode �
 
 - Authoring Document 是唯一权威；Catalog 与编译产物都是派生数据，可随时删除重建。
 - Bridge 只发送 open/reveal 请求，不写 Authoring/Catalog、不触发 Export/Compile、不含 Runtime/Debug/Player 消息。
-- Graph 文档的 Unity 侧编译与 Runtime 接入按 [`Doc/UnityDomainAndRuntimeRoadmap.md`](../../Doc/UnityDomainAndRuntimeRoadmap.md) 推进，尚未实现；Table 的 XLSX 载体编译同属后续范围。
+- Runtime 接入按 [`Doc/UnityDomainAndRuntimeRoadmap.md`](../../Doc/UnityDomainAndRuntimeRoadmap.md) 推进，尚未实现；Table 的 XLSX 载体编译同属后续范围。
 
 架构与冻结决策见 [Unity Editor 接入架构](../../Doc/UnityIntegrationArchitecture.md)。
