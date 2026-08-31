@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：VB-UX-00 至 VB-UX-02（语言规范、Entity Catalog Export、Entity Import/Compile）已完成，VB-UX-03（Unity Adapter API 复核）进行中，其余任务 `pending`。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：VB-UX-00 至 VB-UX-03（语言规范、Entity Catalog Export、Entity Import/Compile、Adapter API 复核决策）已完成，VB-UX-04（Table Import/Compile）待开始。
 
 本阶段分三段：
 
@@ -127,9 +127,11 @@ Exit criteria：
 - 负面路径（路由歧义、文档缺失/非法、Catalog 过期）有自动化覆盖与明确错误码。
 - 全部 Node/dotnet/Unity/docs 门槛通过；产物设计留档进入架构文档。
 
-### VB-UX-03 Unity Adapter API 复核（独立决策任务）— `in_progress`
+### VB-UX-03 Unity Adapter API 复核（独立决策任务）— `complete`
 
 依赖：VB-UX-02。此时仓库拥有 Structured 与 Entity 两个真实 Exporter/Compiler，满足 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 13 节的复核条件。
+
+决策记录：2026-08-31 完成。对比两切片的生命周期、诊断、artifact plan 与注册方式后决定**不建立公开 Unity Adapter API**（方案 B：维持 per-domain batch 服务模式 + internal 共享层），理由为仅 2/4 领域落地且 Graph/Table 是抽象反例、公开 API 是永久契约而产物格式待 VB-UX-07 重估、无现实第三方消费者、复用价值已由 internal 共享兑现。重开条件（Graph 后第三次复核、真实第三方需求、Runtime 产物冻结）与 Table/Graph 边界声明见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 13.3 节。本任务为纯决策记录，无代码变更；既有 84 例 EditMode 与全部 batchmode 门槛维持通过状态。
 
 范围：
 
@@ -141,7 +143,7 @@ Exit criteria：
 - 决策记录（含证据、备选方案与拒绝理由）进入架构文档正式章节，不再留「待定」。
 - 若建立公开 API：两个既有切片迁移到该 API 且全部既有门槛回归通过；若不建立：Table/Graph 任务继续按 per-domain batch 服务模式实施，边界写明。
 
-### VB-UX-04 Table Import / Compile — `pending`
+### VB-UX-04 Table Import / Compile — `in_progress`
 
 依赖：VB-UX-03。
 

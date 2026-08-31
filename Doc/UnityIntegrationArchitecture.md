@@ -366,6 +366,44 @@ Entity 编译镜像 Structured Compiler 的生命周期与事务语义，由 `Vi
 - **原子性与恢复**：复用 Structured Compiler 的事务实现（tmp → VerifyInputs → 基线复核 `compile.outputChangedBeforeReplace` → 备份 → Replace/Move → 失败逆序回滚，残留 bak 供人工恢复）；stale 输出按旧 manifest 托管集计算，Generate 删除、Check 报 drift；Check 模式不写盘。
 - **验证基线**：EditMode 14 例覆盖确定性双跑、默认值物化与零业务构造、drift 不写盘、stale 删除/保留、全部 fail-closed 错误码、失败保留上次产物、别名 canonical 化、ambiguousRoute 与 Structured+Entity 共存；开发宿主样例 `Hero.vbentity` 经 batchmode Generate/Check 产出产物并通过二次运行字节一致校验。
 
+### 13.3 Unity Adapter API 复核决策（VB-UX-03，2026-08-31）
+
+本节是第 13 节复核条件的正式决策记录。触发条件已满足：仓库拥有 Structured 与 Entity 两套真实 Exporter/Compiler，且它们经历了完整实现与验证周期。
+
+**两切片对比证据**：
+
+| 维度 | Structured | Entity | 结论 |
+| --- | --- | --- | --- |
+| 生命周期 | Load Profile → 扩展名过滤 → BuildPlan → 绑定校验 → 输出比对 → 原子写；Compiler 另有输入快照/事务/stale 清算 | 完全同构（镜像实现） | 生命周期高度一致，可共享 |
+| 诊断 | `VisualBridgeIntegrationException` + `catalog.*`/`profile.*`/`compile.*` 错误码 | 同一异常与工具函数，新增 `compile.entityType*`/`compile.component*` 系列 | 已共享 |
+| artifact plan | `manifest.json` + `documents/` + `mappings/` | `manifest.entity.json` + 相同子树 | 布局同构，manifest 按域分文件 |
+| 注册方式 | Profile `catalogExports` 扩展名路由 + per-domain metadata attribute + per-domain batch/菜单 | 同 | 已是统一模式 |
+| 字段/序列化/事务 | 实现所有者 | 经 internal 成员复用（Exporter 约 15 个成员、Compiler 24 个成员），无逻辑复制 | 复用已发生且成本可控 |
+| 领域差异点 | 文档校验经反射物化 C# 实例 | 文档校验为纯 JSON 级对照 Catalog（无反射物化） | 有意分化，抽象收益低 |
+
+**备选方案**：
+
+- A. 现在建立公开 Unity Adapter API（Catalog Generator / Importer / Compiler / Debug Mapping 注册点）。
+- B. 维持 per-domain batch 服务模式 + internal 共享层，公开 API 延后。
+- C. 把 internal 共享层重构为显式 internal 模块（不公开，但结构化共享边界）。
+
+**决策：B**（现有 internal 成员共享即 C 的轻量形态，暂不单独重构）。
+
+拒绝 A 的理由：
+
+1. 仅 2/4 领域落地。Graph（Catalog V4、端口/子图/连接规则，导出形态与字段模型差异最大）与 Table（纯消费方、无 Exporter、CSV/XLSX 载体与 table layout）恰是最能检验抽象是否成立的两类反例；此时冻结注册点 API 有较高概率在 VB-UX-05/06 被迫破坏性修订。
+2. 公开 API 是永久 Package 契约：一旦公开，任何调整都需要版本协商；而编译产物格式本身还要经 VB-UX-07 Runtime 产物形态 spike 重估——先冻结产物消费方的注册契约，等于用最不确定的输入做最持久的承诺。
+3. 当前不存在第三方消费者（私有 `UNLICENSED` 包），公开 API 没有现实需求方，只有假想需求方。
+4. 复用价值已经通过 internal 共享兑现：字段构建、序列化、Hash、原子事务、路径校验零复制；per-domain 剩余重复仅 batch 包装（约 70 行/域）与领域绑定的注册表构建，属低频稳定代码。
+
+重开条件（满足其一即重开决策，届时按本节格式追加新记录）：
+
+- Graph 切片（VB-UX-05/06）完成后按其 exit criteria 做第三次轻量复核，若两域差异击穿 internal 共享层则升级为 C 或 A；
+- 出现真实第三方集成需求（非假想消费者）；
+- VB-UX-07 Runtime 产物形态冻结后，若产物消费方需要统一注册面。
+
+**边界声明**：Table（VB-UX-04）与 Graph（VB-UX-05/06）继续按 per-domain batch 服务模式实施——各自实现 Exporter/Compiler/Batch/菜单，经 internal 成员复用共享字段构建、序列化、Hash 与事务实现，不新增公开注册点，也不把 internal 共享层当作公开契约对待。
+
 ## 14. 命令与验证层级
 
 当前仓库没有独立发布的 VisualBridge CLI。命令行入口是 Protocol npm script 与 Unity batchmode `-executeMethod`，菜单和 batch wrapper 调用相同的 Exporter/Compiler 服务，不建立第二套业务规则：
