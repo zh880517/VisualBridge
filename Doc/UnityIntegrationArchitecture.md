@@ -442,6 +442,33 @@ Graph 编译镜像既有 Compiler 生命周期，由 `VisualBridgeGraphCompiler`
 
 落地与验证记录（同日）：`VisualBridgeGraphCompiler`/`VisualBridgeGraphCompilerBatch`（菜单 Generate/Check Graph Compiled Data）按上述设计实现，VS Code `graph.*` 诊断到编译器 `compile.*` 错误码的映射表留档于实现（warning 级类型别名一律静默 canonical 化、未知类型 fail-closed）。EditMode 新增 19 例（确定性双跑、默认值物化与 alias canonical 化、Check 不写盘、stale 生命周期、subgraph 正路径、11 个错误码负路径、失败保留产物、Batch 契约）随全套 133/133 通过；batchmode 垂直切片：Graph Compile Generate/Check 与 Structured/Entity/Table 编译、Graph Catalog 全部退出码 0；样例 `Encounter.vbflow` 编译产物与 mapping 经二次运行字节一致校验，四套 manifest（structured/entity/table/graph）共存互不干扰。产物 subgraph 节点保留 `subgraphId`（与 position 同理：文档 required 字段，无权威分类排除）。
 
+### 13.7 Runtime 产物形态冻结决策（VB-UX-07，2026-08-31）
+
+本节是 Runtime 产物形态 spike 的正式决策记录（阶段 B 首个任务，输入为四领域产物设计留档 §13.1/13.2/13.4/13.6）。
+
+**实测负载**（Unity 包同款 Newtonsoft.Json 3.2.2，.NET harness）：
+
+| 负载 | 大小 | 解析耗时 |
+| --- | --- | --- |
+| Structured 单文档产物 | 1,154 B | 0.084 ms |
+| Entity 单文档产物 | 1,378 B | 0.035 ms |
+| Table 单文档产物（2 行） | 1,128 B | 0.028 ms |
+| Graph 单文档产物 | 2,210 B | 0.049 ms |
+| 合成 10k 行 Table 产物 | 835,831 B | 32-36 ms（冷/热一致） |
+
+规模化外推约 3.5 μs/行：10 万行 ≈ 350 ms 一次性加载成本，属加载屏可接受量级；内存由 JObject 分配主导，未来可用 typed reader 优化而不改格式。
+
+**备选方案**：A（Editor 侧物化为 Unity 原生资产，Player 走常规加载）vs B（`VisualBridge.Runtime` 升级为 Player 运行时库直读编译产物）。
+
+**决策：B，分两步走。**
+
+- V1（阶段 B 内）：`VisualBridge.Runtime` 从纯 metadata marker 升级为 Player 可见的加载库，直接读取 `Library/VisualBridge/Compiled` 下带 `formatVersion`/`kind` 判别的编译产物；Newtonsoft 3.2.2 既是包既有依赖又提供 AOT 程序集，Player 兼容。
+- 产物格式**保持内部但版本化**，不立即声明公开跨语言 Schema：公开化与版本兼容原则推迟到 VB-UX-09（Runtime Bridge 协议冻结）——远程与调试负载的需求彼时才齐。内部格式演进边界：结构性变更必须递增 `formatVersion` 或新增 `kind` 值；`inputs`/`mappings` 可增字段，既有字段语义永不改变。
+
+拒绝 A 的理由：物化会在编译产物之外制造第二份派生数据（新的 drift 面与同步问题）；每域需要第二套 Unity 资产 schema；`ScriptableObject` 载体已被排除（§13），物化只能走代码生成或反射序列化，成本高于收益；调试映射（VB-UX-10 的稳定身份回溯）在物化资产中会丢失或需要重复携带。B 不排斥未来的物化导出——若出现 Addressables 等具体需求，物化器可作为消费同一产物的下游步骤叠加。
+
+**边界与遗留项**：独立 Player 构建不含工程的 `Library` 目录，产物进入构建（如 StreamingAssets 拷贝或构建后处理）属 VB-UX-09 及后续 Runtime 任务的工程接线，不影响本格式决策；本任务不写正式实现。
+
 ## 14. 命令与验证层级
 
 当前仓库没有独立发布的 VisualBridge CLI。命令行入口是 Protocol npm script 与 Unity batchmode `-executeMethod`，菜单和 batch wrapper 调用相同的 Exporter/Compiler 服务，不建立第二套业务规则：

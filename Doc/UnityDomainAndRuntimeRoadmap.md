@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态 spike）为阶段 B 首个任务，待开始。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）进行中。
 
 本阶段分三段：
 
@@ -207,7 +207,7 @@ Exit criteria：
 - 不得向 Editor Bridge Schema 添加 Runtime/Debug/Player 字段；Editor Bridge 的 open/reveal E2E 必须在阶段 B 每个任务后保持通过。
 - 多实例、多窗口、Domain Reload 场景沿用显式选择与实例 generation 模式，不建立全局「当前 Unity」。
 
-### VB-UX-07 Runtime 产物形态 spike 与冻结决策 — `in_progress`
+### VB-UX-07 Runtime 产物形态 spike 与冻结决策 — `complete`
 
 依赖：VB-UX-06。
 
@@ -217,12 +217,14 @@ Exit criteria：
 - 用真实领域产物做负载验证 Player 加载、内存、调试映射与远程场景差异；两种形态不互斥，允许混合结论。
 - 产出冻结决策进架构文档；本任务不写正式实现。
 
+决策记录：2026-08-31 完成。负载实测（Unity 同款 Newtonsoft，.NET harness：四域真实产物 0.03-0.08 ms；合成 10k 行 Table 836 KB / 32-36 ms，约 3.5 μs/行）与两方案对比后冻结决策 B——`VisualBridge.Runtime` 分两步升级为 Player 运行时加载库直读编译产物，产物格式保持内部但版本化（formatVersion/kind 判别），公开化推迟到 VB-UX-09；Editor 物化被拒绝的理由与内部格式演进边界见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 13.7 节。独立 Player 构建的产物接线（StreamingAssets 等）登记为 VB-UX-09 及后续任务的遗留项。本任务为纯决策记录，无代码变更；既有 133 例 EditMode 与全部 batchmode 门槛维持通过状态。
+
 Exit criteria：
 
 - 决策记录（证据、负载实测数据、备选方案与拒绝理由）进入架构文档；`VisualBridge.Runtime` 的定位（维持 metadata marker / 升级运行时库）明确无歧义。
 - 若决定公开产物格式：版本兼容与向后兼容原则在同章节冻结；若不公开：内部格式的演进边界写明。
 
-### VB-UX-08 Runtime 发现流程 spike 与威胁模型 — `pending`
+### VB-UX-08 Runtime 发现流程 spike 与威胁模型 — `in_progress`
 
 依赖：VB-UX-07。
 
