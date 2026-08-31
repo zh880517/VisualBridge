@@ -69,7 +69,7 @@ namespace VisualBridge.Editor
         private const string ManifestKind = "visualbridge.structured.compileManifest";
 
         private static readonly UTF8Encoding Utf8WithoutBom = new UTF8Encoding(false, true);
-        private static readonly StringComparer FilePathComparer = Path.DirectorySeparatorChar == '\\'
+        internal static readonly StringComparer FilePathComparer = Path.DirectorySeparatorChar == '\\'
             ? StringComparer.OrdinalIgnoreCase
             : StringComparer.Ordinal;
 
@@ -898,7 +898,7 @@ namespace VisualBridge.Editor
             return CreateOutput(profile.CompileOutputRoot, "manifest.json", Serialize(manifest), "manifest");
         }
 
-        private static string InputDisplayPath(VisualBridgeResolvedProfile profile, VisualBridgeAuthoringProject project, string path)
+        internal static string InputDisplayPath(VisualBridgeResolvedProfile profile, VisualBridgeAuthoringProject project, string path)
         {
             if (IsInside(profile.ProjectRoot, path))
             {
@@ -963,7 +963,7 @@ namespace VisualBridge.Editor
             return result;
         }
 
-        private static void CommitTransaction(
+        internal static void CommitTransaction(
             string outputRoot,
             IReadOnlyList<OutputPlan> plans,
             IReadOnlyList<VisualBridgeStructuredCompileOutput> outputs,
@@ -1102,7 +1102,7 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static void VerifyInputs(IEnumerable<InputSnapshot> inputs)
+        internal static void VerifyInputs(IEnumerable<InputSnapshot> inputs)
         {
             foreach (var input in inputs)
             {
@@ -1113,7 +1113,7 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static void EnumerateFilesStrict(string projectRoot, string directory, ISet<string> files)
+        internal static void EnumerateFilesStrict(string projectRoot, string directory, ISet<string> files)
         {
             var pending = new Stack<string>();
             pending.Push(directory);
@@ -1139,7 +1139,7 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static void RequireFrozenOutputRoot(VisualBridgeResolvedProfile profile)
+        internal static void RequireFrozenOutputRoot(VisualBridgeResolvedProfile profile)
         {
             var expected = Path.GetFullPath(Path.Combine(profile.ProjectRoot, OutputRelativeRoot.Replace('/', Path.DirectorySeparatorChar)));
             if (!FilePathComparer.Equals(expected, profile.CompileOutputRoot))
@@ -1148,13 +1148,13 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static OutputPlan CreateOutput(string outputRoot, string relativePath, byte[] bytes, string kind)
+        internal static OutputPlan CreateOutput(string outputRoot, string relativePath, byte[] bytes, string kind)
         {
             var fullPath = ResolveOutputPath(outputRoot, relativePath);
             return new OutputPlan(relativePath, fullPath, bytes, HashBytes(bytes), kind);
         }
 
-        private static string ResolveOutputPath(string outputRoot, string relativePath)
+        internal static string ResolveOutputPath(string outputRoot, string relativePath)
         {
             ValidateOutputRelativePath(relativePath, "output");
             var root = Path.GetFullPath(outputRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -1167,7 +1167,7 @@ namespace VisualBridge.Editor
             return path;
         }
 
-        private static void ValidateOutputRelativePath(string path, string jsonPath)
+        internal static void ValidateOutputRelativePath(string path, string jsonPath)
         {
             if (string.IsNullOrEmpty(path)
                 || path.StartsWith("/", StringComparison.Ordinal)
@@ -1180,7 +1180,7 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static void RejectDuplicateOutputPaths(IEnumerable<OutputPlan> plans)
+        internal static void RejectDuplicateOutputPaths(IEnumerable<OutputPlan> plans)
         {
             var unique = new HashSet<string>(StringComparer.Ordinal);
             foreach (var plan in plans)
@@ -1192,7 +1192,7 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static void RejectOutputAlias(string path)
+        internal static void RejectOutputAlias(string path)
         {
             var fullPath = Path.GetFullPath(path);
             var current = Path.GetPathRoot(fullPath);
@@ -1319,7 +1319,7 @@ namespace VisualBridge.Editor
             RequireKeys(value, path, new[] { "formatVersion", "documentId", "properties" });
         }
 
-        private static void RequireKeys(JObject value, string path, IEnumerable<string> required)
+        internal static void RequireKeys(JObject value, string path, IEnumerable<string> required)
         {
             var allowed = new HashSet<string>(required, StringComparer.Ordinal);
             foreach (var property in value.Properties())
@@ -1339,7 +1339,7 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static string RequireIdentifier(JToken token, string path)
+        internal static string RequireIdentifier(JToken token, string path)
         {
             if (token == null || token.Type != JTokenType.String)
             {
@@ -1358,7 +1358,7 @@ namespace VisualBridge.Editor
             return value;
         }
 
-        private static void RequireHash(JToken token, string path)
+        internal static void RequireHash(JToken token, string path)
         {
             if (token == null || token.Type != JTokenType.String)
             {
@@ -1372,7 +1372,7 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static void RequireTokenType(JToken token, JTokenType type, string path, string expected)
+        internal static void RequireTokenType(JToken token, JTokenType type, string path, string expected)
         {
             if (token == null || token.Type != type)
             {
@@ -1428,7 +1428,7 @@ namespace VisualBridge.Editor
                 || type == typeof(uint);
         }
 
-        private static byte[] Serialize(JToken token)
+        internal static byte[] Serialize(JToken token)
         {
             var builder = new StringBuilder();
             using (var writer = new StringWriter(builder, CultureInfo.InvariantCulture))
@@ -1446,7 +1446,7 @@ namespace VisualBridge.Editor
             return Utf8WithoutBom.GetBytes(builder.ToString().Replace("\r\n", "\n") + "\n");
         }
 
-        private static byte[] ReadInputBytes(string path)
+        internal static byte[] ReadInputBytes(string path)
         {
             try
             {
@@ -1458,13 +1458,13 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static void AddInput(IDictionary<string, InputSnapshot> inputs, string path)
+        internal static void AddInput(IDictionary<string, InputSnapshot> inputs, string path)
         {
             var bytes = ReadInputBytes(path);
             AddInput(inputs, path, bytes, HashBytes(bytes));
         }
 
-        private static void AddInput(IDictionary<string, InputSnapshot> inputs, string path, byte[] bytes, string hash)
+        internal static void AddInput(IDictionary<string, InputSnapshot> inputs, string path, byte[] bytes, string hash)
         {
             var fullPath = Path.GetFullPath(path);
             if (inputs.TryGetValue(fullPath, out var existing) && !string.Equals(existing.Hash, hash, StringComparison.Ordinal))
@@ -1475,12 +1475,12 @@ namespace VisualBridge.Editor
             inputs[fullPath] = new InputSnapshot(fullPath, bytes, hash);
         }
 
-        private static string HashFile(string path)
+        internal static string HashFile(string path)
         {
             return File.Exists(path) ? HashBytes(File.ReadAllBytes(path)) : null;
         }
 
-        private static string HashBytes(byte[] bytes)
+        internal static string HashBytes(byte[] bytes)
         {
             using (var sha256 = SHA256.Create())
             {
@@ -1488,7 +1488,7 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static string RelativePathInside(string root, string path, string jsonPath)
+        internal static string RelativePathInside(string root, string path, string jsonPath)
         {
             var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             var fullPath = Path.GetFullPath(path);
@@ -1671,7 +1671,7 @@ namespace VisualBridge.Editor
             public JToken Json { get; }
         }
 
-        private sealed class InputSnapshot
+        internal sealed class InputSnapshot
         {
             public InputSnapshot(string path, byte[] bytes, string hash)
             {
@@ -1685,7 +1685,7 @@ namespace VisualBridge.Editor
             public string Hash { get; }
         }
 
-        private sealed class OutputPlan
+        internal sealed class OutputPlan
         {
             public OutputPlan(string relativePath, string fullPath, byte[] bytes, string hash, string kind)
             {

@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：VB-UX-00（仓库语言规范梳理）与 VB-UX-01（Entity Catalog Exporter）已完成，VB-UX-02（Entity Import/Compile）进行中，其余任务 `pending`。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：VB-UX-00 至 VB-UX-02（语言规范、Entity Catalog Export、Entity Import/Compile）已完成，VB-UX-03（Unity Adapter API 复核）进行中，其余任务 `pending`。
 
 本阶段分三段：
 
@@ -107,7 +107,7 @@ Exit criteria：
 - 相关 Unity 生成 csproj 的 `dotnet build`、batchmode refresh/import、EditMode 全套通过；Node/docs 门槛通过。
 - 产物设计留档进入架构文档；扫描面不含 `ScriptableObject` 与 Editor-only 程序集。
 
-### VB-UX-02 Entity Import / Compile — `in_progress`
+### VB-UX-02 Entity Import / Compile — `complete`
 
 依赖：VB-UX-01。
 
@@ -117,13 +117,17 @@ Exit criteria：
 - 生成确定性派生产物、source mapping 与 managed manifest，失败不破坏上次有效派生物。
 - batchmode Generate/Check 与 EditMode 测试复用同一 Compiler 服务。
 
+实施记录：2026-08-31 完成。`VisualBridgeEntityCompiler`（镜像 Structured Compiler 生命周期，文档校验为纯 JSON 级对照 Catalog 定义并物化默认值）+ `VisualBridgeEntityCompilerBatch`（菜单 Generate/Check Entity Compiled Data）。产物 kind `visualbridge.entity.compiled/.sourceMapping/.compileManifest`，manifest 独立为 `manifest.entity.json` 与 Structured 互不接管托管集；事务原子性/回滚/Win32 文件身份复用 Structured Compiler 的共享实现（24 处 private→internal）。组白名单采用严格语义（空白名单即全不允许），与 VS Code 侧 `isEntityComponentTypeAllowed` 一致。设计留档见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 13.2 节。
+
+验证记录：EditMode 新增 14 例（确定性双跑、默认值物化与零业务构造、drift 不写盘、stale 删除/保留、entityTypeUnknown/Mismatch、unknownField、typeMismatch、componentGroupNotAllowed、componentIdentityConflict、失败保留产物、ambiguousRoute、别名 canonical 化、Structured+Entity 共存）随全套 84/84 通过；batchmode 垂直切片：Entity Compile Generate/Check、Structured Catalog/Compile Check、Entity Catalog Check 退出码全 0；开发宿主样例 `Hero.vbentity` 产出 artifact/mapping/manifest 并通过二次运行字节一致校验；`dotnet build` 两个 csproj 0 错误。
+
 Exit criteria：
 
 - 编译闭环「Unity C# 类型 → Catalog Export → Node 侧 Schema/Parser/Registry 检查 → batchmode Import/Compile → 确定性产物 + mapping → 二次运行字节一致」真实执行通过。
 - 负面路径（路由歧义、文档缺失/非法、Catalog 过期）有自动化覆盖与明确错误码。
 - 全部 Node/dotnet/Unity/docs 门槛通过；产物设计留档进入架构文档。
 
-### VB-UX-03 Unity Adapter API 复核（独立决策任务）— `pending`
+### VB-UX-03 Unity Adapter API 复核（独立决策任务）— `in_progress`
 
 依赖：VB-UX-02。此时仓库拥有 Structured 与 Entity 两个真实 Exporter/Compiler，满足 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 13 节的复核条件。
 

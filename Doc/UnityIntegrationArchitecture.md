@@ -356,6 +356,16 @@ Entity 是第二个 Unity 领域切片，只覆盖 Catalog Export；Entity 文�
 - **绑定校验**：每个 entity catalog 输出必须被 Authoring Project 中 `editor == "entity"` 的 DocumentType 通过 `catalogs` 声明（`profile.catalogNotDeclared`）；不要求 per-type 覆盖，因为 entity 文档按 `entityTypeId` 引用 catalog 而非按类型路由文件。
 - **验证基线**：严格 JObject 校验器 `VisualBridgeEntityCatalogValidator` 镜像 Schema（复用 Structured 校验器的字段校验共享实现）；EditMode 覆盖确定性、Check 不写盘、类型顺序无关、fail-closed 错误码、扩展名路由与绑定校验；开发宿主样例（Hero/Enemy 实体、Health/Movement 组件）经 batchmode Generate/Check 产出提交 Catalog `Gameplay.vbentitycatalog`，并通过 Node 生产 `parseEntityCatalog`/`parseEntityDocument`/`buildEntityCatalogRegistry` 校验。
 
+### 13.2 Entity Import / Compile 落地记录（VB-UX-02，2026-08-31）
+
+Entity 编译镜像 Structured Compiler 的生命周期与事务语义，由 `VisualBridgeEntityCompiler` 承载：
+
+- **输入与前置**：Integration Profile（输出根冻结为 `Library/VisualBridge/Compiled`，reparse point 拒绝）→ Entity Catalog Check（drift 即 `compile.catalogDrift`）→ Authoring Project 严格解析 → Profile/Project/Catalog/文档全部纳入输入快照（SHA-256），提交前 `VerifyInputs` 拒绝 `compile.inputChanged`。
+- **路由**：`.vbentity` 文档按 `editor == "entity"` 的 DocumentType include/exclude 唯一路由（`compile.ambiguousRoute`/`compile.documentOutsideRoot`）；DocumentType id 必须在其声明的 entity catalog 中按 id/alias 唯一解析到 entityType（`compile.entityTypeUnknown`/`compile.entityTypeAmbiguous`），文档的 `entityTypeId` 与之不符报 `compile.entityTypeMismatch`。文档校验为纯 JSON 级、对照 Catalog 字段定义执行——不实例化业务类型；未知字段 `compile.unknownField`、类型不符 `compile.typeMismatch`、别名 canonical 化、缺失字段以 Catalog `defaultValue` 物化（mapping 记 `origin: metadataDefault`）。组件校验含局部 id 唯一、`componentTypeId` 解析与组白名单（空白名单即全不允许，与 VS Code 侧 `isEntityComponentTypeAllowed` 语义一致，`compile.componentGroupNotAllowed`）。
+- **产物结构**：`documents/{projectId}/{documentTypeId}/{documentId}.vbcompiled.json`（kind `visualbridge.entity.compiled`，`data` 含 `properties` 与按文档顺序的 `components[]`，字段按 canonical ID 排序）、`mappings/.../​*.vbsource.json`（kind `visualbridge.entity.sourceMapping`，逐字段 `{sourcePath, artifactPath, origin}`）、`manifest.entity.json`（kind `visualbridge.entity.compileManifest`，托管 outputs 清单）——与 Structured 产物共用 `documents/`、`mappings/` 子树但 manifest 分文件，互不接管对方托管集。
+- **原子性与恢复**：复用 Structured Compiler 的事务实现（tmp → VerifyInputs → 基线复核 `compile.outputChangedBeforeReplace` → 备份 → Replace/Move → 失败逆序回滚，残留 bak 供人工恢复）；stale 输出按旧 manifest 托管集计算，Generate 删除、Check 报 drift；Check 模式不写盘。
+- **验证基线**：EditMode 14 例覆盖确定性双跑、默认值物化与零业务构造、drift 不写盘、stale 删除/保留、全部 fail-closed 错误码、失败保留上次产物、别名 canonical 化、ambiguousRoute 与 Structured+Entity 共存；开发宿主样例 `Hero.vbentity` 经 batchmode Generate/Check 产出产物并通过二次运行字节一致校验。
+
 ## 14. 命令与验证层级
 
 当前仓库没有独立发布的 VisualBridge CLI。命令行入口是 Protocol npm script 与 Unity batchmode `-executeMethod`，菜单和 batch wrapper 调用相同的 Exporter/Compiler 服务，不建立第二套业务规则：
