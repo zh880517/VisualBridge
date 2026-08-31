@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 检查适配器）已关闭，**阶段 A 与阶段 B 全部完成**——VB-UX-00 至 VB-UX-12 已关闭；阶段 C（远程与设备连接）经项目方 2026-08-31 决策明确推迟（见第 6 节）。**2026-08-31 新增阶段 D（Graph 执行过程可视化，VB-UX-13~16）**：项目方确认游戏侧 Graph 执行引擎与执行观察需求，设计已逐项讨论冻结（见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 19 章）；VB-UX-13（协议扩展）与 VB-UX-14（Unity 采集门面与订阅转发）已关闭，VB-UX-15/16 待执行。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 检查适配器）已关闭，**阶段 A 与阶段 B 全部完成**——VB-UX-00 至 VB-UX-12 已关闭；阶段 C（远程与设备连接）经项目方 2026-08-31 决策明确推迟（见第 6 节）。**2026-08-31 新增阶段 D（Graph 执行过程可视化，VB-UX-13~16）**：项目方确认游戏侧 Graph 执行引擎与执行观察需求，设计已逐项讨论冻结（见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 19 章）；VB-UX-13（协议扩展）、VB-UX-14（Unity 采集门面与订阅转发）与 VB-UX-15（VS Code 订阅服务与会话记录）已关闭，VB-UX-16（页面 UI 与 E2E）待执行。
 
 本阶段分四段：
 
@@ -396,7 +396,7 @@ Exit criteria：
 
 落地说明：零订阅快速路径以**语义断言**验证（无订阅时节点事件不更新浅快照当前节点、退订后 WaitForEvent 超时无事件、IsSubscribed 状态翻转），未做 GC 分配计测量——EditMode 下 GC 计量不稳定，语义断言足以钉死快速路径行为（进缓冲即必然可见于事件流与快照）。
 
-### VB-UX-15 VS Code 订阅服务与会话记录 — `pending`
+### VB-UX-15 VS Code 订阅服务与会话记录 — `complete`
 
 依赖：VB-UX-13。可与 VB-UX-14 并行。
 
@@ -405,6 +405,10 @@ Exit criteria：
 - `RuntimeBridgeService` 扩展：实例枚举、订阅/退订、浅快照、`graphExecution` 事件接收与分发（按实例 ID 分流）。
 - 扩展宿主侧会话记录模型：完整事件留存（内存、不落盘）、事件级/帧级索引、实例停止收尾。
 - 以测试命令暴露订阅状态与记录查询供自动化（沿用既有测试命令模式）。
+
+实施与验证记录：2026-08-31 完成。新增 `src/bridge/graphExecutionRecording.ts`：`GraphExecutionRecording`（订阅开流的合成 instanceStarted 起始标记、按执行 ID 分流防御、instanceStopped 收尾后忽略后续事件、到达顺序保留——批量冲刷不同帧送达且帧号不保证单调，帧切片按连续同帧归并不重排、事件级/帧级步进导航）。`RuntimeBridgeService`/`RuntimeBridgeConnection` 增加四个动作委托与订阅状态；记录对象在发送订阅请求前挂上（合成开流标记不丢）；连接事件路由先入记录再分发给既有监听器；退订即从服务摘除记录（引用归会话持有方）。测试命令新增 7 个（实例枚举/快照/订阅/退订/记录查询/断开连接——断开命令同时修复了假实例测试的 `server.close` 等待问题）。
+
+验证记录：隔离 Extension Host 全部通过（55 PASS，新增「subscribes to graph execution and records the session」：假 Runtime 实例覆盖实例枚举 documentId 过滤、浅快照与未知实例 executionNotFound、订阅+合成开流标记、批量事件与乱序帧号到达顺序、帧切片计数、第二客户端并行观察（不占租约）、instanceStopped 收尾与后续事件忽略、退订摘除记录）；`npm run check` 与根 `npm test` 全工作区通过。
 
 Exit criteria：
 

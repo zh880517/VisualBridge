@@ -51,7 +51,7 @@
 - [Unity 接入前文档完整性矩阵](DocumentationCompleteness.md)：功能、设计、流程图、使用手册、Schema/Manifest 和自动验证的最终审计入口。
 - [Unity 接入前开发任务清单](PreUnityDevelopmentRoadmap.md)：PU 任务状态、强制验证门槛和 Unity 正式接入条件。
 - [Unity Editor 接入任务清单](UnityIntegrationRoadmap.md)：已完成的 C# contract generator、Package、Structured Export/Compile、最小 Editor Bridge 与发布门槛/文档/基线（VB-UI 系列全部关闭）。
-- [Unity 领域扩展与 Runtime 接入任务清单](UnityDomainAndRuntimeRoadmap.md)：VB-UI 系列之后的下一大阶段规划——Entity/Table/Graph 离线编译与本机 Runtime 调试链路（阶段 A/B）已全部完成，远程/设备连接（阶段 C）项目方推迟，Graph 执行过程可视化（阶段 D）执行中（协议与 Unity 采集已关闭，VS Code 侧进行中）。
+- [Unity 领域扩展与 Runtime 接入任务清单](UnityDomainAndRuntimeRoadmap.md)：VB-UI 系列之后的下一大阶段规划——Entity/Table/Graph 离线编译与本机 Runtime 调试链路（阶段 A/B）已全部完成，远程/设备连接（阶段 C）项目方推迟，Graph 执行过程可视化（阶段 D）执行中（协议、Unity 采集与 VS Code 订阅服务已关闭，页面 UI 进行中）。
 - [Unity Graph 执行过程调试接入指南](UnityGraphExecutionDebug.md)：游戏侧引擎事件转发、稳定 ID 映射规则、采集门面 API 与适配器示例。
 
 开发过程中的设计草稿、实施计划和任务文档统一放在 `Doc/Temp`。任务完成后必须删除对应临时文档；需要长期保留的结论应整理进上述正式文档。文档目录新增或删除文件时，根级文档门禁会要求本索引同步更新。

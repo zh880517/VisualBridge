@@ -726,6 +726,48 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }),
       vscode.commands.registerCommand("visualbridge.test.getRuntimeDocumentSources", async () =>
         runtimeBridge.getDocumentSources()),
+      vscode.commands.registerCommand("visualbridge.test.disconnectRuntimeInstance", async () => {
+        runtimeBridge.disconnect();
+        return true;
+      }),
+      vscode.commands.registerCommand("visualbridge.test.getGraphExecutionInstances", async (documentId?: string) =>
+        runtimeBridge.getGraphExecutionInstances(documentId)),
+      vscode.commands.registerCommand("visualbridge.test.getGraphExecutionSnapshot", async (executionId: string) =>
+        runtimeBridge.getGraphExecutionSnapshot(executionId)),
+      vscode.commands.registerCommand("visualbridge.test.subscribeGraphExecution", async (executionId: string) => {
+        const recording = await runtimeBridge.subscribeGraphExecution(executionId);
+        return {
+          executionId: recording.executionId,
+          graphName: recording.execution.graphName,
+          debugKey: recording.execution.debugKey,
+          state: recording.execution.state,
+        };
+      }),
+      vscode.commands.registerCommand("visualbridge.test.unsubscribeGraphExecution", async () => {
+        await runtimeBridge.unsubscribeGraphExecution();
+        return true;
+      }),
+      vscode.commands.registerCommand("visualbridge.test.getGraphExecutionRecording", () => {
+        const recording = runtimeBridge.activeRecording;
+        if (recording === undefined) {
+          return null;
+        }
+
+        return {
+          executionId: recording.executionId,
+          stopped: recording.isStopped,
+          eventCount: recording.recordedEvents.length,
+          frameCount: recording.frameSlices().length,
+          events: recording.recordedEvents.map((event) => ({
+            index: event.index,
+            frameIndex: event.frameIndex,
+            kind: event.kind,
+            ...(event.nodeId === undefined ? {} : { nodeId: event.nodeId }),
+            ...(event.outputIndex === undefined ? {} : { outputIndex: event.outputIndex }),
+            ...(event.value === undefined ? {} : { value: event.value }),
+          })),
+        };
+      }),
       vscode.commands.registerCommand("visualbridge.test.parseRuntimeBridgeMessage", (value: unknown) => {
         try {
           return { ok: true, message: parseRuntimeBridgeMessage(value) };

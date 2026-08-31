@@ -2483,6 +2483,265 @@ exports.run = async function run() {
       await rm(discoveryDirectory, { recursive: true, force: true });
     }
   });
+
+  await test("subscribes to graph execution and records the session", async () => {
+    // 假 Runtime 实例实现 graphExecution 语义：实例枚举/订阅/浅快照/批量事件推送。
+    const instanceId = `editor-${process.pid}`;
+    const discoveryDirectory = await mkdtemp(path.join(tmpdir(), "visualbridge-runtime-graph-exec-"));
+    const recordPath = path.join(discoveryDirectory, `${instanceId}.json`);
+    const token = createHash("sha256").update(`graph-exec-${instanceId}`).digest("hex");
+    const startedAt = new Date().toISOString();
+    const capabilities = ["snapshot", "events", "lease", "sources", "graphExecution"];
+    const executionInstance = {
+      executionId: "exec-1",
+      documentTypeId: "test.graph.encounter",
+      documentId: "test.graph.encounter.default",
+      graphName: "Encounter",
+      debugKey: "hero-01",
+      state: "running",
+      currentNodeId: null,
+      frameIndex: 0,
+    };
+    let executionActive = true;
+    const subscribers = new Set();
+    const actions = [];
+    const send = (socket, message) => socket.write(`${JSON.stringify(message)}\n`);
+    const pushBatch = (events) => {
+      for (const socket of subscribers) {
+        send(socket, { type: "event", event: "graphExecution", executionEvents: events });
+      }
+    };
+    const server = net.createServer((socket) => {
+      socket.setEncoding("utf8");
+      let buffer = "";
+      let handshake = false;
+      socket.on("data", (chunk) => {
+        buffer += chunk;
+        let index;
+        while ((index = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, index);
+          buffer = buffer.slice(index + 1);
+          if (line.trim().length === 0) continue;
+          const message = JSON.parse(line);
+          if (!handshake) {
+            if (message.type === "hello" && message.token === token && message.protocolVersion === 1) {
+              handshake = true;
+              send(socket, {
+                type: "welcome",
+                protocolVersion: 1,
+                coreVersion: 1,
+                instanceId,
+                kind: "editor-play",
+                generation: 1,
+                capabilities,
+                startedAt,
+              });
+            } else {
+              send(socket, { type: "error", code: "runtime.invalidToken" });
+              socket.destroy();
+            }
+            continue;
+          }
+
+          if (message.type !== "request") continue;
+          actions.push({ action: message.action });
+          if (message.action === "getGraphExecutionInstances") {
+            const executions = executionActive
+              && (message.documentId === undefined || message.documentId === executionInstance.documentId)
+                ? [executionInstance]
+                : [];
+            send(socket, { type: "response", requestId: message.requestId, status: "ok", executions });
+          } else if (message.action === "getGraphExecutionSnapshot") {
+            if (executionActive && message.executionId === "exec-1") {
+              send(socket, { type: "response", requestId: message.requestId, status: "ok", execution: executionInstance });
+            } else {
+              send(socket, { type: "response", requestId: message.requestId, status: "error", error: "runtime.executionNotFound" });
+            }
+          } else if (message.action === "subscribeGraphExecution") {
+            if (executionActive && message.executionId === "exec-1") {
+              subscribers.add(socket);
+              send(socket, { type: "response", requestId: message.requestId, status: "ok" });
+              send(socket, {
+                type: "event",
+                event: "graphExecution",
+                executionEvents: [{ executionId: "exec-1", frameIndex: 0, kind: "instanceStarted" }],
+              });
+            } else {
+              send(socket, { type: "response", requestId: message.requestId, status: "error", error: "runtime.executionNotFound" });
+            }
+          } else if (message.action === "unsubscribeGraphExecution") {
+            subscribers.delete(socket);
+            send(socket, { type: "response", requestId: message.requestId, status: "ok" });
+          } else {
+            send(socket, { type: "response", requestId: message.requestId, status: "error", error: "runtime.unknownRequest" });
+          }
+        }
+      });
+      socket.on("close", () => {
+        subscribers.delete(socket);
+      });
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const tcpPort = server.address().port;
+    const writeRecord = () => writeFile(recordPath, `${JSON.stringify({
+      formatVersion: 1,
+      protocolVersion: 1,
+      coreVersion: 1,
+      instanceId,
+      kind: "editor-play",
+      capabilities,
+      tcpPort,
+      token,
+      pid: process.pid,
+      generation: 1,
+      startedAt,
+    })}\n`, "utf8");
+    await writeRecord();
+    const heartbeat = setInterval(() => {
+      void writeRecord();
+    }, 2000);
+
+    const previousRuntimeDirectory = process.env.VISUALBRIDGE_TEST_RUNTIME_DIR;
+    process.env.VISUALBRIDGE_TEST_RUNTIME_DIR = discoveryDirectory;
+    let observer;
+    try {
+      const instances = await vscode.commands.executeCommand("visualbridge.test.enumerateRuntimeInstances");
+      const instance = instances.find((entry) => entry.instanceId === instanceId);
+      assert.ok(instance, "The fake runtime instance was not enumerated.");
+      const welcome = await vscode.commands.executeCommand("visualbridge.test.connectRuntimeInstance", instance);
+      assert.deepEqual([...welcome.capabilities], capabilities);
+
+      // 实例枚举：documentId 过滤。
+      const unfiltered = await vscode.commands.executeCommand("visualbridge.test.getGraphExecutionInstances");
+      assert.equal(unfiltered.length, 1);
+      assert.equal(unfiltered[0].executionId, "exec-1");
+      const filtered = await vscode.commands.executeCommand(
+        "visualbridge.test.getGraphExecutionInstances", "test.graph.encounter.default");
+      assert.equal(filtered.length, 1);
+      const excluded = await vscode.commands.executeCommand(
+        "visualbridge.test.getGraphExecutionInstances", "other.document");
+      assert.equal(excluded.length, 0);
+
+      // 浅快照：活跃 ok、未知实例 executionNotFound。
+      const snapshot = await vscode.commands.executeCommand("visualbridge.test.getGraphExecutionSnapshot", "exec-1");
+      assert.equal(snapshot.state, "running");
+      await assert.rejects(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphExecutionSnapshot", "exec-404"),
+        (errorValue) => String(errorValue).includes("runtime.executionNotFound"));
+
+      // 第二个观察者（裸 TCP）：多客户端并行观察不占租约（观察者语义）。
+      observer = net.connect({ host: "127.0.0.1", port: tcpPort });
+      await new Promise((resolve, reject) => {
+        observer.once("connect", resolve);
+        observer.once("error", reject);
+      });
+      observer.setEncoding("utf8");
+      const observerLines = [];
+      let observerBuffer = "";
+      observer.on("data", (chunk) => {
+        observerBuffer += chunk;
+        let index;
+        while ((index = observerBuffer.indexOf("\n")) >= 0) {
+          const line = observerBuffer.slice(0, index);
+          observerBuffer = observerBuffer.slice(index + 1);
+          if (line.trim().length > 0) observerLines.push(JSON.parse(line));
+        }
+      });
+      send(observer, {
+        type: "hello",
+        protocolVersion: 1,
+        coreVersion: 1,
+        token,
+        clientInstanceId: "6e4d75d6-2b15-4f5e-9d8a-4c0d5f1a9b2d",
+        capabilities,
+      });
+      await waitForAsync(
+        () => observerLines.find((line) => line.type === "welcome"),
+        (value) => value !== undefined,
+        10_000,
+        "The observer client did not complete the handshake.",
+      );
+      send(observer, { type: "request", requestId: "graph-exec-observer-sub", action: "subscribeGraphExecution", executionId: "exec-1" });
+
+      // 服务侧订阅：记录以合成 instanceStarted 开流。
+      const subscribed = await vscode.commands.executeCommand("visualbridge.test.subscribeGraphExecution", "exec-1");
+      assert.equal(subscribed.executionId, "exec-1");
+      assert.equal(subscribed.graphName, "Encounter");
+      assert.equal(subscribed.debugKey, "hero-01");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphExecutionRecording"),
+        (value) => value !== null && value.eventCount >= 1,
+        10_000,
+        "The synthetic instanceStarted event was not recorded.",
+      );
+      let recording = await vscode.commands.executeCommand("visualbridge.test.getGraphExecutionRecording");
+      assert.equal(recording.events[0].kind, "instanceStarted");
+      assert.equal(recording.stopped, false);
+
+      // 批量事件（含乱序帧号）：记录保持到达顺序。
+      pushBatch([
+        { executionId: "exec-1", frameIndex: 5, kind: "nodeStart", nodeId: "node.entry" },
+        { executionId: "exec-1", frameIndex: 5, kind: "nodeOutput", nodeId: "node.entry", outputIndex: 0 },
+        { executionId: "exec-1", frameIndex: 6, kind: "edgeValueChanged", nodeId: "node.entry", outputIndex: 1, value: "42" },
+      ]);
+      pushBatch([
+        { executionId: "exec-1", frameIndex: 8, kind: "nodeStart", nodeId: "node.branch" },
+        { executionId: "exec-1", frameIndex: 7, kind: "dataNode", nodeId: "node.value" },
+      ]);
+      recording = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphExecutionRecording"),
+        (value) => value.eventCount === 6,
+        10_000,
+        "The execution event batches were not recorded.",
+      );
+      assert.deepEqual(
+        recording.events.map((event) => `${event.frameIndex}:${event.kind}`),
+        ["0:instanceStarted", "5:nodeStart", "5:nodeOutput", "6:edgeValueChanged", "8:nodeStart", "7:dataNode"],
+        "The recording must preserve arrival order including out-of-order frame indices.",
+      );
+      assert.equal(recording.frameCount, 5, "Frame slices must merge consecutive same-frame events.");
+      // 第二个观察者也收到同一批事件（观察者语义，不占租约）。
+      await waitForAsync(
+        () => observerLines.find((line) => line.type === "event" && line.event === "graphExecution"
+          && line.executionEvents.some((event) => event.kind === "edgeValueChanged")),
+        (value) => value !== undefined,
+        10_000,
+        "The observer client did not receive the pushed execution events.",
+      );
+
+      // 实例停止：收尾标记、快照失效、后续事件忽略。
+      pushBatch([{ executionId: "exec-1", frameIndex: 9, kind: "instanceStopped" }]);
+      executionActive = false;
+      recording = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphExecutionRecording"),
+        (value) => value.stopped === true,
+        10_000,
+        "The recording did not finalize on instanceStopped.",
+      );
+      assert.equal(recording.eventCount, 7);
+      pushBatch([{ executionId: "exec-1", frameIndex: 10, kind: "nodeStart", nodeId: "node.late" }]);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      recording = await vscode.commands.executeCommand("visualbridge.test.getGraphExecutionRecording");
+      assert.equal(recording.eventCount, 7, "Events after instanceStopped must be ignored.");
+      await assert.rejects(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphExecutionSnapshot", "exec-1"),
+        (errorValue) => String(errorValue).includes("runtime.executionNotFound"));
+
+      // 退订：服务端收到 unsubscribe，记录随会话摘除。
+      assert.equal(await vscode.commands.executeCommand("visualbridge.test.unsubscribeGraphExecution"), true);
+      assert.ok(actions.some((entry) => entry.action === "unsubscribeGraphExecution"));
+      assert.equal(await vscode.commands.executeCommand("visualbridge.test.getGraphExecutionRecording"), null);
+    } finally {
+      if (observer !== undefined) observer.destroy();
+      // 先断开服务层连接：server.close() 等待全部连接结束，否则假实例永不回调。
+      await vscode.commands.executeCommand("visualbridge.test.disconnectRuntimeInstance").catch(() => undefined);
+      clearInterval(heartbeat);
+      if (previousRuntimeDirectory === undefined) delete process.env.VISUALBRIDGE_TEST_RUNTIME_DIR;
+      else process.env.VISUALBRIDGE_TEST_RUNTIME_DIR = previousRuntimeDirectory;
+      await new Promise((resolve) => server.close(resolve));
+      await rm(discoveryDirectory, { recursive: true, force: true });
+    }
+  });
 };
 
 async function assertEditorRoute(workspacePath, segments, expectedViewType, openCommand) {
