@@ -36,6 +36,8 @@ import {
 import { WorkspaceReferenceRefactor } from "./refactor/workspaceReferenceRefactor";
 import { EditorBridgeServer } from "./bridge/editorBridgeServer";
 import { BridgeProtocolError, parseBridgeMessage, parseDiscoveryRecord } from "./bridge/bridgeProtocol";
+import { RuntimeDebugAdapter } from "./debug/runtimeDebugAdapter";
+import { RuntimeDebugConfigurationProvider, RUNTIME_DEBUG_TYPE } from "./debug/runtimeDebugConfigurationProvider";
 
 interface LifecycleElementDeleteRequest {
   readonly projectId: string;
@@ -609,6 +611,39 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const runtimeBridge = new RuntimeBridgeService((message) => output.appendLine(`[runtime] ${message}`));
   context.subscriptions.push({ dispose: () => runtimeBridge.disconnect() });
 
+  // Runtime 只检查 DAP 会话（VB-UX-11）：inline 适配器，一切状态经 Runtime Bridge 协议获取。
+  let runtimeDebugAdapter: RuntimeDebugAdapter | undefined;
+  const runtimeDebugFactory: vscode.DebugAdapterDescriptorFactory = {
+    createDebugAdapterDescriptor: async (session: vscode.DebugSession) => {
+      const instanceId = session.configuration.instanceId;
+      if (typeof instanceId !== "string" || instanceId.length === 0) {
+        throw new Error("VisualBridge runtime attach requires an instanceId.");
+      }
+
+      // 连接时再次枚举校验实例仍存在且非陈旧，避免绑定到过期发现记录。
+      const instances = await runtimeBridge.enumerateInstances(process.env.VISUALBRIDGE_TEST_RUNTIME_DIR);
+      const match = instances.find((entry) => entry.instanceId === instanceId);
+      if (match === undefined) {
+        throw new Error(`Runtime instance '${instanceId}' was not discovered.`);
+      }
+
+      if (match.staleReason !== undefined) {
+        throw new Error(`Runtime instance '${instanceId}' is stale (${match.staleReason}).`);
+      }
+
+      const adapter = new RuntimeDebugAdapter(runtimeBridge, match);
+      adapter.onDidDispose(() => {
+        if (runtimeDebugAdapter === adapter) runtimeDebugAdapter = undefined;
+      });
+      runtimeDebugAdapter = adapter;
+      return new vscode.DebugAdapterInlineImplementation(adapter);
+    },
+  };
+  context.subscriptions.push(
+    vscode.debug.registerDebugConfigurationProvider(RUNTIME_DEBUG_TYPE, new RuntimeDebugConfigurationProvider()),
+    vscode.debug.registerDebugAdapterDescriptorFactory(RUNTIME_DEBUG_TYPE, runtimeDebugFactory),
+  );
+
   if (context.extensionMode !== vscode.ExtensionMode.Production) {
     context.subscriptions.push(
       vscode.commands.registerCommand("visualbridge.test.getBridgeServerState", () => bridgeServer.state ?? null),
@@ -713,6 +748,61 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           return { ok: false, code: "runtime.internalError", jsonPath: "$" };
         }
       }),
+      vscode.commands.registerCommand(
+        "visualbridge.test.attachRuntimeInstance",
+        async (instance: { readonly instanceId: string }) => {
+          const instanceId = typeof instance?.instanceId === "string" ? instance.instanceId : "";
+          if (instanceId.length === 0) {
+            throw new Error("attachRuntimeInstance requires a runtime instanceId.");
+          }
+
+          // 无头 attach：显式 instanceId 启动 DAP 会话并等待其出现，供 E2E 驱动。
+          let settleSession: (session: vscode.DebugSession) => void = () => undefined;
+          let rejectSession: (error: Error) => void = () => undefined;
+          const sessionPromise = new Promise<vscode.DebugSession>((resolve, reject) => {
+            settleSession = resolve;
+            rejectSession = reject;
+          });
+          const subscription = vscode.debug.onDidStartDebugSession((started) => {
+            if (started.type === RUNTIME_DEBUG_TYPE && started.configuration?.instanceId === instanceId) {
+              settleSession(started);
+            }
+          });
+          const timer = setTimeout(
+            () => rejectSession(new Error("The VisualBridge runtime debug session did not start.")),
+            30_000,
+          );
+          try {
+            const accepted = await vscode.debug.startDebugging(undefined, {
+              name: "VisualBridge Runtime Inspection",
+              type: RUNTIME_DEBUG_TYPE,
+              request: "attach",
+              instanceId,
+              __internal: true,
+            });
+            if (accepted !== true) {
+              throw new Error("vscode.debug.startDebugging did not accept the VisualBridge runtime attach.");
+            }
+
+            return await sessionPromise;
+          } finally {
+            clearTimeout(timer);
+            subscription.dispose();
+          }
+        },
+      ),
+      vscode.commands.registerCommand("visualbridge.test.getRuntimeDebugSessionState", () => (
+        runtimeDebugAdapter?.getInspectionState() ?? {
+          connected: false,
+          leaseHeld: false,
+          instanceId: "",
+          documents: 0,
+          topLevelVariables: 0,
+          driftedDocuments: 0,
+          driftedDocumentIds: [],
+          unknownSourceDocuments: 0,
+        }
+      )),
     );
   }
 

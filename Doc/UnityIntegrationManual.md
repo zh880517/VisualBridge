@@ -131,6 +131,7 @@ Table 是纯消费方：Unity 侧没有 Table Exporter，catalog（`.vbtablecata
 - 能力：`snapshot`（读取 `Library/VisualBridge/Compiled` 编译产物，可按 documentTypeIds 过滤）、`events`（产物目录变化推送）、`lease`/`sources`（调试语义：单控制者租约 + 文档级 Source 映射，见下）。Player 构建回退 `StreamingAssets/VisualBridge/Compiled`（接线属后续任务）。
 - 调试语义（VB-UX-10）：`acquireLease`/`releaseLease` 管理单控制者租约（绑定连接、断开自动释放、他人持有时 `runtime.leaseDenied`）；`getDocumentSources`（需持租约）返回每个运行中文档的 Authoring 源路径与 SHA-256（structured/entity/graph 取产物 `inputs.document`，table 取其 sourceMapping 的 `sources[]`）；VS Code 侧对照工作区当前文档字节检测漂移——漂移必须显式呈现，防止把新 Authoring 身份映射到旧 Runtime 数据。断点/调用栈消息按「不以占位 Schema 伪装成已完成能力」原则未进入协议，待真实执行运行时出现再冻结。
 - 菜单：**Tools / VisualBridge/Runtime Bridge/Start in Play Mode**、**Status**。E2E：`npm run test:runtime-e2e`（batchmode Play + 隔离 Extension Host，覆盖发现/快照/事件全链路）。
+- DAP 检查会话：VS Code 调试 UI 以 `visualbridge-runtime` 类型 attach 到 Runtime 实例（attach 时持调试租约），变量树展示运行时快照与 `__sourcePath`/`__sourceDrifted`；断点不受支持（只检查会话，见架构文档 §18.3/18.5）。
 
 ## 6. Structured Compile
 

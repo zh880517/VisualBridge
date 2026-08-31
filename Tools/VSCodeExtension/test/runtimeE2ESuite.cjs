@@ -103,6 +103,37 @@ exports.run = async function run() {
       await stat(artifactPath);
     }
   });
+
+  await test("inspects the runtime snapshot through the DAP debug session", async () => {
+    // 前置测试已释放租约且仅持有观察者连接：DAP attach 可重新连接并 acquire。
+    const instances = await vscode.commands.executeCommand("visualbridge.test.enumerateRuntimeInstances");
+    const instance = Array.isArray(instances)
+      ? instances.find((entry) => entry.kind === "editor-play" && entry.staleReason === undefined)
+      : undefined;
+    assert.ok(instance, "No live editor-play runtime instance for the DAP inspection session.");
+    const session = await vscode.commands.executeCommand("visualbridge.test.attachRuntimeInstance", instance);
+    assert.equal(session.type, "visualbridge-runtime");
+    const attached = await waitForAsync(
+      () => vscode.commands.executeCommand("visualbridge.test.getRuntimeDebugSessionState"),
+      (value) => value?.connected === true && value?.leaseHeld === true && value?.documents >= 4,
+      30_000,
+      "The DAP inspection session did not attach with the full runtime snapshot.",
+    );
+    // 未修改 Authoring 源（hero 漂移测试已还原）：hero 与全部文档 drifted=false。
+    assert.equal(attached.driftedDocuments, 0, "Unmodified authoring documents must not be reported as drifted.");
+    assert.equal(attached.driftedDocumentIds.includes("sample.unity.hero.default"), false,
+      "The unmodified hero document must not be reported as drifted.");
+    assert.equal(attached.topLevelVariables, attached.documents, "Top-level variables must mirror the runtime document list.");
+
+    await vscode.debug.stopDebugging(session);
+    const closed = await waitForAsync(
+      () => vscode.commands.executeCommand("visualbridge.test.getRuntimeDebugSessionState"),
+      (value) => value?.connected !== true && value?.leaseHeld !== true && value?.documents === 0,
+      30_000,
+      "The DAP inspection session did not release the lease and disconnect.",
+    );
+    assert.equal(closed.leaseHeld, false);
+  });
 };
 
 async function test(name, action) {

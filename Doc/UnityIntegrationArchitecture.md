@@ -586,3 +586,7 @@ Editor Bridge Schema 字节冻结不改。共享核落地为：Runtime Bridge Sc
 - Unity 侧：`VisualBridge.Runtime` 按第 13.7 节决策 B 升级——asmdef 增加 Newtonsoft 预编译引用，新增 `VisualBridgeRuntimeArtifactStore`（Play 模式读 `Library/VisualBridge/Compiled`，Player 回退 `StreamingAssets/VisualBridge/Compiled`）与 `VisualBridgeRuntimeBridgeServer`（监听/注册记录/心跳，遵循第 17 章生命周期语义）；`VisualBridge.Editor` 以 `[InitializeOnLoad]` 兜底 mid-play reload 窗口。调试语义（断点/调用栈）不进入本版本——属 VB-UX-10。
 - VS Code 侧：`RuntimeBridgeService` 枚举 `visualbridge-runtime` 发现目录、显式选择实例、连接与订阅（含租约控制与 Source 映射查询）；本任务不提供 UI（DAP 适配器与 UI 属后续任务），以测试命令暴露状态供自动化。
 - 三方 parity fixture：`visualbridge-runtime-bridge-cases.json`（36 例）由 AJV（generate.mjs）、Unity 严格校验器（EditMode）与扩展宿主测试共同消费。
+
+### 18.5 VS Code DAP 检查适配器（VB-UX-11，2026-08-31）
+
+DAP 适配器以**只检查会话**形态落地（范围裁定与 18.3 一致——无执行引擎即无断点/单步/暂停语义）：debug type `visualbridge-runtime`、仅 attach；会话生命周期映射为连接实例 + `acquireLease`（断开即 releaseLease）；单伪线程/单帧/单 scope 仅满足 DAP 结构要求，变量树即 getSnapshot 的真实运行时数据（惰性展开、单层 500 上限、`__sourcePath`/`__sourceDrifted` 信息变量来自 getDocumentSources 与工作区字节比对）；断点一律 `verified:false`、能力声明如实为空——不伪造执行状态。适配器是纯翻译层：全部状态来自 Runtime Bridge 协议（单一事实源），断开释放租约后其他客户端可立即接管（E2E 有断言）。E2E 覆盖：真实 Unity Play 实例 attach→变量树/漂移全零断言→断开；host 测试以假实例验证租约抢占/释放语义。

@@ -2,7 +2,7 @@
 
 本包是 VisualBridge 的 VS Code Host Adapter。扩展只在本地工作区发现并验证 `VisualBridge.project.vbjson` 后建立 Project 功能；Graph、Entity、Structured 和 Table 的 Parser、Catalog、Operation、Validator、Reference 与 Serializer 来自共享 Core/Built-in 包，不在 Extension Host 中复制领域规则。
 
-当前 VSIX 是私有 `UNLICENSED` 产物，不通过 Marketplace 分发。Unity 侧的 Structured Catalog Exporter/Importer/Compiler 与最小 Editor Bridge 已在 Unity Package 中实现；本扩展宿主承载 Editor Bridge 服务器（本机 NDJSON，open/reveal）。Runtime 和 Debug 尚未实现。
+当前 VSIX 是私有 `UNLICENSED` 产物，不通过 Marketplace 分发。Unity 侧的 Structured Catalog Exporter/Importer/Compiler、最小 Editor Bridge 与 Runtime Bridge 服务器已在 Unity Package 中实现；本扩展宿主承载 Editor Bridge 服务器（本机 NDJSON，open/reveal），并通过 Runtime Bridge 协议枚举/连接 Runtime 实例（快照、租约、Source 映射）。Debug 面为 `visualbridge-runtime` DAP 只检查适配器（attach 型：单伪线程、文档快照变量树与漂移信息；不支持断点/单步/求值——真实执行运行时出现前不冻结这些能力）。
 
 ## 安装与首次使用
 

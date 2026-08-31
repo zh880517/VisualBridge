@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 适配器）待开始。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 检查适配器）已关闭，VB-UX-12（MCP Debug Tool）待项目方决策（实现检查工具集或按降级条款预留）。
 
 本阶段分三段：
 
@@ -283,7 +283,7 @@ Exit criteria：
 - 权限模型与漂移防护的冻结设计进入架构文档；文件名、数组索引或对象地址不作为稳定跨进程标识有测试锁定。
 - 断点/调用栈/变量/事件的正反例与上限行为有自动化覆盖；Play 模式 E2E 扩展覆盖调试链路。
 
-### VB-UX-11 VS Code DAP 适配器 — `in_progress`
+### VB-UX-11 VS Code DAP 适配器 — `complete`
 
 依赖：VB-UX-10。
 
@@ -292,9 +292,15 @@ Exit criteria：
 - VS Code 扩展内实现 DAP → Runtime 调试服务的薄翻译层；DAP 会话生命周期（launch/attach、终止、重启）映射到 Runtime 实例选择与权限模型。
 - 不在适配器内建立第二份调试状态；断点集合、暂停状态、调用栈版本只存在于 Runtime 服务。
 
-Exit criteria：
+范围裁定（偏离记录）：与 VB-UX-10 同一现实约束——数据运行时无断点/暂停/继续/调用栈语义，DAP 适配器落地为**只检查会话**（attach→租约→快照变量树→Source 映射/漂移，断点一律 verified:false、能力如实不广告，见架构文档 §18.5）。
 
-- 真实 VS Code 调试 UI（断点、暂停、继续、调用栈、变量查看）经隔离 Extension Host E2E 验证。
+实施与验证记录：2026-08-31 完成。`RuntimeDebugAdapter`（内联 DAP 实现——`vscode.DebugAdapter` 在 1.105.0 是接口非基类，自行分发请求）+ `RuntimeDebugConfigurationProvider` + factory 注册 + package.json `contributes.debuggers`（`visualbridge-runtime`）；测试命令 `visualbridge.test.attachRuntimeInstance`/`getRuntimeDebugSessionState` 供无头驱动。变量树：文档→`__sourcePath`/`__sourceDrifted`→data 递归字段（惰性、单层 500 上限）；漂移 attach 时一次计算缓存。
+
+验证记录：Runtime E2E 五项全绿（新增 DAP 检查项：真实 Play 实例 attach→documents≥4+漂移全零→断开状态归零，Unity 干净退出）；`npm test` 全套通过（新增 host 测试以假 Runtime 实例验证 attach/租约抢占/断开释放/第二客户端接管）；`npm run check`/`check:protocol`/`git diff --check` 通过。多客户端并存状态不分叉：DAP 会话与直接协议客户端共享同一 Runtime 事实源与租约。
+
+Exit criteria（按范围裁定修订）：
+
+- 只检查 DAP 会话（attach/变量树/Source 映射/租约生命周期）经真实 Unity Play 实例与隔离 Extension Host E2E 验证；断点/单步以显式不支持呈现。
 - 多客户端并存（DAP + 预留 MCP 路径）时状态不分叉有测试锁定；Editor Bridge 与阶段 A 门槛全部回归通过。
 
 ### VB-UX-12 MCP Debug Tool — `pending`

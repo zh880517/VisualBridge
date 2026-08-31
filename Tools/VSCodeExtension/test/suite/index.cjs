@@ -2266,6 +2266,223 @@ exports.run = async function run() {
       await rm(externalRoot, { recursive: true, force: true });
     }
   });
+
+  await test("attaches a VisualBridge runtime inspection debug session", async () => {
+    // 宿主测试没有 Unity：起一个按协议实现的假 Runtime 实例驱动 DAP 只检查会话。
+    const instanceId = `editor-${process.pid}`;
+    const discoveryDirectory = await mkdtemp(path.join(tmpdir(), "visualbridge-runtime-debug-"));
+    const recordPath = path.join(discoveryDirectory, `${instanceId}.json`);
+    const token = createHash("sha256").update(`runtime-debug-${instanceId}`).digest("hex");
+    const startedAt = new Date().toISOString();
+    const capabilities = ["snapshot", "events", "lease", "sources"];
+    const documents = [
+      {
+        documentTypeId: "test.debug.hero",
+        documentId: "test.debug.hero.default",
+        kind: "visualbridge.entity.compiled",
+        data: { properties: { name: "Ranger", hp: 100 }, tags: ["alpha", "beta"] },
+      },
+      {
+        documentTypeId: "test.debug.settings",
+        documentId: "test.debug.settings.default",
+        kind: "visualbridge.structured.compiled",
+        data: { properties: { maxPlayers: 5 } },
+      },
+    ];
+    const sources = [
+      {
+        documentTypeId: "test.debug.hero",
+        documentId: "test.debug.hero.default",
+        sourcePath: "Entities/TestDebugHero.vbentity",
+        sourceSha256: "1".repeat(64),
+      },
+      {
+        documentTypeId: "test.debug.settings",
+        documentId: "test.debug.settings.default",
+        sourcePath: "Config/TestDebugSettings.gamesettings",
+        sourceSha256: "2".repeat(64),
+      },
+    ];
+    const actions = [];
+    let leaseHolder = null;
+    const send = (socket, message) => socket.write(`${JSON.stringify(message)}\n`);
+    const server = net.createServer((socket) => {
+      socket.setEncoding("utf8");
+      let buffer = "";
+      let handshake = false;
+      socket.on("data", (chunk) => {
+        buffer += chunk;
+        let index;
+        while ((index = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, index);
+          buffer = buffer.slice(index + 1);
+          if (line.trim().length === 0) continue;
+          const message = JSON.parse(line);
+          if (!handshake) {
+            if (message.type === "hello" && message.token === token && message.protocolVersion === 1) {
+              handshake = true;
+              send(socket, {
+                type: "welcome",
+                protocolVersion: 1,
+                coreVersion: 1,
+                instanceId,
+                kind: "editor-play",
+                generation: 1,
+                capabilities,
+                startedAt,
+              });
+            } else {
+              send(socket, { type: "error", code: "runtime.invalidToken" });
+              socket.destroy();
+            }
+            continue;
+          }
+
+          if (message.type !== "request") continue;
+          actions.push({ action: message.action });
+          if (message.action === "getSnapshot") {
+            send(socket, { type: "response", requestId: message.requestId, status: "ok", documents });
+          } else if (message.action === "acquireLease") {
+            if (leaseHolder !== null && leaseHolder !== socket) {
+              send(socket, { type: "response", requestId: message.requestId, status: "error", error: "runtime.leaseDenied" });
+            } else {
+              leaseHolder = socket;
+              send(socket, { type: "response", requestId: message.requestId, status: "ok" });
+            }
+          } else if (message.action === "releaseLease") {
+            if (leaseHolder === socket) {
+              leaseHolder = null;
+              send(socket, { type: "response", requestId: message.requestId, status: "ok" });
+            } else {
+              send(socket, {
+                type: "response",
+                requestId: message.requestId,
+                status: "error",
+                error: leaseHolder === null ? "runtime.leaseNotHeld" : "runtime.leaseDenied",
+              });
+            }
+          } else if (message.action === "getDocumentSources") {
+            if (leaseHolder !== socket) {
+              send(socket, { type: "response", requestId: message.requestId, status: "error", error: "runtime.leaseRequired" });
+            } else {
+              send(socket, { type: "response", requestId: message.requestId, status: "ok", sources });
+            }
+          } else {
+            send(socket, { type: "response", requestId: message.requestId, status: "error", error: "runtime.unknownRequest" });
+          }
+        }
+      });
+      // 断线自动释放租约（对齐 §18.3 单控制者语义）。
+      socket.on("close", () => {
+        if (leaseHolder === socket) leaseHolder = null;
+      });
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const tcpPort = server.address().port;
+    const writeRecord = () => writeFile(recordPath, `${JSON.stringify({
+      formatVersion: 1,
+      protocolVersion: 1,
+      coreVersion: 1,
+      instanceId,
+      kind: "editor-play",
+      capabilities,
+      tcpPort,
+      token,
+      pid: process.pid,
+      generation: 1,
+      startedAt,
+    })}\n`, "utf8");
+    await writeRecord();
+    const heartbeat = setInterval(() => {
+      void writeRecord();
+    }, 2000);
+
+    const previousRuntimeDirectory = process.env.VISUALBRIDGE_TEST_RUNTIME_DIR;
+    process.env.VISUALBRIDGE_TEST_RUNTIME_DIR = discoveryDirectory;
+    try {
+      const instances = await vscode.commands.executeCommand("visualbridge.test.enumerateRuntimeInstances");
+      const instance = instances.find((entry) => entry.instanceId === instanceId);
+      assert.ok(instance, "The fake runtime instance was not enumerated.");
+      assert.equal(instance.staleReason, undefined, "The fresh fake runtime instance must not be classified as stale.");
+
+      const session = await vscode.commands.executeCommand("visualbridge.test.attachRuntimeInstance", instance);
+      assert.equal(session.type, "visualbridge-runtime");
+      const state = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getRuntimeDebugSessionState"),
+        (value) => value?.connected === true && value?.leaseHeld === true && value?.documents === 2,
+        20_000,
+        "The VisualBridge runtime inspection session did not attach.",
+      );
+      assert.equal(state.instanceId, instanceId);
+      assert.equal(state.topLevelVariables, 2, "Top-level variables must mirror the runtime document list.");
+      // 宿主工作区没有 UnityProject 文件夹：漂移只能判 unknown，绝不能误报 true。
+      assert.equal(state.driftedDocuments, 0);
+      assert.equal(state.unknownSourceDocuments, 2);
+
+      await vscode.debug.stopDebugging(session);
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getRuntimeDebugSessionState"),
+        (value) => value?.connected !== true && value?.leaseHeld !== true && value?.documents === 0,
+        20_000,
+        "The VisualBridge runtime inspection session did not disconnect.",
+      );
+      assert.ok(
+        actions.some((entry) => entry.action === "releaseLease"),
+        "The fake runtime instance did not receive releaseLease on disconnect.",
+      );
+
+      // 租约确实已释放：第二个客户端可立即 acquire。
+      const second = net.connect({ host: "127.0.0.1", port: tcpPort });
+      try {
+        await new Promise((resolve, reject) => {
+          second.once("connect", resolve);
+          second.once("error", reject);
+        });
+        second.setEncoding("utf8");
+        const lines = [];
+        let lineBuffer = "";
+        second.on("data", (chunk) => {
+          lineBuffer += chunk;
+          let index;
+          while ((index = lineBuffer.indexOf("\n")) >= 0) {
+            const line = lineBuffer.slice(0, index);
+            lineBuffer = lineBuffer.slice(index + 1);
+            if (line.trim().length > 0) lines.push(JSON.parse(line));
+          }
+        });
+        send(second, {
+          type: "hello",
+          protocolVersion: 1,
+          coreVersion: 1,
+          token,
+          clientInstanceId: "6e4d75d6-2b15-4f5e-9d8a-4c0d5f1a9b2c",
+          capabilities,
+        });
+        await waitForAsync(
+          () => lines.find((line) => line.type === "welcome"),
+          (value) => value !== undefined,
+          10_000,
+          "The second client did not complete the handshake.",
+        );
+        send(second, { type: "request", requestId: "runtime-debug-second-lease", action: "acquireLease" });
+        const leaseResponse = await waitForAsync(
+          () => lines.find((line) => line.type === "response" && line.requestId === "runtime-debug-second-lease"),
+          (value) => value !== undefined,
+          10_000,
+          "The second client did not receive an acquireLease response.",
+        );
+        assert.equal(leaseResponse.status, "ok", "The released lease must be acquirable by a second client.");
+      } finally {
+        second.destroy();
+      }
+    } finally {
+      clearInterval(heartbeat);
+      if (previousRuntimeDirectory === undefined) delete process.env.VISUALBRIDGE_TEST_RUNTIME_DIR;
+      else process.env.VISUALBRIDGE_TEST_RUNTIME_DIR = previousRuntimeDirectory;
+      await new Promise((resolve) => server.close(resolve));
+      await rm(discoveryDirectory, { recursive: true, force: true });
+    }
+  });
 };
 
 async function assertEditorRoute(workspacePath, segments, expectedViewType, openCommand) {

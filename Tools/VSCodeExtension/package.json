@@ -265,6 +265,22 @@
         }
       ]
     },
+    "debuggers": [
+      {
+        "type": "visualbridge-runtime",
+        "label": "VisualBridge Runtime Attach",
+        "configurationAttributes": {
+          "attach": {
+            "properties": {
+              "instanceId": {
+                "type": "string",
+                "description": "Discovered VisualBridge Runtime instance identifier (editor-<pid> or player-<pid>)."
+              }
+            }
+          }
+        }
+      }
+    ],
     "customEditors": [
       {
         "viewType": "visualbridge.projectSettingsEditor",
