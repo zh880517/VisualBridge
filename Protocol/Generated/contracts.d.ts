@@ -1,7 +1,7 @@
-// Generated from Protocol/Schema. Do not edit.
-// Every formal schema is emitted as a namespace with Root and all $defs declarations.
+// 由 Protocol/Schema 生成，勿手工编辑。
+// 每个正式 Schema 输出为一个命名空间，包含 Root 与全部 $defs 声明。
 
-// Source: Protocol/Schema/visualbridge-authoring-contracts.schema.json
+// 来源：Protocol/Schema/visualbridge-authoring-contracts.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-authoring-contracts.schema.json
 export namespace VisualBridgeAuthoringContracts {
   export type Root = unknown;
@@ -53,7 +53,7 @@ export namespace VisualBridgeAuthoringContracts {
   export type TransactionResult = { readonly "maintenance"?: { readonly "code": "transaction.finalizationPending"; readonly "message": string }; readonly "mutations": readonly TransactionMutation[] };
 }
 
-// Source: Protocol/Schema/visualbridge-catalog-source.schema.json
+// 来源：Protocol/Schema/visualbridge-catalog-source.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-catalog-source.schema.json
 export namespace VisualBridgeCatalogSource {
   export type Root = ({ readonly "status": "unknown" }) | ({ readonly "providerId": Identifier; readonly "sourceHash": Hash; readonly "status": "current" }) | ({ readonly "currentSourceHash": Hash; readonly "providerId": Identifier; readonly "sourceHash": Hash; readonly "status": "stale" });
@@ -61,7 +61,7 @@ export namespace VisualBridgeCatalogSource {
   export type Identifier = string;
 }
 
-// Source: Protocol/Schema/visualbridge-editor-bridge.schema.json
+// 来源：Protocol/Schema/visualbridge-editor-bridge.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-editor-bridge.schema.json
 export namespace VisualBridgeEditorBridge {
   export type Root = (HelloMessage) | (WelcomeMessage) | (OpenRequest) | (RevealRequest) | (ResponseMessage) | (ErrorMessage);
@@ -86,7 +86,7 @@ export namespace VisualBridgeEditorBridge {
   export type WelcomeMessage = { readonly "capabilities": CapabilityList; readonly "protocolVersion": ProtocolVersion; readonly "serverGeneration": ServerGeneration; readonly "type": "welcome"; readonly "windowId": InstanceId };
 }
 
-// Source: Protocol/Schema/visualbridge-entity-catalog.schema.json
+// 来源：Protocol/Schema/visualbridge-entity-catalog.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-entity-catalog.schema.json
 export namespace VisualBridgeEntityCatalog {
   export type Root = { readonly "catalogId": Identifier; readonly "componentGroups": readonly ComponentGroup[]; readonly "componentTypes": readonly ComponentType[]; readonly "entityTypes": readonly EntityType[]; readonly "formatVersion": 1; readonly "source": VisualBridgeCatalogSource.Root; readonly "title": NonEmptyString };
@@ -106,7 +106,7 @@ export namespace VisualBridgeEntityCatalog {
   export type ValueType = "string" | "number" | "boolean" | "object" | "array" | "json";
 }
 
-// Source: Protocol/Schema/visualbridge-entity.schema.json
+// 来源：Protocol/Schema/visualbridge-entity.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-entity.schema.json
 export namespace VisualBridgeEntity {
   export type Root = { readonly "components": readonly Component[]; readonly "documentId": Identifier; readonly "entityTypeId": Identifier; readonly "formatVersion": 1; readonly "properties": PropertyValues; readonly "title": string };
@@ -115,7 +115,7 @@ export namespace VisualBridgeEntity {
   export type PropertyValues = VisualBridgePrimitives.JsonObject;
 }
 
-// Source: Protocol/Schema/visualbridge-graph-catalog.schema.json
+// 来源：Protocol/Schema/visualbridge-graph-catalog.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-graph-catalog.schema.json
 export namespace VisualBridgeGraphCatalog {
   export type Root = { readonly "catalogId": Identifier; readonly "dataTypes": readonly { readonly "accepts"?: readonly Identifier[]; readonly "acceptsAnySource"?: boolean; readonly "color"?: string; readonly "id": Identifier; readonly "title": string }[]; readonly "formatVersion": 4; readonly "graphTypes": readonly GraphType[]; readonly "nodeTypes": readonly NodeType[]; readonly "source": CatalogSource; readonly "title": string };
@@ -143,7 +143,7 @@ export namespace VisualBridgeGraphCatalog {
   export type ValueType = "string" | "number" | "boolean" | "object" | "array" | "json";
 }
 
-// Source: Protocol/Schema/visualbridge-graph.schema.json
+// 来源：Protocol/Schema/visualbridge-graph.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-graph.schema.json
 export namespace VisualBridgeGraph {
   export type Root = { readonly "documentId": Identifier; readonly "formatVersion": 3; readonly "graphs": readonly Graph[]; readonly "rootGraphId": Identifier };
@@ -161,7 +161,7 @@ export namespace VisualBridgeGraph {
   export type SubgraphNode = { readonly "dynamicPorts"?: readonly DynamicPort[]; readonly "id": Identifier; readonly "kind": "subgraph"; readonly "nodeTypeId"?: Identifier; readonly "position": Position; readonly "properties": Properties; readonly "subgraphId": Identifier; readonly "title": string };
 }
 
-// Source: Protocol/Schema/visualbridge-mcp-tools.schema.json
+// 来源：Protocol/Schema/visualbridge-mcp-tools.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-mcp-tools.schema.json
 export namespace VisualBridgeMcpTools {
   export type Root = unknown;
@@ -188,7 +188,7 @@ export namespace VisualBridgeMcpTools {
   export type VisualbridgeReferencesOutput = ToolOutput;
 }
 
-// Source: Protocol/Schema/visualbridge-primitives.schema.json
+// 来源：Protocol/Schema/visualbridge-primitives.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-primitives.schema.json
 export namespace VisualBridgePrimitives {
   export type Root = unknown;
@@ -212,7 +212,7 @@ export namespace VisualBridgePrimitives {
   export type StableId = string;
 }
 
-// Source: Protocol/Schema/visualbridge-project-provider.schema.json
+// 来源：Protocol/Schema/visualbridge-project-provider.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-project-provider.schema.json
 export namespace VisualBridgeProjectProvider {
   export type Root = (HostMessage) | (ProviderResponse);
@@ -251,7 +251,7 @@ export namespace VisualBridgeProjectProvider {
   export type ValidatorDiagnosticsResult = ({ readonly "diagnostics": readonly ({ readonly "code": Identifier; readonly "documentPath": RelativePath; readonly "documentTypeId": Identifier; readonly "message": string; readonly "path": string; readonly "severity": "error" | "warning" })[]; readonly "status": "ok" }) | (ProviderUnavailableResult);
 }
 
-// Source: Protocol/Schema/visualbridge-project.schema.json
+// 来源：Protocol/Schema/visualbridge-project.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-project.schema.json
 export namespace VisualBridgeProject {
   export type Root = { readonly "documentRoots": readonly string[]; readonly "documentTypes": readonly ({ readonly "catalogs"?: readonly string[]; readonly "editor": string; readonly "exclude"?: readonly ((SafeGlob) & (string))[]; readonly "id": string; readonly "include": readonly ((SafeGlob) & (string))[] })[]; readonly "formatVersion": 1; readonly "projectId": string; readonly "providers"?: readonly Provider[]; readonly "tableLayout"?: { readonly "dataStartRow": number; readonly "nameKeyRow": number } };
@@ -261,7 +261,7 @@ export namespace VisualBridgeProject {
   export type SafeGlob = string;
 }
 
-// Source: Protocol/Schema/visualbridge-structured-catalog.schema.json
+// 来源：Protocol/Schema/visualbridge-structured-catalog.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-structured-catalog.schema.json
 export namespace VisualBridgeStructuredCatalog {
   export type Root = { readonly "catalogId": Identifier; readonly "configTypes": readonly ConfigType[]; readonly "formatVersion": 1; readonly "source": VisualBridgeCatalogSource.Root; readonly "title": NonEmptyString };
@@ -279,14 +279,14 @@ export namespace VisualBridgeStructuredCatalog {
   export type ValueType = "string" | "number" | "boolean" | "object" | "array" | "json";
 }
 
-// Source: Protocol/Schema/visualbridge-structured.schema.json
+// 来源：Protocol/Schema/visualbridge-structured.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-structured.schema.json
 export namespace VisualBridgeStructured {
   export type Root = { readonly "documentId": Identifier; readonly "formatVersion": 1; readonly "properties": VisualBridgePrimitives.JsonObject };
   export type Identifier = string;
 }
 
-// Source: Protocol/Schema/visualbridge-table-catalog.schema.json
+// 来源：Protocol/Schema/visualbridge-table-catalog.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-table-catalog.schema.json
 export namespace VisualBridgeTableCatalog {
   export type Root = { readonly "catalogId": Identifier; readonly "formatVersion": 1; readonly "source": VisualBridgeCatalogSource.Root; readonly "tableTypes": readonly TableType[]; readonly "title": NonEmptyString };
@@ -309,7 +309,7 @@ export namespace VisualBridgeTableCatalog {
   export type ValueType = "string" | "number" | "boolean" | "object" | "array" | "json";
 }
 
-// Source: Protocol/Schema/visualbridge-unity-integration-profile.schema.json
+// 来源：Protocol/Schema/visualbridge-unity-integration-profile.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-unity-integration-profile.schema.json
 export namespace VisualBridgeUnityIntegrationProfile {
   export type Root = { readonly "authoringProject": ProjectRelativePath; readonly "catalogExports": readonly CatalogExport[]; readonly "compileOutputRoot": ProjectRelativePath; readonly "formatVersion": 1 };

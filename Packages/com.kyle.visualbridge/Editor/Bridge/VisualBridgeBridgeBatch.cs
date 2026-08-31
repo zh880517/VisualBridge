@@ -6,10 +6,9 @@ using UnityEngine;
 namespace VisualBridge.Editor
 {
     /// <summary>
-    /// Batch entry points for the Editor Bridge. The E2E methods run in a real
-    /// (non-batchmode) Unity Editor session via -executeMethod, together with an
-    /// isolated VS Code Extension Host, and write a structured result file that
-    /// the orchestrating test reads. Menu entries reuse the same service.
+    /// Editor Bridge 的 batch 入口。E2E 方法在真实（非 batchmode）Unity Editor 会话中
+    /// 经 -executeMethod 与隔离的 VS Code Extension Host 一起运行，并写出结构化结果文件
+    /// 供编排测试读取；菜单入口复用同一服务。
     /// </summary>
     public static class VisualBridgeBridgeBatch
     {
@@ -27,9 +26,8 @@ namespace VisualBridge.Editor
         }
 
         /// <summary>
-        /// Runs the bridge open and reveal round trip against a live VS Code window.
-        /// Configured through environment variables so the same method serves the
-        /// automated E2E gate and manual verification.
+        /// 对存活的 VS Code 窗口执行 bridge open/reveal 往返。通过环境变量配置，
+        /// 使同一方法既服务自动化 E2E 门槛也服务手工验证。
         /// </summary>
         public static void RunE2E()
         {

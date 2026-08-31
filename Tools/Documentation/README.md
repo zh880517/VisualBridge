@@ -1,10 +1,10 @@
-# Documentation Gate
+# 文档门禁
 
-`npm run check:docs` validates the maintained Markdown, VS Code extension surface, MCP registry, and executable examples without opening VS Code or Unity. It then reuses the Protocol Contract workspace's real stdio `check:mcp`, so the MCP build must exist; CI runs this gate after `npm run build`.
+`npm run check:docs` 在不打开 VS Code 或 Unity 的前提下校验受维护的 Markdown、VS Code 扩展面、MCP 注册表与可执行示例。它随后复用 Protocol Contract 工作区真实的 stdio `check:mcp`，因此 MCP 构建产物必须已存在；CI 在 `npm run build` 之后运行本门禁。
 
-## JSON fence metadata
+## JSON 围栏元数据
 
-New or changed business JSON fences must identify an executable contract. This example is itself checked:
+新增或修改业务 JSON 围栏时必须标注可执行契约。下面的示例本身就会被校验：
 
 ```json visualbridge-schema=visualbridge-primitives.schema.json#/$defs/lockOwner
 {
@@ -15,24 +15,24 @@ New or changed business JSON fences must identify an executable contract. This e
 }
 ```
 
-Use `visualbridge-parser=project`, `catalog-source`, `graph-document`, `graph-catalog`, `entity-document`, `entity-catalog`, `structured-document`, `structured-catalog`, or `table-catalog` for complete Authoring documents. A complete root-Schema example must declare both its Schema and production parser. A schema-only fence is allowed only when it names a formal JSON Pointer fragment such as `#/$defs/...` for which no standalone product parser exists. Parser-backed fences require the corresponding built workspace output.
+完整的 Authoring 文档使用 `visualbridge-parser=project`、`catalog-source`、`graph-document`、`graph-catalog`、`entity-document`、`entity-catalog`、`structured-document`、`structured-catalog` 或 `table-catalog`。完整的根 Schema 示例必须同时声明其 Schema 与生产 Parser。只声明 Schema 的围栏仅允许指向正式的 JSON Pointer 片段（如 `#/$defs/...`），且该片段不存在独立的产品 Parser。带 Parser 的围栏要求对应的工作区构建产物已存在。
 
-There is no legacy bypass: every `json` or `jsonc` fence in the maintained documentation must carry executable metadata. Unmarked business JSON, new or old, fails the gate.
+不存在遗留豁免：受维护文档中的每个 `json` 或 `jsonc` 围栏，无论新旧，都必须带可执行元数据，否则门禁失败。
 
-The maintained `Samples/PreUnityAuthoring` files are validated separately by `npm run test:samples`: every JSON Project, Catalog, and Document source passes its formal JSON Schema and its production parser; CSV additionally passes the production Table parser.
+受维护的 `Samples/PreUnityAuthoring` 文件由 `npm run test:samples` 单独校验：每个 JSON Project、Catalog 与 Document 源文件都通过其正式 JSON Schema 与生产 Parser；CSV 额外通过生产 Table Parser。
 
-## Pinned parser dependencies
+## 固定的 Parser 依赖
 
-Versions and licenses were verified against the npm registry before adoption:
+以下版本与许可证在引入前均已对照 npm registry 核实：
 
-| Package | Version | License | Purpose |
+| 包 | 版本 | 许可证 | 用途 |
 | --- | --- | --- | --- |
-| `unified` | `11.0.5` | MIT | Markdown processing pipeline |
+| `unified` | `11.0.5` | MIT | Markdown 处理管线 |
 | `remark-parse` | `11.0.0` | MIT | CommonMark Markdown AST |
-| `remark-gfm` | `4.0.1` | MIT | GitHub-flavored Markdown extensions |
-| `github-slugger` | `2.0.0` | ISC | GitHub-compatible heading anchors |
-| `jsdom` | `29.1.1` | MIT | Deterministic DOM for Mermaid parsing under Node |
-| `mermaid` | `11.17.2` | MIT | Real Mermaid grammar parsing |
-| `ajv` | `8.20.0` | MIT | JSON Schema 2020-12 validation |
+| `remark-gfm` | `4.0.1` | MIT | GitHub 风格 Markdown 扩展 |
+| `github-slugger` | `2.0.0` | ISC | GitHub 兼容的标题锚点 |
+| `jsdom` | `29.1.1` | MIT | Node 下 Mermaid 解析所需的确定性 DOM |
+| `mermaid` | `11.17.2` | MIT | 真实 Mermaid 语法解析 |
+| `ajv` | `8.20.0` | MIT | JSON Schema 2020-12 校验 |
 
-The repository dependency policy requires these direct versions, the workspace license metadata, and the lockfile importer to remain exact.
+仓库依赖策略要求这些直接依赖版本、工作区许可证元数据与 lockfile importer 保持精确一致。

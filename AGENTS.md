@@ -1,44 +1,50 @@
-# Repository Guidelines
+# 仓库协作规范
 
-## Project Structure & Module Organization
+## 项目结构与模块组织
 
-VisualBridge is a monorepo for the platform implementation. `Core/` contains host-independent TypeScript domain logic; it must not reference VS Code, Webview DOM, or Unity APIs. `Protocol/` owns schemas, messages, and generated cross-language contracts. Reusable Webview UI belongs in `Editors/`, while built-in document types live in `BuiltInExtensions/`. Host integrations are under `Tools/VSCodeExtension/` and `Tools/VisualBridgeMcp/`. The Unity Package source is `Packages/com.kyle.visualbridge/`; `UnityProject/` is only its development host, with Unity assets under `UnityProject/Assets/`.
+VisualBridge 是平台实现的 monorepo。`Core/` 存放与宿主无关的 TypeScript 领域逻辑，不得引用 VS Code、Webview DOM 或 Unity API。`Protocol/` 负责 Schema、消息与生成的跨语言契约。可复用的 Webview UI 放在 `Editors/`，内置文档类型在 `BuiltInExtensions/`。宿主集成位于 `Tools/VSCodeExtension/` 与 `Tools/VisualBridgeMcp/`。Unity Package 源码在 `Packages/com.kyle.visualbridge/`；`UnityProject/` 只是它的开发宿主，Unity 资产在 `UnityProject/Assets/`。
 
-Keep durable documentation in `Doc/`. Put task plans and temporary design notes in `Doc/Temp/`, then delete them when the task is complete. Read `Doc/VisualBridgeArchitecture.md` before changing module boundaries.
+正式文档统一保存在 `Doc/`。任务计划与临时设计笔记放在 `Doc/Temp/`，任务完成后删除。修改模块边界前先阅读 `Doc/VisualBridgeArchitecture.md`。
 
-## Build, Test, and Development Commands
+## 语言规范
 
-Use Node.js 22.22.1 and npm 10.9.4 as declared by `.nvmrc`, `engines.node`, and `packageManager`. Switch Node versions before installing; `.npmrc` intentionally rejects a mismatched runtime.
+- 仓库内全部文档使用中文撰写（含 README 与正式设计文档）；代码标识符、命令、Schema 字段名等机器契约保持英文。
+- 源码中的关键注释同样使用中文；注释保持精简，只保留解释约束、意图或非显然行为的部分，不写复述代码的流水账注释。
+- 生成产物（如 Protocol 契约文件）中的注释由生成器模板输出，模板修改后必须重新生成并保证一致性。
 
-- `npm ci` — install the exact monorepo dependencies from the root lockfile.
-- `npm run check` — type-check VisualBridgeCore and the VS Code extension.
-- `npm run build` — compile Core and bundle the extension into `Tools/VSCodeExtension/dist/`.
-- `npm run package:vscode` — create a VSIX under `Tools/VSCodeExtension/artifacts/`.
-- `npm run test:vscode:host` — build the extension and run isolated Extension Host integration tests against the fixed VisualBridge fixtures.
-- `npm run test:vscode:cli` — package the VSIX, install it into isolated VS Code user/extension directories, and verify the packaged runtime assets.
-- `npm run check:docs` — validate final-document coverage, links, anchors, Mermaid diagrams, command/editor manifests, and schema-bound JSON examples.
-- `dotnet build .\UnityProject\Assembly-CSharp.csproj` — compile-check Unity runtime C# without opening Unity Editor.
-- `dotnet build .\UnityProject\Assembly-CSharp-Editor.csproj` — compile-check editor-only C#.
-- `git diff --check` — detect whitespace errors before review.
+## 构建、测试与开发命令
 
-## Code Intelligence
+使用 `.nvmrc`、`engines.node` 与 `packageManager` 声明的 Node.js 22.22.1 和 npm 10.9.4。安装前先切换 Node 版本；`.npmrc` 会在运行时不匹配时直接报错，这是刻意设计。
 
-- Use CodeGraph first for symbol relationships, entry points, callers, callees, and change-impact analysis when its project index is available.
-- Run `codegraph sync .` after source changes before relying on impact or affected-test results.
-- Treat CodeGraph as navigation evidence; confirm behavior in source and with the relevant build or automated validation before reporting a result.
+- `npm ci` — 按根 lockfile 安装确定的 monorepo 依赖。
+- `npm run check` — 对 VisualBridgeCore 与 VS Code 扩展做类型检查。
+- `npm run build` — 编译 Core 并把扩展打包到 `Tools/VSCodeExtension/dist/`。
+- `npm run package:vscode` — 在 `Tools/VSCodeExtension/artifacts/` 下生成 VSIX。
+- `npm run test:vscode:host` — 构建扩展并在隔离的 Extension Host 中对固定 VisualBridge fixtures 跑集成测试。
+- `npm run test:vscode:cli` — 打包 VSIX、安装进隔离的 VS Code 用户/扩展目录并验证打包后的运行时资产。
+- `npm run check:docs` — 校验正式文档覆盖、链接、锚点、Mermaid 图、命令/编辑器 manifest 与绑定 Schema 的 JSON 示例。
+- `dotnet build .\UnityProject\Assembly-CSharp.csproj` — 不打开 Unity Editor 快速编译检查运行时 C#。
+- `dotnet build .\UnityProject\Assembly-CSharp-Editor.csproj` — 快速编译检查 Editor-only C#。
+- `git diff --check` — 审查前检查空白符错误。
 
-Open the repository root in VS Code and press `F5` to launch an Extension Development Host. Unity-generated `.csproj` files must not be edited manually.
+## 代码智能
 
-## Coding Style & Naming Conventions
+- 项目索引可用时，优先用 CodeGraph 查符号关系、入口、调用方/被调用方与变更影响分析。
+- 源码变更后先执行 `codegraph sync .`，再依赖影响面或受影响测试结果。
+- CodeGraph 只作为导航证据；报告结论前必须在源码与对应构建或自动化验证中确认行为。
 
-Use UTF-8 and final newlines. Indent C# with four spaces and TypeScript/JSON with two. Use `PascalCase` for C# types and public members, `camelCase` for locals and parameters, and `PascalCase` for established repository directories. Keep files focused and prefer one public C# type per file. Preserve dependency direction: Protocol → Core → VS Code/MCP adapters; Unity consumes generated protocol contracts, not TypeScript Core code.
+在 VS Code 中打开仓库根目录并按 `F5` 启动 Extension Development Host。Unity 生成的 `.csproj` 文件不得手工编辑。
 
-For Webview UI, prefer maintained open-source React components over custom browser-control implementations when they cover the required behavior. Use Base UI for accessible headless interaction primitives, Lucide React for shared functional icons, and `react-colorful` for color editing; apply Visual Studio Code theme variables in repository CSS. Review license, maintenance status, React compatibility, bundle impact, and CSP behavior before adding another UI dependency. Do not use the archived `@vscode/webview-ui-toolkit`.
+## 编码风格与命名约定
 
-## Testing Guidelines
+使用 UTF-8 与文件末尾换行。C# 缩进四空格，TypeScript/JSON 缩进两空格。C# 类型与公开成员用 `PascalCase`，局部变量与参数用 `camelCase`，既有仓库目录名保持 `PascalCase`。保持文件聚焦，C# 尽量一个公开类型一个文件。依赖方向不可破坏：Protocol → Core → VS Code/MCP 适配器；Unity 只消费生成的协议契约，不引用 TypeScript Core 代码。
 
-Run `npm test` for the fixed Core, Graph, Entity, Structured, Table, and MCP semantic suites. Add host-independent tests beside the relevant built-in extension and keep reusable fixtures under `TestData/`. No coverage threshold is established. Unless explicitly requested, do not add Unity tests. Validate Unity changes with the relevant `dotnet build` command and report when generated project files or unavailable Unity assemblies limit verification.
+Webview UI 优先使用维护中的开源 React 组件而非自研浏览器控件：无障碍交互基元用 Base UI，共享功能图标用 Lucide React，颜色编辑用 `react-colorful`；仓库 CSS 使用 Visual Studio Code 主题变量。新增 UI 依赖前评估许可证、维护状态、React 兼容性、包体积与 CSP 行为。不得使用已归档的 `@vscode/webview-ui-toolkit`。
 
-## Commit & Pull Request Guidelines
+## 测试指南
 
-History currently contains only initialization commits, so no formal convention is established. Use short imperative subjects such as `Add document operation registry`, and keep commits scoped to one concern. Pull requests should explain the affected modules, architecture impact, validation performed, and known limitations. Include screenshots for Webview changes and call out protocol or generated-contract changes explicitly.
+`npm test` 运行固定的 Core、Graph、Entity、Structured、Table 与 MCP 语义套件。宿主无关的测试放在对应内置扩展旁，可复用 fixtures 统一放在 `TestData/`。未设定覆盖率门槛。除非明确要求，不新增 Unity 测试。Unity 变更用对应的 `dotnet build` 命令验证；当生成工程文件或 Unity 程序集不可用导致验证受限时，如实报告。
+
+## 提交与 Pull Request 指南
+
+使用简短祈使句主题（如 `Add document operation registry`），每次提交只关注一件事。Pull Request 应说明受影响模块、架构影响、已执行的验证与已知限制。Webview 变更附截图；协议或生成契约变更必须显式指出。

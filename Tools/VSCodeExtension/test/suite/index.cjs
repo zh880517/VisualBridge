@@ -2109,7 +2109,7 @@ exports.run = async function run() {
       capabilities: ["open", "reveal"],
     });
 
-    // Invalid token is rejected with a connection-level error.
+    // 无效 token 以连接级错误拒绝。
     {
       const connection = await connectBridge();
       try {
@@ -2122,7 +2122,7 @@ exports.run = async function run() {
       }
     }
 
-    // Non-JSON lines are rejected as invalidJson.
+    // 非 JSON 行以 invalidJson 拒绝。
     {
       const connection = await connectBridge();
       try {
@@ -2135,7 +2135,7 @@ exports.run = async function run() {
       }
     }
 
-    // A non-hello first message is rejected as unknownMessageType.
+    // 首条消息不是 hello 时以 unknownMessageType 拒绝。
     {
       const connection = await connectBridge();
       try {
@@ -2148,7 +2148,7 @@ exports.run = async function run() {
       }
     }
 
-    // Valid handshake, document open, unresolved open, and reference reveal.
+    // 正常握手、文档 open、未命中 open 与 Reference reveal。
     {
       const connection = await connectBridge();
       try {
@@ -2181,8 +2181,8 @@ exports.run = async function run() {
         );
         await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
 
-        // Reference 101 occurs in both the Structured and Entity projects; the
-        // frozen design requires an explicit ambiguity error instead of a guess.
+        // Reference 101 同时出现在 Structured 与 Entity 两个 Project；
+        // 冻结设计要求显式的歧义错误而不是猜测。
         connection.send({ type: "reveal", requestId: "bridge-reveal-ambiguous", reference: 101 });
         const ambiguous = await connection.waitForLine(
           (line) => line.type === "response" && line.requestId === "bridge-reveal-ambiguous",
@@ -2190,7 +2190,7 @@ exports.run = async function run() {
         assert.equal(ambiguous.status, "error");
         assert.equal(ambiguous.error, "bridge.documentAmbiguous");
 
-        // The entity component reference 'health' resolves uniquely.
+        // entity component 引用 'health' 可唯一解析。
         connection.send({ type: "reveal", requestId: "bridge-reveal-1", reference: "health" });
         const revealed = await connection.waitForLine(
           (line) => line.type === "response" && line.requestId === "bridge-reveal-1",

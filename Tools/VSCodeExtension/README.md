@@ -2,7 +2,7 @@
 
 本包是 VisualBridge 的 VS Code Host Adapter。扩展只在本地工作区发现并验证 `VisualBridge.project.vbjson` 后建立 Project 功能；Graph、Entity、Structured 和 Table 的 Parser、Catalog、Operation、Validator、Reference 与 Serializer 来自共享 Core/Built-in 包，不在 Extension Host 中复制领域规则。
 
-当前 VSIX 是私有 `UNLICENSED` 产物，不通过 Marketplace 分发。Unity Catalog Exporter、Importer、Compiler、Editor Bridge、Runtime 和 Debug 尚未实现。
+当前 VSIX 是私有 `UNLICENSED` 产物，不通过 Marketplace 分发。Unity 侧的 Structured Catalog Exporter/Importer/Compiler 与最小 Editor Bridge 已在 Unity Package 中实现；本扩展宿主承载 Editor Bridge 服务器（本机 NDJSON，open/reveal）。Runtime 和 Debug 尚未实现。
 
 ## 安装与首次使用
 
@@ -98,7 +98,7 @@ Manifest 的默认 `visualbridge.documentEditor` selector 包含 `.vbgraph`、`.
 - Project/Index 刷新、Provider stderr/结构化生命周期、Lifecycle、Refactor 和事务摘要写入 **Output / VisualBridge**。
 - Provider 声明、Trust、日志和故障处理见 [Project Provider V2](../../Doc/ProjectProvider.md)。
 
-## Development
+## 开发环境
 
 使用仓库固定的 Node.js `22.22.1` 和 npm `10.9.4`。从根目录执行：
 
@@ -111,7 +111,7 @@ npm run build
 
 构建后在 VS Code 打开仓库根目录并按 `F5` 启动 Extension Development Host。修改 Project File 后可运行 **VisualBridge: Refresh Projects**。
 
-## Automated host and package tests
+## 自动化宿主与打包测试
 
 真实 Extension Host 套件：
 

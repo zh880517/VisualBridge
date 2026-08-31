@@ -40,7 +40,7 @@ interface StructuredStateOptions {
 export class StructuredEditorSession {
   private readonly disposables: vscode.Disposable[] = [];
   private readonly catalogDisposables: vscode.Disposable[] = [];
-  // TextDocument conflicts intentionally compare decoded UTF-8 text. Project Transactions use exact-byte hashes.
+  // TextDocument 冲突刻意比较解码后的 UTF-8 文本；Project Transaction 使用精确字节 Hash。
   private baseDiskTextHash = "";
   private operationQueue: Promise<void> = Promise.resolve();
   private disposed = false;

@@ -17,13 +17,11 @@ namespace VisualBridge.Editor
     }
 
     /// <summary>
-    /// Unity-side Editor Bridge client. One instance owns one connection to one
-    /// VS Code window. The V1 protocol is strictly request/response, so all stream
-    /// I/O happens synchronously on the caller's thread; the Unity Mono runtime
-    /// serializes concurrent Read/Write on NamedPipeClientStream with a shared
-    /// lock, which rules out a background reader thread (measured 2026-08-30).
-    /// Loopback TCP is preferred because NetworkStream supports read timeouts;
-    /// the named pipe endpoint is kept as a fallback.
+    /// Unity 侧 Editor Bridge 客户端。一个实例持有一条到单个 VS Code 窗口的连接。
+    /// V1 协议是严格的请求/响应模型，因此全部流 I/O 在调用方线程上同步执行：
+    /// Unity Mono 运行时在 NamedPipeClientStream 上用共享锁串行化并发 Read/Write，
+    /// 排除了后台读线程的方案（2026-08-30 实测）。优先使用回环 TCP，因为
+    /// NetworkStream 支持读超时；命名管道端点保留为回退。
     /// </summary>
     public sealed class VisualBridgeEditorBridgeClient : IDisposable
     {
@@ -55,9 +53,8 @@ namespace VisualBridge.Editor
         public string ClientInstanceId => clientInstanceId;
 
         /// <summary>
-        /// Connects to the window's TCP endpoint (named pipe fallback on Windows),
-        /// performs the hello/welcome handshake and verifies the server generation
-        /// matches the discovery record.
+        /// 连接窗口的 TCP 端点（Windows 下命名管道回退），完成 hello/welcome
+        /// 握手并校验服务端 generation 与发现记录一致。
         /// </summary>
         public VisualBridgeBridgeMessage Connect(int timeoutMs = ConnectTimeoutMs)
         {
@@ -102,8 +99,7 @@ namespace VisualBridge.Editor
 
                 ServerCapabilities = reply.Capabilities;
                 State = VisualBridgeBridgeConnectionState.Connected;
-                // Keep any bytes already buffered after the welcome line: the server
-                // may have followed it with a connection-level error message.
+                // 保留 welcome 行之后已缓冲的字节：服务端可能紧随其后发送连接级错误。
                 return reply;
             }
             catch
@@ -114,7 +110,7 @@ namespace VisualBridge.Editor
         }
 
         /// <summary>
-        /// Sends an open or reveal request and waits for the correlated response.
+        /// 发送 open 或 reveal 请求并等待配对的响应。
         /// </summary>
         public VisualBridgeBridgeMessage SendRequest(VisualBridgeBridgeMessage request, int timeoutMs)
         {
@@ -191,7 +187,7 @@ namespace VisualBridge.Editor
             }
             catch (IOException)
             {
-                // The stream may already be torn down by the remote side.
+                // 流可能已被远端拆除。
             }
 
             try
@@ -200,7 +196,7 @@ namespace VisualBridge.Editor
             }
             catch (SocketException)
             {
-                // The socket may already be closed.
+                // 套接字可能已经关闭。
             }
 
             stream = null;
@@ -284,9 +280,8 @@ namespace VisualBridge.Editor
 
         private static void ApplyReadTimeout(Stream target, int timeoutMs)
         {
-            // Named pipe streams do not support read timeouts; TCP streams already
-            // carry the timeout from OpenTcp. The pipe fallback trades the read
-            // timeout for transport availability and fails on connection reset.
+            // 命名管道流不支持读超时；TCP 流在 OpenTcp 时已携带超时。
+            // 管道回退用读超时换取传输可用性，靠连接重置失败。
             if (target is NetworkStream)
             {
                 target.ReadTimeout = timeoutMs;

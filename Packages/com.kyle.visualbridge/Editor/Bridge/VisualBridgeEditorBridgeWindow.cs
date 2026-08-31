@@ -7,8 +7,8 @@ using UnityEngine;
 namespace VisualBridge.Editor
 {
     /// <summary>
-    /// Minimal Editor Bridge window: lists matching VS Code windows, requires an
-    /// explicit selection, and sends open/reveal requests from the Unity Editor.
+    /// 最小 Editor Bridge 窗口：列出匹配的 VS Code 窗口、要求显式选择，
+    /// 并从 Unity Editor 发送 open/reveal 请求。
     /// </summary>
     public sealed class VisualBridgeEditorBridgeWindow : EditorWindow
     {
@@ -32,7 +32,7 @@ namespace VisualBridge.Editor
 
         private void OnEnable()
         {
-            // Domain Reload clears all static and instance state; refresh from scratch.
+            // Domain Reload 会清空全部静态与实例状态，必须整体重建。
             windows = new VisualBridgeBridgeWindow[0];
             selectedWindow = 0;
             connected = false;

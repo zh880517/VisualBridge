@@ -7,8 +7,8 @@ using System.Linq;
 namespace VisualBridge.Editor
 {
     /// <summary>
-    /// Enumerates per-window discovery records from the local discovery directory
-    /// and filters records with stale heartbeats or dead publisher processes.
+    /// 枚举本地发现目录中按窗口划分的发现记录，
+    /// 过滤心跳过期或发布进程已终止的记录。
     /// </summary>
     public static class VisualBridgeEditorBridgeDiscovery
     {
@@ -16,8 +16,8 @@ namespace VisualBridge.Editor
         public static readonly TimeSpan HeartbeatTimeout = TimeSpan.FromSeconds(5);
 
         /// <summary>
-        /// Lists live bridge windows. Records that fail validation, have a stale
-        /// heartbeat, or belong to a dead process are skipped and reported.
+        /// 列出存活的 bridge 窗口。校验失败、心跳过期或进程已死的记录
+        /// 会被跳过并逐条报告原因。
         /// </summary>
         public static IReadOnlyList<VisualBridgeBridgeWindow> EnumerateWindows(Action<string> skipReason = null, string directoryOverride = null)
         {
@@ -48,7 +48,7 @@ namespace VisualBridge.Editor
         }
 
         /// <summary>
-        /// Loads and validates one discovery record; rejects stale heartbeat and dead pid.
+        /// 加载并校验单条发现记录；拒绝心跳过期与进程已死的情况。
         /// </summary>
         public static VisualBridgeBridgeWindow LoadRecord(string recordPath)
         {
@@ -81,8 +81,7 @@ namespace VisualBridge.Editor
         }
 
         /// <summary>
-        /// Compares a local absolute path against a discovery record project root,
-        /// normalizing separators; case-insensitive on Windows.
+        /// 比较本地绝对路径与发现记录的项目根，统一分隔符；Windows 下不区分大小写。
         /// </summary>
         public static bool IsSamePath(string left, string right)
         {

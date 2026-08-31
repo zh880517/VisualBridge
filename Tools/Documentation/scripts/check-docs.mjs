@@ -210,7 +210,7 @@ async function checkDocIndex(allDocuments) {
         linked.add(path.basename(target));
       }
     } catch {
-      // checkRelativeLinksAndAnchors reports malformed encodings with file and line context.
+      // 非法编码由 checkRelativeLinksAndAnchors 带文件与行号上下文报告。
     }
   }
   for (const name of expected) {

@@ -8,9 +8,8 @@ using System.Threading;
 namespace VisualBridge.Editor
 {
     /// <summary>
-    /// Editor-facing bridge service. Resolves the Integration Profile's authoring
-    /// project against published discovery records, requires an explicit window
-    /// choice when several windows match, and retries connection with backoff.
+    /// 面向 Editor 的 bridge 服务。用 Integration Profile 的 authoring 项目
+    /// 匹配已发布的发现记录；多个窗口匹配时要求显式选择，连接失败按退避重试。
     /// </summary>
     public sealed class VisualBridgeEditorBridgeService
     {
@@ -33,8 +32,8 @@ namespace VisualBridge.Editor
         }
 
         /// <summary>
-        /// Loads the Integration Profile for the Unity project and returns the live
-        /// bridge windows whose project roots contain the profile's authoring project.
+        /// 加载 Unity 项目的 Integration Profile，返回项目根包含该 authoring
+        /// 项目的存活 bridge 窗口。
         /// </summary>
         public IReadOnlyList<VisualBridgeBridgeWindow> FindWindows(string unityProjectRoot = null, string discoveryDirectory = null)
         {
@@ -64,8 +63,8 @@ namespace VisualBridge.Editor
         }
 
         /// <summary>
-        /// Connects to the explicitly chosen window. Connecting never silently
-        /// picks a window; the caller selects one from the candidate list.
+        /// 连接显式指定的窗口。连接永远不会静默挑选窗口，
+        /// 调用方必须从候选列表中选定一个。
         /// </summary>
         public VisualBridgeEditorBridgeClient Connect(VisualBridgeBridgeWindow window, int timeoutMs = 3000)
         {
@@ -115,9 +114,8 @@ namespace VisualBridge.Editor
         }
 
         /// <summary>
-        /// Runs an open request with re-discovery and reconnect backoff; used when
-        /// the window may be starting up. Requires exactly one matching window —
-        /// ambiguity always surfaces as an explicit-choice error, never a guess.
+        /// 带重新发现与重连退避执行 open 请求，用于窗口可能仍在启动的场景。
+        /// 要求恰好一个匹配窗口——歧义永远以显式选择错误呈现，绝不猜测。
         /// </summary>
         public VisualBridgeBridgeMessage OpenDocumentWithRetry(
             string documentPath,

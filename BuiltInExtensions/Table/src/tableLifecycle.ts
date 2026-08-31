@@ -44,9 +44,8 @@ export function collectTableOwnedIdentities(
         const value = row.cells[keyColumn.id];
         if (typeof value === "string" || typeof value === "number") {
           const identityKey = tableRowIdentityKey(definition.id, value);
-          // A stable Table identity is the typed key value, not a physical row. Partition
-          // duplicates therefore share one explicit remap, while every physical occurrence
-          // is still rewritten below. keepFirst/keepLast only chooses the effective view.
+          // Table 稳定身份是类型化键值而非物理行：分区中的重复行共享同一个显式 remap，
+          // 下方仍会重写每个物理出现；keepFirst/keepLast 只决定生效视图。
           if (!identities.has(identityKey)) identities.set(identityKey, {
             identityKey,
             kind: "table.row",

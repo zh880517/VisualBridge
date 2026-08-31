@@ -426,7 +426,7 @@ export class EditorBridgeServer implements vscode.Disposable {
       const current = await vscode.workspace.fs.readFile(uri);
       await vscode.workspace.fs.writeFile(uri, current);
     } catch {
-      // The record was removed externally; the next project change rewrites it.
+      // 记录被外部删除时忽略，下次项目变更会重写。
     }
   }
 }

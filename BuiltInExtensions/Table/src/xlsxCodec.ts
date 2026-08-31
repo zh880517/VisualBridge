@@ -322,7 +322,6 @@ interface RowSnapshot {
 }
 
 function loadExcelJs(): typeof ExcelJS {
-  // Keep the workbook implementation out of the extension activation path.
-  // The Webview consumes the dedicated browser-only entrypoint and never calls this loader.
+  // 延迟加载 workbook 实现，避免进入扩展激活路径；Webview 走专用 browser-only 入口，不调用本 loader。
   return require("exceljs") as typeof ExcelJS;
 }

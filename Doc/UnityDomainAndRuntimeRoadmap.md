@@ -19,6 +19,7 @@
 - 阶段 B 仅监听本机回环；跨网络边界的远程与设备场景独立成阶段 C，先行做自己的 spike 与威胁模型。
 - 调试采用单一事实源：调试语义进入 Runtime 协议，VS Code DAP 适配器与 MCP Debug Tool 都接同一服务；MCP Debug Tool 排在最后，允许项目方降级为预留接口。
 - Runtime 产物形态（Editor 物化 vs Runtime 库直读）不预先拍板，作为阶段 B 首个 spike 任务；为此阶段 A 各领域任务要求对产物结构、稳定 ID 与 source mapping 做设计留档（只约束设计记录，不约束产物格式本身）。
+- 项目方要求在执行任何任务之前先完成仓库语言规范梳理：全部文档与关键代码注释统一中文、注释保持精简、清理任务残留的临时文档；规范本身写入 `AGENTS.md`（VB-UX-00）。
 
 本清单不冻结阶段 B 的任何连接设计。[`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 中「后续 Unity 连接与 Debug 设计入口」一节列出的待决项，必须由对应任务的 spike、威胁模型和真实垂直切片逐项关闭后才能进入 Protocol Schema；本清单任何文字都不构成跳过该流程的授权。
 
@@ -28,6 +29,7 @@
 
 ```mermaid
 flowchart LR
+    UX00["VB-UX-00 repo language conventions"]
     UI07["VB-UI-07 release hardening"]
     UX01["VB-UX-01 Entity Catalog Exporter"]
     UX02["VB-UX-02 Entity Import / Compile"]
@@ -43,14 +45,37 @@ flowchart LR
     UX12["VB-UX-12 MCP debug tool"]
     UX13["Phase C remote and devices"]
 
-    UI07 --> UX01 --> UX02 --> UX03 --> UX04 --> UX05 --> UX06 --> UX07 --> UX08 --> UX09 --> UX10 --> UX11
+    UX00 --> UX01
+    UI07 --> UX01
+    UX01 --> UX02 --> UX03 --> UX04 --> UX05 --> UX06 --> UX07 --> UX08 --> UX09 --> UX10 --> UX11
     UX10 --> UX12
     UX09 -.-> UX13
 ```
 
 Entity → Table → Graph 是风险递进的范围控制。VB-UX-03 不阻塞 Table/Graph 的调研，但在它产出 Adapter API 决策之前，后续领域任务不得自行发明新的注册方式。VB-UX-07 依赖三个领域的产物设计留档齐全，因此排在阶段 A 末尾。
 
-## 3. 阶段 A：离线领域扩展（Editor-only）
+## 3. 前置任务：仓库语言规范梳理
+
+### VB-UX-00 仓库语言规范梳理 — `complete`
+
+依赖：无。先于本清单全部任务执行，且不依赖 VB-UI-07。
+
+范围：
+
+- 仓库全部文档统一中文（含 `AGENTS.md`、各级 README），机器契约（命令、Schema 字段、标识符）保持英文。
+- 源码中的关键注释统一中文并保持精简，只解释约束、意图与非显然行为。
+- 语言规范写入 `AGENTS.md`，约束后续全部任务。
+- 删除任务过程残留的临时文档。
+
+实施与验证记录：2026-08-31 完成。`AGENTS.md` 全文中文化并新增「语言规范」一节；`Samples/PreUnityAuthoring/README.md`、`Tools/Documentation/README.md`、`Tools/ProtocolContract/README.md` 翻译为中文并修正其中过时的能力描述（Protocol Contract 工具已生成 C#、Unity Exporter/Compiler/Editor Bridge 已实现）；`Tools/VSCodeExtension/README.md` 的过时能力描述与英文标题同步修正。TypeScript/mjs/cjs 与 Unity Package C# 的全部手写注释中文化；协议生成器模板注释中文化并重新生成四个确定性产物。`Doc/Temp` 仅余 `.gitkeep`，无残留临时文档。`npm run check:docs`、`npm run check:protocol`、`npm run check`、两个 Unity 生成 csproj 的 `dotnet build` 与 `git diff --check` 通过；注释级变更未重跑 Unity batchmode 与 EditMode（以 dotnet 编译为证据）。
+
+Exit criteria：
+
+- 语言规范进入 `AGENTS.md`，后续任务与新增文档、注释可据此执行。
+- 既有文档与关键注释无英文正文残留；生成产物注释与生成器模板一致。
+- 全部 Node/dotnet/docs 门槛通过。
+
+## 4. 阶段 A：离线领域扩展（Editor-only）
 
 阶段 A 所有任务共同遵守：
 
@@ -151,7 +176,7 @@ Exit criteria：
 - 编译闭环、负面路径（连接规则违反、端口不匹配、subgraph 类型漂移）有自动化覆盖。
 - 全部 Node/dotnet/Unity/docs 门槛通过；Adapter API 边界复核结论记录进架构文档。
 
-## 4. 阶段 B：本机 Runtime 接入（仅回环）
+## 5. 阶段 B：本机 Runtime 接入（仅回环）
 
 阶段 B 所有任务共同遵守：
 
@@ -250,14 +275,14 @@ Exit criteria：
 - 实现时：MCP 工具进 Protocol manifest 并通过 `npm run check:mcp --workspace @visualbridge/protocol-contract` 校验，与 DAP 客户端并存状态不分叉有 E2E 覆盖。
 - 降级时：架构文档记录预留接口边界与重启条件，本任务标记 `complete` 前须取得项目方明确确认。
 
-## 5. 阶段 C：远程与设备连接（范围登记，不分配任务号）
+## 6. 阶段 C：远程与设备连接（范围登记，不分配任务号）
 
 阶段 C 在阶段 B 主体完成后由独立 spike 启动，届时依据实测结论再拆分任务并沿用本清单的工作流与状态语义。当前只登记范围与出口标准：
 
 - **范围**：跨网络边界的端点安全暴露（防火墙、设备/实例寻址）、配对与凭据生命周期（首次信任建立、撤销、轮换）、传输加密、跨机器审计与错误恢复；不承诺与阶段 B 同协议版本，若远程要求传输层换形，按其自身版本演进。
 - **出口标准（最低）**：spike 与威胁模型先行并冻结进架构文档；跨机器实例发现、配对、撤销与重连有自动化或可复现手工验证；本机阶段全部门槛回归不受影响；`ScriptableObject` 排除条款与单一权威源原则不被任何远程能力绕过。
 
-## 6. 强制工作流与验证门槛
+## 7. 强制工作流与验证门槛
 
 本清单任务执行 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md) 第 4 节强制工作流与第 5 节 Unity 验证门槛（dotnet 快速编译、batchmode refresh/import、EditMode 与垂直切片、Bridge E2E），不再重复。在此之上补充：
 
@@ -265,7 +290,7 @@ Exit criteria：
 - 阶段 B 每个任务在冻结任何协议语义前完成 spike 与威胁模型；Play 模式 E2E 与同机 Player 构建 E2E 是独立发布门槛，协议单元测试或 batchmode 不能替代。
 - 阶段 B 任何任务不得破坏 Editor Bridge open/reveal E2E、阶段 A 各领域 Generate/Check 与全部 Node/VSIX/docs 门槛。
 
-## 7. 完成定义
+## 8. 完成定义
 
 - 阶段 A/B 全部任务 `complete`，阶段 C 已由 spike 启动或由项目方明确推迟并记录。
 - 三领域离线编译闭环、本机 Runtime 通道、调试链路与 DAP 适配器全部经真实 Unity Editor/Player 与隔离 Extension Host 验证。

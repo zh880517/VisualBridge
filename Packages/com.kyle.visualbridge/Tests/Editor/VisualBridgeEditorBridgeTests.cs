@@ -350,11 +350,9 @@ namespace VisualBridge.Editor.Tests
         }
 
         /// <summary>
-        /// Minimal server-side TCP peer on 127.0.0.1 with an ephemeral port: answers
-        /// the hello handshake with a fixed line, records every received request,
-        /// and replays queued response lines after each request. The in-process
-        /// Mono named pipe server deadlocks on write (measured 2026-08-30), so the
-        /// protocol tests exercise the TCP endpoint that the client prefers.
+        /// 监听 127.0.0.1 随机端口的最小服务端 TCP 对等体：用固定行应答 hello 握手、
+        /// 记录收到的每个请求，并在每个请求后回放排队的响应行。进程内 Mono 命名管道
+        /// 服务端在写入时死锁（2026-08-30 实测），因此协议测试走客户端优先的 TCP 端点。
         /// </summary>
         private sealed class BridgeTestServer : IDisposable
         {
@@ -415,8 +413,7 @@ namespace VisualBridge.Editor.Tests
                 {
                     client = listener.AcceptTcpClient();
                     stream = client.GetStream();
-                    // Consume the hello handshake before answering with the welcome,
-                    // mirroring the server side of the protocol.
+                    // 先消费 hello 握手再应答 welcome，与服务端协议行为一致。
                     Receive();
                     Send(replyToHello);
                     if (thenSend != null)
@@ -444,15 +441,15 @@ namespace VisualBridge.Editor.Tests
                 }
                 catch (IOException)
                 {
-                    // Client disconnected.
+                    // 客户端已断开。
                 }
                 catch (SocketException)
                 {
-                    // Client disconnected.
+                    // 客户端已断开。
                 }
                 catch (ObjectDisposedException)
                 {
-                    // Server disposed.
+                    // 服务端已释放。
                 }
             }
 
@@ -492,7 +489,7 @@ namespace VisualBridge.Editor.Tests
                 }
                 catch (SocketException)
                 {
-                    // Already closed.
+                    // 已关闭。
                 }
 
                 listener.Stop();

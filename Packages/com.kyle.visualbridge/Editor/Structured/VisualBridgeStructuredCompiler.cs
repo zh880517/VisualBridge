@@ -1092,7 +1092,7 @@ namespace VisualBridge.Editor
                 }
                 catch
                 {
-                    // Preserve the original exception. Any surviving backup remains beside its target for manual recovery.
+                    // 保留原始异常；残留的备份保留在目标旁供人工恢复。
                 }
             }
         }
@@ -1521,7 +1521,7 @@ namespace VisualBridge.Editor
             }
             catch
             {
-                // A stale transaction helper is safer than changing the reported compile result after commit.
+                // 保留过期的事务辅助文件比提交后改写编译结果更安全。
             }
         }
 

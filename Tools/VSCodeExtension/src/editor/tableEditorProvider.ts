@@ -1259,7 +1259,7 @@ async function atomicWrite(uri: vscode.Uri, bytes: Uint8Array): Promise<void> {
     try {
       await vscode.workspace.fs.delete(temporary);
     } catch {
-      // Best-effort cleanup only.
+      // 仅尽力清理临时文件。
     }
     throw errorValue;
   }

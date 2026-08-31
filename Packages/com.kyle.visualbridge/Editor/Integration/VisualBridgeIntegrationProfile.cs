@@ -280,11 +280,11 @@ namespace VisualBridge.Editor
                 }
                 catch (FileNotFoundException)
                 {
-                    // A not-yet-created output path is valid; every existing ancestor has already been checked.
+                    // 输出路径尚未创建是合法的；已存在的祖先段此前均已校验。
                 }
                 catch (DirectoryNotFoundException)
                 {
-                    // A not-yet-created output path is valid; every existing ancestor has already been checked.
+                    // 输出路径尚未创建是合法的；已存在的祖先段此前均已校验。
                 }
             }
 

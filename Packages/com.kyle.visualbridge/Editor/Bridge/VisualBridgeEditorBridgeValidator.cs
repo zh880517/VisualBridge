@@ -17,8 +17,8 @@ namespace VisualBridge.Editor
     }
 
     /// <summary>
-    /// Validated Editor Bridge message; wire validation happens in
-    /// <see cref="VisualBridgeEditorBridgeValidator"/> before this model is populated.
+    /// 已通过校验的 Editor Bridge 消息；wire 校验在填充本模型之前
+    /// 由 <see cref="VisualBridgeEditorBridgeValidator"/> 完成。
     /// </summary>
     public sealed class VisualBridgeBridgeMessage
     {
@@ -62,7 +62,7 @@ namespace VisualBridge.Editor
     }
 
     /// <summary>
-    /// Validated per-window discovery record published by a VS Code extension host.
+    /// 已通过校验的、由 VS Code Extension Host 发布的按窗口划分的发现记录。
     /// </summary>
     public sealed class VisualBridgeBridgeWindow
     {
@@ -95,9 +95,9 @@ namespace VisualBridge.Editor
     }
 
     /// <summary>
-    /// Strict JSON validator for Editor Bridge V1 messages and discovery records.
-    /// Mirrors Protocol/Schema/visualbridge-editor-bridge.schema.json; the shared
-    /// parity fixture is executed by both AJV (generator) and Unity EditMode tests.
+    /// Editor Bridge V1 消息与发现记录的严格 JSON 校验器。
+    /// 与 Protocol/Schema/visualbridge-editor-bridge.schema.json 保持镜像；
+    /// 共享 parity fixture 同时由 AJV（generator）与 Unity EditMode 测试执行。
     /// </summary>
     public static class VisualBridgeEditorBridgeValidator
     {
@@ -282,7 +282,7 @@ namespace VisualBridge.Editor
                     throw Error("bridge.invalidMessage", "$.type", "Cannot serialize an unknown message type.");
             }
 
-            // Serialized output must survive the same strict validation as the wire input.
+            // 序列化输出必须通过与 wire 输入相同的严格校验。
             ValidateMessage(value);
             return value;
         }
