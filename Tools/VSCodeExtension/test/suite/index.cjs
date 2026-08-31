@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const { mkdtemp, readFile, rm, symlink, unlink, writeFile } = require("node:fs/promises");
 const fsPromises = require("node:fs/promises");
 const { createHash } = require("node:crypto");
+const net = require("node:net");
 const { tmpdir } = require("node:os");
 const path = require("node:path");
 const vscode = require("vscode");
@@ -2028,6 +2029,188 @@ exports.run = async function run() {
     );
     await vscode.commands.executeCommand("workbench.action.files.revert");
     assert.deepEqual(await vscode.workspace.fs.readFile(uri), before);
+  });
+
+  await test("shares the Editor Bridge parity fixture with the schema and Unity validators", async () => {
+    const fixturePath = path.join(__dirname, "..", "..", "..", "..",
+      "Packages", "com.kyle.visualbridge", "Tests", "Fixtures", "visualbridge-editor-bridge-cases.json");
+    const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
+    assert.ok(Array.isArray(fixture.cases) && fixture.cases.length > 0);
+    for (const testCase of fixture.cases) {
+      const command = testCase.target === "discoveryRecord"
+        ? "visualbridge.test.parseBridgeDiscoveryRecord"
+        : "visualbridge.test.parseBridgeMessage";
+      const result = await vscode.commands.executeCommand(command, testCase.value);
+      if (testCase.valid) {
+        assert.equal(result.ok, true, `${testCase.label}: expected a valid parse.`);
+      } else {
+        assert.equal(result.ok, false, `${testCase.label}: expected an invalid parse.`);
+        assert.equal(result.code, testCase.loaderCode, `${testCase.label}: error code mismatch.`);
+      }
+    }
+  });
+
+  await test("runs the Editor Bridge discovery record, handshake, open, and reveal", async () => {
+    const state = await waitForAsync(
+      () => vscode.commands.executeCommand("visualbridge.test.getBridgeServerState"),
+      (value) => value !== null && value !== undefined,
+      20_000,
+      "Editor Bridge server did not start during activation.",
+    );
+
+    const record = JSON.parse(await readFile(state.recordPath, "utf8"));
+    assert.equal(record.formatVersion, 1);
+    assert.equal(record.protocolVersion, 1);
+    assert.equal(record.windowId, state.windowId);
+    assert.equal(record.token, state.token);
+    assert.equal(record.pid, process.pid);
+    assert.equal(record.generation, state.generation);
+    assert.match(record.token, /^[0-9a-f]{48,64}$/);
+    assert.match(record.pipePath, /^\\\\.\\pipe\\visualbridge-bridge-[0-9a-f-]+$/);
+    assert.ok(record.tcpPort >= 1 && record.tcpPort <= 65535);
+    const structuredRoot = normalizeFileSystemPath(path.join(workspacePath, "StructuredSemanticProject")).replaceAll("\\", "/");
+    assert.ok(record.projectRoots.some((root) => normalizeFileSystemPath(root).replaceAll("\\", "/") === structuredRoot),
+      `Discovery record project roots miss the structured project: ${JSON.stringify(record.projectRoots)}`);
+
+    const connectBridge = async () => {
+      const socket = net.connect({ host: "127.0.0.1", port: state.tcpPort });
+      await new Promise((resolve, reject) => {
+        socket.once("connect", resolve);
+        socket.once("error", reject);
+      });
+      socket.setEncoding("utf8");
+      const lines = [];
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk;
+        let index;
+        while ((index = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, index);
+          buffer = buffer.slice(index + 1);
+          if (line.trim().length > 0) lines.push(JSON.parse(line));
+        }
+      });
+      return {
+        socket,
+        lines,
+        send: (message) => socket.write(`${JSON.stringify(message)}\n`),
+        sendRaw: (line) => socket.write(`${line}\n`),
+        waitForLine: async (predicate, message) => {
+          await waitForAsync(() => lines.find(predicate), (value) => value !== undefined, 20_000, message);
+          return lines.find(predicate);
+        },
+      };
+    };
+    const hello = (token) => ({
+      type: "hello",
+      protocolVersion: 1,
+      token,
+      clientInstanceId: "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+      capabilities: ["open", "reveal"],
+    });
+
+    // Invalid token is rejected with a connection-level error.
+    {
+      const connection = await connectBridge();
+      try {
+        connection.send(hello("0".repeat(48)));
+        const errorLine = await connection.waitForLine(
+          (line) => line.type === "error", "Bridge server did not reject an invalid token.");
+        assert.equal(errorLine.code, "bridge.invalidToken");
+      } finally {
+        connection.socket.destroy();
+      }
+    }
+
+    // Non-JSON lines are rejected as invalidJson.
+    {
+      const connection = await connectBridge();
+      try {
+        connection.sendRaw("{not json");
+        const errorLine = await connection.waitForLine(
+          (line) => line.type === "error", "Bridge server did not reject a non-JSON line.");
+        assert.equal(errorLine.code, "bridge.invalidJson");
+      } finally {
+        connection.socket.destroy();
+      }
+    }
+
+    // A non-hello first message is rejected as unknownMessageType.
+    {
+      const connection = await connectBridge();
+      try {
+        connection.send({ type: "open", requestId: "bridge-premature-1", documentPath: "Config/Game.gamesettings" });
+        const errorLine = await connection.waitForLine(
+          (line) => line.type === "error", "Bridge server did not reject a premature request.");
+        assert.equal(errorLine.code, "bridge.unknownMessageType");
+      } finally {
+        connection.socket.destroy();
+      }
+    }
+
+    // Valid handshake, document open, unresolved open, and reference reveal.
+    {
+      const connection = await connectBridge();
+      try {
+        connection.send(hello(state.token));
+        const welcome = await connection.waitForLine(
+          (line) => line.type === "welcome", "Bridge server did not answer the hello handshake.");
+        assert.equal(welcome.protocolVersion, 1);
+        assert.equal(welcome.windowId, state.windowId);
+        assert.equal(welcome.serverGeneration, state.generation);
+
+        connection.send({ type: "open", requestId: "bridge-open-1", documentPath: "Config/Missing.gamesettings" });
+        const unresolved = await connection.waitForLine(
+          (line) => line.type === "response" && line.requestId === "bridge-open-1",
+          "Bridge server did not answer the unresolved open request.");
+        assert.equal(unresolved.status, "error");
+        assert.equal(unresolved.error, "bridge.documentUnresolved");
+
+        connection.send({ type: "open", requestId: "bridge-open-2", documentPath: "Config/Game.gamesettings" });
+        const opened = await connection.waitForLine(
+          (line) => line.type === "response" && line.requestId === "bridge-open-2",
+          "Bridge server did not answer the open request.");
+        assert.equal(opened.status, "ok");
+        const structuredUri = vscode.Uri.file(path.join(
+          workspacePath, "StructuredSemanticProject", "Config", "Game.gamesettings"));
+        await waitForAsync(
+          () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", structuredUri),
+          (ready) => ready === true,
+          20_000,
+          "Bridge open request did not open the structured editor.",
+        );
+        await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+
+        // Reference 101 occurs in both the Structured and Entity projects; the
+        // frozen design requires an explicit ambiguity error instead of a guess.
+        connection.send({ type: "reveal", requestId: "bridge-reveal-ambiguous", reference: 101 });
+        const ambiguous = await connection.waitForLine(
+          (line) => line.type === "response" && line.requestId === "bridge-reveal-ambiguous",
+          "Bridge server did not answer the ambiguous reveal request.");
+        assert.equal(ambiguous.status, "error");
+        assert.equal(ambiguous.error, "bridge.documentAmbiguous");
+
+        // The entity component reference 'health' resolves uniquely.
+        connection.send({ type: "reveal", requestId: "bridge-reveal-1", reference: "health" });
+        const revealed = await connection.waitForLine(
+          (line) => line.type === "response" && line.requestId === "bridge-reveal-1",
+          "Bridge server did not answer the reveal request.");
+        assert.equal(revealed.status, "ok");
+        const entityUri = vscode.Uri.file(path.join(
+          workspacePath, "EntitySemanticProject", "Config", "Entities", "Player.herojson"));
+        await waitForAsync(
+          () => vscode.commands.executeCommand("visualbridge.test.getEntityEditorState", entityUri),
+          (value) => value?.lastRevealResults?.some((result) => (
+            result.found === true && result.target.componentId === "health"
+          )),
+          20_000,
+          "Bridge reveal request did not reveal the referenced entity component.",
+        );
+        await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+      } finally {
+        connection.socket.destroy();
+      }
+    }
   });
 
   await test("rejects Authoring files that resolve outside the Project through a directory link", async () => {

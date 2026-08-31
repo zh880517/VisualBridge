@@ -26,7 +26,7 @@ namespace VisualBridge.Protocol.Generated
     public static class VisualBridgeSchemaRegistry
     {
         public const string VisualBridgeCatalogSourceSha256 = "56f5fb5cdbbc911c178eb8500e8f2279bdf8ded0c652f2db5da23d1d37a179c4";
-        public const string VisualBridgeEditorBridgeSha256 = "2d887360a985ffc953c238a6a6f22fab3d810e1146ef52858f453d6724b500d5";
+        public const string VisualBridgeEditorBridgeSha256 = "bc12ffd457f2d0babc08d6525fd6e10362ef845ad691ba42833d2c0a4860a640";
         public const string VisualBridgePrimitivesSha256 = "23c83a69a9d557916a9e2a0a120c0664fb09fbc86dc96703aa7bc036030dc639";
         public const string VisualBridgeProjectSha256 = "dde9d43f3fdc09ca0978fe0e8650a731726f6490ad1fda2e62023db69b01c3e9";
         public const string VisualBridgeStructuredCatalogSha256 = "0cae8ab7b7a9aa1159669f0939f7178e5e310056366fe0713165cd87687942fe";

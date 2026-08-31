@@ -119,6 +119,7 @@ namespace VisualBridge.Editor
             "bridge.documentUnresolved",
             "bridge.internalError",
             "bridge.invalidJson",
+            "bridge.invalidMessage",
             "bridge.invalidToken",
             "bridge.protocolVersionMismatch",
             "bridge.unknownMessageType",

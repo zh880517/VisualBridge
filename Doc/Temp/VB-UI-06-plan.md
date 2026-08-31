@@ -53,3 +53,15 @@ spike 与威胁模型全部完成，证据与结论见 [VB-UI-06-spike-report.md
 - 实施期关键发现：Unity Mono 运行时进程内 Mono↔Mono named pipe 双端 `Write` 死锁（最小复现确认）；客户端改为 TCP 优先 + 管道回退的单线程同步请求/响应模型，架构文档 §12 已同步修正。
 - EditMode 测试 `VisualBridgeEditorBridgeTests`（20 例）：parity fixture（AJV/C# 双端一致）、序列化往返、握手/open 请求、无效 token、版本不匹配、陈旧 generation、能力缺失、非法 JSON、未知 requestId、服务器断开、discovery 过滤、服务匹配与多窗口显式选择——全部通过。
 - Unity batchmode 编译与 `dotnet build VisualBridge.Editor.csproj` 通过。
+
+### 阶段 4 + 5（2026-08-31，已完成）
+
+- `Tools/VSCodeExtension/src/bridge/`：`bridgeProtocol.ts`（严格 TS 校验器，与 Schema/C# 三方 parity）、`editorBridgeServer.ts`（named pipe + loopback TCP 双端点监听、per-window discovery 记录 + 每秒心跳、token 握手、open 经 Project Registry 唯一解析、reveal 经文档索引唯一解析并复用 `revealReference` 命令）。
+- 激活接线：`projects/documents.initialize()` 后启动；启动失败不阻断扩展激活；projects 变更重写记录。
+- wire 错误码补 `bridge.invalidMessage`（结构非法消息的连接级错误），Schema/manifest/C#/TS/fixture 同步并重新生成契约。
+- 测试命令：`visualbridge.test.getBridgeServerState`、`parseBridgeMessage`、`parseBridgeDiscoveryRecord`。
+- 宿主集成测试（隔离 VS Code 1.105.1）：parity fixture（24 例 TS 侧一致）、discovery 记录内容与 projectRoots、无效 token/非 JSON/非 hello 首消息拒绝、握手 welcome（generation/windowId）、unresolved open、open 打开 Structured 编辑器、reveal 101 → documentAmbiguous（跨工程歧义正确拒绝）、reveal "health" → Entity 组件定位并经 Webview 确认——全部通过；受限模式回归通过（exit 0）。
+
+### 阶段 6（进行中）
+
+待办：真实 Unity Editor + 隔离 Extension Host 的 open/reveal E2E、Bridge 关闭时离线切片回归、全套 Node/VSIX/dotnet/Unity/docs 门槛、清理 Doc/Temp、更新路线图状态。

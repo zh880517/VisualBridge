@@ -9,7 +9,10 @@
         "protocolVersion": 1,
         "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
         "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
-        "capabilities": ["open", "reveal"]
+        "capabilities": [
+          "open",
+          "reveal"
+        ]
       }
     },
     {
@@ -21,7 +24,9 @@
         "protocolVersion": 1,
         "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
         "serverGeneration": 3,
-        "capabilities": ["open"]
+        "capabilities": [
+          "open"
+        ]
       }
     },
     {
@@ -83,8 +88,13 @@
         "formatVersion": 1,
         "protocolVersion": 1,
         "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
-        "capabilities": ["open", "reveal"],
-        "projectRoots": ["D:/GitHub/VisualBridge/UnityProject/VisualBridgeAuthoring"],
+        "capabilities": [
+          "open",
+          "reveal"
+        ],
+        "projectRoots": [
+          "D:/GitHub/VisualBridge/UnityProject/VisualBridgeAuthoring"
+        ],
         "pipePath": "\\\\.\\pipe\\visualbridge-bridge-6f9619ff",
         "tcpPort": 8226,
         "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
@@ -113,7 +123,9 @@
         "protocolVersion": 1,
         "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
         "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
-        "capabilities": ["open"],
+        "capabilities": [
+          "open"
+        ],
         "currentUnity": true
       }
     },
@@ -126,7 +138,9 @@
         "type": "hello",
         "protocolVersion": 1,
         "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
-        "capabilities": ["open"]
+        "capabilities": [
+          "open"
+        ]
       }
     },
     {
@@ -139,7 +153,9 @@
         "protocolVersion": 2,
         "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
         "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
-        "capabilities": ["open"]
+        "capabilities": [
+          "open"
+        ]
       }
     },
     {
@@ -152,7 +168,9 @@
         "protocolVersion": 1,
         "token": "not-hex!",
         "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
-        "capabilities": ["open"]
+        "capabilities": [
+          "open"
+        ]
       }
     },
     {
@@ -188,6 +206,16 @@
       }
     },
     {
+      "label": "valid error message with malformed message code",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "error",
+        "code": "bridge.invalidMessage",
+        "detail": "malformed message"
+      }
+    },
+    {
       "label": "error message with unknown code",
       "target": "message",
       "valid": false,
@@ -206,8 +234,12 @@
         "formatVersion": 1,
         "protocolVersion": 1,
         "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
-        "capabilities": ["open"],
-        "projectRoots": ["D:/Authoring"],
+        "capabilities": [
+          "open"
+        ],
+        "projectRoots": [
+          "D:/Authoring"
+        ],
         "pipePath": "\\\\.\\pipe\\visualbridge-bridge-1",
         "tcpPort": 8226,
         "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
@@ -226,8 +258,12 @@
         "formatVersion": 2,
         "protocolVersion": 1,
         "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
-        "capabilities": ["open"],
-        "projectRoots": ["D:/Authoring"],
+        "capabilities": [
+          "open"
+        ],
+        "projectRoots": [
+          "D:/Authoring"
+        ],
         "pipePath": "\\\\.\\pipe\\visualbridge-bridge-1",
         "tcpPort": 8226,
         "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
@@ -245,8 +281,12 @@
         "formatVersion": 1,
         "protocolVersion": 1,
         "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
-        "capabilities": ["open"],
-        "projectRoots": ["D:/Authoring"],
+        "capabilities": [
+          "open"
+        ],
+        "projectRoots": [
+          "D:/Authoring"
+        ],
         "pipePath": "localhost:1234",
         "tcpPort": 8226,
         "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
@@ -264,8 +304,12 @@
         "formatVersion": 1,
         "protocolVersion": 1,
         "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
-        "capabilities": ["open"],
-        "projectRoots": ["D:/Authoring"],
+        "capabilities": [
+          "open"
+        ],
+        "projectRoots": [
+          "D:/Authoring"
+        ],
         "pipePath": "\\\\.\\pipe\\visualbridge-bridge-1",
         "tcpPort": 0,
         "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
@@ -283,7 +327,9 @@
         "formatVersion": 1,
         "protocolVersion": 1,
         "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
-        "capabilities": ["open"],
+        "capabilities": [
+          "open"
+        ],
         "projectRoots": [],
         "pipePath": "\\\\.\\pipe\\visualbridge-bridge-1",
         "tcpPort": 8226,
@@ -302,8 +348,12 @@
         "formatVersion": 1,
         "protocolVersion": 1,
         "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
-        "capabilities": ["open"],
-        "projectRoots": ["D:/Authoring"],
+        "capabilities": [
+          "open"
+        ],
+        "projectRoots": [
+          "D:/Authoring"
+        ],
         "pipePath": "\\\\.\\pipe\\visualbridge-bridge-1",
         "tcpPort": 8226,
         "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",

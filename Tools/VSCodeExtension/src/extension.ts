@@ -31,6 +31,8 @@ import {
   WorkspaceReferenceService,
 } from "./reference/workspaceReferenceService";
 import { WorkspaceReferenceRefactor } from "./refactor/workspaceReferenceRefactor";
+import { EditorBridgeServer } from "./bridge/editorBridgeServer";
+import { BridgeProtocolError, parseBridgeMessage, parseDiscoveryRecord } from "./bridge/bridgeProtocol";
 
 interface LifecycleElementDeleteRequest {
   readonly projectId: string;
@@ -592,6 +594,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await projects.initialize();
   await documents.initialize();
   await catalogBrowser.refresh();
+
+  const bridgeServer = new EditorBridgeServer(projects, documents, output);
+  context.subscriptions.push(bridgeServer);
+  try {
+    await bridgeServer.start();
+  } catch (errorValue) {
+    output.appendLine(`[bridge] Editor Bridge server failed to start: ${String(errorValue)}`);
+  }
+
+  if (context.extensionMode !== vscode.ExtensionMode.Production) {
+    context.subscriptions.push(
+      vscode.commands.registerCommand("visualbridge.test.getBridgeServerState", () => bridgeServer.state ?? null),
+      vscode.commands.registerCommand("visualbridge.test.parseBridgeMessage", (value: unknown) => {
+        try {
+          return { ok: true, message: parseBridgeMessage(value) };
+        } catch (errorValue) {
+          if (errorValue instanceof BridgeProtocolError) {
+            return { ok: false, code: errorValue.code, jsonPath: errorValue.jsonPath };
+          }
+
+          return { ok: false, code: "bridge.internalError", jsonPath: "$" };
+        }
+      }),
+      vscode.commands.registerCommand("visualbridge.test.parseBridgeDiscoveryRecord", (value: unknown) => {
+        try {
+          return { ok: true, record: parseDiscoveryRecord(value) };
+        } catch (errorValue) {
+          if (errorValue instanceof BridgeProtocolError) {
+            return { ok: false, code: errorValue.code, jsonPath: errorValue.jsonPath };
+          }
+
+          return { ok: false, code: "bridge.internalError", jsonPath: "$" };
+        }
+      }),
+    );
+  }
+
   updateStatus();
   output.appendLine("[extension] VisualBridge extension shell activated.");
 }

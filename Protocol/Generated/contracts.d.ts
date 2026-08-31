@@ -69,7 +69,7 @@ export namespace VisualBridgeEditorBridge {
   export type Capability = "open" | "reveal";
   export type CapabilityList = readonly Capability[];
   export type DiscoveryRecord = { readonly "capabilities": CapabilityList; readonly "formatVersion": 1; readonly "generation": ServerGeneration; readonly "pid": ProcessId; readonly "pipePath": PipePath; readonly "projectRoots": readonly AbsolutePath[]; readonly "protocolVersion": ProtocolVersion; readonly "startedAt": string; readonly "tcpPort": TcpPort; readonly "token": Token; readonly "windowId": InstanceId };
-  export type ErrorCode = "bridge.capabilityMissing" | "bridge.documentAmbiguous" | "bridge.documentUnresolved" | "bridge.internalError" | "bridge.invalidJson" | "bridge.invalidToken" | "bridge.protocolVersionMismatch" | "bridge.unknownMessageType";
+  export type ErrorCode = "bridge.capabilityMissing" | "bridge.documentAmbiguous" | "bridge.documentUnresolved" | "bridge.internalError" | "bridge.invalidJson" | "bridge.invalidMessage" | "bridge.invalidToken" | "bridge.protocolVersionMismatch" | "bridge.unknownMessageType";
   export type ErrorMessage = { readonly "code": ErrorCode; readonly "detail"?: string; readonly "type": "error" };
   export type HelloMessage = { readonly "capabilities": CapabilityList; readonly "clientInstanceId": InstanceId; readonly "protocolVersion": ProtocolVersion; readonly "token": Token; readonly "type": "hello" };
   export type InstanceId = string;

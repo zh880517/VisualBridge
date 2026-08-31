@@ -67,7 +67,7 @@
     {
       "file": "Schema/visualbridge-editor-bridge.schema.json",
       "id": "https://visualbridge.dev/schema/visualbridge-editor-bridge.schema.json",
-      "sha256": "2d887360a985ffc953c238a6a6f22fab3d810e1146ef52858f453d6724b500d5",
+      "sha256": "bc12ffd457f2d0babc08d6525fd6e10362ef845ad691ba42833d2c0a4860a640",
       "definitions": [
         "absolutePath",
         "capability",
