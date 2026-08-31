@@ -6,7 +6,7 @@
 
 本文在 [`VisualBridgeArchitecture.md`](VisualBridgeArchitecture.md)、[`ProtocolContracts.md`](ProtocolContracts.md)、[`StructuredConfigModel.md`](StructuredConfigModel.md) 和四个领域正式契约之上补充 Unity 侧职责。已有 Project、Catalog、Document、Field、稳定 ID、Hash 和诊断语义继续以 `Protocol/Schema`、`Protocol/contract-manifest.json`、现有 TypeScript Core 及领域正式文档为准。本文不能通过概念描述覆盖或放宽这些已冻结契约。
 
-当前仓库已经完成 C# contract generator、有效 UPM Package、Integration Profile V1、Structured Catalog Exporter 与 offline Import/Compiler；固定 Unity 样例可在没有 VS Code/Bridge 的条件下执行 Generate/Check。UPM Package ID 固定为 `com.kyle.visualbridge`，C# namespace/assembly 使用 `VisualBridge.<Module>`；私有 VSIX 保持 `UNLICENSED` 并携带不授予公共使用权的 proprietary notice。Editor Bridge 已于 2026-08-30 由项目方授权恢复实施；discovery/transport spike 与威胁模型已完成，传输、discovery、认证与重连策略已冻结（见第 12 章），正式消息 Schema（`visualbridge-editor-bridge.schema.json`）已进入 Protocol 与 C# 生成闭包，双端实现尚未开始。Runtime、Debug、DAP 与 Player 仍未实现。实施状态与剩余发布门槛见 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)。
+当前仓库已经完成 C# contract generator、有效 UPM Package、Integration Profile V1、Structured Catalog Exporter 与 offline Import/Compiler；固定 Unity 样例可在没有 VS Code/Bridge 的条件下执行 Generate/Check。UPM Package ID 固定为 `com.kyle.visualbridge`，C# namespace/assembly 使用 `VisualBridge.<Module>`；私有 VSIX 保持 `UNLICENSED` 并携带不授予公共使用权的 proprietary notice。最小 Editor Bridge V1 已实现并于 2026-08-31 完成：正式消息 Schema 进入 Protocol、Unity 侧客户端与 VS Code 扩展宿主服务器落地、全部自动化门槛通过、真实 Unity Editor 与隔离 VS Code Extension Host 完成 open/reveal E2E（见第 12 章）。Runtime、Debug、DAP 与 Player 仍未实现。实施状态与剩余发布门槛见 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)。
 
 ## 2. 首期范围
 
@@ -17,7 +17,7 @@
 - 使用固定的 Unity Integration Profile V1，把一个 Unity Project 关联到该 Unity Project 内的一个 Authoring Project。
 - 从显式登记的普通 C# `class` / `struct` 和元数据生成 Structured Catalog V1。
 - 在 Unity Editor 中读取 Project、Structured Catalog 和 Structured Document，生成确定性的 Editor 派生产物与映射清单。
-- 离线垂直切片之后的下一阶段单独设计并实现最小 Editor Bridge，使 Unity Editor 可以请求 VS Code 打开或定位 Authoring Document；该阶段已由项目方授权恢复实施，当前为 `in_progress`，spike 与威胁模型已完成，设计已冻结（见第 12 章）。
+- 离线垂直切片之后的下一阶段单独设计并实现最小 Editor Bridge，使 Unity Editor 可以请求 VS Code 打开或定位 Authoring Document；该阶段已实现并于 2026-08-31 完成（见第 12 章）。
 
 首期明确不包含：
 
@@ -328,6 +328,12 @@ WebSocket 被拒绝：扩展宿主需新增 `ws` 依赖、HTTP upgrade 握手开
 Unity Editor 与 VS Code 扩展宿主都以当前用户权限运行且非沙箱；Bridge 的安全目标是防误路由与最小暴露，不是防御同用户恶意进程。named pipe / loopback TCP 仅限本机；伪造 discovery 记录的后果上限是获知请求中的文档路径并假冒接受（VS Code 端只执行 open/reveal，无写入面）；请求/响应只含稳定 ID 与路径，不含 Authoring 文档内容。无效 token、版本/capability 不匹配、陈旧 generation、死 pid/陈旧心跳记录与 Domain Reload 后的旧请求必须有自动化拒绝覆盖；本地同用户 DoS（占用管道名/端口）不在防御目标内。
 
 Runtime、Debug 和 Player 仍需各自独立架构、身份模型、权限与真实垂直切片。Editor Bridge 的传输即使验证成功，也不自动成为 Player 或远程调试协议。
+
+### 12.4 实施与验证（2026-08-31）
+
+- **Unity 侧**：`Packages/com.kyle.visualbridge/Editor/Bridge/` 提供严格校验器、discovery 枚举器、同步请求/响应客户端与服务门面；`Tools/VisualBridge/Editor Bridge/Open in VS Code…` 菜单提供显式窗口选择的最小 UI；`VisualBridge.Editor.VisualBridgeBridgeBatch.RunE2E` 供真实编辑器 E2E 使用。
+- **VS Code 侧**：扩展激活并完成项目/文档索引后启动 `EditorBridgeServer`（named pipe + loopback TCP 双端点、per-window discovery 记录与心跳、token 握手）；open 经 Project Registry 唯一解析，reveal 经文档索引唯一解析后复用 `revealReference` 命令；多候选一律显式拒绝（`bridge.documentAmbiguous`），不做最近连接猜测。
+- **验证**：24 例三方 parity fixture（AJV / Unity strict validator / 扩展宿主解析）一致；Unity EditMode 覆盖握手、generation、能力、非法 JSON、断开、discovery 过滤与多窗口显式选择；扩展宿主集成测试覆盖无效 token、非 JSON、非 hello 首消息、unresolved/ambiguous open 与 reveal 全链路；真实 Unity Editor 6000.3.10f1 与隔离 VS Code 1.105.1 Extension Host 完成 open/reveal E2E（`npm run test:bridge-e2e`）；Bridge 关闭时 Catalog Check 与 Structured Compile Generate/Check 独立通过。
 
 ## 13. 领域扩展边界
 

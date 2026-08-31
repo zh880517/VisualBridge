@@ -5,7 +5,7 @@
   "source": {
     "status": "current",
     "providerId": "unity.csharp",
-    "sourceHash": "fbb30ff79a693689692bd24d0b9b44570a4cdc8f6501895e157a0e47e0a2c57f"
+    "sourceHash": "1c2f0277530aa6472b5d996d7508b0617f9822e3f9394b82e417dc2dd6041e62"
   },
   "configTypes": [
     {
@@ -152,6 +152,25 @@
               "integer": true,
               "min": -2147483648,
               "max": 2147483647
+            }
+          }
+        },
+        {
+          "id": "linkedDocument",
+          "title": "Linked Document",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "string",
+          "defaultValue": "sample.unity.game.settings.default",
+          "editor": {
+            "kind": "reference",
+            "readOnly": false,
+            "integer": false
+          },
+          "reference": {
+            "kind": "document",
+            "target": {
+              "documentTypeId": "sample.unity.game.settings"
             }
           }
         }

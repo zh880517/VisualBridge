@@ -53,5 +53,15 @@ namespace VisualBridge.Sample
 
         [VisualBridgeField("checkpoints", "Checkpoints", Order = 5, DataTypeId = "list.int", DefaultJson = "[0,10]")]
         public List<int> Checkpoints;
+
+        [VisualBridgeField(
+            "linkedDocument",
+            "Linked Document",
+            Order = 6,
+            DefaultJson = "\"sample.unity.game.settings.default\"",
+            Editor = VisualBridgeEditorKind.Reference,
+            ReferenceKind = "document",
+            ReferenceTargetJson = "{\"documentTypeId\":\"sample.unity.game.settings\"}")]
+        public string LinkedDocument;
     }
 }

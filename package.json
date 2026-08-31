@@ -52,7 +52,8 @@
     "benchmark:large-corpus": "npm run build --workspace @visualbridge/core && npm run build --workspace @visualbridge/entity && npm run build --workspace @visualbridge/graph && npm run build --workspace @visualbridge/structured && npm run build --workspace @visualbridge/table && npm run benchmark --workspace @visualbridge/large-corpus --",
     "test:vscode:host": "npm run test:host --workspace visualbridge",
     "test:vscode:cli": "npm run package:vscode && npm run test:cli --workspace visualbridge",
-    "package:vscode": "npm run package:vsix --workspace visualbridge"
+    "package:vscode": "npm run package:vsix --workspace visualbridge",
+    "test:bridge-e2e": "npm run test:bridge-e2e --workspace visualbridge"
   },
   "devDependencies": {
     "@types/node": "22.20.1"

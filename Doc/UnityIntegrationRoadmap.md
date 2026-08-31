@@ -6,7 +6,7 @@
 
 本路线图不实现 Runtime、Debug、DAP、Player、远程连接、设备发现、Graph/Entity/Table Unity 编译或 `ScriptableObject` Authoring 包装层。Editor Bridge 不是 Structured offline slice 的前置条件，也不能承载 Export/Compile。
 
-当前进度：VB-UI-01 至 VB-UI-05 已完成首个 Structured offline、Editor-only slice；VB-UI-06 Editor Bridge 已由项目方授权恢复实施，当前为 `in_progress`：discovery/transport spike 与威胁模型已完成，传输、discovery、认证与重连策略已冻结，正式消息 Schema 已进入 Protocol 并重新生成 TypeScript/C# 契约（见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 12 章），双端实现尚未开始；VB-UI-07 仅完成当前 slice 的部分文档与验证基线，完整发布 hardening 仍在进行。这里的 `complete` 只代表各任务冻结范围，不表示 Runtime、Debug、DAP、Player 或其他三个领域已实现。
+当前进度：VB-UI-01 至 VB-UI-06 已完成。VB-UI-06 最小 Editor Bridge 已于 2026-08-31 完成：spike 与威胁模型冻结了传输/discovery/认证设计，正式消息 Schema 进入 Protocol 并生成 TS/C# 契约，Unity 侧客户端与 VS Code 扩展宿主服务器实现并通过全部自动化门槛，真实 Unity Editor 与隔离 Extension Host 完成 open/reveal E2E。VB-UI-07 仍为 `in_progress`，完整发布 hardening 仍在进行。这里的 `complete` 只代表各任务冻结范围，不表示 Runtime、Debug、DAP、Player 或其他三个领域已实现。
 
 2026-08-30 暂停检查点：私有 VSIX 已加入 proprietary `LICENSE` notice，同时保持 manifest `private: true` 与 `UNLICENSED`；Unity Package ID 已固定为 `com.kyle.visualbridge`，C# namespace/assembly 统一使用 `VisualBridge.<Module>`，`kyle` 不进入 C# 标识。上述变更已经过 Node、VSIX、Protocol、dotnet、Unity batchmode、Structured Generate/Check、Compile Check 和 EditMode 回归并提交推送（提交 `4b6b66d`）。
 
@@ -151,11 +151,13 @@ Exit criteria：
 - dotnet 快速编译、Unity batchmode refresh/import、EditMode、Exporter/Compiler E2E、Node Schema/Parser parity 和现有完整 Node/VSIX 门槛全部通过。
 - 没有 Runtime loader、Build integration、Debug、Player 或 Graph/Entity/Table Compile 混入。
 
-### VB-UI-06 最小 Unity Editor Bridge — `in_progress`
+### VB-UI-06 最小 Unity Editor Bridge — `complete`
 
 依赖：VB-UI-05。该依赖用于保证先完成离线切片，不表示 Bridge 调用 Compiler。
 
-实施状态：2026-08-30 项目方授权恢复，并授权新增本任务所需的 Bridge contract/连接状态机 Unity EditMode 测试（见文首恢复决定）。discovery/transport spike 与威胁模型已完成，设计已冻结进 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 12 章；正式消息 Schema（`visualbridge-editor-bridge.schema.json`）已进入 Protocol 与 C# 生成闭包，四个生成产物已重新生成并通过 drift gate 与 parity 正反例。下一步是 Unity 侧与 VS Code Host 侧实现。
+实施记录：2026-08-30 项目方授权恢复并授权新增 Bridge contract/连接状态机 Unity EditMode 测试（见文首恢复决定）。同日完成 discovery/transport spike 与威胁模型，设计冻结进 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 12 章；正式消息 Schema（`visualbridge-editor-bridge.schema.json`）进入 Protocol 与 C# 生成闭包。2026-08-31 完成 Unity 侧客户端（严格校验器、discovery 枚举、同步请求/响应、服务门面与菜单）与 VS Code 扩展宿主服务器（双端点监听、discovery 记录与心跳、token 握手、open/reveal 路由）。
+
+验证记录：24 例三方 parity fixture（AJV / Unity strict validator / 扩展宿主）一致；Unity EditMode 20 例 Bridge 测试随全套 69 例通过；扩展宿主集成测试覆盖无效 token、非法 JSON、非 hello 首消息、协议版本、unresolved/ambiguous open 与 reveal 全链路并随受限模式回归通过；真实 Unity Editor 6000.3.10f1 与隔离 VS Code 1.105.1 Extension Host 完成 open/reveal E2E（`npm run test:bridge-e2e`，结果 `open=ok; reveal=ok`）；Bridge 关闭时 Catalog Check 与 Structured Compile Generate/Check 退出码全部为 0；`npm run check`、`npm test`、`npm run build`、`npm run test:vscode:host`、`npm run test:vscode:cli`、`check:protocol`、`check:mcp`、`git diff --check` 与四个 Unity 生成 csproj 的 `dotnet build` 全部通过。
 
 范围：
 
@@ -180,7 +182,7 @@ Exit criteria：
 
 依赖：VB-UI-01 至 VB-UI-06。
 
-当前只完成 VB-UI-01 至 VB-UI-05 对应的 Protocol/Package/Profile/Export/Compile 文档、Node/dotnet/Unity batchmode/EditMode 验证路径和固定样例。Package README、Bridge 使用说明、真实 open/reveal E2E、完整 compatibility matrix、空缓存 clean-checkout 复现及最终分发基线仍未关闭，因此本任务不能标记 `complete`。
+当前已完成 VB-UI-01 至 VB-UI-05 对应的 Protocol/Package/Profile/Export/Compile 文档与验证路径，以及 VB-UI-06 落地后的 Editor Bridge 契约、双端实现与真实 open/reveal E2E（见第 3 章 VB-UI-06 验证记录与 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 12.4 节）。Package README、Unity 接入手册、完整 compatibility matrix、空缓存 clean-checkout 复现及最终分发基线仍未关闭，因此本任务不能标记 `complete`。
 
 范围：
 

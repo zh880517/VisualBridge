@@ -367,7 +367,8 @@
     "test:host": "npm run build:host-dependencies && npm run build && node ./test/runTest.mjs && node ./test/runRestrictedTest.mjs",
     "test:host:trusted": "npm run build:host-dependencies && npm run build && node ./test/runTest.mjs",
     "test:host:restricted": "npm run build:host-dependencies && npm run build && node ./test/runRestrictedTest.mjs",
-    "test:cli": "node ./scripts/test-vsix-cli.mjs ./artifacts/visualbridge.vsix"
+    "test:cli": "node ./scripts/test-vsix-cli.mjs ./artifacts/visualbridge.vsix",
+    "test:bridge-e2e": "npm run build:host-dependencies && npm run build && node ./test/runBridgeE2E.mjs"
   },
   "devDependencies": {
     "@types/node": "22.20.1",

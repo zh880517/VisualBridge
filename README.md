@@ -2,7 +2,7 @@
 
 VisualBridge 是一个基于 VS Code 的游戏语义内容创作平台。当前版本提供 Graph、Entity、Structured Config、Table 四类 Authoring 文档的可视化编辑，共享 Catalog、Form、Reference、Project Transaction 和 MCP 语义，并以文本源文件或受约束的 CSV/XLSX 载体作为权威数据。
 
-仓库现已落地首个 Unity Structured offline、Editor-only 垂直切片：`Packages/com.kyle.visualbridge` 提供显式 C# metadata、固定 Profile、Structured Catalog Generate/Check，以及从 Authoring Project 到 `Library/VisualBridge/Compiled` 确定性派生产物的 Generate/Check。它不依赖 VS Code 或 Bridge 在线运行。当前仍未实现 Editor Bridge、Runtime loader/行为、Debug、DAP、Player、设备发现或网络通信；Package 中名为 `VisualBridge.Runtime` 的程序集只是 player-visible、无 Unity API/无行为的纯 metadata marker surface，不是 Runtime 功能。
+仓库现已落地首个 Unity Structured offline、Editor-only 垂直切片：`Packages/com.kyle.visualbridge` 提供显式 C# metadata、固定 Profile、Structured Catalog Generate/Check，以及从 Authoring Project 到 `Library/VisualBridge/Compiled` 确定性派生产物的 Generate/Check。它不依赖 VS Code 或 Bridge 在线运行。最小 Unity Editor Bridge V1 亦已落地：Unity Editor 可以通过本机 NDJSON 协议请求 VS Code 打开或定位 Authoring Document（open/reveal），协议契约见 `Protocol/Schema/visualbridge-editor-bridge.schema.json`，边界见 [Unity Editor 接入架构](Doc/UnityIntegrationArchitecture.md)。当前仍未实现 Runtime loader/行为、Debug、DAP、Player、设备发现或远程网络通信；Package 中名为 `VisualBridge.Runtime` 的程序集只是 player-visible、无 Unity API/无行为的纯 metadata marker surface，不是 Runtime 功能。
 
 本项目是私有项目，所有 npm 包和 VSIX 均标记为 `UNLICENSED`。仓库内容不是公开分发许可证的授权。
 
@@ -86,4 +86,12 @@ $unityProject = (Resolve-Path .\UnityProject).Path
 & $unityEditor -batchmode -nographics -runTests -testPlatform EditMode -projectPath $unityProject -testResults "$env:TEMP\visualbridge-editmode.xml" -logFile "$env:TEMP\visualbridge-editmode.log"
 ```
 
-Catalog 与 Compiler batch 统一返回 `0` 表示成功、`1` 表示执行失败、`2` 表示 Check 发现 drift。退出码之外还必须检查日志与 EditMode XML。Unity 生成的 `.csproj` 可再用 `dotnet build` 做快速编译检查，但不能替代 batchmode import 或 EditMode tests。完整边界见 [Unity Editor 接入架构](Doc/UnityIntegrationArchitecture.md)、[Unity Editor 接入任务清单](Doc/UnityIntegrationRoadmap.md) 与 [Release Quality](Doc/ReleaseQuality.md)。
+Catalog 与 Compiler batch 统一返回 `0` 表示成功、`1` 表示执行失败、`2` 表示 Check 发现 drift。退出码之外还必须检查日志与 EditMode XML。Unity 生成的 `.csproj` 可再用 `dotnet build` 做快速编译检查，但不能替代 batchmode import 或 EditMode tests。
+
+Editor Bridge 的端到端验证在真实 Unity Editor（非 batchmode）与隔离 VS Code Extension Host 之间执行 open/reveal 往返：
+
+```powershell
+npm run test:bridge-e2e
+```
+
+该命令同时启动两个进程（Unity 编辑器需已安装在本机，可用 `VISUALBRIDGE_UNITY_EDITOR` 覆盖路径），完成后双方各自退出并校验结果。完整边界见 [Unity Editor 接入架构](Doc/UnityIntegrationArchitecture.md)、[Unity Editor 接入任务清单](Doc/UnityIntegrationRoadmap.md) 与 [Release Quality](Doc/ReleaseQuality.md)。

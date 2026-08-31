@@ -8,6 +8,7 @@
     ],
     "difficulty": "Normal",
     "friendlyFire": false,
+    "linkedDocument": "sample.unity.game.settings.default",
     "maxPlayers": 5,
     "serverName": "Local Development",
     "spawn": {
