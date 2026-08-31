@@ -1,0 +1,631 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using Newtonsoft.Json.Linq;
+
+namespace VisualBridge.Runtime
+{
+    /// <summary>
+    /// Runtime Bridge 服务端：监听 127.0.0.1、执行 token 首条消息握手、
+    /// 应答 getSnapshot、轮询产物目录并向订阅客户端推送 artifactsChanged，
+    /// 并按第 17 章语义发布/心跳/清理发现记录。
+    /// 本类是服务端（每连接独立线程，允许并发客户端），与客户端的
+    /// 单线程同步请求/响应模型不冲突；Runtime 程序集禁止 Unity API，
+    /// 日志走可选回调。
+    /// </summary>
+    public sealed class VisualBridgeRuntimeBridgeServer : IDisposable
+    {
+        public static readonly string[] AdvertisedCapabilities = { "snapshot", "events" };
+
+        private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(1);
+        private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(1);
+        private const int DisposeJoinTimeoutMs = 2000;
+
+        private readonly string instanceId;
+        private readonly string kind;
+        private readonly string token;
+        private readonly string artifactsRoot;
+        private readonly int generation;
+        private readonly string startedAtText;
+        private readonly Action<string> log;
+        private readonly string recordPath;
+        private readonly object connectionsGate = new object();
+        private readonly List<Connection> connections = new List<Connection>();
+
+        private readonly TcpListener listener;
+        private readonly Thread acceptThread;
+        private readonly Thread heartbeatThread;
+        private readonly Thread pollThread;
+        private volatile bool stopping;
+        private bool disposed;
+
+        private sealed class Connection
+        {
+            public TcpClient Client;
+            public NetworkStream Stream;
+            public readonly object WriteGate = new object();
+            public bool WantsEvents;
+            public readonly StringBuilder LineBuffer = new StringBuilder();
+            public readonly byte[] ReadBuffer = new byte[8192];
+        }
+
+        /// <summary>
+        /// preferredTcpPort 为 0 时随机分配；指定端口被占用时回退随机端口
+        /// （宿主用实际绑定的 TcpPort 更新记录）。
+        /// </summary>
+        public VisualBridgeRuntimeBridgeServer(
+            string instanceId,
+            string kind,
+            int preferredTcpPort,
+            string token,
+            string artifactsRoot,
+            int generation,
+            Action<string> log = null)
+        {
+            this.instanceId = instanceId ?? throw new ArgumentNullException(nameof(instanceId));
+            this.kind = kind ?? throw new ArgumentNullException(nameof(kind));
+            this.token = token ?? throw new ArgumentNullException(nameof(token));
+            this.artifactsRoot = artifactsRoot ?? throw new ArgumentNullException(nameof(artifactsRoot));
+            this.generation = generation;
+            this.log = log;
+            startedAtText = DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture);
+            recordPath = Path.Combine(
+                Path.GetTempPath(), VisualBridgeRuntimeBridgeDiscovery.DiscoveryDirectoryName, instanceId + ".json");
+
+            listener = CreateListener(preferredTcpPort);
+            TcpPort = ((IPEndPoint)listener.LocalEndpoint).Port;
+            WriteDiscoveryRecord();
+
+            acceptThread = new Thread(AcceptLoop) { IsBackground = true, Name = "visualbridge-runtime-accept" };
+            heartbeatThread = new Thread(HeartbeatLoop) { IsBackground = true, Name = "visualbridge-runtime-heartbeat" };
+            pollThread = new Thread(PollLoop) { IsBackground = true, Name = "visualbridge-runtime-poll" };
+            acceptThread.Start();
+            heartbeatThread.Start();
+            pollThread.Start();
+        }
+
+        public string InstanceId => instanceId;
+
+        public string Kind => kind;
+
+        public int Generation => generation;
+
+        public int TcpPort { get; }
+
+        public string Token => token;
+
+        public string ArtifactsRoot => artifactsRoot;
+
+        public string RecordPath => recordPath;
+
+        public string StartedAtText => startedAtText;
+
+        /// <summary>当前产物快照（每次调用重新读取产物目录）。</summary>
+        public IReadOnlyList<VisualBridgeRuntimeDocumentSnapshot> Snapshot()
+        {
+            return VisualBridgeRuntimeArtifactStore.Snapshot(artifactsRoot);
+        }
+
+        public void Dispose()
+        {
+            if (disposed)
+            {
+                return;
+            }
+
+            disposed = true;
+            stopping = true;
+            try
+            {
+                listener.Stop();
+            }
+            catch (SocketException)
+            {
+                // 监听套接字已关闭。
+            }
+
+            lock (connectionsGate)
+            {
+                foreach (var connection in connections)
+                {
+                    CloseConnection(connection);
+                }
+
+                connections.Clear();
+            }
+
+            JoinThread(acceptThread);
+            JoinThread(heartbeatThread);
+            JoinThread(pollThread);
+            try
+            {
+                File.Delete(recordPath);
+            }
+            catch (IOException)
+            {
+                // 记录文件可能被占用；心跳超时兜底判定陈旧。
+            }
+        }
+
+        private static TcpListener CreateListener(int preferredTcpPort)
+        {
+            if (preferredTcpPort > 0)
+            {
+                try
+                {
+                    var preferred = new TcpListener(IPAddress.Loopback, preferredTcpPort);
+                    preferred.Start();
+                    return preferred;
+                }
+                catch (SocketException)
+                {
+                    // 端口被旧实例占用（reload 窗口）：回退随机端口。
+                }
+            }
+
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            return listener;
+        }
+
+        private void AcceptLoop()
+        {
+            while (!stopping)
+            {
+                TcpClient client;
+                try
+                {
+                    client = listener.AcceptTcpClient();
+                }
+                catch (Exception exception) when (exception is SocketException || exception is ObjectDisposedException || exception is InvalidOperationException)
+                {
+                    break;
+                }
+
+                // 每连接独立线程：允许并发客户端连接；顶层兜底防止异常击穿线程。
+                var handler = new Thread(() =>
+                {
+                    try
+                    {
+                        HandleClient(client);
+                    }
+                    catch (Exception exception)
+                    {
+                        log?.Invoke($"[runtime-bridge] connection handler failed: {exception.Message}");
+                    }
+                })
+                { IsBackground = true };
+                handler.Start();
+            }
+        }
+
+        private void HandleClient(TcpClient client)
+        {
+            var connection = new Connection { Client = client, Stream = client.GetStream() };
+            try
+            {
+                lock (connectionsGate)
+                {
+                    connections.Add(connection);
+                }
+
+                // 首条消息必须 hello：非法 JSON/残缺消息/版本不符/未知类型分别按冻结错误码回发后断开。
+                string firstLine;
+                try
+                {
+                    firstLine = ReadLine(connection);
+                }
+                catch (VisualBridgeRuntimeBridgeException)
+                {
+                    return;
+                }
+
+                if (firstLine == null)
+                {
+                    return;
+                }
+
+                JObject helloObject;
+                try
+                {
+                    helloObject = VisualBridgeRuntimeBridgeValidator.ParseObject(firstLine, "runtime.invalidJson");
+                }
+                catch (VisualBridgeRuntimeBridgeException exception)
+                {
+                    SendError(connection, "runtime.invalidJson", exception.Message);
+                    return;
+                }
+
+                VisualBridgeRuntimeBridgeMessage hello;
+                try
+                {
+                    hello = VisualBridgeRuntimeBridgeValidator.ValidateMessage(helloObject);
+                }
+                catch (VisualBridgeRuntimeBridgeException exception)
+                {
+                    SendError(connection, VisualBridgeRuntimeBridgeValidator.MapWireCode(exception.Code), exception.Message);
+                    return;
+                }
+
+                if (hello.Type != VisualBridgeRuntimeBridgeMessageType.Hello)
+                {
+                    SendError(connection, "runtime.unknownMessageType", "First message must be hello.");
+                    return;
+                }
+
+                if (!string.Equals(hello.Token, token, StringComparison.Ordinal))
+                {
+                    SendError(connection, "runtime.invalidToken", "Token does not match the discovery record.");
+                    return;
+                }
+
+                connection.WantsEvents = hello.SupportsCapability("events");
+                var welcome = VisualBridgeRuntimeBridgeValidator.CreateWelcome(
+                    instanceId, kind, generation, AdvertisedCapabilities, startedAtText);
+                WriteLine(connection, welcome.ToLine());
+
+                RequestLoop(connection);
+            }
+            catch (Exception exception) when (exception is IOException || exception is ObjectDisposedException || exception is SocketException)
+            {
+                // 客户端已断开。
+            }
+            finally
+            {
+                lock (connectionsGate)
+                {
+                    connections.Remove(connection);
+                }
+
+                CloseConnection(connection);
+            }
+        }
+
+        private void RequestLoop(Connection connection)
+        {
+            while (!stopping)
+            {
+                string line;
+                try
+                {
+                    line = ReadLine(connection);
+                }
+                catch (VisualBridgeRuntimeBridgeException exception)
+                {
+                    SendError(connection, VisualBridgeRuntimeBridgeValidator.MapWireCode(exception.Code), exception.Message);
+                    return;
+                }
+
+                if (line == null)
+                {
+                    return;
+                }
+
+                JObject requestObject;
+                try
+                {
+                    requestObject = VisualBridgeRuntimeBridgeValidator.ParseObject(line, "runtime.invalidJson");
+                }
+                catch (VisualBridgeRuntimeBridgeException exception)
+                {
+                    SendError(connection, "runtime.invalidJson", exception.Message);
+                    return;
+                }
+
+                VisualBridgeRuntimeBridgeMessage request;
+                try
+                {
+                    request = VisualBridgeRuntimeBridgeValidator.ValidateMessage(requestObject);
+                    if (request.Type != VisualBridgeRuntimeBridgeMessageType.Request)
+                    {
+                        throw VisualBridgeRuntimeBridgeValidator.Error(
+                            "runtime.invalidMessage", "$.type", "Only request messages are allowed after the handshake.");
+                    }
+                }
+                catch (VisualBridgeRuntimeBridgeException exception)
+                {
+                    // 未知 action 是请求级错误（response error，连接保持），其余为连接级错误。
+                    if (exception.Code == "runtime.unknownRequest")
+                    {
+                        var requestId = (requestObject["requestId"] as JValue)?.Value<string>();
+                        if (requestId != null && !string.IsNullOrEmpty(requestId) && requestId.Length <= 128)
+                        {
+                            SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                                .CreateSnapshotResponseError(requestId, "runtime.unknownRequest", exception.Message)
+                                .ToLine());
+                            continue;
+                        }
+                    }
+
+                    SendError(connection, VisualBridgeRuntimeBridgeValidator.MapWireCode(exception.Code), exception.Message);
+                    return;
+                }
+
+                RespondToSnapshotRequest(connection, request);
+            }
+        }
+
+        private void RespondToSnapshotRequest(Connection connection, VisualBridgeRuntimeBridgeMessage request)
+        {
+            try
+            {
+                var snapshot = VisualBridgeRuntimeArtifactStore.Snapshot(artifactsRoot);
+                var documents = VisualBridgeRuntimeArtifactStore.FilterSnapshot(snapshot, request.DocumentTypeIds);
+                SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                    .CreateSnapshotResponseOk(request.RequestId, documents)
+                    .ToLine());
+            }
+            catch (VisualBridgeRuntimeBridgeException exception)
+            {
+                SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                    .CreateSnapshotResponseError(request.RequestId, "runtime.internalError", exception.Message)
+                    .ToLine());
+            }
+            catch (Exception exception)
+            {
+                SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                    .CreateSnapshotResponseError(request.RequestId, "runtime.internalError", exception.Message)
+                    .ToLine());
+            }
+        }
+
+        private void HeartbeatLoop()
+        {
+            while (!stopping)
+            {
+                if (!SleepInterruptibly(HeartbeatInterval))
+                {
+                    return;
+                }
+
+                try
+                {
+                    // 心跳即记录 mtime：陈旧判定 = mtime 超过 5 秒或 pid 已死。
+                    File.SetLastWriteTimeUtc(recordPath, DateTime.UtcNow);
+                }
+                catch (Exception exception) when (exception is IOException || exception is UnauthorizedAccessException)
+                {
+                    log?.Invoke($"[runtime-bridge] heartbeat touch failed: {exception.Message}");
+                }
+            }
+        }
+
+        private void PollLoop()
+        {
+            var digest = SafeComputeDigest();
+            while (!stopping)
+            {
+                if (!SleepInterruptibly(PollInterval))
+                {
+                    return;
+                }
+
+                var next = SafeComputeDigest();
+                if (next == null || next == digest)
+                {
+                    if (next != null)
+                    {
+                        digest = next;
+                    }
+
+                    continue;
+                }
+
+                digest = next;
+                try
+                {
+                    var snapshot = VisualBridgeRuntimeArtifactStore.Snapshot(artifactsRoot);
+                    BroadcastArtifactsChanged(snapshot);
+                }
+                catch (Exception exception)
+                {
+                    log?.Invoke($"[runtime-bridge] failed to snapshot changed artifacts: {exception.Message}");
+                }
+            }
+        }
+
+        private string SafeComputeDigest()
+        {
+            try
+            {
+                return VisualBridgeRuntimeArtifactStore.ComputeDigest(artifactsRoot);
+            }
+            catch (Exception exception) when (exception is IOException || exception is UnauthorizedAccessException)
+            {
+                // 产物目录被并发写入时跳过本轮比较。
+                return null;
+            }
+        }
+
+        private void BroadcastArtifactsChanged(IReadOnlyList<VisualBridgeRuntimeDocumentSnapshot> snapshot)
+        {
+            var line = VisualBridgeRuntimeBridgeValidator.CreateArtifactsChangedEvent(snapshot).ToLine();
+            List<Connection> subscribers;
+            lock (connectionsGate)
+            {
+                subscribers = new List<Connection>(connections);
+            }
+
+            foreach (var connection in subscribers)
+            {
+                if (!connection.WantsEvents)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    WriteLine(connection, line);
+                }
+                catch (Exception exception) when (exception is IOException || exception is ObjectDisposedException || exception is SocketException)
+                {
+                    // 推送失败说明客户端已断开；关闭套接字让其读线程退出。
+                    CloseConnection(connection);
+                }
+            }
+        }
+
+        private void WriteDiscoveryRecord()
+        {
+            var record = new JObject
+            {
+                ["formatVersion"] = VisualBridgeRuntimeBridgeValidator.DiscoveryFormatVersion,
+                ["protocolVersion"] = VisualBridgeRuntimeBridgeValidator.ProtocolVersion,
+                ["coreVersion"] = VisualBridgeRuntimeBridgeValidator.CoreVersion,
+                ["instanceId"] = instanceId,
+                ["kind"] = kind,
+                ["capabilities"] = new JArray(AdvertisedCapabilities),
+                ["tcpPort"] = TcpPort,
+                ["token"] = token,
+                ["pid"] = Process.GetCurrentProcess().Id,
+                ["generation"] = generation,
+                ["startedAt"] = startedAtText,
+            };
+
+            // 自检：写盘记录必须能被自己的严格校验器接受。
+            VisualBridgeRuntimeBridgeValidator.ValidateDiscoveryRecord(record);
+
+            var directory = Path.GetDirectoryName(recordPath);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            // 原子替换：先写临时文件再覆盖，读取方不会看到半截记录。
+            var temporaryPath = recordPath + ".tmp";
+            File.WriteAllText(temporaryPath, record.ToString(Newtonsoft.Json.Formatting.None));
+            try
+            {
+                File.Delete(recordPath);
+            }
+            catch (IOException)
+            {
+                // 旧记录可能不存在。
+            }
+
+            File.Move(temporaryPath, recordPath);
+        }
+
+        private static string ReadLine(Connection connection)
+        {
+            while (true)
+            {
+                var buffered = connection.LineBuffer.ToString();
+                var newline = buffered.IndexOf('\n');
+                if (newline >= 0)
+                {
+                    var line = connection.LineBuffer.ToString(0, newline);
+                    connection.LineBuffer.Remove(0, newline + 1);
+                    if (line.Trim().Length == 0)
+                    {
+                        continue;
+                    }
+
+                    return line;
+                }
+
+                int read;
+                try
+                {
+                    read = connection.Stream.Read(connection.ReadBuffer, 0, connection.ReadBuffer.Length);
+                }
+                catch (Exception exception) when (exception is IOException || exception is ObjectDisposedException)
+                {
+                    throw VisualBridgeRuntimeBridgeValidator.Error("runtime.invalidMessage", "$", "Connection failed while reading: " + exception.Message);
+                }
+
+                if (read == 0)
+                {
+                    return null;
+                }
+
+                connection.LineBuffer.Append(Encoding.UTF8.GetString(connection.ReadBuffer, 0, read));
+            }
+        }
+
+        private void SendError(Connection connection, string code, string detail)
+        {
+            try
+            {
+                WriteLine(connection, VisualBridgeRuntimeBridgeValidator.CreateError(code, detail).ToLine());
+            }
+            catch (Exception exception) when (exception is IOException || exception is ObjectDisposedException || exception is SocketException)
+            {
+                // 对端已断开。
+            }
+        }
+
+        private static void SendLine(Connection connection, string line)
+        {
+            WriteLine(connection, line);
+        }
+
+        private static void WriteLine(Connection connection, string line)
+        {
+            lock (connection.WriteGate)
+            {
+                var bytes = Encoding.UTF8.GetBytes(line + "\n");
+                connection.Stream.Write(bytes, 0, bytes.Length);
+                connection.Stream.Flush();
+            }
+        }
+
+        private static void CloseConnection(Connection connection)
+        {
+            try
+            {
+                connection.Client.Close();
+            }
+            catch (SocketException)
+            {
+                // 已关闭。
+            }
+        }
+
+        private bool SleepInterruptibly(TimeSpan interval)
+        {
+            var remaining = interval;
+            var watch = Stopwatch.StartNew();
+            while (remaining > TimeSpan.Zero)
+            {
+                if (stopping)
+                {
+                    return false;
+                }
+
+                var slice = remaining > TimeSpan.FromMilliseconds(200) ? TimeSpan.FromMilliseconds(200) : remaining;
+                Thread.Sleep(slice);
+                remaining = interval - watch.Elapsed;
+            }
+
+            return !stopping;
+        }
+
+        private static void JoinThread(Thread thread)
+        {
+            try
+            {
+                thread.Join(DisposeJoinTimeoutMs);
+            }
+            catch (ThreadStateException)
+            {
+                // 线程尚未启动或已退出。
+            }
+        }
+    }
+
+    internal static class RuntimeBridgeCapabilityExtensions
+    {
+        /// <summary>hello 消息是否声明了指定能力（事件订阅判定）。</summary>
+        public static bool SupportsCapability(this VisualBridgeRuntimeBridgeMessage message, string capability)
+        {
+            return message.Capabilities != null
+                && System.Linq.Enumerable.Contains(message.Capabilities, capability);
+        }
+    }
+}

@@ -1,0 +1,289 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://visualbridge.dev/schema/visualbridge-runtime-bridge.schema.json",
+  "title": "VisualBridge Runtime Bridge V1",
+  "description": "Local NDJSON message contracts between the VS Code runtime bridge client and a Unity Runtime instance listener (Editor Play mode or same-machine Player), plus the per-instance discovery record published at <temp>/visualbridge-runtime/<instanceId>.json. The hello/welcome/error shapes realize the shared bridge protocol core (coreVersion 1) established by the Editor Bridge; this channel carries runtime snapshots and artifact-change events only and defines no debug messages.",
+  "oneOf": [
+    { "$ref": "#/$defs/helloMessage" },
+    { "$ref": "#/$defs/welcomeMessage" },
+    { "$ref": "#/$defs/snapshotRequest" },
+    { "$ref": "#/$defs/responseMessage" },
+    { "$ref": "#/$defs/eventMessage" },
+    { "$ref": "#/$defs/errorMessage" }
+  ],
+  "$defs": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "coreVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "token": {
+      "type": "string",
+      "description": "Hex-encoded per-instance authentication token of at least 192 bits.",
+      "pattern": "^[0-9a-f]{48,64}$"
+    },
+    "instanceId": {
+      "type": "string",
+      "description": "Runtime instance identifier: editor-<pid> for Editor Play mode, player-<pid> for a Player process.",
+      "pattern": "^(editor|player)-[0-9]+$"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "processId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "instanceKind": {
+      "enum": ["editor-play", "player"]
+    },
+    "capability": {
+      "enum": ["snapshot", "events"]
+    },
+    "capabilityList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/capability" }
+    },
+    "errorCode": {
+      "enum": [
+        "runtime.capabilityMissing",
+        "runtime.internalError",
+        "runtime.invalidJson",
+        "runtime.invalidMessage",
+        "runtime.invalidToken",
+        "runtime.protocolVersionMismatch",
+        "runtime.unknownMessageType",
+        "runtime.unknownRequest"
+      ]
+    },
+    "helloMessage": {
+      "type": "object",
+      "description": "First message sent by the VS Code client after connecting; authenticates the connection and negotiates the protocol, core and capability set.",
+      "required": [
+        "type",
+        "protocolVersion",
+        "coreVersion",
+        "token",
+        "clientInstanceId",
+        "capabilities"
+      ],
+      "properties": {
+        "type": { "const": "hello" },
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "coreVersion": { "$ref": "#/$defs/coreVersion" },
+        "token": { "$ref": "#/$defs/token" },
+        "clientInstanceId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "capabilities": { "$ref": "#/$defs/capabilityList" }
+      },
+      "additionalProperties": false
+    },
+    "welcomeMessage": {
+      "type": "object",
+      "description": "Instance reply to a valid hello message; identifies the runtime instance, its kind and the current generation.",
+      "required": [
+        "type",
+        "protocolVersion",
+        "coreVersion",
+        "instanceId",
+        "kind",
+        "generation",
+        "capabilities",
+        "startedAt"
+      ],
+      "properties": {
+        "type": { "const": "welcome" },
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "coreVersion": { "$ref": "#/$defs/coreVersion" },
+        "instanceId": { "$ref": "#/$defs/instanceId" },
+        "kind": { "$ref": "#/$defs/instanceKind" },
+        "generation": { "$ref": "#/$defs/generation" },
+        "capabilities": { "$ref": "#/$defs/capabilityList" },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    },
+    "snapshotRequest": {
+      "type": "object",
+      "description": "Requests the compiled artifact snapshot currently loaded by the runtime instance; optionally restricted to specific document types.",
+      "required": [
+        "type",
+        "requestId",
+        "action"
+      ],
+      "properties": {
+        "type": { "const": "request" },
+        "requestId": { "$ref": "#/$defs/requestId" },
+        "action": { "const": "getSnapshot" },
+        "documentTypeIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "visualbridge-primitives.schema.json#/$defs/stableId"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "documentSnapshot": {
+      "type": "object",
+      "description": "One compiled artifact as served by the runtime instance; the data value is the parsed compiled artifact content.",
+      "required": [
+        "documentTypeId",
+        "documentId",
+        "kind",
+        "data"
+      ],
+      "properties": {
+        "documentTypeId": {
+          "$ref": "visualbridge-primitives.schema.json#/$defs/stableId"
+        },
+        "documentId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "kind": {
+          "type": "string",
+          "pattern": "^visualbridge\\.(structured|entity|table|graph)\\.(compiled)$"
+        },
+        "data": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "responseMessage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "requestId",
+            "status",
+            "documents"
+          ],
+          "properties": {
+            "type": { "const": "response" },
+            "requestId": { "$ref": "#/$defs/requestId" },
+            "status": { "const": "ok" },
+            "documents": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/documentSnapshot" }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "requestId",
+            "status",
+            "error"
+          ],
+          "properties": {
+            "type": { "const": "response" },
+            "requestId": { "$ref": "#/$defs/requestId" },
+            "status": { "const": "error" },
+            "error": { "$ref": "#/$defs/errorCode" },
+            "detail": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "eventMessage": {
+      "type": "object",
+      "description": "Unsolicited notification pushed by the runtime instance to a connected client with the events capability.",
+      "required": [
+        "type",
+        "event",
+        "documents"
+      ],
+      "properties": {
+        "type": { "const": "event" },
+        "event": { "const": "artifactsChanged" },
+        "documents": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/documentSnapshot" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "errorMessage": {
+      "type": "object",
+      "description": "Connection-level failure report sent before the instance closes the connection.",
+      "required": [
+        "type",
+        "code"
+      ],
+      "properties": {
+        "type": { "const": "error" },
+        "code": { "$ref": "#/$defs/errorCode" },
+        "detail": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "additionalProperties": false
+    },
+    "tcpPort": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "discoveryRecord": {
+      "type": "object",
+      "description": "Per-instance discovery record published at <temp>/visualbridge-runtime/<instanceId>.json; heartbeat is the file modification time. Staleness is heartbeat older than 5 seconds or a dead pid.",
+      "required": [
+        "formatVersion",
+        "protocolVersion",
+        "coreVersion",
+        "instanceId",
+        "kind",
+        "capabilities",
+        "tcpPort",
+        "token",
+        "pid",
+        "generation",
+        "startedAt"
+      ],
+      "properties": {
+        "formatVersion": { "const": 1 },
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "coreVersion": { "$ref": "#/$defs/coreVersion" },
+        "instanceId": { "$ref": "#/$defs/instanceId" },
+        "kind": { "$ref": "#/$defs/instanceKind" },
+        "capabilities": { "$ref": "#/$defs/capabilityList" },
+        "tcpPort": { "$ref": "#/$defs/tcpPort" },
+        "token": { "$ref": "#/$defs/token" },
+        "pid": { "$ref": "#/$defs/processId" },
+        "generation": { "$ref": "#/$defs/generation" },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

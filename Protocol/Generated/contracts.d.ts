@@ -261,6 +261,32 @@ export namespace VisualBridgeProject {
   export type SafeGlob = string;
 }
 
+// 来源：Protocol/Schema/visualbridge-runtime-bridge.schema.json
+// $id: https://visualbridge.dev/schema/visualbridge-runtime-bridge.schema.json
+export namespace VisualBridgeRuntimeBridge {
+  export type Root = (HelloMessage) | (WelcomeMessage) | (SnapshotRequest) | (ResponseMessage) | (EventMessage) | (ErrorMessage);
+  export type Capability = "snapshot" | "events";
+  export type CapabilityList = readonly Capability[];
+  export type CoreVersion = 1;
+  export type DiscoveryRecord = { readonly "capabilities": CapabilityList; readonly "coreVersion": CoreVersion; readonly "formatVersion": 1; readonly "generation": Generation; readonly "instanceId": InstanceId; readonly "kind": InstanceKind; readonly "pid": ProcessId; readonly "protocolVersion": ProtocolVersion; readonly "startedAt": string; readonly "tcpPort": TcpPort; readonly "token": Token };
+  export type DocumentSnapshot = { readonly "data": { readonly [key: string]: unknown }; readonly "documentId": string; readonly "documentTypeId": VisualBridgePrimitives.StableId; readonly "kind": string };
+  export type ErrorCode = "runtime.capabilityMissing" | "runtime.internalError" | "runtime.invalidJson" | "runtime.invalidMessage" | "runtime.invalidToken" | "runtime.protocolVersionMismatch" | "runtime.unknownMessageType" | "runtime.unknownRequest";
+  export type ErrorMessage = { readonly "code": ErrorCode; readonly "detail"?: string; readonly "type": "error" };
+  export type EventMessage = { readonly "documents": readonly DocumentSnapshot[]; readonly "event": "artifactsChanged"; readonly "type": "event" };
+  export type Generation = number;
+  export type HelloMessage = { readonly "capabilities": CapabilityList; readonly "clientInstanceId": string; readonly "coreVersion": CoreVersion; readonly "protocolVersion": ProtocolVersion; readonly "token": Token; readonly "type": "hello" };
+  export type InstanceId = string;
+  export type InstanceKind = "editor-play" | "player";
+  export type ProcessId = number;
+  export type ProtocolVersion = 1;
+  export type RequestId = string;
+  export type ResponseMessage = ({ readonly "documents": readonly DocumentSnapshot[]; readonly "requestId": RequestId; readonly "status": "ok"; readonly "type": "response" }) | ({ readonly "detail"?: string; readonly "error": ErrorCode; readonly "requestId": RequestId; readonly "status": "error"; readonly "type": "response" });
+  export type SnapshotRequest = { readonly "action": "getSnapshot"; readonly "documentTypeIds"?: readonly VisualBridgePrimitives.StableId[]; readonly "requestId": RequestId; readonly "type": "request" };
+  export type TcpPort = number;
+  export type Token = string;
+  export type WelcomeMessage = { readonly "capabilities": CapabilityList; readonly "coreVersion": CoreVersion; readonly "generation": Generation; readonly "instanceId": InstanceId; readonly "kind": InstanceKind; readonly "protocolVersion": ProtocolVersion; readonly "startedAt": string; readonly "type": "welcome" };
+}
+
 // 来源：Protocol/Schema/visualbridge-structured-catalog.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-structured-catalog.schema.json
 export namespace VisualBridgeStructuredCatalog {

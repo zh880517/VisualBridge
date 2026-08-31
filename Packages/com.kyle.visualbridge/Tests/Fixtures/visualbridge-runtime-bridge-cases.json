@@ -1,0 +1,416 @@
+{
+  "cases": [
+    {
+      "label": "valid hello message",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "hello",
+        "protocolVersion": 1,
+        "coreVersion": 1,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "capabilities": [
+          "snapshot",
+          "events"
+        ]
+      }
+    },
+    {
+      "label": "valid welcome message",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "welcome",
+        "protocolVersion": 1,
+        "coreVersion": 1,
+        "instanceId": "editor-44936",
+        "kind": "editor-play",
+        "generation": 2,
+        "capabilities": [
+          "snapshot",
+          "events"
+        ],
+        "startedAt": "2026-08-31T12:00:00.000Z"
+      }
+    },
+    {
+      "label": "valid snapshot request",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "request",
+        "requestId": "req-001",
+        "action": "getSnapshot",
+        "documentTypeIds": [
+          "sample.unity.hero"
+        ]
+      }
+    },
+    {
+      "label": "valid snapshot request without filter",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "request",
+        "requestId": "req-002",
+        "action": "getSnapshot"
+      }
+    },
+    {
+      "label": "valid ok response with documents",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "response",
+        "requestId": "req-001",
+        "status": "ok",
+        "documents": [
+          {
+            "documentTypeId": "sample.unity.hero",
+            "documentId": "sample.unity.hero.default",
+            "kind": "visualbridge.entity.compiled",
+            "data": {
+              "formatVersion": 1,
+              "kind": "visualbridge.entity.compiled"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "valid ok response with empty documents",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "response",
+        "requestId": "req-002",
+        "status": "ok",
+        "documents": []
+      }
+    },
+    {
+      "label": "valid error response",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "response",
+        "requestId": "req-003",
+        "status": "error",
+        "error": "runtime.capabilityMissing",
+        "detail": "Instance does not advertise the snapshot capability."
+      }
+    },
+    {
+      "label": "valid artifactsChanged event",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "event",
+        "event": "artifactsChanged",
+        "documents": [
+          {
+            "documentTypeId": "sample.unity.game.settings",
+            "documentId": "sample.unity.game.settings.default",
+            "kind": "visualbridge.structured.compiled",
+            "data": {
+              "formatVersion": 1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "valid connection-level error message",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "error",
+        "code": "runtime.invalidToken",
+        "detail": "Token does not match the discovery record."
+      }
+    },
+    {
+      "label": "valid player discovery record",
+      "target": "discoveryRecord",
+      "valid": true,
+      "value": {
+        "formatVersion": 1,
+        "protocolVersion": 1,
+        "coreVersion": 1,
+        "instanceId": "player-82252",
+        "kind": "player",
+        "capabilities": [
+          "snapshot"
+        ],
+        "tcpPort": 5309,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "pid": 82252,
+        "generation": 1,
+        "startedAt": "2026-08-31T12:00:00.000Z"
+      }
+    },
+    {
+      "label": "valid editor-play discovery record",
+      "target": "discoveryRecord",
+      "valid": true,
+      "value": {
+        "formatVersion": 1,
+        "protocolVersion": 1,
+        "coreVersion": 1,
+        "instanceId": "editor-44936",
+        "kind": "editor-play",
+        "capabilities": [
+          "snapshot",
+          "events"
+        ],
+        "tcpPort": 4594,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "pid": 44936,
+        "generation": 2,
+        "startedAt": "2026-08-31T12:00:00.000Z"
+      }
+    },
+    {
+      "label": "hello without coreVersion is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.missingProperty",
+      "value": {
+        "type": "hello",
+        "protocolVersion": 1,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "capabilities": [
+          "snapshot"
+        ]
+      }
+    },
+    {
+      "label": "hello with short token is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidToken",
+      "value": {
+        "type": "hello",
+        "protocolVersion": 1,
+        "coreVersion": 1,
+        "token": "deadbeef",
+        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "capabilities": [
+          "snapshot"
+        ]
+      }
+    },
+    {
+      "label": "hello with unsupported protocol version is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.protocolVersionMismatch",
+      "value": {
+        "type": "hello",
+        "protocolVersion": 2,
+        "coreVersion": 1,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "capabilities": [
+          "snapshot"
+        ]
+      }
+    },
+    {
+      "label": "welcome with invalid instanceId prefix is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "welcome",
+        "protocolVersion": 1,
+        "coreVersion": 1,
+        "instanceId": "window-1234",
+        "kind": "editor-play",
+        "generation": 1,
+        "capabilities": [
+          "snapshot"
+        ],
+        "startedAt": "2026-08-31T12:00:00.000Z"
+      }
+    },
+    {
+      "label": "welcome with unknown capability is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "welcome",
+        "protocolVersion": 1,
+        "coreVersion": 1,
+        "instanceId": "editor-44936",
+        "kind": "editor-play",
+        "generation": 1,
+        "capabilities": [
+          "debug"
+        ],
+        "startedAt": "2026-08-31T12:00:00.000Z"
+      }
+    },
+    {
+      "label": "request with unknown action is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.unknownRequest",
+      "value": {
+        "type": "request",
+        "requestId": "req-004",
+        "action": "setBreakpoint"
+      }
+    },
+    {
+      "label": "request with invalid requestId is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "request",
+        "requestId": "invalid request id!",
+        "action": "getSnapshot"
+      }
+    },
+    {
+      "label": "response with unknown error code is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "response",
+        "requestId": "req-005",
+        "status": "error",
+        "error": "runtime.debugNotSupported"
+      }
+    },
+    {
+      "label": "event with unknown event name is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "event",
+        "event": "breakpointHit",
+        "documents": []
+      }
+    },
+    {
+      "label": "document snapshot with unknown artifact kind is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "response",
+        "requestId": "req-006",
+        "status": "ok",
+        "documents": [
+          {
+            "documentTypeId": "sample.unity.hero",
+            "documentId": "sample.unity.hero.default",
+            "kind": "visualbridge.debug.compiled",
+            "data": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "error message with unknown code is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "error",
+        "code": "runtime.notACode"
+      }
+    },
+    {
+      "label": "discovery record without startedAt is rejected",
+      "target": "discoveryRecord",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "formatVersion": 1,
+        "protocolVersion": 1,
+        "coreVersion": 1,
+        "instanceId": "editor-44936",
+        "kind": "player",
+        "capabilities": [
+          "snapshot"
+        ],
+        "tcpPort": 5309,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "pid": 44936,
+        "generation": 1
+      }
+    },
+    {
+      "label": "discovery record with zero generation is rejected",
+      "target": "discoveryRecord",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "formatVersion": 1,
+        "protocolVersion": 1,
+        "coreVersion": 1,
+        "instanceId": "player-82252",
+        "kind": "player",
+        "capabilities": [
+          "snapshot"
+        ],
+        "tcpPort": 5309,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "pid": 82252,
+        "generation": 0,
+        "startedAt": "2026-08-31T12:00:00.000Z"
+      }
+    },
+    {
+      "label": "discovery record with out-of-range tcp port is rejected",
+      "target": "discoveryRecord",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "formatVersion": 1,
+        "protocolVersion": 1,
+        "coreVersion": 1,
+        "instanceId": "player-82252",
+        "kind": "player",
+        "capabilities": [
+          "snapshot"
+        ],
+        "tcpPort": 70000,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "pid": 82252,
+        "generation": 1,
+        "startedAt": "2026-08-31T12:00:00.000Z"
+      }
+    },
+    {
+      "label": "discovery record with pipe path is rejected",
+      "target": "discoveryRecord",
+      "valid": false,
+      "loaderCode": "runtime.unknownProperty",
+      "value": {
+        "formatVersion": 1,
+        "protocolVersion": 1,
+        "coreVersion": 1,
+        "instanceId": "editor-44936",
+        "kind": "editor-play",
+        "capabilities": [
+          "snapshot"
+        ],
+        "tcpPort": 4594,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "pid": 44936,
+        "generation": 1,
+        "startedAt": "2026-08-31T12:00:00.000Z",
+        "pipePath": "\\\\.\\pipe\\visualbridge-runtime"
+      }
+    }
+  ]
+}

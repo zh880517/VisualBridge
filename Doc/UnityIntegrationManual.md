@@ -122,6 +122,15 @@ Table 是纯消费方：Unity 侧没有 Table Exporter，catalog（`.vbtablecata
 - 语义：文档按 graph DocumentType 唯一路由（不要求 documentType.id 对应 graphType——root 图的 `graphTypeId` 自行解析校验）；VS Code 侧的全部 error 级文档校验在编译器为 fail-closed（身份唯一、边方向/kind/dataType/连接上限、节点允许性、subgraph 白名单与调用类型匹配、实例约束、动态端口、接口端口），warning 级类型别名静默 canonical 化进产物；缺失节点/图属性物化 Catalog 默认值（mapping 记 `origin: metadataDefault`）。
 - 产物：`documents/{projectId}/{documentTypeId}/{documentId}.vbcompiled.json`（保留节点 position 与 subgraphId，节点/边按 id 排序）+ mapping + `manifest.graph.json`，与其他三域 manifest 共存。
 
+## 5.5 Runtime Bridge（Play 模式状态/事件）
+
+进入 Play 模式后，`VisualBridge.Runtime` 的 Runtime Bridge 服务器自动启动（发现层遵循架构文档第 17 章）：
+
+- 发现：`<临时目录>/visualbridge-runtime/<instanceId>.json`（instanceId 为 `editor-<pid>`，心跳每秒 touch mtime；陈旧判定 = 心跳 >5 秒或 pid 死）。VS Code 侧 `RuntimeBridgeService` 枚举并显式选择实例。
+- 协议：NDJSON 行分帧、token 首条消息认证、`coreVersion 1` 共享核（与 Editor Bridge 同构但独立版本化）；消息集 hello/welcome/getSnapshot 响应/artifactsChanged 事件/连接级 error（`runtime.*`）。
+- 能力：`snapshot`（读取 `Library/VisualBridge/Compiled` 编译产物，可按 documentTypeIds 过滤）与 `events`（产物目录变化推送）。Player 构建回退 `StreamingAssets/VisualBridge/Compiled`（接线属后续任务）。
+- 菜单：**Tools / VisualBridge/Runtime Bridge/Start in Play Mode**、**Status**。E2E：`npm run test:runtime-e2e`（batchmode Play + 隔离 Extension Host，覆盖发现/快照/事件全链路）。
+
 ## 6. Structured Compile
 
 输入是 Authoring Project（Project File + Structured 文档）+ 已提交 Catalog + Integration Profile。入口：

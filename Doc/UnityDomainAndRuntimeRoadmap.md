@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）进行中。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义进入 Runtime 协议）待开始。
 
 本阶段分三段：
 
@@ -241,7 +241,7 @@ Exit criteria：
 - 发现流程、实例代际、陈旧判定与显式选择的冻结设计进入架构文档；实测证据（含 Domain Reload、进程重启、多实例并存）留档。
 - 威胁模型覆盖本机边界内的全部已识别攻击面，与 Editor Bridge 威胁模型边界清晰分界。
 
-### VB-UX-09 共享协议核与 Runtime Bridge — `in_progress`
+### VB-UX-09 共享协议核与 Runtime Bridge — `complete`
 
 依赖：VB-UX-08。
 
@@ -251,6 +251,10 @@ Exit criteria：
 - Runtime 消息集为独立 Schema（长连流式状态/事件、请求/响应配对），进 Protocol 生成闭包；Editor Bridge Schema 保持不变。
 - Unity 侧与 VS Code 侧双端实现；客户端并发模型必须规避 Mono 命名管道已知死锁，本机回环 TCP 优先。
 
+实施与验证记录：2026-08-31 完成。协议设计冻结进 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 18 章（共享核落地为 Runtime Schema 的 core 形状 + `coreVersion 1` 声明，Editor Bridge Schema 字节不变并事后认定为 core 兼容先例）。`visualbridge-runtime-bridge.schema.json`（消息集 hello/welcome/getSnapshot/artifactsChanged/error + 发现记录，`runtimeBridge` 版本 1）进入 Protocol C# 生成闭包（第 16 个 Schema）；三方 parity fixture `visualbridge-runtime-bridge-cases.json`（24 例）由 AJV（generate.mjs `verifyRuntimeBridgeExamples`）、Unity 严格校验器与扩展宿主（`visualbridge.test.parseRuntimeBridgeMessage`/`parseRuntimeBridgeDiscoveryRecord` + host 测试）共同消费。Unity 侧：`VisualBridge.Runtime` 按第 13.7 节决策 B 升级（asmdef 增 Newtonsoft 预编译引用），新增 `VisualBridgeRuntimeBridgeValidator`/`VisualBridgeRuntimeArtifactStore`（Play 读 `Library/VisualBridge/Compiled`，Player 回退 StreamingAssets）/`VisualBridgeRuntimeBridgeServer`（监听/记录/心跳/事件推送）/`VisualBridgeRuntimeBridgeDiscovery`（心跳+pid 双信号陈旧判定）；`VisualBridge.Editor` 侧 `[InitializeOnLoad]` Host 管理 Play 生命周期（含 mid-play reload 兜底）。VS Code 侧：`runtimeBridgeProtocol.ts` + `RuntimeBridgeService`（枚举/连接/订阅）+ 测试命令。
+
+验证记录：EditMode 新增 11 例（parity fixture 26 断言、服务器全链路含并发/错误码、真实四域产物快照与 digest 确定性、artifactsChanged 事件、陈旧判定）随全套 144/144 通过；**Runtime Play 模式 E2E（`npm run test:runtime-e2e`，batchmode Play + 隔离 Extension Host）全链路通过**：发现→连接（welcome 代际一致）→getSnapshot（四域产物、字段断言）→修改产物→artifactsChanged 事件→恢复产物→Unity 干净退出（修了客户端响应竞态与 Batch 的 `[InitializeOnLoad]` reload 重挂接缺陷，E2E 编排改 batchmode 避免弹窗干扰桌面）；`npm run test:bridge-e2e` Editor Bridge 回归 `open=ok; reveal=ok` 退出码 0；`check:protocol` 漂移检查、`npm run check`、`dotnet build` 通过。调试语义（断点/调用栈）按设计留在 VB-UX-10。
+
 Exit criteria：
 
 - 共享核 + Runtime 消息 Schema 进 Protocol，`npm run check:protocol` 漂移检查通过；三方 parity fixture 覆盖正反例。
@@ -258,7 +262,7 @@ Exit criteria：
 - Play 模式 E2E：真实 Unity Editor Play 模式与隔离 VS Code Extension Host 完成状态/事件全链路验证；仅有协议单元测试或 batchmode 不能替代。
 - Editor Bridge open/reveal E2E 回归通过；`npm run test:bridge-e2e` 退出码 0。
 
-### VB-UX-10 调试语义进入 Runtime 协议 — `pending`
+### VB-UX-10 调试语义进入 Runtime 协议 — `in_progress`
 
 依赖：VB-UX-09。
 

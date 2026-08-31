@@ -554,3 +554,27 @@ Structured offline slice 已关闭：
 ### 17.4 工程告示
 
 `BuildPipeline.BuildPlayer` 会改写被跟踪的 ProjectSettings（Standalone batching、Graphics、URP、UnityConnect 等，实测确认）——将来把「构建带 VisualBridge Runtime 的 Player」接入工具链时（关联 §13.7 的 StreamingAssets 遗留项），构建步骤必须隔离或回滚这些脏文件，不进入产品 diff。
+
+
+## 18. Runtime Bridge 协议（冻结设计，VB-UX-09，2026-08-31）
+
+本节冻结本机 Runtime 通道的协议设计；Schema 见 `visualbridge-runtime-bridge.schema.json`（`runtimeBridge` 版本 1），发现层遵循第 17 章。
+
+### 18.1 共享协议核的实现方式
+
+Editor Bridge Schema 字节冻结不改。共享核落地为：Runtime Bridge Schema 中与 Editor Bridge 语义一致的 core 形状（hello/welcome/error 消息结构、NDJSON 行分帧、≥192 位 hex token 首条消息认证、协议版本/能力协商、实例 generation）+ 每条 hello/welcome 携带的 `coreVersion: 1` 声明字段。Editor Bridge V1 事后认定为 core 兼容先例；其未来 V2 升级时才改为 `$ref` 共享 defs。新通道必须复用 core 形状并声明 coreVersion——这是本仓库的协议规范，不是可选建议。共享核独立于各通道的 `protocolVersion` 演进，互不牵连。
+
+### 18.2 消息集
+
+- `hello`（client→instance）：token、protocolVersion(1)、coreVersion(1)、clientInstanceId(uuid)、capabilities。
+- `welcome`（instance→client）：instanceId（`editor-<pid>`/`player-<pid>`）、kind、generation、capabilities(`snapshot`/`events`)、startedAt。
+- `request`/`response`（requestId 配对）：V1 仅 `getSnapshot` 动作（可选 `documentTypeIds` 过滤）；ok 响应携带 `documents[]`（`{documentTypeId, documentId, kind, data}`——data 为解析后的编译产物），error 响应携带 `runtime.*` 错误码。
+- `event`（instance→client）：V1 仅 `artifactsChanged`——Play 模式下监听编译产物目录变化并向已订阅客户端推送新快照。
+- `error`（连接级）：`runtime.invalidToken/invalidJson/invalidMessage/unknownMessageType/protocolVersionMismatch/unknownRequest/internalError`；首条消息必须 hello，token 不符即断开（对齐 Editor Bridge）。
+- 传输：仅 `127.0.0.1` TCP（无命名管道端点——发现记录无 pipePath 字段）；客户端单线程同步请求/响应模型（Mono 管道死锁教训，见 §12）。
+
+### 18.3 实现边界
+
+- Unity 侧：`VisualBridge.Runtime` 按第 13.7 节决策 B 升级——asmdef 增加 Newtonsoft 预编译引用，新增 `VisualBridgeRuntimeArtifactStore`（Play 模式读 `Library/VisualBridge/Compiled`，Player 回退 `StreamingAssets/VisualBridge/Compiled`）与 `VisualBridgeRuntimeBridgeServer`（监听/注册记录/心跳，遵循第 17 章生命周期语义）；`VisualBridge.Editor` 以 `[InitializeOnLoad]` 兜底 mid-play reload 窗口。调试语义（断点/调用栈）不进入本版本——属 VB-UX-10。
+- VS Code 侧：`RuntimeBridgeService` 枚举 `visualbridge-runtime` 发现目录、显式选择实例、连接与订阅；本任务不提供 UI（DAP 适配器与 UI 属后续任务），以测试命令暴露状态供自动化。
+- 三方 parity fixture：`visualbridge-runtime-bridge-cases.json`（24 例）由 AJV（generate.mjs）、Unity 严格校验器（EditMode）与扩展宿主测试共同消费。

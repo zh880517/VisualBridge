@@ -53,7 +53,8 @@
     "test:vscode:host": "npm run test:host --workspace visualbridge",
     "test:vscode:cli": "npm run package:vscode && npm run test:cli --workspace visualbridge",
     "package:vscode": "npm run package:vsix --workspace visualbridge",
-    "test:bridge-e2e": "npm run test:bridge-e2e --workspace visualbridge"
+    "test:bridge-e2e": "npm run test:bridge-e2e --workspace visualbridge",
+    "test:runtime-e2e": "npm run build --workspace visualbridge && node ./Tools/VSCodeExtension/test/runRuntimeE2E.mjs"
   },
   "devDependencies": {
     "@types/node": "22.20.1"

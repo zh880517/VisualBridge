@@ -98,10 +98,11 @@ $unityProject = (Resolve-Path .\UnityProject).Path
 
 Catalog 与 Compiler batch 统一返回 `0` 表示成功、`1` 表示执行失败、`2` 表示 Check 发现 drift。退出码之外还必须检查日志与 EditMode XML。Unity 生成的 `.csproj` 可再用 `dotnet build` 做快速编译检查，但不能替代 batchmode import 或 EditMode tests。
 
-Editor Bridge 的端到端验证在真实 Unity Editor（非 batchmode）与隔离 VS Code Extension Host 之间执行 open/reveal 往返：
+Editor Bridge 的端到端验证在真实 Unity Editor（非 batchmode）与隔离 VS Code Extension Host 之间执行 open/reveal 往返；Runtime Bridge 的端到端验证在 batchmode Play 模式与隔离 Extension Host 之间执行发现/快照/事件往返：
 
 ```powershell
 npm run test:bridge-e2e
-```
+
+npm run test:runtime-e2e```
 
 该命令同时启动两个进程（Unity 编辑器需已安装在本机，可用 `VISUALBRIDGE_UNITY_EDITOR` 覆盖路径），完成后双方各自退出并校验结果。完整边界见 [Unity Editor 接入架构](Doc/UnityIntegrationArchitecture.md)、[Unity Editor 接入任务清单](Doc/UnityIntegrationRoadmap.md) 与 [Release Quality](Doc/ReleaseQuality.md)。

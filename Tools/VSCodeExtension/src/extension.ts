@@ -6,6 +6,8 @@ import type {
 } from "@visualbridge/core";
 import { TABLE_EDITOR_ID } from "@visualbridge/table";
 import { parseGraphCatalog } from "@visualbridge/graph";
+import { RuntimeBridgeService } from "./bridge/runtimeBridgeService";
+import { parseRuntimeBridgeDiscoveryRecord, parseRuntimeBridgeMessage, RuntimeBridgeProtocolError } from "./bridge/runtimeBridgeProtocol";
 import { CatalogBrowser } from "./catalog/catalogBrowser";
 import { createDocument } from "./commands/createDocument";
 import { createEntityDocument } from "./commands/createEntityDocument";
@@ -604,6 +606,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     output.appendLine(`[bridge] Editor Bridge server failed to start: ${String(errorValue)}`);
   }
 
+  const runtimeBridge = new RuntimeBridgeService((message) => output.appendLine(`[runtime] ${message}`));
+  context.subscriptions.push({ dispose: () => runtimeBridge.disconnect() });
+
   if (context.extensionMode !== vscode.ExtensionMode.Production) {
     context.subscriptions.push(
       vscode.commands.registerCommand("visualbridge.test.getBridgeServerState", () => bridgeServer.state ?? null),
@@ -632,6 +637,71 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.commands.registerCommand("visualbridge.test.parseGraphCatalog", (value: unknown) => {
         const result = parseGraphCatalog(JSON.stringify(value));
         return { ok: result.success === true };
+      }),
+      vscode.commands.registerCommand("visualbridge.test.getRuntimeBridgeState", () => runtimeBridge.state),
+      vscode.commands.registerCommand("visualbridge.test.enumerateRuntimeInstances", async () => {
+        const directory = process.env.VISUALBRIDGE_TEST_RUNTIME_DIR;
+        const instances = await runtimeBridge.enumerateInstances(directory);
+        return instances.map((instance) => ({
+          instanceId: instance.instanceId,
+          kind: instance.kind,
+          tcpPort: instance.tcpPort,
+          token: instance.token,
+          pid: instance.pid,
+          generation: instance.generation,
+          startedAt: instance.startedAt,
+          ...(instance.staleReason === undefined ? {} : { staleReason: instance.staleReason }),
+        }));
+      }),
+      vscode.commands.registerCommand("visualbridge.test.connectRuntimeInstance", async (instance: {
+        readonly instanceId: string;
+        readonly kind: string;
+        readonly tcpPort: number;
+        readonly token: string;
+        readonly pid: number;
+        readonly generation: number;
+        readonly startedAt: string;
+      }) => {
+        const welcome = await runtimeBridge.connect({
+          recordPath: "",
+          instanceId: instance.instanceId,
+          kind: instance.kind as "editor-play" | "player",
+          tcpPort: instance.tcpPort,
+          token: instance.token,
+          pid: instance.pid,
+          generation: instance.generation,
+          startedAt: instance.startedAt,
+        });
+        return {
+          instanceId: welcome.instanceId,
+          kind: welcome.kind,
+          generation: welcome.generation,
+          capabilities: [...welcome.capabilities],
+        };
+      }),
+      vscode.commands.registerCommand("visualbridge.test.getRuntimeSnapshot", async (documentTypeIds?: readonly string[]) =>
+        runtimeBridge.getSnapshot(documentTypeIds)),
+      vscode.commands.registerCommand("visualbridge.test.parseRuntimeBridgeMessage", (value: unknown) => {
+        try {
+          return { ok: true, message: parseRuntimeBridgeMessage(value) };
+        } catch (errorValue) {
+          if (errorValue instanceof RuntimeBridgeProtocolError) {
+            return { ok: false, code: errorValue.code, jsonPath: errorValue.jsonPath };
+          }
+
+          return { ok: false, code: "runtime.internalError", jsonPath: "$" };
+        }
+      }),
+      vscode.commands.registerCommand("visualbridge.test.parseRuntimeBridgeDiscoveryRecord", (value: unknown) => {
+        try {
+          return { ok: true, record: parseRuntimeBridgeDiscoveryRecord(value) };
+        } catch (errorValue) {
+          if (errorValue instanceof RuntimeBridgeProtocolError) {
+            return { ok: false, code: errorValue.code, jsonPath: errorValue.jsonPath };
+          }
+
+          return { ok: false, code: "runtime.internalError", jsonPath: "$" };
+        }
       }),
     );
   }

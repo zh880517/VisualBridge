@@ -2065,6 +2065,25 @@ exports.run = async function run() {
     }
   });
 
+  await test("shares the Runtime Bridge parity fixture with the schema and Unity validators", async () => {
+    const fixturePath = path.join(__dirname, "..", "..", "..", "..",
+      "Packages", "com.kyle.visualbridge", "Tests", "Fixtures", "visualbridge-runtime-bridge-cases.json");
+    const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
+    assert.ok(Array.isArray(fixture.cases) && fixture.cases.length >= 12);
+    for (const testCase of fixture.cases) {
+      const command = testCase.target === "discoveryRecord"
+        ? "visualbridge.test.parseRuntimeBridgeDiscoveryRecord"
+        : "visualbridge.test.parseRuntimeBridgeMessage";
+      const result = await vscode.commands.executeCommand(command, testCase.value);
+      if (testCase.valid) {
+        assert.equal(result.ok, true, `${testCase.label}: expected a valid parse.`);
+      } else {
+        assert.equal(result.ok, false, `${testCase.label}: expected an invalid parse.`);
+        assert.equal(result.code, testCase.loaderCode, `${testCase.label}: error code mismatch.`);
+      }
+    }
+  });
+
   await test("runs the Editor Bridge discovery record, handshake, open, and reveal", async () => {
     const state = await waitForAsync(
       () => vscode.commands.executeCommand("visualbridge.test.getBridgeServerState"),

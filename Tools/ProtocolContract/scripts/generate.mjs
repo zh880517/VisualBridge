@@ -48,6 +48,7 @@ verifyContractExamples(ajv);
 await verifyUnityIntegrationProfileExamples(ajv);
 await verifyEditorBridgeExamples(ajv);
 await verifyGraphCatalogExamples(ajv);
+await verifyRuntimeBridgeExamples(ajv);
 verifySharedFormSchemaParity(ajv);
 await verifyImplementationRegistry();
 
@@ -233,6 +234,48 @@ async function verifyEditorBridgeExamples(compiler) {
   assert.equal(fixture.cases.length > 0, true, "Editor Bridge parity fixture must not be empty.");
   for (const testCase of fixture.cases) {
     assert.equal(typeof testCase.label, "string", "Editor Bridge fixture case requires a label.");
+    assert.equal(typeof testCase.valid, "boolean", `${testCase.label} requires a boolean valid flag.`);
+    const target = testCase.target === "discoveryRecord" ? discoveryValidator : messageValidator;
+    assert.equal(
+      target(testCase.value),
+      testCase.valid,
+      `${testCase.label} Schema parity drift: ${JSON.stringify(target.errors)}`,
+    );
+    if (!testCase.valid) {
+      assert.equal(typeof testCase.loaderCode, "string", `${testCase.label} requires a loaderCode.`);
+    }
+  }
+}
+
+async function verifyRuntimeBridgeExamples(compiler) {
+  const runtimeId = "https://visualbridge.dev/schema/visualbridge-runtime-bridge.schema.json";
+  const messageValidator = requireValidator(compiler, runtimeId);
+  const discoveryValidator = requireValidator(compiler, `${runtimeId}#/$defs/discoveryRecord`);
+  assert.equal(contractManifest.versions.runtimeBridge, 1, "Runtime Bridge version registry drift.");
+  const runtimeSchema = schemas.find((entry) => entry.name === "visualbridge-runtime-bridge.schema.json")?.schema;
+  assert.equal(
+    runtimeSchema?.$defs?.discoveryRecord?.properties?.formatVersion?.const,
+    contractManifest.versions.runtimeBridge,
+    "Runtime Bridge discovery record format version drift.",
+  );
+  assert.equal(
+    runtimeSchema?.$defs?.coreVersion?.const,
+    1,
+    "Runtime Bridge core version drift.",
+  );
+  const fixturePath = path.join(
+    repositoryRoot,
+    "Packages",
+    "com.kyle.visualbridge",
+    "Tests",
+    "Fixtures",
+    "visualbridge-runtime-bridge-cases.json",
+  );
+  const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
+  assert.equal(Array.isArray(fixture.cases), true, "Runtime Bridge parity fixture must declare cases.");
+  assert.equal(fixture.cases.length >= 12, true, "Runtime Bridge parity fixture must cover at least 12 cases.");
+  for (const testCase of fixture.cases) {
+    assert.equal(typeof testCase.label, "string", "Runtime Bridge fixture case requires a label.");
     assert.equal(typeof testCase.valid, "boolean", `${testCase.label} requires a boolean valid flag.`);
     const target = testCase.target === "discoveryRecord" ? discoveryValidator : messageValidator;
     assert.equal(
