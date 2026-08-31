@@ -6,7 +6,7 @@
 
 本文在 [`VisualBridgeArchitecture.md`](VisualBridgeArchitecture.md)、[`ProtocolContracts.md`](ProtocolContracts.md)、[`StructuredConfigModel.md`](StructuredConfigModel.md) 和四个领域正式契约之上补充 Unity 侧职责。已有 Project、Catalog、Document、Field、稳定 ID、Hash 和诊断语义继续以 `Protocol/Schema`、`Protocol/contract-manifest.json`、现有 TypeScript Core 及领域正式文档为准。本文不能通过概念描述覆盖或放宽这些已冻结契约。
 
-当前仓库已经完成 C# contract generator、有效 UPM Package、Integration Profile V1、Structured Catalog Exporter 与 offline Import/Compiler；固定 Unity 样例可在没有 VS Code/Bridge 的条件下执行 Generate/Check。UPM Package ID 固定为 `com.kyle.visualbridge`，C# namespace/assembly 使用 `VisualBridge.<Module>`；私有 VSIX 保持 `UNLICENSED` 并携带不授予公共使用权的 proprietary notice。最小 Editor Bridge V1 已实现并于 2026-08-31 完成：正式消息 Schema 进入 Protocol、Unity 侧客户端与 VS Code 扩展宿主服务器落地、全部自动化门槛通过、真实 Unity Editor 与隔离 VS Code Extension Host 完成 open/reveal E2E（见第 12 章）。Runtime、Debug、DAP 与 Player 仍未实现。实施状态与剩余发布门槛见 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)。
+当前仓库已经完成 C# contract generator、有效 UPM Package、Integration Profile V1、Structured Catalog Exporter 与 offline Import/Compiler；固定 Unity 样例可在没有 VS Code/Bridge 的条件下执行 Generate/Check。UPM Package ID 固定为 `com.kyle.visualbridge`，C# namespace/assembly 使用 `VisualBridge.<Module>`；私有 VSIX 保持 `UNLICENSED` 并携带不授予公共使用权的 proprietary notice。最小 Editor Bridge V1 已实现并于 2026-08-31 完成：正式消息 Schema 进入 Protocol、Unity 侧客户端与 VS Code 扩展宿主服务器落地、全部自动化门槛通过、真实 Unity Editor 与隔离 VS Code Extension Host 完成 open/reveal E2E（见第 12 章）。Runtime 实例发现、Runtime Bridge 协议（含调试租约与源映射语义）、VS Code DAP 检查适配器与 MCP 运行时检查工具已于 2026-08-31 落地（见第 17、18 章）；断点/调用栈等执行级调试语义按 §18.3 范围裁定尚未进入协议，Unity Player 与远程/设备连接（阶段 C）明确推迟。实施状态与剩余发布门槛见 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)。
 
 ## 2. 首期范围
 
@@ -496,7 +496,7 @@ Graph 编译镜像既有 Compiler 生命周期，由 `VisualBridgeGraphCompiler`
 
 - 首个 Unity 垂直切片是 Structured、offline、Editor-only。
 - Editor Bridge 不是首切片前置，在离线 Export/Compile 完成后单独进入。
-- Runtime、Debug、DAP 和 Player 不在本路线图范围内。
+- Runtime、Debug、DAP 和 Player 不在本路线图（Editor 集成首路线图）范围内；后续由 [`UnityDomainAndRuntimeRoadmap.md`](UnityDomainAndRuntimeRoadmap.md) 单独覆盖并已落地本机 Runtime 检查能力（第 17、18 章），Player 与远程仍推迟。
 - Authoring Document 权威；Catalog 和 Unity artifact 是派生数据。
 - Structured Compile 必须读取 Project File 并按 Document Type 解析 Config Type。
 - C# contract 只从现有 Schema/manifest 生成，不建立手写第二来源。
