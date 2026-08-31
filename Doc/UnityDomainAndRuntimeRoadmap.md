@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 检查适配器）已关闭，**阶段 B（本机 Runtime 接入）全部完成**——VB-UX-07 至 VB-UX-12 已关闭。阶段 C（远程与设备连接）仍为范围登记，未分配任务。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 检查适配器）已关闭，**阶段 A 与阶段 B 全部完成**——VB-UX-00 至 VB-UX-12 已关闭；阶段 C（远程与设备连接）经项目方 2026-08-31 决策明确推迟（见第 6 节），本清单当前无可执行任务。
 
 本阶段分三段：
 
@@ -327,6 +327,8 @@ Exit criteria：
 
 阶段 C 在阶段 B 主体完成后由独立 spike 启动，届时依据实测结论再拆分任务并沿用本清单的工作流与状态语义。当前只登记范围与出口标准：
 
+**2026-08-31 项目方决策：阶段 C 明确推迟，暂不启动 spike。**理由：远程与设备连接需要真实目标设备与网络拓扑等设计输入，在输入具备前启动 spike 产出会偏 speculative；本机阶段（A/B）的全部冻结面（发现记录、协议核、租约、产物格式）均不因推迟而失效，阶段 C 启动时从本节范围与出口标准直接进入 spike + 威胁模型，不需要改动任何已落地契约。重开条件：项目方提供目标设备/远程场景输入，或本机阶段出现真实的远程需求方。
+
 - **范围**：跨网络边界的端点安全暴露（防火墙、设备/实例寻址）、配对与凭据生命周期（首次信任建立、撤销、轮换）、传输加密、跨机器审计与错误恢复；不承诺与阶段 B 同协议版本，若远程要求传输层换形，按其自身版本演进。
 - **出口标准（最低）**：spike 与威胁模型先行并冻结进架构文档；跨机器实例发现、配对、撤销与重连有自动化或可复现手工验证；本机阶段全部门槛回归不受影响；`ScriptableObject` 排除条款与单一权威源原则不被任何远程能力绕过。
 
@@ -340,7 +342,7 @@ Exit criteria：
 
 ## 8. 完成定义
 
-- 阶段 A/B 全部任务 `complete`，阶段 C 已由 spike 启动或由项目方明确推迟并记录。
+- 阶段 A/B 全部任务 `complete`，阶段 C 已由项目方明确推迟并记录（2026-08-31，见第 6 节）——**本条已满足，本清单主体完结**。
 - 三领域离线编译闭环、本机 Runtime 通道、调试链路与 DAP 适配器全部经真实 Unity Editor/Player 与隔离 Extension Host 验证。
 - 架构文档同步收录：领域产物设计记录、Adapter API 决策、Runtime 产物形态决策、发现流程与威胁模型、协议分层与调试权限模型。
 - 既有 VB-UI 系列全部 exit criteria 保持通过；仓库不引入 Runtime 行为越界（`VisualBridge.Runtime` 的定位以 VB-UX-07 冻结结论为准）、`ScriptableObject` 扫描或任何绕过单一权威源的路径。
