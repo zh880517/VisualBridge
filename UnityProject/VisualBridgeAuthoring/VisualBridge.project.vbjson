@@ -3,7 +3,8 @@
   "projectId": "visualbridge.unity-sample",
   "documentRoots": [
     "Config",
-    "Entities"
+    "Entities",
+    "Tables"
   ],
   "documentTypes": [
     {
@@ -27,6 +28,21 @@
       "catalogs": [
         "Catalog/Gameplay.vbentitycatalog"
       ]
+    },
+    {
+      "id": "sample.unity.skills",
+      "editor": "table",
+      "include": [
+        "Tables/**/*.csv"
+      ],
+      "exclude": [],
+      "catalogs": [
+        "Catalog/Gameplay.vbtablecatalog"
+      ]
     }
-  ]
+  ],
+  "tableLayout": {
+    "nameKeyRow": 2,
+    "dataStartRow": 3
+  }
 }

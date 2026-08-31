@@ -2,7 +2,7 @@
 
 VisualBridge 是一个基于 VS Code 的游戏语义内容创作平台。当前版本提供 Graph、Entity、Structured Config、Table 四类 Authoring 文档的可视化编辑，共享 Catalog、Form、Reference、Project Transaction 和 MCP 语义，并以文本源文件或受约束的 CSV/XLSX 载体作为权威数据。
 
-仓库现已落地首个 Unity Structured offline、Editor-only 垂直切片与第二个领域切片的 Entity Catalog Export：`Packages/com.kyle.visualbridge` 提供显式 C# metadata、固定 Profile、Structured 与 Entity Catalog Generate/Check，以及从 Authoring Project（Structured 与 Entity 文档）到 `Library/VisualBridge/Compiled` 确定性派生产物的 Generate/Check。它不依赖 VS Code 或 Bridge 在线运行。最小 Unity Editor Bridge V1 亦已落地：Unity Editor 可以通过本机 NDJSON 协议请求 VS Code 打开或定位 Authoring Document（open/reveal），协议契约见 `Protocol/Schema/visualbridge-editor-bridge.schema.json`，边界见 [Unity Editor 接入架构](Doc/UnityIntegrationArchitecture.md)。当前仍未实现 Runtime loader/行为、Debug、DAP、Player、设备发现或远程网络通信；Package 中名为 `VisualBridge.Runtime` 的程序集只是 player-visible、无 Unity API/无行为的纯 metadata marker surface，不是 Runtime 功能。
+仓库现已落地首个 Unity Structured offline、Editor-only 垂直切片与第二个领域切片的 Entity Catalog Export：`Packages/com.kyle.visualbridge` 提供显式 C# metadata、固定 Profile、Structured 与 Entity Catalog Generate/Check，以及从 Authoring Project（Structured、Entity 与 Table/CSV 文档）到 `Library/VisualBridge/Compiled` 确定性派生产物的 Generate/Check。它不依赖 VS Code 或 Bridge 在线运行。最小 Unity Editor Bridge V1 亦已落地：Unity Editor 可以通过本机 NDJSON 协议请求 VS Code 打开或定位 Authoring Document（open/reveal），协议契约见 `Protocol/Schema/visualbridge-editor-bridge.schema.json`，边界见 [Unity Editor 接入架构](Doc/UnityIntegrationArchitecture.md)。当前仍未实现 Runtime loader/行为、Debug、DAP、Player、设备发现或远程网络通信；Package 中名为 `VisualBridge.Runtime` 的程序集只是 player-visible、无 Unity API/无行为的纯 metadata marker surface，不是 Runtime 功能。
 
 本项目是私有项目，所有 npm 包和 VSIX 均标记为 `UNLICENSED`。仓库内容不是公开分发许可证的授权。
 
@@ -87,6 +87,8 @@ $unityProject = (Resolve-Path .\UnityProject).Path
 & $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeStructuredCompilerBatch.Check -logFile "$env:TEMP\visualbridge-compile-check.log"
 & $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeEntityCompilerBatch.Generate -logFile "$env:TEMP\visualbridge-entity-compile-generate.log"
 & $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeEntityCompilerBatch.Check -logFile "$env:TEMP\visualbridge-entity-compile-check.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeTableCompilerBatch.Generate -logFile "$env:TEMP\visualbridge-table-compile-generate.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeTableCompilerBatch.Check -logFile "$env:TEMP\visualbridge-table-compile-check.log"
 & $unityEditor -batchmode -nographics -runTests -testPlatform EditMode -projectPath $unityProject -testResults "$env:TEMP\visualbridge-editmode.xml" -logFile "$env:TEMP\visualbridge-editmode.log"
 ```
 

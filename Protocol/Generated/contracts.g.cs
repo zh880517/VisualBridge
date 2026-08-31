@@ -32,6 +32,7 @@ namespace VisualBridge.Protocol.Generated
         public const string VisualBridgeProjectSha256 = "dde9d43f3fdc09ca0978fe0e8650a731726f6490ad1fda2e62023db69b01c3e9";
         public const string VisualBridgeStructuredCatalogSha256 = "0cae8ab7b7a9aa1159669f0939f7178e5e310056366fe0713165cd87687942fe";
         public const string VisualBridgeStructuredSha256 = "24af3e3ecd5f5481c76ad4e1377d5441d09a238faa37b220dfbc1f6fffc0baf8";
+        public const string VisualBridgeTableCatalogSha256 = "05e0fea3c73f1290cab52ef4ecbacd79d96ad074232794453fa3ac3f90680f7c";
         public const string VisualBridgeUnityIntegrationProfileSha256 = "8bb83a17fa223158cf60b0d5cea460c53f8cd6a57b9cadee4d3734233eba582e";
 
         public static readonly IReadOnlyList<VisualBridgeSchemaContract> Contracts =
@@ -44,6 +45,7 @@ namespace VisualBridge.Protocol.Generated
                 new VisualBridgeSchemaContract("Schema/visualbridge-project.schema.json", "https://visualbridge.dev/schema/visualbridge-project.schema.json", VisualBridgeProjectSha256),
                 new VisualBridgeSchemaContract("Schema/visualbridge-structured-catalog.schema.json", "https://visualbridge.dev/schema/visualbridge-structured-catalog.schema.json", VisualBridgeStructuredCatalogSha256),
                 new VisualBridgeSchemaContract("Schema/visualbridge-structured.schema.json", "https://visualbridge.dev/schema/visualbridge-structured.schema.json", VisualBridgeStructuredSha256),
+                new VisualBridgeSchemaContract("Schema/visualbridge-table-catalog.schema.json", "https://visualbridge.dev/schema/visualbridge-table-catalog.schema.json", VisualBridgeTableCatalogSha256),
                 new VisualBridgeSchemaContract("Schema/visualbridge-unity-integration-profile.schema.json", "https://visualbridge.dev/schema/visualbridge-unity-integration-profile.schema.json", VisualBridgeUnityIntegrationProfileSha256),
             };
     }
@@ -810,6 +812,289 @@ namespace VisualBridge.Protocol.Generated.VisualBridgeStructured
 
         [DataMember(Name = "properties", IsRequired = true, EmitDefaultValue = true, Order = 2)]
         public IReadOnlyDictionary<string, object?> Properties { get; set; } = new Dictionary<string, object?>();
+    }
+}
+
+namespace VisualBridge.Protocol.Generated.VisualBridgeTableCatalog
+{
+    // JSON Schema：https://visualbridge.dev/schema/visualbridge-table-catalog.schema.json
+    [DataContract]
+    public sealed class Root
+    {
+        [DataMember(Name = "catalogId", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public string CatalogId { get; set; } = null!;
+
+        [DataMember(Name = "formatVersion", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public int FormatVersion { get; set; }
+
+        [DataMember(Name = "source", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public VisualBridge.Protocol.Generated.VisualBridgeCatalogSource.Root Source { get; set; } = null!;
+
+        [DataMember(Name = "tableTypes", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.TableType> TableTypes { get; set; } = Array.Empty<VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.TableType>();
+
+        [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 4)]
+        public string Title { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class CellEncoding
+    {
+        [DataMember(Name = "item", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.CellEncoding? Item { get; set; }
+
+        [DataMember(Name = "kind", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string Kind { get; set; } = null!;
+
+        [DataMember(Name = "separator", IsRequired = false, EmitDefaultValue = false, Order = 2)]
+        public string? Separator { get; set; }
+    }
+
+    [DataContract]
+    public sealed class Column
+    {
+        [DataMember(Name = "aliases", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public IReadOnlyList<string>? Aliases { get; set; }
+
+        [DataMember(Name = "cellEncoding", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.CellEncoding CellEncoding { get; set; } = null!;
+
+        [DataMember(Name = "dataTypeId", IsRequired = false, EmitDefaultValue = false, Order = 2)]
+        public string? DataTypeId { get; set; }
+
+        [DataMember(Name = "defaultValue", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        public object? DefaultValue { get; set; }
+
+        [DataMember(Name = "description", IsRequired = false, EmitDefaultValue = false, Order = 4)]
+        public string? Description { get; set; }
+
+        [DataMember(Name = "editor", IsRequired = false, EmitDefaultValue = false, Order = 5)]
+        public VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.Editor? Editor { get; set; }
+
+        [DataMember(Name = "fields", IsRequired = false, EmitDefaultValue = false, Order = 6)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.Field>? Fields { get; set; }
+
+        [DataMember(Name = "id", IsRequired = true, EmitDefaultValue = true, Order = 7)]
+        public string Id { get; set; } = null!;
+
+        [DataMember(Name = "item", IsRequired = false, EmitDefaultValue = false, Order = 8)]
+        public VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.ValueDefinition? Item { get; set; }
+
+        [DataMember(Name = "nameKey", IsRequired = true, EmitDefaultValue = true, Order = 9)]
+        public string NameKey { get; set; } = null!;
+
+        [DataMember(Name = "nameKeyAliases", IsRequired = false, EmitDefaultValue = false, Order = 10)]
+        public IReadOnlyList<string>? NameKeyAliases { get; set; }
+
+        [DataMember(Name = "reference", IsRequired = false, EmitDefaultValue = false, Order = 11)]
+        public VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.Reference? Reference { get; set; }
+
+        [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 12)]
+        public string Title { get; set; } = null!;
+
+        [DataMember(Name = "valueType", IsRequired = true, EmitDefaultValue = true, Order = 13)]
+        public string ValueType { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class Csv
+    {
+        [DataMember(Name = "delimiter", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public string Delimiter { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class Editor
+    {
+        [DataMember(Name = "integer", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public bool? Integer { get; set; }
+
+        [DataMember(Name = "kind", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string Kind { get; set; } = null!;
+
+        [DataMember(Name = "max", IsRequired = false, EmitDefaultValue = false, Order = 2)]
+        public double? Max { get; set; }
+
+        [DataMember(Name = "min", IsRequired = false, EmitDefaultValue = false, Order = 3)]
+        public double? Min { get; set; }
+
+        [DataMember(Name = "options", IsRequired = false, EmitDefaultValue = false, Order = 4)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.EditorOption>? Options { get; set; }
+
+        [DataMember(Name = "readOnly", IsRequired = false, EmitDefaultValue = false, Order = 5)]
+        public bool? ReadOnly { get; set; }
+
+        [DataMember(Name = "step", IsRequired = false, EmitDefaultValue = false, Order = 6)]
+        public double? Step { get; set; }
+    }
+
+    [DataContract]
+    public sealed class EditorOption
+    {
+        [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public string Title { get; set; } = null!;
+
+        [DataMember(Name = "value", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public object? Value { get; set; }
+    }
+
+    [DataContract]
+    public sealed class Field
+    {
+        [DataMember(Name = "aliases", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public IReadOnlyList<string>? Aliases { get; set; }
+
+        [DataMember(Name = "dataTypeId", IsRequired = false, EmitDefaultValue = false, Order = 1)]
+        public string? DataTypeId { get; set; }
+
+        [DataMember(Name = "defaultValue", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public object? DefaultValue { get; set; }
+
+        [DataMember(Name = "description", IsRequired = false, EmitDefaultValue = false, Order = 3)]
+        public string? Description { get; set; }
+
+        [DataMember(Name = "editor", IsRequired = false, EmitDefaultValue = false, Order = 4)]
+        public VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.Editor? Editor { get; set; }
+
+        [DataMember(Name = "fields", IsRequired = false, EmitDefaultValue = false, Order = 5)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.Field>? Fields { get; set; }
+
+        [DataMember(Name = "id", IsRequired = true, EmitDefaultValue = true, Order = 6)]
+        public string Id { get; set; } = null!;
+
+        [DataMember(Name = "item", IsRequired = false, EmitDefaultValue = false, Order = 7)]
+        public VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.ValueDefinition? Item { get; set; }
+
+        [DataMember(Name = "reference", IsRequired = false, EmitDefaultValue = false, Order = 8)]
+        public VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.Reference? Reference { get; set; }
+
+        [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 9)]
+        public string Title { get; set; } = null!;
+
+        [DataMember(Name = "valueType", IsRequired = true, EmitDefaultValue = true, Order = 10)]
+        public string ValueType { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class Partition
+    {
+        [DataMember(Name = "deduplicateByColumnId", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public string DeduplicateByColumnId { get; set; } = null!;
+
+        [DataMember(Name = "duplicatePolicy", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string DuplicatePolicy { get; set; } = null!;
+
+        [DataMember(Name = "namePattern", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public string NamePattern { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class Reference
+    {
+        [DataMember(Name = "allowMissing", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public bool? AllowMissing { get; set; }
+
+        [DataMember(Name = "kind", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string Kind { get; set; } = null!;
+
+        [DataMember(Name = "target", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public IReadOnlyDictionary<string, object?> Target { get; set; } = new Dictionary<string, object?>();
+    }
+
+    [DataContract]
+    public sealed class Sheet
+    {
+        [DataMember(Name = "aliases", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public IReadOnlyList<string>? Aliases { get; set; }
+
+        [DataMember(Name = "columns", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.Column> Columns { get; set; } = Array.Empty<VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.Column>();
+
+        [DataMember(Name = "id", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public string Id { get; set; } = null!;
+
+        [DataMember(Name = "keyColumnId", IsRequired = false, EmitDefaultValue = false, Order = 3)]
+        public string? KeyColumnId { get; set; }
+
+        [DataMember(Name = "name", IsRequired = true, EmitDefaultValue = true, Order = 4)]
+        public string Name { get; set; } = null!;
+
+        [DataMember(Name = "nameAliases", IsRequired = false, EmitDefaultValue = false, Order = 5)]
+        public IReadOnlyList<string>? NameAliases { get; set; }
+
+        [DataMember(Name = "partition", IsRequired = false, EmitDefaultValue = false, Order = 6)]
+        public VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.Partition? Partition { get; set; }
+
+        [DataMember(Name = "rowDisplayNamePattern", IsRequired = true, EmitDefaultValue = true, Order = 7)]
+        public string RowDisplayNamePattern { get; set; } = null!;
+
+        [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 8)]
+        public string Title { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class Source
+    {
+        [DataMember(Name = "providerId", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public string ProviderId { get; set; } = null!;
+
+        [DataMember(Name = "typeName", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string TypeName { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class TableType
+    {
+        [DataMember(Name = "aliases", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public IReadOnlyList<string>? Aliases { get; set; }
+
+        [DataMember(Name = "csv", IsRequired = false, EmitDefaultValue = false, Order = 1)]
+        public VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.Csv? Csv { get; set; }
+
+        [DataMember(Name = "description", IsRequired = false, EmitDefaultValue = false, Order = 2)]
+        public string? Description { get; set; }
+
+        [DataMember(Name = "id", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        public string Id { get; set; } = null!;
+
+        [DataMember(Name = "sheets", IsRequired = true, EmitDefaultValue = true, Order = 4)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.Sheet> Sheets { get; set; } = Array.Empty<VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.Sheet>();
+
+        [DataMember(Name = "source", IsRequired = false, EmitDefaultValue = false, Order = 5)]
+        public VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.Source? Source { get; set; }
+
+        [DataMember(Name = "title", IsRequired = true, EmitDefaultValue = true, Order = 6)]
+        public string Title { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class ValueDefinition
+    {
+        [DataMember(Name = "dataTypeId", IsRequired = false, EmitDefaultValue = false, Order = 0)]
+        public string? DataTypeId { get; set; }
+
+        [DataMember(Name = "defaultValue", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public object? DefaultValue { get; set; }
+
+        [DataMember(Name = "editor", IsRequired = false, EmitDefaultValue = false, Order = 2)]
+        public VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.Editor? Editor { get; set; }
+
+        [DataMember(Name = "fields", IsRequired = false, EmitDefaultValue = false, Order = 3)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.Field>? Fields { get; set; }
+
+        [DataMember(Name = "item", IsRequired = false, EmitDefaultValue = false, Order = 4)]
+        public VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.ValueDefinition? Item { get; set; }
+
+        [DataMember(Name = "reference", IsRequired = false, EmitDefaultValue = false, Order = 5)]
+        public VisualBridge.Protocol.Generated.VisualBridgeTableCatalog.Reference? Reference { get; set; }
+
+        [DataMember(Name = "valueType", IsRequired = true, EmitDefaultValue = true, Order = 6)]
+        public string ValueType { get; set; } = null!;
+    }
+
+    [DataContract]
+    public sealed class ValueShape
+    {
     }
 }
 

@@ -10,6 +10,7 @@
       "visualbridge-project.schema.json",
       "visualbridge-structured-catalog.schema.json",
       "visualbridge-structured.schema.json",
+      "visualbridge-table-catalog.schema.json",
       "visualbridge-unity-integration-profile.schema.json"
     ],
     "outputs": [

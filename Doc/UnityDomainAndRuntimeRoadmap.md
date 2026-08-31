@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：VB-UX-00 至 VB-UX-03（语言规范、Entity Catalog Export、Entity Import/Compile、Adapter API 复核决策）已完成，VB-UX-04（Table Import/Compile）待开始。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：VB-UX-00 至 VB-UX-04（语言规范、Entity Catalog Export、Entity Import/Compile、Adapter API 复核决策、Table Import/Compile）已完成，VB-UX-05（Graph Catalog V4 Exporter）待开始。
 
 本阶段分三段：
 
@@ -143,7 +143,7 @@ Exit criteria：
 - 决策记录（含证据、备选方案与拒绝理由）进入架构文档正式章节，不再留「待定」。
 - 若建立公开 API：两个既有切片迁移到该 API 且全部既有门槛回归通过；若不建立：Table/Graph 任务继续按 per-domain batch 服务模式实施，边界写明。
 
-### VB-UX-04 Table Import / Compile — `in_progress`
+### VB-UX-04 Table Import / Compile — `complete`
 
 依赖：VB-UX-03。
 
@@ -153,12 +153,16 @@ Exit criteria：
 - Table 文档 → 确定性派生产物 + source mapping，模式对齐 VB-UX-02。
 - 任务开始时先小设计产物形态（分区与行编码在 Unity 侧落地的数据结构），结论写入架构文档。
 
+实施与验证记录：2026-08-31 完成。产物形态设计先行冻结进 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 13.4 节（V1 仅 CSV family——XLSX 需 OOXML 解析栈、以 `table.xlsxUnsupported` 拒绝；产物按 documentType 聚合、Table 无虚构 Document ID）。实现 `VisualBridgeTableCompiler`/`VisualBridgeTableCompilerBatch`（复用 internal 共享事务/序列化/Hash 层，零新增 private→internal）+ 严格校验器 `VisualBridgeTableCatalogValidator`；`visualbridge-table-catalog.schema.json` 进入 Protocol C# 生成闭包；`VisualBridgeAuthoringProject` 暴露 `TableLayout`。消费语义完整复刻权威链路：nameKey 映射、cell encoding（scalar/json/delimited 递归）、key column/rowId、跨分区有效行去重（error/keepFirst/keepLast）。
+
+验证记录：EditMode 新增 14 例随全套 98/98 通过；batchmode 垂直切片：Table Compile Generate/Check、Structured/Entity Catalog 与 Compile 全部退出码 0（Project File 变更引发的输入 Hash drift 属设计内行为，统一重新 Generate 后全绿）；开发宿主样例（`Gameplay.vbtablecatalog` + `Tables/Skills_Main.csv`）产出 `sample.unity.skills` 产物，rowId 形态与 VS Code 约定一致，catalog 经 Node 生产 `parseTableCatalog`/`buildTableCatalogRegistry`/`matchTableSheetDefinitions` 校验；`npm run generate:protocol`/`check:protocol` 漂移检查通过；`dotnet build` 两个 csproj 0 错误。
+
 Exit criteria：
 
 - 消费语义只来自 Catalog 定义；载体（CSV/XLSX）内部结构不进入任何决策路径，有测试锁定。
 - 编译闭环、负面路径、全部 Node/dotnet/Unity/docs 门槛与产物设计留档要求同 VB-UX-02。
 
-### VB-UX-05 Graph Catalog V4 Exporter — `pending`
+### VB-UX-05 Graph Catalog V4 Exporter — `in_progress`
 
 依赖：VB-UX-04。
 

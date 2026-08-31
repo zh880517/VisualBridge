@@ -404,6 +404,18 @@ Entity 编译镜像 Structured Compiler 的生命周期与事务语义，由 `Vi
 
 **边界声明**：Table（VB-UX-04）与 Graph（VB-UX-05/06）继续按 per-domain batch 服务模式实施——各自实现 Exporter/Compiler/Batch/菜单，经 internal 成员复用共享字段构建、序列化、Hash 与事务实现，不新增公开注册点，也不把 internal 共享层当作公开契约对待。
 
+### 13.4 Table Import / Compile 设计记录（VB-UX-04，2026-08-31）
+
+Table 是第一个纯消费方切片：Unity 侧不建立 Table Exporter（权威数据在 VS Code 侧的 Table 文档与 Catalog），只实现编译。产物形态设计（任务前置结论）：
+
+- **载体边界**：V1 只编译 CSV family。XLSX 是 OOXML zip+xml，Unity 侧无内置等价物且 Package 不引入第三方解压/解析依赖；遇到 `.xlsx` 路由到 table documentType 时以 `table.xlsxUnsupported` 明确拒绝。CSV 解析复刻 VS Code 侧 `csv-parse` 语义（UTF-8 严格、BOM 剥离、quote 转义、relax_column_count、空行保留）。
+- **消费语义**：完整复刻权威链路——nameKeyRow/dataStartRow（tableLayout 缺失报 `compile.tableLayoutMissing`）、nameKey（含 aliases、trim 精确匹配）列映射、cell encoding（scalar/json/delimited 递归、空串→defaultValue）、key column 校验（空值 `table.emptyKey`、单 sheet 内重复 `table.duplicateKey`）、rowId 生成（有 key 时 `${definitionId}:${physicalName}:key-${stableValueKey}`）、跨分区去重（`error` 失败、keepFirst 跳过、keepLast 原位替换）。
+- **编译单元与聚合**：Table 没有虚构的 Document ID；产物按 documentType 聚合。documentType.id 必须在其声明 catalog 中按 id/alias 唯一解析到 tableType（`compile.tableTypeUnknown`/`compile.tableTypeAmbiguous`，与 Entity 的 entityType 路由同构）。该 documentType 路由到的全部匹配文件（按路径 UTF-16 序排序）各自成为一个物理 sheet（`${definitionId}:${fileBaseName}`），按 sheet definition 拼接后做全局有效行去重。与 VS Code 侧"同目录 family"作用域的差异：编译器把整个 documentType 视为一个编译单元、去重跨全部文件——单 family 场景（样例与绝大多数用法）两者等价，多目录分布同一分区键时以声明 duplicatePolicy 全局裁决。
+- **产物结构**：`documents/{projectId}/{documentTypeId}/{tableTypeId}.vbcompiled.json`（kind `visualbridge.table.compiled`，`data` 为 `{sheets:[{definitionId, rows:[{rowId, cells}]}]}`，行按有效顺序、cells 按 canonical 列 ID 排序、值为解码后 JSON 值）、`mappings/{projectId}/{documentTypeId}/{tableTypeId}.vbsource.json`（kind `visualbridge.table.sourceMapping`，逐 cell 记 `{sourcePath, artifactPath, origin}`——空/缺 cell 物化默认值记 `metadataDefault`）、`manifest.table.json`（kind `visualbridge.table.compileManifest`）。事务、输入快照、stale 清算复用共享实现。
+- **Catalog 信任**：table catalog 不在 profile 导出闭包中（无 Exporter），以提交文件为准；`visualbridge-table-catalog.schema.json` 进入 Protocol C# 生成闭包，Unity 侧新增严格校验器 `VisualBridgeTableCatalogValidator` 镜像 Schema（含 cellEncoding oneOf、partition namePattern、rowDisplayNamePattern 占位符约束）。
+
+落地与验证记录（同日）：`VisualBridgeTableCompiler`/`VisualBridgeTableCompilerBatch`（菜单 Generate/Check Table Compiled Data）按上述设计实现；`VisualBridgeAuthoringProject` 暴露 `TableLayout`。EditMode 新增 14 例（确定性双跑、默认值物化与 mapping origin、drift 不写盘、stale 生命周期、keepFirst/keepLast、delimited 解码、tableTypeUnknown、missingColumn、duplicateKey、duplicatePartitionKey、xlsxUnsupported、tableLayoutMissing、invalidCell、失败保留产物）随全套 98/98 通过。开发宿主样例（`Gameplay.vbtablecatalog` + `Tables/Skills_Main.csv`）经 batchmode Generate/Check 产出 `sample.unity.skills` 产物（rowId `skills:Skills_Main:key-101` 与 VS Code 约定一致），table catalog 经 Node 生产 `parseTableCatalog`/`buildTableCatalogRegistry`/`matchTableSheetDefinitions` 校验。已知实现边界：keepLast 为原位替换（TS 侧为删除后 append，仅中间插入其他行时顺序不同）；rowDisplayNamePattern 仅校验占位符形状（不校验列引用，编译器不消费该 pattern）；解码后 cell 不执行 editor 数值约束（与权威 cellCodec 一致）。Project File 变更（如新增 table documentType）会改变 `projectSha256` 输入，全部编译器按输入 Hash 语义报 drift，需统一重新 Generate——这是设计内行为。
+
 ## 14. 命令与验证层级
 
 当前仓库没有独立发布的 VisualBridge CLI。命令行入口是 Protocol npm script 与 Unity batchmode `-executeMethod`，菜单和 batch wrapper 调用相同的 Exporter/Compiler 服务，不建立第二套业务规则：

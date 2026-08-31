@@ -96,6 +96,15 @@ Entity 领域的 Catalog 导出与 Structured 共用 Profile 与验证门槛，�
 - 前置：Entity Catalog Check 必须无 drift（`compile.catalogDrift`），否则先重跑 Catalog Generate 并提交。
 - 语义：文档按 entity DocumentType 唯一路由；`entityTypeId`/`componentTypeId` 必须在声明的 Catalog 中唯一解析，组件组必须在 entityType 的 `allowedComponentGroupIds` 白名单内（空白名单即全不允许）；缺失字段以 Catalog 默认值物化进产物；产物布局与 Structured 相同（`documents/`、`mappings/`），但使用独立的 `manifest.entity.json`，两套编译互不接管对方托管集。失败不破坏上次有效产物；stale 产物在 Generate 时清理、Check 时计为 drift。
 
+## 5.3 Table Compile（CSV family）
+
+Table 是纯消费方：Unity 侧没有 Table Exporter，catalog（`.vbtablecatalog`）由 VS Code 侧创作并提交；Unity 只编译 CSV family 文档（`.xlsx` 以 `table.xlsxUnsupported` 拒绝——OOXML 解析不在 V1 依赖边界内）：
+
+- 入口：菜单 **Tools / VisualBridge / Generate Table Compiled Data**、**Check Table Compiled Data**；batchmode `VisualBridge.Editor.VisualBridgeTableCompilerBatch.Generate` / `.Check`（退出码 `0`/`1`/`2`）。
+- 前置：Project File 需声明 `tableLayout {nameKeyRow, dataStartRow}`（缺失报 `compile.tableLayoutMissing`）；table documentType 的 id 必须在其声明 catalog 中唯一解析到 tableType。
+- 语义：nameKey 列映射、cell encoding（scalar/json/delimited）、key column 与 rowId（`{sheetDefinitionId}:{物理名}:key-{值}`）、跨分区有效行去重（error/keepFirst/keepLast）全部复刻 VS Code 权威语义；产物按 documentType 聚合为 `documents/{projectId}/{documentTypeId}/{tableTypeId}.vbcompiled.json` + mapping + `manifest.table.json`。
+- 注意：Project File 任何变更都会改变 `projectSha256`，三个编译器（Structured/Entity/Table）都会按输入 Hash 报 drift，需统一重新 Generate。
+
 ## 6. Structured Compile
 
 输入是 Authoring Project（Project File + Structured 文档）+ 已提交 Catalog + Integration Profile。入口：

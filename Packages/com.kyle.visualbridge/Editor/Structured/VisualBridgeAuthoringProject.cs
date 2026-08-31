@@ -12,12 +12,14 @@ namespace VisualBridge.Editor
             string rootPath,
             string projectId,
             IReadOnlyList<string> documentRoots,
-            IReadOnlyList<VisualBridgeAuthoringDocumentType> documentTypes)
+            IReadOnlyList<VisualBridgeAuthoringDocumentType> documentTypes,
+            VisualBridgeAuthoringTableLayout tableLayout)
         {
             RootPath = rootPath;
             ProjectId = projectId;
             DocumentRoots = documentRoots;
             DocumentTypes = documentTypes;
+            TableLayout = tableLayout;
         }
 
         public string RootPath { get; }
@@ -27,6 +29,22 @@ namespace VisualBridge.Editor
         public IReadOnlyList<string> DocumentRoots { get; }
 
         public IReadOnlyList<VisualBridgeAuthoringDocumentType> DocumentTypes { get; }
+
+        public VisualBridgeAuthoringTableLayout TableLayout { get; }
+    }
+
+    // Table 文档的 CSV 行布局；缺省表示 Authoring Project 未声明 tableLayout。
+    internal sealed class VisualBridgeAuthoringTableLayout
+    {
+        public VisualBridgeAuthoringTableLayout(int nameKeyRow, int dataStartRow)
+        {
+            NameKeyRow = nameKeyRow;
+            DataStartRow = dataStartRow;
+        }
+
+        public int NameKeyRow { get; }
+
+        public int DataStartRow { get; }
     }
 
     internal sealed class VisualBridgeAuthoringDocumentType
@@ -72,10 +90,7 @@ namespace VisualBridge.Editor
             var projectId = RequireIdentifier(root["projectId"], "$.projectId");
             var documentRoots = ReadRelativePaths(root["documentRoots"], "$.documentRoots", true, true);
             var documentTypes = ReadDocumentTypes(root["documentTypes"]);
-            if (root["tableLayout"] != null)
-            {
-                ValidateTableLayout(root["tableLayout"]);
-            }
+            var tableLayout = root["tableLayout"] == null ? null : ReadTableLayout(root["tableLayout"]);
 
             if (root["providers"] != null)
             {
@@ -86,7 +101,8 @@ namespace VisualBridge.Editor
                 Path.GetDirectoryName(Path.GetFullPath(projectPath)),
                 projectId,
                 documentRoots,
-                documentTypes);
+                documentTypes,
+                tableLayout);
         }
 
         public static string ResolveInsideProject(VisualBridgeAuthoringProject project, string relativePath, string jsonPath)
@@ -222,7 +238,7 @@ namespace VisualBridge.Editor
             return result;
         }
 
-        private static void ValidateTableLayout(JToken token)
+        private static VisualBridgeAuthoringTableLayout ReadTableLayout(JToken token)
         {
             if (!(token is JObject value))
             {
@@ -236,6 +252,8 @@ namespace VisualBridge.Editor
             {
                 throw Error("compile.projectInvalidTableLayout", "$.tableLayout", "nameKeyRow must be before dataStartRow.");
             }
+
+            return new VisualBridgeAuthoringTableLayout(nameKeyRow, dataStartRow);
         }
 
         private static void ValidateProviders(JToken token, IReadOnlyList<VisualBridgeAuthoringDocumentType> documentTypes)
