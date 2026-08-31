@@ -41,13 +41,17 @@ Catalog 来源是显式 metadata 的普通 `class` / `struct`；C# 全名只作 
 菜单：
 
 - **Tools / VisualBridge / Generate Structured Catalogs**
+- **Tools / VisualBridge / Generate Entity Catalogs**
 - **Tools / VisualBridge / Generate Structured Compiled Data**
 - **Tools / VisualBridge / Check Structured Compiled Data**
 
 batchmode 入口（退出码统一 `0` 成功、`1` 失败、`2` Check 发现 drift）：
 
 - `VisualBridge.Editor.VisualBridgeStructuredCatalogBatch.Generate` / `.Check`
+- `VisualBridge.Editor.VisualBridgeEntityCatalogBatch.Generate` / `.Check`
 - `VisualBridge.Editor.VisualBridgeStructuredCompilerBatch.Generate` / `.Check`
+
+Profile 的 `catalogExports[].output` 扩展名决定路由：`.vbstructuredcatalog` 走 Structured Exporter，`.vbentitycatalog` 走 Entity Exporter。Entity 侧 metadata 为 assembly 级 `VisualBridgeEntityCatalog` / `VisualBridgeEntityComponentGroup` 与类型级 `VisualBridgeEntityType` / `VisualBridgeEntityComponent`（字段沿用 `VisualBridgeField`），导出 Component Group、Entity Type 与 Component Type；Entity 文档的 Unity 侧编译（VB-UX-02）尚未实现。
 
 编译产物布局在 `Library/VisualBridge/Compiled` 下：`manifest.json`、`documents/<projectId>/<documentTypeId>/<documentId>.vbcompiled.json`、`mappings/<projectId>/<documentTypeId>/<documentId>.vbsource.json`。失败不会破坏上次有效产物。
 
@@ -63,6 +67,6 @@ EditMode 测试位于 `Tests/Editor/`，用 Unity Test Framework 的 EditMode �
 
 - Authoring Document 是唯一权威；Catalog 与编译产物都是派生数据，可随时删除重建。
 - Bridge 只发送 open/reveal 请求，不写 Authoring/Catalog、不触发 Export/Compile、不含 Runtime/Debug/Player 消息。
-- Graph/Entity/Table 的 Unity Export/Compile 与 Runtime 接入按 [`Doc/UnityDomainAndRuntimeRoadmap.md`](../../Doc/UnityDomainAndRuntimeRoadmap.md) 推进，尚未实现。
+- Graph/Table 的 Unity Export/Compile、Entity 文档的 Unity 侧编译与 Runtime 接入按 [`Doc/UnityDomainAndRuntimeRoadmap.md`](../../Doc/UnityDomainAndRuntimeRoadmap.md) 推进，尚未实现。
 
 架构与冻结决策见 [Unity Editor 接入架构](../../Doc/UnityIntegrationArchitecture.md)。

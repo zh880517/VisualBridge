@@ -30,7 +30,7 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static void ValidateSource(JObject source, string path)
+        internal static void ValidateSource(JObject source, string path)
         {
             var status = RequireString(source["status"], path + ".status");
             switch (status)
@@ -91,7 +91,7 @@ namespace VisualBridge.Editor
             ValidateFields(fields, path + ".properties");
         }
 
-        private static void ValidateFields(JArray fields, string path)
+        internal static void ValidateFields(JArray fields, string path)
         {
             var identities = new HashSet<string>(StringComparer.Ordinal);
             for (var index = 0; index < fields.Count; index++)
@@ -383,7 +383,7 @@ namespace VisualBridge.Editor
             RequireOptionalBoolean(reference["allowMissing"], path + ".allowMissing");
         }
 
-        private static void RequireKeys(JObject value, string path, IEnumerable<string> required, IEnumerable<string> optional)
+        internal static void RequireKeys(JObject value, string path, IEnumerable<string> required, IEnumerable<string> optional)
         {
             var requiredSet = new HashSet<string>(required, StringComparer.Ordinal);
             var allowed = new HashSet<string>(requiredSet, StringComparer.Ordinal);
@@ -405,7 +405,7 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static JObject RequireObject(JToken token, string path)
+        internal static JObject RequireObject(JToken token, string path)
         {
             if (!(token is JObject value))
             {
@@ -415,7 +415,7 @@ namespace VisualBridge.Editor
             return value;
         }
 
-        private static JArray RequireArray(JToken token, string path, bool requireNonEmpty)
+        internal static JArray RequireArray(JToken token, string path, bool requireNonEmpty)
         {
             if (!(token is JArray value) || (requireNonEmpty && value.Count == 0))
             {
@@ -425,7 +425,7 @@ namespace VisualBridge.Editor
             return value;
         }
 
-        private static string RequireString(JToken token, string path)
+        internal static string RequireString(JToken token, string path)
         {
             if (token == null || token.Type != JTokenType.String)
             {
@@ -435,7 +435,7 @@ namespace VisualBridge.Editor
             return token.Value<string>();
         }
 
-        private static string RequireNonEmptyString(JToken token, string path)
+        internal static string RequireNonEmptyString(JToken token, string path)
         {
             var value = RequireString(token, path);
             if (string.IsNullOrWhiteSpace(value))
@@ -446,7 +446,7 @@ namespace VisualBridge.Editor
             return value;
         }
 
-        private static string RequireIdentifier(JToken token, string path)
+        internal static string RequireIdentifier(JToken token, string path)
         {
             var value = RequireString(token, path);
             if (value.Length == 0
@@ -460,7 +460,7 @@ namespace VisualBridge.Editor
             return value;
         }
 
-        private static IReadOnlyList<string> RequireIdentifierArray(JToken token, string path)
+        internal static IReadOnlyList<string> RequireIdentifierArray(JToken token, string path)
         {
             var array = RequireArray(token, path, false);
             var values = new List<string>(array.Count);
@@ -479,7 +479,7 @@ namespace VisualBridge.Editor
             return values;
         }
 
-        private static void RequireInteger(JToken token, string path, int expected)
+        internal static void RequireInteger(JToken token, string path, int expected)
         {
             if (token == null || token.Type != JTokenType.Integer || token.Value<int>() != expected)
             {
@@ -579,7 +579,7 @@ namespace VisualBridge.Editor
                 || (value >= '0' && value <= '9');
         }
 
-        private static VisualBridgeIntegrationException Error(string code, string path, string message)
+        internal static VisualBridgeIntegrationException Error(string code, string path, string message)
         {
             return VisualBridgeIntegrationProfileLoader.Error(code, path, message);
         }

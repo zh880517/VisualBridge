@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件是 VB-UI-07（发布门槛、文档与基线）关闭；在它完成之前，本清单全部任务保持 `pending`，不得提前开工。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：VB-UX-00（仓库语言规范梳理）与 VB-UX-01（Entity Catalog Exporter）已完成，VB-UX-02（Entity Import/Compile）进行中，其余任务 `pending`。
 
 本阶段分三段：
 
@@ -86,7 +86,7 @@ Exit criteria：
 - 每个任务收尾时把产物结构、稳定 ID 与 source mapping 的设计记录写入 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md)，作为 VB-UX-07 的 spike 输入。
 - 不引入 `ScriptableObject` 扫描、不执行业务初始化方法、C# 全名只作 `source` 追踪信息。
 
-### VB-UX-01 Entity Catalog Exporter — `pending`
+### VB-UX-01 Entity Catalog Exporter — `complete`
 
 依赖：VB-UI-07。
 
@@ -96,6 +96,10 @@ Exit criteria：
 - 扫描普通运行时 `class` / `struct` 与显式 metadata，导出 Entity Type、Component Group、Component Type 与递归 Field ID；数值、颜色、List 与普通自定义结构映射到全项目共享字段模型。
 - batchmode Generate/Check 入口、菜单与 EditMode 测试复用同一 Exporter 服务。
 
+实施记录：2026-08-31 完成。`visualbridge-entity-catalog.schema.json` 进入 Protocol C# 生成闭包（第九个命名空间）；Integration Profile 的 `catalogExports[].output` 扩展名路由（`.vbstructuredcatalog`/`.vbentitycatalog`，Schema pattern 与 C# loader 同步放开）。`VisualBridge.Runtime` 新增 `VisualBridgeEntityCatalog`/`VisualBridgeEntityComponentGroup`（assembly 级）与 `VisualBridgeEntityType`/`VisualBridgeEntityComponent`（类型级）四个 attribute，字段沿用共享 `VisualBridgeField`（两侧 field $defs 完全同构）。`VisualBridgeEntityCatalogExporter` 复用 Structured Exporter 的字段构建/序列化/原子写共享实现（internal 成员共享，两遍处理使组引用与注册顺序无关），配套严格校验器 `VisualBridgeEntityCatalogValidator` 与 batch 入口 `VisualBridgeEntityCatalogBatch`（菜单 Generate Entity Catalogs）。Structured Exporter 与 Structured Compiler 均按扩展名过滤非 Structured 导出单元，混合 Profile 可共存。设计留档见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 13.1 节。
+
+验证记录：EditMode 新增 15 例（Entity Exporter 14 例 + Compiler 混合 Profile 回归 1 例）随全套 70/70 通过；batchmode 垂直切片：refresh、Entity Catalog Generate/Check、Structured Catalog Check、Structured Compile Generate/Check 退出码全 0；开发宿主样例（Hero/Enemy 实体、Health/Movement 组件、Hero.vbentity 文档）产出提交 Catalog `Gameplay.vbentitycatalog`，并经 Node 生产 `parseEntityCatalog`/`parseEntityDocument`/`buildEntityCatalogRegistry` 与身份/别名解析校验；`npm run check:protocol` 漂移检查通过；扫描面不含 `ScriptableObject`（`catalog.unityObjectUnsupported`/`catalog.unityTypeUnsupported` 继承自共享实现）。
+
 Exit criteria：
 
 - Schema/manifest/生成产物通过 `npm run check:protocol` 与 `npm run generate:protocol` 漂移检查；不存在手写 C# DTO。
@@ -103,7 +107,7 @@ Exit criteria：
 - 相关 Unity 生成 csproj 的 `dotnet build`、batchmode refresh/import、EditMode 全套通过；Node/docs 门槛通过。
 - 产物设计留档进入架构文档；扫描面不含 `ScriptableObject` 与 Editor-only 程序集。
 
-### VB-UX-02 Entity Import / Compile — `pending`
+### VB-UX-02 Entity Import / Compile — `in_progress`
 
 依赖：VB-UX-01。
 

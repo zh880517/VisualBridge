@@ -1,0 +1,181 @@
+{
+  "formatVersion": 1,
+  "catalogId": "sample.unity.entity",
+  "title": "Unity Gameplay Entities",
+  "source": {
+    "status": "current",
+    "providerId": "unity.csharp",
+    "sourceHash": "e0b625f503791113da6fe56db7e66f995f6c3681e580e3e3e0c9e2554f3c84a5"
+  },
+  "componentGroups": [
+    {
+      "id": "sample.unity.group.combat",
+      "title": "Combat",
+      "aliases": []
+    },
+    {
+      "id": "sample.unity.group.movement",
+      "title": "Movement",
+      "aliases": []
+    }
+  ],
+  "entityTypes": [
+    {
+      "id": "sample.unity.enemy",
+      "title": "Enemy",
+      "aliases": [],
+      "allowedComponentGroupIds": [],
+      "properties": [
+        {
+          "id": "name",
+          "title": "Name",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "string",
+          "defaultValue": "Enemy",
+          "editor": {
+            "kind": "text",
+            "readOnly": false,
+            "integer": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "sample.unity.hero",
+      "title": "Hero",
+      "aliases": [
+        "sample.unity.hero.legacy"
+      ],
+      "allowedComponentGroupIds": [
+        "sample.unity.group.combat",
+        "sample.unity.group.movement"
+      ],
+      "description": "Player-controlled hero entity.",
+      "properties": [
+        {
+          "id": "name",
+          "title": "Name",
+          "aliases": [],
+          "valueType": "string",
+          "dataTypeId": "string",
+          "defaultValue": "Hero",
+          "editor": {
+            "kind": "text",
+            "readOnly": false,
+            "integer": false
+          }
+        },
+        {
+          "id": "level",
+          "title": "Level",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "int",
+          "defaultValue": 1,
+          "editor": {
+            "kind": "number",
+            "readOnly": false,
+            "integer": true,
+            "min": 1,
+            "max": 2147483647
+          }
+        }
+      ]
+    }
+  ],
+  "componentTypes": [
+    {
+      "id": "sample.unity.health",
+      "title": "Health",
+      "aliases": [],
+      "groupId": "sample.unity.group.combat",
+      "menuPath": [
+        "Combat",
+        "Health"
+      ],
+      "source": {
+        "providerId": "unity.csharp",
+        "typeName": "VisualBridge.Sample.HealthComponent, Assembly-CSharp"
+      },
+      "properties": [
+        {
+          "id": "maxHealth",
+          "title": "Max Health",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "int",
+          "defaultValue": 100,
+          "editor": {
+            "kind": "number",
+            "readOnly": false,
+            "integer": true,
+            "min": 1,
+            "max": 2147483647
+          }
+        },
+        {
+          "id": "regenPerSecond",
+          "title": "Regen Per Second",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "float",
+          "defaultValue": 0.5,
+          "editor": {
+            "kind": "number",
+            "readOnly": false,
+            "integer": false,
+            "step": 0.1
+          }
+        }
+      ]
+    },
+    {
+      "id": "sample.unity.movement",
+      "title": "Movement",
+      "aliases": [],
+      "groupId": "sample.unity.group.movement",
+      "menuPath": [],
+      "source": {
+        "providerId": "unity.csharp",
+        "typeName": "VisualBridge.Sample.MovementComponent, Assembly-CSharp"
+      },
+      "properties": [
+        {
+          "id": "speed",
+          "title": "Speed",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "float",
+          "defaultValue": 3.5,
+          "editor": {
+            "kind": "number",
+            "readOnly": false,
+            "integer": false
+          }
+        },
+        {
+          "id": "waypoints",
+          "title": "Waypoints",
+          "aliases": [],
+          "valueType": "array",
+          "dataTypeId": "list.float",
+          "defaultValue": [
+            0,
+            10
+          ],
+          "item": {
+            "valueType": "number",
+            "dataTypeId": "float",
+            "defaultValue": 0,
+            "editor": {
+              "kind": "number",
+              "readOnly": false,
+              "integer": false
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

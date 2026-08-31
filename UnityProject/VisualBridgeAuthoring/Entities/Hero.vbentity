@@ -1,0 +1,33 @@
+{
+  "formatVersion": 1,
+  "documentId": "sample.unity.hero.default",
+  "entityTypeId": "sample.unity.hero",
+  "title": "Sample Hero",
+  "properties": {
+    "name": "Ranger",
+    "level": 3
+  },
+  "components": [
+    {
+      "id": "health",
+      "componentTypeId": "sample.unity.health",
+      "enabled": true,
+      "properties": {
+        "maxHealth": 120,
+        "regenPerSecond": 0.5
+      }
+    },
+    {
+      "id": "movement",
+      "componentTypeId": "sample.unity.movement",
+      "enabled": true,
+      "properties": {
+        "speed": 6.5,
+        "waypoints": [
+          0,
+          10
+        ]
+      }
+    }
+  ]
+}

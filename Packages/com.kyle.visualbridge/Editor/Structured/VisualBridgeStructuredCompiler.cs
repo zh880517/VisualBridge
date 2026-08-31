@@ -162,6 +162,11 @@ namespace VisualBridge.Editor
             var configAliases = new Dictionary<string, ConfigDescriptor>(StringComparer.Ordinal);
             foreach (var export in profile.CatalogExports)
             {
+                if (!export.OutputPath.EndsWith(".vbstructuredcatalog", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
                 var relativeOutput = RelativePathInside(project.RootPath, export.OutputPath, "$.catalogExports.output");
                 if (!catalogExports.TryAdd(export.OutputPath, export))
                 {

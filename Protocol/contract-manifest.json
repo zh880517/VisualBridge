@@ -5,6 +5,7 @@
     "schemas": [
       "visualbridge-catalog-source.schema.json",
       "visualbridge-editor-bridge.schema.json",
+      "visualbridge-entity-catalog.schema.json",
       "visualbridge-primitives.schema.json",
       "visualbridge-project.schema.json",
       "visualbridge-structured-catalog.schema.json",

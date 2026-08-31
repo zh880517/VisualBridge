@@ -137,6 +137,32 @@ namespace VisualBridge.Editor.Tests
         }
 
         [Test]
+        public void EntityCatalogExportsAreIgnoredByTheStructuredCompiler()
+        {
+            using (var fixture = new CompilerFixture())
+            {
+                // 在 Profile 中追加一个 entity 导出单元：Structured Compiler 必须按扩展名路由跳过它，
+                // 不把 entity 类型当作 config 类型校验。
+                var profilePath = Path.Combine(fixture.Root, "ProjectSettings", "VisualBridgeIntegration.json");
+                var heroName = typeof(EntityExporterHeroType).AssemblyQualifiedName.Replace("\\", "\\\\").Replace("\"", "\\\"");
+                File.WriteAllText(
+                    profilePath,
+                    "{\n  \"formatVersion\": 1,\n  \"authoringProject\": \"Authoring/VisualBridge.project.vbjson\",\n  \"catalogExports\": ["
+                        + "{\"catalogId\": \"tests.visualbridge.compiler.catalog\", \"title\": \"VisualBridge Compiler Tests\", \"output\": \"Authoring/Catalog/Compiler.vbstructuredcatalog\", \"types\": [\"" + typeof(CompilerTestSettings).AssemblyQualifiedName.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"]},"
+                        + "{\"catalogId\": \"tests.visualbridge.entity\", \"title\": \"VisualBridge Entity Exporter Tests\", \"output\": \"Authoring/Catalog/Entities.vbentitycatalog\", \"types\": [\"" + heroName + "\"]}"
+                        + "],\n  \"compileOutputRoot\": \"Library/VisualBridge/Compiled\"\n}\n",
+                    Utf8WithoutBom);
+                fixture.WriteValidDocument();
+
+                var result = VisualBridgeStructuredCompiler.Compile(fixture.Root, VisualBridgeStructuredCompileMode.Generate);
+
+                Assert.That(result.DriftDetected, Is.True);
+                Assert.That(File.Exists(fixture.ArtifactPath), Is.True);
+                Assert.That(File.Exists(Path.Combine(fixture.Root, "Authoring", "Catalog", "Entities.vbentitycatalog")), Is.False);
+            }
+        }
+
+        [Test]
         public void RouteMustBeUnique()
         {
             using (var fixture = new CompilerFixture(includeOtherType: true))

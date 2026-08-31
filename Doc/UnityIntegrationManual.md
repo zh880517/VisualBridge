@@ -59,7 +59,7 @@ Profile 固定为 `ProjectSettings/VisualBridgeIntegration.json`，V1 结构如�
 
 - `formatVersion` 必须为 `1`（`profile.unsupportedVersion`）。
 - V1 只关联一个 Unity Project 内的 Authoring Project；路径从 Unity Project root 解析，拒绝绝对路径、冒号、反斜杠、空/`.`/`..` segment 与盘符别名（`profile.invalidPath`），解析后离开 project root 报 `profile.pathOutsideProject`，祖先段 symlink/reparse-point 报 `profile.symlinkForbidden`。
-- `catalogExports[].output` 必须以 `.vbstructuredcatalog` 结尾；catalogId、输出路径与物理同一文件均不得重复（`profile.duplicateCatalogId` / `profile.duplicateOutput` / `profile.duplicatePhysicalOutput`）。
+- `catalogExports[].output` 必须以 `.vbstructuredcatalog` 或 `.vbentitycatalog` 结尾，扩展名决定导出路由（Structured / Entity Exporter）；catalogId、输出路径与物理同一文件均不得重复（`profile.duplicateCatalogId` / `profile.duplicateOutput` / `profile.duplicatePhysicalOutput`）。
 - `compileOutputRoot` 在 Compiler V1 必须恰为 `Library/VisualBridge/Compiled`（`compile.outputRootMismatch`）。
 - JSON 必须严格 UTF-8，不允许注释、尾随内容或重复键（`profile.invalidJson`）。
 
@@ -79,6 +79,15 @@ C# 类型通过 `VisualBridge.Runtime` 的 attribute 显式标注（`VisualBridg
 - 常见错误：`catalog.typeNotFound`（Profile 引用的类型不存在）、`catalog.identityConflict`（稳定 ID 冲突）、`catalog.invalidDefault` / `catalog.invalidReference`（metadata 声明不一致）、`catalog.staticFieldUnsupported`、`catalog.polymorphismUnsupported`。
 
 Catalog 提交进版本库后由 VS Code 侧作为来源消费；Exporter 是 Catalog 的唯一生成方，禁止手工编辑。
+
+## 5.1 Entity Catalog Export
+
+Entity 领域的 Catalog 导出与 Structured 共用 Profile 与验证门槛，按输出扩展名路由到 `VisualBridgeEntityCatalogExporter`：
+
+- metadata：assembly 级 `VisualBridgeEntityCatalog(catalogId, title)` 与 `VisualBridgeEntityComponentGroup(catalogId, id, title)`；类型级 `VisualBridgeEntityType(catalogId, id, title, AllowedComponentGroupIds)` 与 `VisualBridgeEntityComponent(catalogId, id, title, groupId, MenuPath)`；字段沿用共享的 `VisualBridgeField`。
+- 入口：菜单 **Tools / VisualBridge / Generate Entity Catalogs**；batchmode `VisualBridge.Editor.VisualBridgeEntityCatalogBatch.Generate` / `.Check`（退出码 `0`/`1`/`2` 同 Structured）。
+- 语义：Generate 确定性输出 `{componentGroups, entityTypes, componentTypes}` 的 Entity Catalog V1（`.vbentitycatalog`）；三类身份（id+aliases）单 catalog 内唯一、跨 catalog 全局唯一；`groupId` 与 `allowedComponentGroupIds` 必须引用同 catalog 声明的组；entity catalog 输出必须被 Authoring Project 中 `editor == "entity"` 的 DocumentType 声明（`profile.catalogNotDeclared`）。
+- Structured Compiler 按扩展名跳过 entity 导出单元，两者可在同一 Profile 共存；Entity 文档的 Unity 侧编译（VB-UX-02）尚未实现，VS Code 侧编辑 `.vbentity` 文档即用已提交 Catalog。
 
 ## 6. Structured Compile
 

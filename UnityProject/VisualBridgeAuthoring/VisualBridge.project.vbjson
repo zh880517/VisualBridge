@@ -2,7 +2,8 @@
   "formatVersion": 1,
   "projectId": "visualbridge.unity-sample",
   "documentRoots": [
-    "Config"
+    "Config",
+    "Entities"
   ],
   "documentTypes": [
     {
@@ -14,6 +15,17 @@
       "exclude": [],
       "catalogs": [
         "Catalog/Gameplay.vbstructuredcatalog"
+      ]
+    },
+    {
+      "id": "sample.unity.hero",
+      "editor": "entity",
+      "include": [
+        "Entities/**/*.vbentity"
+      ],
+      "exclude": [],
+      "catalogs": [
+        "Catalog/Gameplay.vbentitycatalog"
       ]
     }
   ]

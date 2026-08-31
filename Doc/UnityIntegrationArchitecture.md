@@ -345,6 +345,17 @@ Structured 是首个 Unity 切片，因为它能以最小范围验证 Project �
 
 第二个领域切片开始前应复核 Structured 服务边界。只有至少两个真实 Exporter/Compiler 使用相同生命周期、诊断和 artifact plan 后，才建立公开 Unity Adapter API。领域扩展与本机 Runtime 接入的执行顺序、各项 exit criteria 见 [`UnityDomainAndRuntimeRoadmap.md`](UnityDomainAndRuntimeRoadmap.md)；`ScriptableObject` Authoring 包装层确认为旧设计迁移残留，新体系不采用。
 
+### 13.1 Entity Catalog Export 落地记录（VB-UX-01，2026-08-31）
+
+Entity 是第二个 Unity 领域切片，只覆盖 Catalog Export；Entity 文档的 Unity 侧 Import/Compile 由 VB-UX-02 承接。设计要点：
+
+- **metadata API**：`VisualBridge.Runtime` 新增四个 attribute——assembly 级 `VisualBridgeEntityCatalog(catalogId, title)`（每程序集一个 entity catalog）与 `VisualBridgeEntityComponentGroup(catalogId, id, title, Aliases)`（AllowMultiple）；类型级 `VisualBridgeEntityType(catalogId, id, title, Aliases, Description, AllowedComponentGroupIds)` 与 `VisualBridgeEntityComponent(catalogId, id, title, groupId, Aliases, Description, MenuPath)`。字段继续使用共享的 `VisualBridgeField`，因为 entity-catalog 与 structured-catalog 的 field/valueDefinition/editor $defs 完全同构。
+- **路由**：Integration Profile 的 `catalogExports[].output` 扩展名决定 Exporter——`.vbstructuredcatalog` 走 Structured Exporter，`.vbentitycatalog` 走 `VisualBridgeEntityCatalogExporter`；Structured Compiler 同样按扩展名跳过非 Structured 导出单元。Schema pattern 与 C# loader 同步放开两种扩展名。
+- **稳定身份**：entityType、componentType、componentGroup 三类身份（id + aliases）各自在单 catalog 内唯一，跨 catalog 全局唯一（`profile.catalogIdentityConflict`），与 VS Code Entity Registry 的全局命名空间语义一致；C# 全名只出现在 componentType 的 `source.typeName` 追踪信息中。`allowedComponentGroupIds` 与 `groupId` 必须引用同 catalog 内声明的组（`catalog.invalidReference`）；组收集采用两遍处理，类型注册顺序不影响结果。
+- **产物结构**：输出即 `visualbridge-entity-catalog.schema.json` 的 Catalog V1——`{formatVersion, catalogId, title, source, componentGroups, entityTypes, componentTypes}`，其中 `source.sourceHash` 来自 canonical snapshot（含 componentGroups、按 id 排序的 entityType/componentType 及其 AQN）的 SHA-256；序列化、原子写、Generate/Check 与 changedBeforeReplace 语义复用 Structured Exporter 的共享实现（该实现以 internal 成员方式共享，是 VB-UX-03 Adapter API 复核的直接输入）。
+- **绑定校验**：每个 entity catalog 输出必须被 Authoring Project 中 `editor == "entity"` 的 DocumentType 通过 `catalogs` 声明（`profile.catalogNotDeclared`）；不要求 per-type 覆盖，因为 entity 文档按 `entityTypeId` 引用 catalog 而非按类型路由文件。
+- **验证基线**：严格 JObject 校验器 `VisualBridgeEntityCatalogValidator` 镜像 Schema（复用 Structured 校验器的字段校验共享实现）；EditMode 覆盖确定性、Check 不写盘、类型顺序无关、fail-closed 错误码、扩展名路由与绑定校验；开发宿主样例（Hero/Enemy 实体、Health/Movement 组件）经 batchmode Generate/Check 产出提交 Catalog `Gameplay.vbentitycatalog`，并通过 Node 生产 `parseEntityCatalog`/`parseEntityDocument`/`buildEntityCatalogRegistry` 校验。
+
 ## 14. 命令与验证层级
 
 当前仓库没有独立发布的 VisualBridge CLI。命令行入口是 Protocol npm script 与 Unity batchmode `-executeMethod`，菜单和 batch wrapper 调用相同的 Exporter/Compiler 服务，不建立第二套业务规则：

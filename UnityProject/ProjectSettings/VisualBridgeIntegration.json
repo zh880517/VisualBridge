@@ -9,6 +9,17 @@
       "types": [
         "VisualBridge.Sample.GameSettings, Assembly-CSharp"
       ]
+    },
+    {
+      "catalogId": "sample.unity.entity",
+      "title": "Unity Gameplay Entities",
+      "output": "VisualBridgeAuthoring/Catalog/Gameplay.vbentitycatalog",
+      "types": [
+        "VisualBridge.Sample.HeroEntity, Assembly-CSharp",
+        "VisualBridge.Sample.EnemyEntity, Assembly-CSharp",
+        "VisualBridge.Sample.HealthComponent, Assembly-CSharp",
+        "VisualBridge.Sample.MovementComponent, Assembly-CSharp"
+      ]
     }
   ],
   "compileOutputRoot": "Library/VisualBridge/Compiled"

@@ -59,13 +59,14 @@ namespace VisualBridge.Editor
     {
         public const string ProviderId = "unity.csharp";
 
-        private static readonly UTF8Encoding Utf8WithoutBom = new UTF8Encoding(false, true);
+        internal static readonly UTF8Encoding Utf8WithoutBom = new UTF8Encoding(false, true);
         private static readonly Regex ColorPattern = new Regex("^#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?$", RegexOptions.CultureInvariant);
 
         public static VisualBridgeCatalogExportResult Export(string unityProjectRoot, VisualBridgeCatalogExportMode mode)
         {
             var profile = VisualBridgeIntegrationProfileLoader.Load(unityProjectRoot);
             var plans = profile.CatalogExports
+                .Where(export => export.OutputPath.EndsWith(".vbstructuredcatalog", StringComparison.Ordinal))
                 .Select(export => BuildPlan(profile.ProjectRoot, export))
                 .OrderBy(plan => plan.OutputPath, StringComparer.Ordinal)
                 .ToArray();
@@ -218,7 +219,7 @@ namespace VisualBridge.Editor
             return new ExportPlan(projectRoot, export.OutputPath, bytes, HashBytes(bytes), catalog);
         }
 
-        private static JArray BuildFields(Type type, HashSet<Type> recursionStack, string path)
+        internal static JArray BuildFields(Type type, HashSet<Type> recursionStack, string path)
         {
             if (!recursionStack.Add(type))
             {
@@ -816,7 +817,7 @@ namespace VisualBridge.Editor
             return matches.SingleOrDefault();
         }
 
-        private static string ReadConstructorString(CustomAttributeData attribute, int index, string path)
+        internal static string ReadConstructorString(CustomAttributeData attribute, int index, string path)
         {
             if (attribute.ConstructorArguments.Count <= index || !(attribute.ConstructorArguments[index].Value is string value))
             {
@@ -826,7 +827,7 @@ namespace VisualBridge.Editor
             return value;
         }
 
-        private static string[] ReadStringArray(CustomAttributeTypedArgument argument, string path)
+        internal static string[] ReadStringArray(CustomAttributeTypedArgument argument, string path)
         {
             if (argument.Value == null)
             {
@@ -853,7 +854,7 @@ namespace VisualBridge.Editor
             return result;
         }
 
-        private static void ValidateRootType(Type type, string path)
+        internal static void ValidateRootType(Type type, string path)
         {
             ValidateObjectType(type, path);
             if (type.IsValueType && !type.IsLayoutSequential && !type.IsExplicitLayout)
@@ -1164,7 +1165,7 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static void ValidateAliases(string id, IReadOnlyList<string> aliases, string path)
+        internal static void ValidateAliases(string id, IReadOnlyList<string> aliases, string path)
         {
             var identities = new HashSet<string>(StringComparer.Ordinal) { id };
             foreach (var alias in aliases)
@@ -1177,7 +1178,7 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static void ValidateIdentifier(string value, string path)
+        internal static void ValidateIdentifier(string value, string path)
         {
             if (string.IsNullOrEmpty(value)
                 || value.Length > 128
@@ -1188,7 +1189,7 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static void ValidateNonEmpty(string value, string path)
+        internal static void ValidateNonEmpty(string value, string path)
         {
             if (string.IsNullOrWhiteSpace(value))
             {
@@ -1315,14 +1316,14 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static string MakeRelativePath(string directory, string path)
+        internal static string MakeRelativePath(string directory, string path)
         {
             var baseUri = new Uri(Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar);
             var pathUri = new Uri(Path.GetFullPath(path));
             return Uri.UnescapeDataString(baseUri.MakeRelativeUri(pathUri).ToString()).Replace('\\', '/');
         }
 
-        private static JToken Canonicalize(JToken value)
+        internal static JToken Canonicalize(JToken value)
         {
             if (value is JObject objectValue)
             {
@@ -1370,12 +1371,12 @@ namespace VisualBridge.Editor
                 || (value >= '0' && value <= '9');
         }
 
-        private static string WriteCompact(JToken value)
+        internal static string WriteCompact(JToken value)
         {
             return WriteJson(value, Formatting.None, false);
         }
 
-        private static string WriteIndented(JToken value)
+        internal static string WriteIndented(JToken value)
         {
             return WriteJson(value, Formatting.Indented, true);
         }
@@ -1400,7 +1401,7 @@ namespace VisualBridge.Editor
             return finalNewline ? builder + "\n" : builder.ToString();
         }
 
-        private static string HashBytes(byte[] bytes)
+        internal static string HashBytes(byte[] bytes)
         {
             using (var sha256 = SHA256.Create())
             {
@@ -1408,7 +1409,7 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static void WriteAtomically(ExportPlan plan, string baselineHash)
+        internal static void WriteAtomically(ExportPlan plan, string baselineHash)
         {
             VisualBridgeIntegrationProfileLoader.RevalidateResolvedProjectPath(plan.ProjectRoot, plan.OutputPath, plan.OutputPath);
             var directory = Path.GetDirectoryName(plan.OutputPath);
@@ -1449,12 +1450,12 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static VisualBridgeIntegrationException Error(string code, string path, string message)
+        internal static VisualBridgeIntegrationException Error(string code, string path, string message)
         {
             return VisualBridgeIntegrationProfileLoader.Error(code, path, message);
         }
 
-        private sealed class ExportPlan
+        internal sealed class ExportPlan
         {
             public ExportPlan(string projectRoot, string outputPath, byte[] bytes, string expectedHash, JObject catalog)
             {

@@ -139,9 +139,10 @@ namespace VisualBridge.Editor
                 var title = RequireNonEmptyString(exportObject, "title", path + ".title");
                 var outputRelative = RequireString(exportObject, "output", path + ".output");
                 var outputPath = ResolveProjectPath(projectRoot, outputRelative, path + ".output");
-                if (!outputRelative.EndsWith(".vbstructuredcatalog", StringComparison.Ordinal))
+                if (!outputRelative.EndsWith(".vbstructuredcatalog", StringComparison.Ordinal)
+                    && !outputRelative.EndsWith(".vbentitycatalog", StringComparison.Ordinal))
                 {
-                    throw Error("profile.invalidCatalogOutput", path + ".output", "Catalog output must end with '.vbstructuredcatalog'.");
+                    throw Error("profile.invalidCatalogOutput", path + ".output", "Catalog output must end with '.vbstructuredcatalog' or '.vbentitycatalog'.");
                 }
 
                 if (!catalogIds.Add(catalogId))
