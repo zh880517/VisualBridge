@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）进行中。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）进行中。
 
 本阶段分三段：
 
@@ -224,7 +224,7 @@ Exit criteria：
 - 决策记录（证据、负载实测数据、备选方案与拒绝理由）进入架构文档；`VisualBridge.Runtime` 的定位（维持 metadata marker / 升级运行时库）明确无歧义。
 - 若决定公开产物格式：版本兼容与向后兼容原则在同章节冻结；若不公开：内部格式的演进边界写明。
 
-### VB-UX-08 Runtime 发现流程 spike 与威胁模型 — `in_progress`
+### VB-UX-08 Runtime 发现流程 spike 与威胁模型 — `complete`
 
 依赖：VB-UX-07。
 
@@ -234,12 +234,14 @@ Exit criteria：
 - 产出威胁模型（本机信任边界内：token 分发、端点不暴露、进程重启、记录残留）。
 - 用真实 Unity Editor 与同机 Player 构建做实测；结论冻结进架构文档后才允许进入 VB-UX-09。
 
+实施与验证记录：2026-08-31 完成。真实 Unity Editor（batchmode Play 模式，四组对照 Run A/B/C/D）与同机 Windows x64 Player 构建（97.5 MB/36.7s）实测：注册记录写入与心跳、TCP echo（Player 6ms）、干净退出与强杀的 pid+心跳双信号陈旧检测、Play/Player 多实例并存、跨 Play 会话的 generation 磁盘恢复与端口重绑；关键否定事实——mid-play domain reload 不重跑 RuntimeInitializeOnLoadMethod（监听/心跳全灭、记录泄漏且 pid 仍活），冻结对策为编辑器侧 [InitializeOnLoad] 兜底 + 心跳超时判定。冻结设计与威胁模型（含与 Editor Bridge 的信任模型分界、BuildPlayer 污染工程设置的工程告示）见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 17 章。spike 为临时脚本实测，无产品代码变更；工作区清理干净。
+
 Exit criteria：
 
 - 发现流程、实例代际、陈旧判定与显式选择的冻结设计进入架构文档；实测证据（含 Domain Reload、进程重启、多实例并存）留档。
 - 威胁模型覆盖本机边界内的全部已识别攻击面，与 Editor Bridge 威胁模型边界清晰分界。
 
-### VB-UX-09 共享协议核与 Runtime Bridge — `pending`
+### VB-UX-09 共享协议核与 Runtime Bridge — `in_progress`
 
 依赖：VB-UX-08。
 

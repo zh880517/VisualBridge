@@ -505,6 +505,7 @@ Graph 编译镜像既有 Compiler 生命周期，由 `VisualBridgeGraphCompiler`
 - Compiler 不修改 Authoring Project/File/Document，失败不破坏上次有效派生物。
 - `VisualBridge.Runtime` 只允许 player-visible、无 Unity API/无行为的 metadata marker；当前不建立 Runtime 功能、Unity Adapter public API 或 `ScriptableObject` Authoring 工作流。
 - dotnet 只是快速编译；真实 Unity batchmode import、EditMode 和垂直切片执行是独立发布门槛。
+- Runtime 实例发现采用「实例自写临时目录注册记录 + 心跳/pid 双信号陈旧判定 + 磁盘持久 generation + 显式选择」模型（第 17 章，VB-UX-08 实测冻结）；mid-play domain reload 的监听失效窗口由编辑器侧兜底处理。
 
 ## 16. 已关闭与仍待关闭的决策
 
@@ -523,3 +524,33 @@ Structured offline slice 已关闭：
 - Protocol、Package、VSIX、generator、compiler 与 Bridge 的完整发布兼容矩阵、空缓存 clean-checkout 复现和分发基线（兼容矩阵见 [`UnityIntegrationManual.md`](UnityIntegrationManual.md)，复现与基线记录见 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md) VB-UI-07）。
 
 仍待条目必须在对应路线图任务中通过正式 contract、实现和自动验证关闭，不能由实现私有约定长期替代；offline artifact 若将来跨越 Editor 内部边界，也必须先进入正式 Schema。
+
+## 17. Runtime 实例发现（冻结设计，VB-UX-08，2026-08-31）
+
+本节由 spike 实测冻结，是阶段 B 各任务（VB-UX-09 起）实现 Runtime 通道的发现层契约；实测证据为本机 Windows 10 + Unity 6000.3.10f1 batchmode 驱动。
+
+### 17.1 注册记录
+
+- 位置：`<系统临时目录>/visualbridge-runtime/<instanceId>.json`（与 Editor Bridge 的 `visualbridge-bridge` 目录分离，互不读写对方记录）。
+- instanceId：Play 模式实例 `editor-<Editor进程pid>`，Player 实例 `player-<Player进程pid>`——同一 Editor 的多次 Play 会话复用同一 instanceId。
+- 字段：`kind`（`"editor-play"` | `"player"`）、`protocolVersion`、`capabilities`、`tcpPort`（仅监听 `127.0.0.1`）、`token`（≥192 位十六进制）、`pid`、`generation`、`startedAt`。
+- 心跳：每秒 touch 记录 mtime；陈旧判定 = **心跳 >5 秒或 pid 已死双信号**——mid-play domain reload 窗口内 pid 仍活而心跳冻结（实测 Run A：泄漏记录冻结 2 分 17 秒仍可检测），此时只有心跳超时可用。
+
+### 17.2 生命周期语义（实测冻结）
+
+- **Play 实例**：进入 Play（含其触发的 domain reload）后 `RuntimeInitializeOnLoadMethod` 每次执行——注册或恢复磁盘记录（同 instanceId 下 `generation` 递增；实测 Run D：gen 1→2 且旧端口重绑成功，证明退出 Play 的 reload 已释放 socket）；正常退出 Play 时回收线程并删除记录。
+- **关键否定事实**：mid-play domain reload（如 play 中脚本重编译）**不会**重跑 `RuntimeInitializeOnLoadMethod`——监听与心跳线程随 `ThreadAbortException` 全灭，记录泄漏且 pid 仍活。冻结对策：真实实现（VB-UX-09）必须由编辑器侧 `[InitializeOnLoad]` 兜底——reload 后检测「记录存在但监听已死」并标记失效或重新拉起；V1 允许的最坏行为是记录短暂泄漏、由心跳超时判定陈旧。
+- **禁 Domain Reload 场景**：statics 跨 Play 周期存活且 `RuntimeInitializeOnLoadMethod` 仍每次执行（实测 Run B）——实现必须带 static 守卫防双重初始化，且每次 init 重置生命周期标志（否则心跳/accept 线程立即退出、记录泄漏——实测直接复现）。
+- **generation 必须持久在磁盘记录中**，不能只存 static（mid-play reload 清空 statics；跨会话恢复靠磁盘，同 Editor Bridge 的 server generation 模式）。
+- **Player 实例**：进程启动约 1 秒内注册；干净退出（`Application.quitting`）回收并删记录；强杀由 pid 死 + 心跳冻结双信号检测（实测 `taskkill /F` 后 mtime 冻结于死亡时刻）。Windows x64 Player 构建实测 97.5 MB / 36.7 秒（空场景），注册、TCP 监听、心跳与定时退出在 `-batchmode -nographics` 下全部正常。
+- **多实例**：Play 与 Player 实例并发注册实测并存（instanceId/kind/端口互不冲突，心跳独立），VS Code 侧枚举后显式选择，沿用 Editor Bridge 的「无全局当前实例」原则。
+
+### 17.3 威胁模型（本机信任边界）
+
+- **信任域**：本机同用户进程视为同一信任域（与 Editor Bridge 一致）。token 首条消息握手防「无意连接与陈旧会话」，不防同用户恶意进程（其本可直接读写磁盘与内存）。
+- **攻击面与处置**：(a) 临时目录记录被同用户进程伪造/篡改/覆盖——接受（同信任域）；记录写入用原子替换，读取方校验 token 格式与代际。(b) 恶意进程抢占端口诱导连接——连接后 token 握手失败即断开（对齐 Editor Bridge `bridge.invalidToken` 语义）。(c) 记录残留——心跳/pid 双信号陈旧判定，绝不连接陈旧记录。(d) 端点暴露——仅 `127.0.0.1`，远程场景属阶段 C，另行威胁模型。
+- **与 Editor Bridge 威胁模型的分界**：Editor Bridge 记录由 VS Code 写、Unity 读；Runtime 记录由 Unity/Player 写、VS Code 读。两套目录、token、代际与能力集完全独立，互不通用——Editor Bridge 保持 open/reveal 只读语义，Runtime 通道的写语义（调试控制）只存在于本模型的 token 握手之后。
+
+### 17.4 工程告示
+
+`BuildPipeline.BuildPlayer` 会改写被跟踪的 ProjectSettings（Standalone batching、Graphics、URP、UnityConnect 等，实测确认）——将来把「构建带 VisualBridge Runtime 的 Player」接入工具链时（关联 §13.7 的 StreamingAssets 遗留项），构建步骤必须隔离或回滚这些脏文件，不进入产品 diff。
