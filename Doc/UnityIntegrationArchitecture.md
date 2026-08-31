@@ -6,7 +6,7 @@
 
 本文在 [`VisualBridgeArchitecture.md`](VisualBridgeArchitecture.md)、[`ProtocolContracts.md`](ProtocolContracts.md)、[`StructuredConfigModel.md`](StructuredConfigModel.md) 和四个领域正式契约之上补充 Unity 侧职责。已有 Project、Catalog、Document、Field、稳定 ID、Hash 和诊断语义继续以 `Protocol/Schema`、`Protocol/contract-manifest.json`、现有 TypeScript Core 及领域正式文档为准。本文不能通过概念描述覆盖或放宽这些已冻结契约。
 
-当前仓库已经完成 C# contract generator、有效 UPM Package、Integration Profile V1、Structured Catalog Exporter 与 offline Import/Compiler；固定 Unity 样例可在没有 VS Code/Bridge 的条件下执行 Generate/Check。UPM Package ID 固定为 `com.kyle.visualbridge`，C# namespace/assembly 使用 `VisualBridge.<Module>`；私有 VSIX 保持 `UNLICENSED` 并携带不授予公共使用权的 proprietary notice。最小 Editor Bridge V1 已实现并于 2026-08-31 完成：正式消息 Schema 进入 Protocol、Unity 侧客户端与 VS Code 扩展宿主服务器落地、全部自动化门槛通过、真实 Unity Editor 与隔离 VS Code Extension Host 完成 open/reveal E2E（见第 12 章）。Runtime 实例发现、Runtime Bridge 协议（含调试租约与源映射语义）、VS Code DAP 检查适配器与 MCP 运行时检查工具已于 2026-08-31 落地（见第 17、18 章）；断点/调用栈等执行级调试语义按 §18.3 范围裁定尚未进入协议，Unity Player 与远程/设备连接（阶段 C）明确推迟。实施状态与剩余发布门槛见 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)。
+当前仓库已经完成 C# contract generator、有效 UPM Package、Integration Profile V1、Structured Catalog Exporter 与 offline Import/Compiler；固定 Unity 样例可在没有 VS Code/Bridge 的条件下执行 Generate/Check。UPM Package ID 固定为 `com.kyle.visualbridge`，C# namespace/assembly 使用 `VisualBridge.<Module>`；私有 VSIX 保持 `UNLICENSED` 并携带不授予公共使用权的 proprietary notice。最小 Editor Bridge V1 已实现并于 2026-08-31 完成：正式消息 Schema 进入 Protocol、Unity 侧客户端与 VS Code 扩展宿主服务器落地、全部自动化门槛通过、真实 Unity Editor 与隔离 VS Code Extension Host 完成 open/reveal E2E（见第 12 章）。Runtime 实例发现、Runtime Bridge 协议（含调试租约与源映射语义）、VS Code DAP 检查适配器与 MCP 运行时检查工具已于 2026-08-31 落地（见第 17、18 章）；Graph 执行过程可视化（游戏侧执行引擎的执行观察，不做断点）已于同日冻结设计（见第 19 章，实施见 [`UnityDomainAndRuntimeRoadmap.md`](UnityDomainAndRuntimeRoadmap.md) 阶段 D）；断点/调用栈等执行级调试语义按 §18.3 范围裁定不进入协议，Unity Player 与远程/设备连接（阶段 C）明确推迟。实施状态与剩余发布门槛见 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)。
 
 ## 2. 首期范围
 
@@ -577,6 +577,8 @@ Editor Bridge Schema 字节冻结不改。共享核落地为：Runtime Bridge Sc
 
 **范围裁定**：当前 `VisualBridge.Runtime` 是数据运行时（加载编译产物快照），不存在可打断点的执行引擎。按「不以占位 Schema 伪装成已完成能力」原则，断点/调用栈/变量/求值消息**不进入 Schema**——它们在真实执行运行时出现时再冻结（重开条件：出现承载业务逻辑的执行运行时，或阶段 C 远程设备调试需要）。V1 落地的真实调试面：
 
+2026-08-31 增补：项目方确认游戏侧 Graph 执行引擎（执行过程观察需求），触发上述重开条件的前一半——执行**观察**语义按第 19 章冻结进入协议；断点/调用栈/变量求值仍不进入 Schema（项目方明确不做断点）。
+
 - **单控制者租约模型**（「后续 Unity 连接与 Debug 设计入口」多客户端权限待决项的裁决）：同一 Runtime 实例同一时刻至多一个**连接**持有调试租约（绑定连接对象而非 clientInstanceId——同客户端重连视为新连接）；`acquireLease` 幂等、他人持有时 `runtime.leaseDenied`（detail 含持有者）；`releaseLease` 三态（ok/`leaseNotHeld`/`leaseDenied`）；连接断开自动释放；`getDocumentSources` 要求持有租约（无租约 `runtime.leaseRequired`）；`getSnapshot` 与事件订阅为观察者语义、不要求租约。抢占不静默——后来者得到明确拒绝，控制权转移只能经持有者主动释放或断线。
 - **文档级 Source 映射与漂移防护**：`getDocumentSources` 返回每个运行中文档的 Authoring 源路径与 SHA-256——structured/entity/graph 取产物 `inputs.document`（严格必填），table 取其 sourceMapping 的 `sources[]`（每源文件一条）。VS Code 侧对照工作区当前文档字节计算漂移；漂移必须在调用方显式呈现（当前 Hash 与运行时 Hash 并列），阻止把新 Authoring 身份静默映射到旧 Runtime 数据。会话状态绝不写回 Authoring 源。
 - 消息集增量为 Schema 内扩展（`protocolVersion` 维持 1）：capability 增 `lease`/`sources`；request action 增 `acquireLease`/`releaseLease`/`getDocumentSources`（`documentTypeIds` 仅 `getSnapshot` 允许，allOf 条件约束）；ok 响应 `documents`/`sources` 互斥（oneOf）；错误码增 `runtime.leaseRequired`/`leaseDenied`/`leaseNotHeld`。三方 parity fixture 扩至 36 例。
@@ -590,3 +592,44 @@ Editor Bridge Schema 字节冻结不改。共享核落地为：Runtime Bridge Sc
 ### 18.5 VS Code DAP 检查适配器（VB-UX-11，2026-08-31）
 
 DAP 适配器以**只检查会话**形态落地（范围裁定与 18.3 一致——无执行引擎即无断点/单步/暂停语义）：debug type `visualbridge-runtime`、仅 attach；会话生命周期映射为连接实例 + `acquireLease`（断开即 releaseLease）；单伪线程/单帧/单 scope 仅满足 DAP 结构要求，变量树即 getSnapshot 的真实运行时数据（惰性展开、单层 500 上限、`__sourcePath`/`__sourceDrifted` 信息变量来自 getDocumentSources 与工作区字节比对）；断点一律 `verified:false`、能力声明如实为空——不伪造执行状态。适配器是纯翻译层：全部状态来自 Runtime Bridge 协议（单一事实源），断开释放租约后其他客户端可立即接管（E2E 有断言）。E2E 覆盖：真实 Unity Play 实例 attach→变量树/漂移全零断言→断开；host 测试以假实例验证租约抢占/释放语义。
+
+## 19. Graph 执行过程可视化（冻结设计，VB-UX-13~16，2026-08-31）
+
+### 19.1 范围与定位
+
+项目方期望（2026-08-31 逐项确认）：从运行时获取 Graph 的执行过程，在 VS Code Graph 页面中显示（调试指定图），获取浅快照状态；**不做断点**。这触发了 18.3 记录的重开条件的一半——「执行运行时出现」：Graph 的执行发生在**游戏侧引擎**（项目方参考实现：ActionEditor `FlowGraph` Runtime——节点 Start/Output/DataNode/边值变化四类事件、`IFlowDebugerProvider` 插桩缝、`NodeUIDs` 稳定 ID 表）。VisualBridge 的职责因此是**采集、传输、订阅与可视化**，不是执行引擎：`VisualBridge.Runtime` 保持数据运行时定位（13.7 决策 B）不变，不引入节点调度或求值语义。
+
+边界裁决：
+
+- **创作权在 VisualBridge（方案 A）**：`.vbflow` 文档是唯一创作源；编译导出游戏执行数据时 VisualBridge 节点稳定 ID 一路带入游戏侧 UID 表（`NodeUIDs` 的等价物），调试事件回传时携带 VisualBridge 稳定 ID，页面直接点亮对应节点。
+- **导入器归游戏侧**：`.vbflow` 编译产物 → 游戏执行数据的转换（含稳定 ID 进 UID 表）是游戏工程职责，不进 VisualBridge 仓库；VisualBridge 保证图编译产物节点稳定 ID 完整保留（现有产物已满足），并以文档写清映射规则（游戏侧接入指南，随 VB-UX-14 落地）。
+- 与 18.3 的关系：执行**观察**语义进入协议（本章）；断点/调用栈/变量求值仍不进入 Schema——项目方明确不做。
+
+### 19.2 事件与实例模型
+
+- **执行实例**：游戏侧上报 `(graphId, graphName, debugKey)`（debugKey 为游戏侧执行者标识，如角色）→ VisualBridge 分配 `instanceId`；实例停止上报 `instanceId`。同一张图可被多个执行者并发执行，每个 Start 一个实例。
+- **事件类型**：`instanceStarted` / `instanceStopped` / `nodeStart` / `nodeOutput` / `dataNode` / `edgeValueChanged`。
+- **字段**：每条事件携带 `instanceId`、`frameIndex`（逐条携带，非整批一个）、`nodeStableId`（VisualBridge 文档稳定 ID）；端口类事件含 `outputIndex`；值变化事件含值字符串。回放支持**事件级与帧级**两种步进粒度，同帧事件保持原始顺序。
+- **单实例跟踪**：页面一次只跟一个执行实例，实例列表可切换；事件按 `instanceId` 分流，不聚合混显。
+
+### 19.3 协议扩展（Runtime Bridge 纯增量）
+
+- 新请求动作：`getGraphExecutionInstances`（可选按图 ID 过滤，返回实例 ID、图 ID、图名、debugKey、运行状态、当前节点、frameIndex）、`subscribeGraphExecution` / `unsubscribeGraphExecution`（按实例 ID；退订即停采）、`getGraphExecutionSnapshot`（浅快照：实例元信息 + 当前节点 + 运行状态，不含变量池 dump——边的值由事件流补齐，游戏侧 provider 缝无需状态查询能力）。
+- 新事件消息 `graphExecution`：**批量数组**承载，冲刷节奏「每 100ms 或满 64 条，先到先冲」；不要求同帧送达（项目方确认）。
+- **权限语义：观察者级别，不占租约**——与 `getSnapshot`/`artifactsChanged` 同级；多个客户端可并行观察同一实例，与 DAP 租约、MCP 连接互不影响。
+- Schema 纪律：`coreVersion` 不变，Runtime Bridge schema 版本递增；fixtures 三方（AJV / Unity 严格校验器 / 扩展宿主）一致；新增错误码（如实例不存在）进入错误分类法。
+
+### 19.4 Unity 侧采集缝
+
+- `VisualBridge.Runtime` 提供静态门面 `VisualBridgeGraphExecutionCapture`：`OnInstanceStarted(graphId, graphName, debugKey, out instanceId)` / `OnInstanceStopped` / `OnNodeStart` / `OnNodeOutput` / `OnDataNode` / `OnEdgeValueChanged`（均含 instanceId + frameIndex，节点参数用 nodeStableId）。**实例 ID 由 VisualBridge 分配**，游戏侧不自造 ID 体系。
+- **零订阅零开销**：`static bool` 快速路径，无人订阅时全部方法直接返回；不采用参考实现的 `[Conditional]` 编译宏——无需重编译即可开关。
+- 采集与传输解耦：门面只负责收集进缓冲；订阅驱动的转发由现有 `VisualBridgeRuntimeBridgeServer` 通道承载（与 `artifactsChanged` 同级生命周期）。mid-play domain reload 语义沿用第 17 章（generation/心跳）。
+- **游戏侧职责**：写一个小适配器实现其引擎自身的 debug provider 接口，把事件转发到上述门面；引擎与 VisualBridge 互不引用。
+
+### 19.5 VS Code 页面交互
+
+- **调试入口在 Graph 编辑器页内**：工具栏「执行调试」按钮 → 拉取当前打开图的活跃实例列表（debugKey、运行状态、当前节点、frameIndex）→ 选择实例 attach 并订阅。入口只服务当前打开的图。
+- **实时态**：当前执行节点持续高亮（描边/呼吸），刚经过的边短暂流光，数据边旁显示最近值（值变化事件驱动）；时间轴默认跟随最新。
+- **回放态**：扩展宿主留存本会话完整事件记录（内存，不落盘）；拖动时间轴或按步进（事件级/帧级）暂停实时进入回放，可「回到实时」；实例停止时自动停在记录末尾，可从实例列表切换新实例。
+- **断开语义**：关闭页面或点击停止调试即退订，Unity 侧采集随之停止；记录随会话丢弃。
+- 单一事实源不变：执行流与 DAP 检查、MCP 工具同源（Runtime Bridge 协议），可并行使用。

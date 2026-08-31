@@ -2,13 +2,14 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 检查适配器）已关闭，**阶段 A 与阶段 B 全部完成**——VB-UX-00 至 VB-UX-12 已关闭；阶段 C（远程与设备连接）经项目方 2026-08-31 决策明确推迟（见第 6 节），本清单当前无可执行任务。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 检查适配器）已关闭，**阶段 A 与阶段 B 全部完成**——VB-UX-00 至 VB-UX-12 已关闭；阶段 C（远程与设备连接）经项目方 2026-08-31 决策明确推迟（见第 6 节）。**2026-08-31 新增阶段 D（Graph 执行过程可视化，VB-UX-13~16）**：项目方确认游戏侧 Graph 执行引擎与执行观察需求，设计已逐项讨论冻结（见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 19 章），当前待执行。
 
-本阶段分三段：
+本阶段分四段：
 
 - **阶段 A（离线领域扩展）**：Entity、Table、Graph 三个领域的 Unity Catalog Export 与派生编译。全部 Editor-only、离线、确定性，复用 VB-UI-04/05 已冻结的 Profile、Schema 先行、batch Generate/Check、EditMode 与产物原子性方法论。
 - **阶段 B（本机 Runtime 接入）**：仅本机回环（`127.0.0.1`）的 Runtime 通道、调试语义、VS Code DAP 适配器与 MCP Debug Tool。Editor 内 Play 模式与同机 Player 构建是同一 Runtime 发现流程的两种实例来源。
 - **阶段 C（远程与设备连接）**：独立后续阶段，只登记范围与出口标准，不进入阶段 B 依赖链，不承诺与阶段 B 同协议版本落地。任务拆分由该阶段自己的 spike 产出。
+- **阶段 D（Graph 执行过程可视化）**：游戏侧执行引擎的执行事件经 `VisualBridge.Runtime` 采集门面进入 Runtime Bridge 协议，VS Code Graph 页面实时跟踪与回放。只观察、不做断点；执行引擎与产物导入器归游戏侧，VisualBridge 不实现执行器。
 
 2026-08-30 规划决策记录（项目方逐项确认）：
 
@@ -44,15 +45,26 @@ flowchart LR
     UX11["VB-UX-11 VS Code DAP adapter"]
     UX12["VB-UX-12 MCP debug tool"]
     UX13["Phase C remote and devices"]
+    UX14["VB-UX-13 graph execution protocol"]
+    UX15["VB-UX-14 Unity capture facade"]
+    UX16["VB-UX-15 VS Code subscription service"]
+    UX17["VB-UX-16 graph editor debug UI"]
 
     UX00 --> UX01
     UI07 --> UX01
     UX01 --> UX02 --> UX03 --> UX04 --> UX05 --> UX06 --> UX07 --> UX08 --> UX09 --> UX10 --> UX11
     UX10 --> UX12
     UX09 -.-> UX13
+    UX12 --> UX14
+    UX14 --> UX15
+    UX14 --> UX16
+    UX15 --> UX17
+    UX16 --> UX17
 ```
 
 Entity → Table → Graph 是风险递进的范围控制。VB-UX-03 不阻塞 Table/Graph 的调研，但在它产出 Adapter API 决策之前，后续领域任务不得自行发明新的注册方式。VB-UX-07 依赖三个领域的产物设计留档齐全，因此排在阶段 A 末尾。
+
+阶段 D 依赖：VB-UX-13（协议扩展）是基线；VB-UX-14（Unity 采集门面）与 VB-UX-15（VS Code 订阅服务）在其后可并行；VB-UX-16（页面 UI 与 E2E）收口。图中 `UX13` 节点是阶段 C 范围登记（非任务号），阶段 C 保持推迟不进入依赖链。
 
 ## 3. 前置任务：仓库语言规范梳理
 
@@ -332,17 +344,89 @@ Exit criteria：
 - **范围**：跨网络边界的端点安全暴露（防火墙、设备/实例寻址）、配对与凭据生命周期（首次信任建立、撤销、轮换）、传输加密、跨机器审计与错误恢复；不承诺与阶段 B 同协议版本，若远程要求传输层换形，按其自身版本演进。
 - **出口标准（最低）**：spike 与威胁模型先行并冻结进架构文档；跨机器实例发现、配对、撤销与重连有自动化或可复现手工验证；本机阶段全部门槛回归不受影响；`ScriptableObject` 排除条款与单一权威源原则不被任何远程能力绕过。
 
-## 7. 强制工作流与验证门槛
+## 7. 阶段 D：Graph 执行过程可视化（VB-UX-13~16）
+
+阶段 D 所有任务共同遵守：
+
+- 设计基线是 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 19 章的冻结记录（2026-08-31 项目方逐项确认）；任务实现不得偏离其中的范围裁决、事件模型、观察者语义与交互形态。
+- 只观察、不做断点；断点/调用栈/变量求值不进入 Schema（§18.3/§19.1 裁定）。
+- 执行引擎与 `.vbflow` → 游戏执行数据的导入器均归游戏侧；VisualBridge 仓库不引入节点调度/求值语义（`VisualBridge.Runtime` 定位以 VB-UX-07 冻结结论为准）。
+- 不占租约的观察语义不得削弱既有租约模型；Editor Bridge open/reveal E2E 与阶段 A/B 全部门槛在每个任务后保持通过。
+
+### VB-UX-13 Runtime Bridge Graph 执行协议扩展 — `pending`
+
+依赖：VB-UX-12（协议与 fixtures 基线）。
+
+范围：
+
+- Runtime Bridge Schema 纯增量扩展（§19.3）：请求动作 `getGraphExecutionInstances` / `subscribeGraphExecution` / `unsubscribeGraphExecution` / `getGraphExecutionSnapshot`（浅快照）、事件消息 `graphExecution`（批量数组，逐条携带 `instanceId`/`frameIndex`/`nodeStableId`）、按需新增错误码进分类法。
+- fixtures 三方一致（AJV / Unity 严格校验器 / 扩展宿主）：新增用例与既有 36 例共存；`contract-manifest` 的 `versions.runtimeBridge` 递增，`coreVersion` 不变。
+- TS 协议镜像与 Unity 校验器同步实现，能力枚举等常量三方一致。
+
+Exit criteria：
+
+- `check:docs`、`check:protocol`、`check:mcp` 通过；三方 parity fixtures 全部通过（Unity EditMode + 扩展宿主）。
+- 既有协议用例零回归；协议扩展不改动任何已冻结消息的字段语义。
+
+### VB-UX-14 Unity 采集门面与订阅转发 — `pending`
+
+依赖：VB-UX-13。
+
+范围：
+
+- `VisualBridge.Runtime` 静态门面 `VisualBridgeGraphExecutionCapture`（§19.4）：实例 ID 由 VisualBridge 分配；零订阅零开销（`static bool` 快速路径，不用编译宏）。
+- `VisualBridgeRuntimeBridgeServer` 订阅驱动转发与浅快照查询；mid-play domain reload 语义沿用第 17 章。
+- EditMode 测试以假采集器（直接调用门面，模拟游戏引擎事件序列）覆盖实例生命周期、事件分流、批量冲刷节奏与退订停采。
+- 游戏侧接入指南进入 `Doc/`：稳定 ID 映射规则、适配器形态示例（引擎 provider 接口 → 采集门面转发）。
+
+Exit criteria：
+
+- `dotnet build`（runtime + editor csproj）通过；EditMode 全部通过；Runtime E2E（既有）与 Bridge E2E 回归通过。
+- 零订阅路径有性能断言（无订阅时门面方法无分配、不进缓冲）。
+
+### VB-UX-15 VS Code 订阅服务与会话记录 — `pending`
+
+依赖：VB-UX-13。可与 VB-UX-14 并行。
+
+范围：
+
+- `RuntimeBridgeService` 扩展：实例枚举、订阅/退订、浅快照、`graphExecution` 事件接收与分发（按实例 ID 分流）。
+- 扩展宿主侧会话记录模型：完整事件留存（内存、不落盘）、事件级/帧级索引、实例停止收尾。
+- 以测试命令暴露订阅状态与记录查询供自动化（沿用既有测试命令模式）。
+
+Exit criteria：
+
+- 扩展宿主测试（假 Runtime 实例）覆盖订阅/退订/批量事件乱序到达/实例停止/多客户端并行观察不占租约。
+- `npm run check`、`npm test` 全工作区通过。
+
+### VB-UX-16 Graph 页面执行调试 UI 与 E2E — `pending`
+
+依赖：VB-UX-14、VB-UX-15。
+
+范围：
+
+- Graph 编辑器页（`BuiltInExtensions/Graph` webview）「执行调试」入口：活跃实例选择器（debugKey、运行状态、当前节点、frameIndex）。
+- 实时态（当前节点高亮、经过边流光、数据边最近值）与回放态（时间轴、事件级/帧级步进、回到实时、实例停止收尾与切换）；Webview 组件选型遵循仓库规范（AGENTS.md）。
+- 停止调试/关闭页面即退订。
+
+Exit criteria：
+
+- 真实 Unity Play 实例 + 隔离 Extension Host E2E：attach → 事件驱动高亮/值显示 → 回放步进 → 切换实例 → 退订停采断言。
+- Editor Bridge open/reveal E2E、阶段 A/B 全部门槛回归通过；`check:docs` 的命令/编辑器清单同步更新。
+
+## 8. 强制工作流与验证门槛
 
 本清单任务执行 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md) 第 4 节强制工作流与第 5 节 Unity 验证门槛（dotnet 快速编译、batchmode refresh/import、EditMode 与垂直切片、Bridge E2E），不再重复。在此之上补充：
 
 - 阶段 A 每个领域任务收尾时，产物结构、稳定 ID 与 source mapping 的设计记录进入 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md)（VB-UX-07 的 spike 输入）。
 - 阶段 B 每个任务在冻结任何协议语义前完成 spike 与威胁模型；Play 模式 E2E 与同机 Player 构建 E2E 是独立发布门槛，协议单元测试或 batchmode 不能替代。
 - 阶段 B 任何任务不得破坏 Editor Bridge open/reveal E2E、阶段 A 各领域 Generate/Check 与全部 Node/VSIX/docs 门槛。
+- 阶段 D 设计已由项目方逐项确认并冻结于架构文档第 19 章（2026-08-31），任务执行直接以该章为实现规约，不再重复 spike；任何偏离须先回到项目方确认并更新冻结记录。
 
-## 8. 完成定义
+## 9. 完成定义
 
-- 阶段 A/B 全部任务 `complete`，阶段 C 已由项目方明确推迟并记录（2026-08-31，见第 6 节）——**本条已满足，本清单主体完结**。
+- 阶段 A/B 全部任务 `complete`，阶段 C 已由项目方明确推迟并记录（2026-08-31，见第 6 节）。
+- 阶段 D 全部任务 `complete`：执行事件链路（采集门面 → 协议 → 页面）经真实 Unity Play 与隔离 Extension Host E2E 验证，游戏侧接入指南落地。
 - 三领域离线编译闭环、本机 Runtime 通道、调试链路与 DAP 适配器全部经真实 Unity Editor/Player 与隔离 Extension Host 验证。
-- 架构文档同步收录：领域产物设计记录、Adapter API 决策、Runtime 产物形态决策、发现流程与威胁模型、协议分层与调试权限模型。
+- 架构文档同步收录：领域产物设计记录、Adapter API 决策、Runtime 产物形态决策、发现流程与威胁模型、协议分层与调试权限模型、Graph 执行过程可视化设计（第 19 章）。
 - 既有 VB-UI 系列全部 exit criteria 保持通过；仓库不引入 Runtime 行为越界（`VisualBridge.Runtime` 的定位以 VB-UX-07 冻结结论为准）、`ScriptableObject` 扫描或任何绕过单一权威源的路径。
