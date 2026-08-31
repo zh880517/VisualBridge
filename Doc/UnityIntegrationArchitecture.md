@@ -568,13 +568,21 @@ Editor Bridge Schema 字节冻结不改。共享核落地为：Runtime Bridge Sc
 
 - `hello`（client→instance）：token、protocolVersion(1)、coreVersion(1)、clientInstanceId(uuid)、capabilities。
 - `welcome`（instance→client）：instanceId（`editor-<pid>`/`player-<pid>`）、kind、generation、capabilities(`snapshot`/`events`)、startedAt。
-- `request`/`response`（requestId 配对）：V1 仅 `getSnapshot` 动作（可选 `documentTypeIds` 过滤）；ok 响应携带 `documents[]`（`{documentTypeId, documentId, kind, data}`——data 为解析后的编译产物），error 响应携带 `runtime.*` 错误码。
+- `request`/`response`（requestId 配对）：动作 `getSnapshot`（可选 `documentTypeIds` 过滤）与调试语义动作 `acquireLease`/`releaseLease`/`getDocumentSources`（见 18.3）；ok 响应携带 `documents[]`（`{documentTypeId, documentId, kind, data}`——data 为解析后的编译产物）或 `sources[]`（互斥），error 响应携带 `runtime.*` 错误码。
 - `event`（instance→client）：V1 仅 `artifactsChanged`——Play 模式下监听编译产物目录变化并向已订阅客户端推送新快照。
 - `error`（连接级）：`runtime.invalidToken/invalidJson/invalidMessage/unknownMessageType/protocolVersionMismatch/unknownRequest/internalError`；首条消息必须 hello，token 不符即断开（对齐 Editor Bridge）。
 - 传输：仅 `127.0.0.1` TCP（无命名管道端点——发现记录无 pipePath 字段）；客户端单线程同步请求/响应模型（Mono 管道死锁教训，见 §12）。
 
-### 18.3 实现边界
+### 18.3 调试语义与权限模型（VB-UX-10 增补，2026-08-31）
+
+**范围裁定**：当前 `VisualBridge.Runtime` 是数据运行时（加载编译产物快照），不存在可打断点的执行引擎。按「不以占位 Schema 伪装成已完成能力」原则，断点/调用栈/变量/求值消息**不进入 Schema**——它们在真实执行运行时出现时再冻结（重开条件：出现承载业务逻辑的执行运行时，或阶段 C 远程设备调试需要）。V1 落地的真实调试面：
+
+- **单控制者租约模型**（「后续 Unity 连接与 Debug 设计入口」多客户端权限待决项的裁决）：同一 Runtime 实例同一时刻至多一个**连接**持有调试租约（绑定连接对象而非 clientInstanceId——同客户端重连视为新连接）；`acquireLease` 幂等、他人持有时 `runtime.leaseDenied`（detail 含持有者）；`releaseLease` 三态（ok/`leaseNotHeld`/`leaseDenied`）；连接断开自动释放；`getDocumentSources` 要求持有租约（无租约 `runtime.leaseRequired`）；`getSnapshot` 与事件订阅为观察者语义、不要求租约。抢占不静默——后来者得到明确拒绝，控制权转移只能经持有者主动释放或断线。
+- **文档级 Source 映射与漂移防护**：`getDocumentSources` 返回每个运行中文档的 Authoring 源路径与 SHA-256——structured/entity/graph 取产物 `inputs.document`（严格必填），table 取其 sourceMapping 的 `sources[]`（每源文件一条）。VS Code 侧对照工作区当前文档字节计算漂移；漂移必须在调用方显式呈现（当前 Hash 与运行时 Hash 并列），阻止把新 Authoring 身份静默映射到旧 Runtime 数据。会话状态绝不写回 Authoring 源。
+- 消息集增量为 Schema 内扩展（`protocolVersion` 维持 1）：capability 增 `lease`/`sources`；request action 增 `acquireLease`/`releaseLease`/`getDocumentSources`（`documentTypeIds` 仅 `getSnapshot` 允许，allOf 条件约束）；ok 响应 `documents`/`sources` 互斥（oneOf）；错误码增 `runtime.leaseRequired`/`leaseDenied`/`leaseNotHeld`。三方 parity fixture 扩至 36 例。
+
+### 18.4 实现边界
 
 - Unity 侧：`VisualBridge.Runtime` 按第 13.7 节决策 B 升级——asmdef 增加 Newtonsoft 预编译引用，新增 `VisualBridgeRuntimeArtifactStore`（Play 模式读 `Library/VisualBridge/Compiled`，Player 回退 `StreamingAssets/VisualBridge/Compiled`）与 `VisualBridgeRuntimeBridgeServer`（监听/注册记录/心跳，遵循第 17 章生命周期语义）；`VisualBridge.Editor` 以 `[InitializeOnLoad]` 兜底 mid-play reload 窗口。调试语义（断点/调用栈）不进入本版本——属 VB-UX-10。
-- VS Code 侧：`RuntimeBridgeService` 枚举 `visualbridge-runtime` 发现目录、显式选择实例、连接与订阅；本任务不提供 UI（DAP 适配器与 UI 属后续任务），以测试命令暴露状态供自动化。
-- 三方 parity fixture：`visualbridge-runtime-bridge-cases.json`（24 例）由 AJV（generate.mjs）、Unity 严格校验器（EditMode）与扩展宿主测试共同消费。
+- VS Code 侧：`RuntimeBridgeService` 枚举 `visualbridge-runtime` 发现目录、显式选择实例、连接与订阅（含租约控制与 Source 映射查询）；本任务不提供 UI（DAP 适配器与 UI 属后续任务），以测试命令暴露状态供自动化。
+- 三方 parity fixture：`visualbridge-runtime-bridge-cases.json`（36 例）由 AJV（generate.mjs）、Unity 严格校验器（EditMode）与扩展宿主测试共同消费。

@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义进入 Runtime 协议）待开始。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 适配器）待开始。
 
 本阶段分三段：
 
@@ -262,7 +262,7 @@ Exit criteria：
 - Play 模式 E2E：真实 Unity Editor Play 模式与隔离 VS Code Extension Host 完成状态/事件全链路验证；仅有协议单元测试或 batchmode 不能替代。
 - Editor Bridge open/reveal E2E 回归通过；`npm run test:bridge-e2e` 退出码 0。
 
-### VB-UX-10 调试语义进入 Runtime 协议 — `in_progress`
+### VB-UX-10 调试语义进入 Runtime 协议 — `complete`
 
 依赖：VB-UX-09。
 
@@ -272,12 +272,18 @@ Exit criteria：
 - 多客户端权限模型（单控制者、租约或其他）冻结：抢占、断线与恢复行为明确。
 - Source Document 元素与运行版本、Runtime Instance 的稳定可校验映射；Source/Catalog 漂移必须显式呈现并阻止把新 Authoring 身份错误映射到旧 Runtime。
 
+范围裁定（重要偏离记录）：实施时确认当前 `VisualBridge.Runtime` 是数据运行时，不存在可打断点的执行引擎——按「不以占位 Schema 伪装成已完成能力」原则，断点/调用栈/变量/求值消息不进入 Schema（重开条件见架构文档 §18.3）。V1 落地的真实调试面为单控制者租约与文档级 Source 映射。
+
+实施与验证记录：2026-08-31 完成。Schema 内增量扩展（protocolVersion 维持 1）：capability 增 `lease`/`sources`，request action 增 `acquireLease`/`releaseLease`/`getDocumentSources`（documentTypeIds 仅 getSnapshot 允许），ok 响应 documents/sources 互斥，新 $defs/documentSource 与错误码 `runtime.leaseRequired`/`leaseDenied`/`leaseNotHeld`；三方 parity fixture 扩至 36 例（AJV/Unity 校验器/扩展宿主）。Unity 侧：租约绑定连接（幂等 acquire、三态 release、断开自动释放、getDocumentSources 需租约）；Source 映射 structured/entity/graph 取产物 `inputs.document`（严格必填），table 取其 sourceMapping `sources[]`。VS Code 侧：协议镜像/服务方法/测试命令 + E2E 漂移检测（修改 Authoring 文档后当前 Hash 与运行时 Hash 不一致断言）。期间修复宿主侧能力常量遗漏导致的发现记录被整体跳过缺陷。
+
+验证记录：EditMode 新增 6 例随全套 150/150 通过；Runtime E2E 扩展为四项（发现连接、快照、**租约+Source 映射+漂移**、事件）全过且 Unity 干净退出；`npm test` 全套与 `npm run test:bridge-e2e` 回归通过；`check:protocol`/`npm run check`/`dotnet build` 通过。权限模型（单控制者租约、抢占不静默）与漂移防护语义冻结进 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 18.3 节。
+
 Exit criteria：
 
 - 权限模型与漂移防护的冻结设计进入架构文档；文件名、数组索引或对象地址不作为稳定跨进程标识有测试锁定。
 - 断点/调用栈/变量/事件的正反例与上限行为有自动化覆盖；Play 模式 E2E 扩展覆盖调试链路。
 
-### VB-UX-11 VS Code DAP 适配器 — `pending`
+### VB-UX-11 VS Code DAP 适配器 — `in_progress`
 
 依赖：VB-UX-10。
 

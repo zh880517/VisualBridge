@@ -12,8 +12,9 @@ namespace VisualBridge.Runtime
     /// 确定性枚举并加载编译产物目录（Editor Play 模式为
     /// &lt;project&gt;/Library/VisualBridge/Compiled，Player 为
     /// &lt;StreamingAssets&gt;/VisualBridge/Compiled——路径解析由调用方完成）。
-    /// 快照按 manifest 的 artifact 输出收集，digest 覆盖 manifest 与
-    /// documents 树的全部产物文件，用于 1 秒轮询的变更检测。
+    /// 快照按 manifest 的 artifact 输出收集并附带每文档的 Authoring 源映射
+    /// （DocumentSources），digest 覆盖 manifest 与 documents 树的全部产物文件，
+    /// 用于 1 秒轮询的变更检测。
     /// </summary>
     public static class VisualBridgeRuntimeArtifactStore
     {
@@ -29,7 +30,17 @@ namespace VisualBridge.Runtime
         };
 
         private const string DocumentsDirectoryName = "documents";
+        private const string MappingsDirectoryName = "mappings";
         private const string ArtifactFileExtension = ".vbcompiled.json";
+        private const string SourceMappingFileExtension = ".vbsource.json";
+
+        /// <summary>manifest 输出条目（kind 固定为 artifact 或 sourceMapping）。</summary>
+        private sealed class ManifestOutput
+        {
+            public string Kind;
+
+            public string Path;
+        }
 
         /// <summary>
         /// 加载全部编译产物。table 产物用 tableTypeId 充当 DocumentTypeId 与
@@ -44,6 +55,7 @@ namespace VisualBridge.Runtime
                 return snapshots;
             }
 
+            var sourceMappings = ReadSourceMappingIndex(artifactsRoot);
             var visited = new HashSet<string>(StringComparer.Ordinal);
             foreach (var relativePath in EnumerateManifestArtifactPaths(artifactsRoot))
             {
@@ -52,7 +64,7 @@ namespace VisualBridge.Runtime
                     continue;
                 }
 
-                snapshots.Add(LoadArtifact(Path.Combine(artifactsRoot, relativePath), relativePath));
+                snapshots.Add(LoadArtifact(artifactsRoot, relativePath, sourceMappings));
             }
 
             snapshots.Sort((left, right) =>
@@ -61,6 +73,22 @@ namespace VisualBridge.Runtime
                 return byType != 0 ? byType : string.CompareOrdinal(left.DocumentId, right.DocumentId);
             });
             return snapshots;
+        }
+
+        /// <summary>
+        /// 全部运行中文档的 Authoring 源映射（getDocumentSources 的数据源）：
+        /// 非 table 域每文档一条（产物 inputs.document），table 域每个源文件一条
+        /// （.vbsource.json 的 sources 数组，身份仍为 tableTypeId）。
+        /// </summary>
+        public static IReadOnlyList<VisualBridgeRuntimeDocumentSource> DocumentSources(string artifactsRoot)
+        {
+            var sources = new List<VisualBridgeRuntimeDocumentSource>();
+            foreach (var snapshot in Snapshot(artifactsRoot))
+            {
+                sources.AddRange(snapshot.Sources ?? Array.Empty<VisualBridgeRuntimeDocumentSource>());
+            }
+
+            return sources;
         }
 
         /// <summary>
@@ -138,7 +166,10 @@ namespace VisualBridge.Runtime
 
                 foreach (var output in ReadManifestOutputs(manifestPath, manifestName))
                 {
-                    paths.Add(output);
+                    if (output.Kind == "artifact")
+                    {
+                        paths.Add(output.Path);
+                    }
                 }
             }
 
@@ -146,7 +177,52 @@ namespace VisualBridge.Runtime
             return paths;
         }
 
-        private static IEnumerable<string> ReadManifestOutputs(string manifestPath, string manifestName)
+        /// <summary>
+        /// sourceMapping 产物索引：artifact 相对路径 → mappings/ 产物相对路径。
+        /// table 产物的 Authoring 源清单（inputs 无单一 document）登记在
+        /// .vbsource.json 的 sources 数组里。
+        /// </summary>
+        private static Dictionary<string, string> ReadSourceMappingIndex(string artifactsRoot)
+        {
+            var index = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var manifestName in ManifestFileNames)
+            {
+                var manifestPath = Path.Combine(artifactsRoot, manifestName);
+                if (!File.Exists(manifestPath))
+                {
+                    continue;
+                }
+
+                foreach (var output in ReadManifestOutputs(manifestPath, manifestName))
+                {
+                    if (output.Kind != "sourceMapping")
+                    {
+                        continue;
+                    }
+
+                    var mappingPath = Path.Combine(artifactsRoot, output.Path);
+                    if (!File.Exists(mappingPath))
+                    {
+                        throw VisualBridgeRuntimeBridgeValidator.Error(
+                            "runtime.invalidMessage", "$", $"Source mapping '{output.Path}' listed by a manifest does not exist.");
+                    }
+
+                    var mappingRoot = VisualBridgeRuntimeBridgeValidator.ParseObject(File.ReadAllText(mappingPath), "runtime.invalidJson");
+                    var artifactPath = mappingRoot["artifact"]?["path"]?.Value<string>();
+                    if (string.IsNullOrEmpty(artifactPath))
+                    {
+                        throw VisualBridgeRuntimeBridgeValidator.Error(
+                            "runtime.invalidMessage", "$.artifact.path", $"Source mapping '{output.Path}' must reference its compiled artifact.");
+                    }
+
+                    index.TryAdd(artifactPath, output.Path);
+                }
+            }
+
+            return index;
+        }
+
+        private static IEnumerable<ManifestOutput> ReadManifestOutputs(string manifestPath, string manifestName)
         {
             var root = VisualBridgeRuntimeBridgeValidator.ParseObject(File.ReadAllText(manifestPath), "runtime.invalidJson");
             var formatVersion = root["formatVersion"];
@@ -172,27 +248,48 @@ namespace VisualBridge.Runtime
 
                 var kind = entry["kind"]?.Value<string>();
                 var path = entry["path"]?.Value<string>();
-                if (kind != "artifact" || string.IsNullOrEmpty(path))
+                if (kind != "artifact" && kind != "sourceMapping")
                 {
                     continue;
                 }
 
-                // 只接受 documents/ 下的编译产物相对路径，拒绝越界路径。
-                if (!path.StartsWith(DocumentsDirectoryName + "/", StringComparison.Ordinal)
-                    || !path.EndsWith(ArtifactFileExtension, StringComparison.Ordinal)
-                    || path.Contains("..")
-                    || Path.IsPathRooted(path))
+                if (string.IsNullOrEmpty(path))
                 {
                     throw VisualBridgeRuntimeBridgeValidator.Error(
-                        "runtime.invalidMessage", "$.outputs[].path", $"Manifest '{manifestName}' declares an unexpected artifact path '{path}'.");
+                        "runtime.invalidMessage", "$.outputs[].path", $"Manifest '{manifestName}' declares an output without a path.");
                 }
 
-                yield return path.Replace('\\', '/');
+                // 只接受产物目录内的注册相对路径，拒绝越界路径。
+                if (path.Contains("..") || Path.IsPathRooted(path))
+                {
+                    throw VisualBridgeRuntimeBridgeValidator.Error(
+                        "runtime.invalidMessage", "$.outputs[].path", $"Manifest '{manifestName}' declares an unexpected output path '{path}'.");
+                }
+
+                if (kind == "artifact")
+                {
+                    if (!path.StartsWith(DocumentsDirectoryName + "/", StringComparison.Ordinal)
+                        || !path.EndsWith(ArtifactFileExtension, StringComparison.Ordinal))
+                    {
+                        throw VisualBridgeRuntimeBridgeValidator.Error(
+                            "runtime.invalidMessage", "$.outputs[].path", $"Manifest '{manifestName}' declares an unexpected artifact path '{path}'.");
+                    }
+                }
+                else if (!path.StartsWith(MappingsDirectoryName + "/", StringComparison.Ordinal)
+                    || !path.EndsWith(SourceMappingFileExtension, StringComparison.Ordinal))
+                {
+                    throw VisualBridgeRuntimeBridgeValidator.Error(
+                        "runtime.invalidMessage", "$.outputs[].path", $"Manifest '{manifestName}' declares an unexpected source mapping path '{path}'.");
+                }
+
+                yield return new ManifestOutput { Kind = kind, Path = path.Replace('\\', '/') };
             }
         }
 
-        private static VisualBridgeRuntimeDocumentSnapshot LoadArtifact(string absolutePath, string relativePath)
+        private static VisualBridgeRuntimeDocumentSnapshot LoadArtifact(
+            string artifactsRoot, string relativePath, Dictionary<string, string> sourceMappings)
         {
+            var absolutePath = Path.Combine(artifactsRoot, relativePath);
             if (!File.Exists(absolutePath))
             {
                 throw VisualBridgeRuntimeBridgeValidator.Error(
@@ -243,6 +340,7 @@ namespace VisualBridge.Runtime
                     DocumentId = tableTypeId,
                     Kind = kind,
                     Data = data,
+                    Sources = ReadTableSources(artifactsRoot, relativePath, sourceMappings, tableTypeId),
                 };
             }
 
@@ -261,7 +359,110 @@ namespace VisualBridge.Runtime
                 DocumentId = documentId,
                 Kind = kind,
                 Data = data,
+                Sources = new[] { ReadDocumentInput(root, relativePath, documentTypeId, documentId) },
             };
+        }
+
+        /// <summary>非 table 产物：单一 Authoring 源来自产物 inputs.document（冻结产物格式）。</summary>
+        private static VisualBridgeRuntimeDocumentSource ReadDocumentInput(
+            JObject root, string relativePath, string documentTypeId, string documentId)
+        {
+            var sourcePath = root["inputs"]?["document"]?["path"]?.Value<string>();
+            var sourceSha256 = root["inputs"]?["document"]?["sha256"]?.Value<string>();
+            if (string.IsNullOrEmpty(sourcePath) || !IsSha256Digest(sourceSha256))
+            {
+                throw VisualBridgeRuntimeBridgeValidator.Error(
+                    "runtime.invalidMessage", "$.inputs.document",
+                    $"Artifact '{relativePath}' must declare inputs.document.path and a 64-hex inputs.document.sha256.");
+            }
+
+            return new VisualBridgeRuntimeDocumentSource
+            {
+                DocumentTypeId = documentTypeId,
+                DocumentId = documentId,
+                SourcePath = sourcePath,
+                SourceSha256 = sourceSha256,
+            };
+        }
+
+        /// <summary>
+        /// table 产物：Authoring 源来自同名 .vbsource.json 的 sources 数组
+        /// （每源文件一条映射，身份均为 tableTypeId）；无源文件时不产生条目。
+        /// </summary>
+        private static IReadOnlyList<VisualBridgeRuntimeDocumentSource> ReadTableSources(
+            string artifactsRoot, string relativePath, Dictionary<string, string> sourceMappings, string tableTypeId)
+        {
+            if (!sourceMappings.TryGetValue(relativePath, out var mappingRelativePath))
+            {
+                throw VisualBridgeRuntimeBridgeValidator.Error(
+                    "runtime.invalidMessage", "$",
+                    $"Table artifact '{relativePath}' has no registered source mapping output.");
+            }
+
+            var mappingRoot = VisualBridgeRuntimeBridgeValidator.ParseObject(
+                File.ReadAllText(Path.Combine(artifactsRoot, mappingRelativePath)), "runtime.invalidJson");
+            var formatVersion = mappingRoot["formatVersion"];
+            if (formatVersion == null || formatVersion.Type != JTokenType.Integer || formatVersion.Value<int>() != CompiledFormatVersion)
+            {
+                throw VisualBridgeRuntimeBridgeValidator.Error(
+                    "runtime.invalidMessage", "$.formatVersion",
+                    $"Source mapping '{mappingRelativePath}' must declare formatVersion {CompiledFormatVersion}.");
+            }
+
+            if (!(mappingRoot["sources"] is JArray entries))
+            {
+                throw VisualBridgeRuntimeBridgeValidator.Error(
+                    "runtime.invalidMessage", "$.sources",
+                    $"Source mapping '{mappingRelativePath}' must declare a sources array.");
+            }
+
+            var sources = new List<VisualBridgeRuntimeDocumentSource>(entries.Count);
+            foreach (var entry in entries)
+            {
+                if (!(entry is JObject source))
+                {
+                    throw VisualBridgeRuntimeBridgeValidator.Error(
+                        "runtime.invalidMessage", "$.sources[]",
+                        $"Source mapping '{mappingRelativePath}' has a malformed source entry.");
+                }
+
+                var path = source["path"]?.Value<string>();
+                var sha256 = source["sha256"]?.Value<string>();
+                if (string.IsNullOrEmpty(path) || !IsSha256Digest(sha256))
+                {
+                    throw VisualBridgeRuntimeBridgeValidator.Error(
+                        "runtime.invalidMessage", "$.sources[]",
+                        $"Source mapping '{mappingRelativePath}' has a source entry without path or a 64-hex sha256.");
+                }
+
+                sources.Add(new VisualBridgeRuntimeDocumentSource
+                {
+                    DocumentTypeId = tableTypeId,
+                    DocumentId = tableTypeId,
+                    SourcePath = path,
+                    SourceSha256 = sha256,
+                });
+            }
+
+            return sources;
+        }
+
+        private static bool IsSha256Digest(string value)
+        {
+            if (value == null || value.Length != 64)
+            {
+                return false;
+            }
+
+            foreach (var character in value)
+            {
+                if ((character < '0' || character > '9') && (character < 'a' || character > 'f'))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         private static bool IsCompiledKind(string kind)

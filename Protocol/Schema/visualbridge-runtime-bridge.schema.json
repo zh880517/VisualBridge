@@ -4,12 +4,24 @@
   "title": "VisualBridge Runtime Bridge V1",
   "description": "Local NDJSON message contracts between the VS Code runtime bridge client and a Unity Runtime instance listener (Editor Play mode or same-machine Player), plus the per-instance discovery record published at <temp>/visualbridge-runtime/<instanceId>.json. The hello/welcome/error shapes realize the shared bridge protocol core (coreVersion 1) established by the Editor Bridge; this channel carries runtime snapshots and artifact-change events only and defines no debug messages.",
   "oneOf": [
-    { "$ref": "#/$defs/helloMessage" },
-    { "$ref": "#/$defs/welcomeMessage" },
-    { "$ref": "#/$defs/snapshotRequest" },
-    { "$ref": "#/$defs/responseMessage" },
-    { "$ref": "#/$defs/eventMessage" },
-    { "$ref": "#/$defs/errorMessage" }
+    {
+      "$ref": "#/$defs/helloMessage"
+    },
+    {
+      "$ref": "#/$defs/welcomeMessage"
+    },
+    {
+      "$ref": "#/$defs/snapshotRequest"
+    },
+    {
+      "$ref": "#/$defs/responseMessage"
+    },
+    {
+      "$ref": "#/$defs/eventMessage"
+    },
+    {
+      "$ref": "#/$defs/errorMessage"
+    }
   ],
   "$defs": {
     "protocolVersion": {
@@ -41,16 +53,26 @@
       "minimum": 1
     },
     "instanceKind": {
-      "enum": ["editor-play", "player"]
+      "enum": [
+        "editor-play",
+        "player"
+      ]
     },
     "capability": {
-      "enum": ["snapshot", "events"]
+      "enum": [
+        "snapshot",
+        "events",
+        "lease",
+        "sources"
+      ]
     },
     "capabilityList": {
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
-      "items": { "$ref": "#/$defs/capability" }
+      "items": {
+        "$ref": "#/$defs/capability"
+      }
     },
     "errorCode": {
       "enum": [
@@ -59,6 +81,9 @@
         "runtime.invalidJson",
         "runtime.invalidMessage",
         "runtime.invalidToken",
+        "runtime.leaseDenied",
+        "runtime.leaseNotHeld",
+        "runtime.leaseRequired",
         "runtime.protocolVersionMismatch",
         "runtime.unknownMessageType",
         "runtime.unknownRequest"
@@ -76,15 +101,25 @@
         "capabilities"
       ],
       "properties": {
-        "type": { "const": "hello" },
-        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
-        "coreVersion": { "$ref": "#/$defs/coreVersion" },
-        "token": { "$ref": "#/$defs/token" },
+        "type": {
+          "const": "hello"
+        },
+        "protocolVersion": {
+          "$ref": "#/$defs/protocolVersion"
+        },
+        "coreVersion": {
+          "$ref": "#/$defs/coreVersion"
+        },
+        "token": {
+          "$ref": "#/$defs/token"
+        },
         "clientInstanceId": {
           "type": "string",
           "format": "uuid"
         },
-        "capabilities": { "$ref": "#/$defs/capabilityList" }
+        "capabilities": {
+          "$ref": "#/$defs/capabilityList"
+        }
       },
       "additionalProperties": false
     },
@@ -102,13 +137,27 @@
         "startedAt"
       ],
       "properties": {
-        "type": { "const": "welcome" },
-        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
-        "coreVersion": { "$ref": "#/$defs/coreVersion" },
-        "instanceId": { "$ref": "#/$defs/instanceId" },
-        "kind": { "$ref": "#/$defs/instanceKind" },
-        "generation": { "$ref": "#/$defs/generation" },
-        "capabilities": { "$ref": "#/$defs/capabilityList" },
+        "type": {
+          "const": "welcome"
+        },
+        "protocolVersion": {
+          "$ref": "#/$defs/protocolVersion"
+        },
+        "coreVersion": {
+          "$ref": "#/$defs/coreVersion"
+        },
+        "instanceId": {
+          "$ref": "#/$defs/instanceId"
+        },
+        "kind": {
+          "$ref": "#/$defs/instanceKind"
+        },
+        "generation": {
+          "$ref": "#/$defs/generation"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/capabilityList"
+        },
         "startedAt": {
           "type": "string",
           "format": "date-time"
@@ -118,16 +167,27 @@
     },
     "snapshotRequest": {
       "type": "object",
-      "description": "Requests the compiled artifact snapshot currently loaded by the runtime instance; optionally restricted to specific document types.",
+      "description": "Client request paired with a response by requestId: snapshot queries, debug lease control, and document source mapping.",
       "required": [
         "type",
         "requestId",
         "action"
       ],
       "properties": {
-        "type": { "const": "request" },
-        "requestId": { "$ref": "#/$defs/requestId" },
-        "action": { "const": "getSnapshot" },
+        "type": {
+          "const": "request"
+        },
+        "requestId": {
+          "$ref": "#/$defs/requestId"
+        },
+        "action": {
+          "enum": [
+            "getSnapshot",
+            "acquireLease",
+            "releaseLease",
+            "getDocumentSources"
+          ]
+        },
         "documentTypeIds": {
           "type": "array",
           "minItems": 1,
@@ -137,7 +197,26 @@
           }
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "getSnapshot"
+              }
+            }
+          },
+          "then": {},
+          "else": {
+            "not": {
+              "required": [
+                "documentTypeIds"
+              ]
+            }
+          }
+        }
+      ]
     },
     "documentSnapshot": {
       "type": "object",
@@ -173,19 +252,71 @@
           "required": [
             "type",
             "requestId",
-            "status",
-            "documents"
+            "status"
           ],
           "properties": {
-            "type": { "const": "response" },
-            "requestId": { "$ref": "#/$defs/requestId" },
-            "status": { "const": "ok" },
+            "type": {
+              "const": "response"
+            },
+            "requestId": {
+              "$ref": "#/$defs/requestId"
+            },
+            "status": {
+              "const": "ok"
+            },
             "documents": {
               "type": "array",
-              "items": { "$ref": "#/$defs/documentSnapshot" }
+              "items": {
+                "$ref": "#/$defs/documentSnapshot"
+              }
+            },
+            "sources": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/documentSource"
+              }
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Successful response: snapshot requests carry documents, source requests carry sources, lease requests carry neither.",
+          "oneOf": [
+            {
+              "required": [
+                "documents"
+              ],
+              "not": {
+                "required": [
+                  "sources"
+                ]
+              }
+            },
+            {
+              "required": [
+                "sources"
+              ],
+              "not": {
+                "required": [
+                  "documents"
+                ]
+              }
+            },
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "documents"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sources"
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
         },
         {
           "type": "object",
@@ -196,10 +327,18 @@
             "error"
           ],
           "properties": {
-            "type": { "const": "response" },
-            "requestId": { "$ref": "#/$defs/requestId" },
-            "status": { "const": "error" },
-            "error": { "$ref": "#/$defs/errorCode" },
+            "type": {
+              "const": "response"
+            },
+            "requestId": {
+              "$ref": "#/$defs/requestId"
+            },
+            "status": {
+              "const": "error"
+            },
+            "error": {
+              "$ref": "#/$defs/errorCode"
+            },
             "detail": {
               "type": "string",
               "minLength": 1,
@@ -219,11 +358,17 @@
         "documents"
       ],
       "properties": {
-        "type": { "const": "event" },
-        "event": { "const": "artifactsChanged" },
+        "type": {
+          "const": "event"
+        },
+        "event": {
+          "const": "artifactsChanged"
+        },
         "documents": {
           "type": "array",
-          "items": { "$ref": "#/$defs/documentSnapshot" }
+          "items": {
+            "$ref": "#/$defs/documentSnapshot"
+          }
         }
       },
       "additionalProperties": false
@@ -236,8 +381,12 @@
         "code"
       ],
       "properties": {
-        "type": { "const": "error" },
-        "code": { "$ref": "#/$defs/errorCode" },
+        "type": {
+          "const": "error"
+        },
+        "code": {
+          "$ref": "#/$defs/errorCode"
+        },
         "detail": {
           "type": "string",
           "minLength": 1,
@@ -268,19 +417,65 @@
         "startedAt"
       ],
       "properties": {
-        "formatVersion": { "const": 1 },
-        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
-        "coreVersion": { "$ref": "#/$defs/coreVersion" },
-        "instanceId": { "$ref": "#/$defs/instanceId" },
-        "kind": { "$ref": "#/$defs/instanceKind" },
-        "capabilities": { "$ref": "#/$defs/capabilityList" },
-        "tcpPort": { "$ref": "#/$defs/tcpPort" },
-        "token": { "$ref": "#/$defs/token" },
-        "pid": { "$ref": "#/$defs/processId" },
-        "generation": { "$ref": "#/$defs/generation" },
+        "formatVersion": {
+          "const": 1
+        },
+        "protocolVersion": {
+          "$ref": "#/$defs/protocolVersion"
+        },
+        "coreVersion": {
+          "$ref": "#/$defs/coreVersion"
+        },
+        "instanceId": {
+          "$ref": "#/$defs/instanceId"
+        },
+        "kind": {
+          "$ref": "#/$defs/instanceKind"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/capabilityList"
+        },
+        "tcpPort": {
+          "$ref": "#/$defs/tcpPort"
+        },
+        "token": {
+          "$ref": "#/$defs/token"
+        },
+        "pid": {
+          "$ref": "#/$defs/processId"
+        },
+        "generation": {
+          "$ref": "#/$defs/generation"
+        },
         "startedAt": {
           "type": "string",
           "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    },
+    "documentSource": {
+      "type": "object",
+      "description": "Authoring source mapping for one runtime document, derived from the compiled artifact inputs.",
+      "required": [
+        "documentTypeId",
+        "documentId",
+        "sourcePath",
+        "sourceSha256"
+      ],
+      "properties": {
+        "documentTypeId": {
+          "$ref": "visualbridge-primitives.schema.json#/$defs/stableId"
+        },
+        "documentId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "sourcePath": {
+          "$ref": "visualbridge-primitives.schema.json#/$defs/normalizedPath"
+        },
+        "sourceSha256": {
+          "$ref": "visualbridge-primitives.schema.json#/$defs/sha256"
         }
       },
       "additionalProperties": false

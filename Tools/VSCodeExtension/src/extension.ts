@@ -681,6 +681,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }),
       vscode.commands.registerCommand("visualbridge.test.getRuntimeSnapshot", async (documentTypeIds?: readonly string[]) =>
         runtimeBridge.getSnapshot(documentTypeIds)),
+      vscode.commands.registerCommand("visualbridge.test.acquireRuntimeLease", async () => {
+        await runtimeBridge.acquireLease();
+        return true;
+      }),
+      vscode.commands.registerCommand("visualbridge.test.releaseRuntimeLease", async () => {
+        await runtimeBridge.releaseLease();
+        return true;
+      }),
+      vscode.commands.registerCommand("visualbridge.test.getRuntimeDocumentSources", async () =>
+        runtimeBridge.getDocumentSources()),
       vscode.commands.registerCommand("visualbridge.test.parseRuntimeBridgeMessage", (value: unknown) => {
         try {
           return { ok: true, message: parseRuntimeBridgeMessage(value) };

@@ -8,10 +8,14 @@ import {
   RUNTIME_BRIDGE_CAPABILITIES,
   RUNTIME_BRIDGE_DISCOVERY_DIRECTORY,
   RuntimeBridgeDocumentSnapshot,
+  RuntimeBridgeDocumentSource,
   RuntimeBridgeErrorMessage,
   RuntimeBridgeEventMessage,
+  RuntimeBridgeLeaseRequest,
   RuntimeBridgeProtocolError,
   RuntimeBridgeResponseMessage,
+  RuntimeBridgeSnapshotRequest,
+  RuntimeBridgeSourcesRequest,
   RuntimeBridgeWelcomeMessage,
   serializeRuntimeBridgeMessage,
 } from "./runtimeBridgeProtocol";
@@ -128,6 +132,30 @@ export class RuntimeBridgeService {
 
     return this.connection.getSnapshot(documentTypeIds);
   }
+
+  public async acquireLease(): Promise<void> {
+    if (this.connection === undefined) {
+      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$", "Runtime bridge is not connected.");
+    }
+
+    return this.connection.acquireLease();
+  }
+
+  public async releaseLease(): Promise<void> {
+    if (this.connection === undefined) {
+      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$", "Runtime bridge is not connected.");
+    }
+
+    return this.connection.releaseLease();
+  }
+
+  public async getDocumentSources(): Promise<readonly RuntimeBridgeDocumentSource[]> {
+    if (this.connection === undefined) {
+      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$", "Runtime bridge is not connected.");
+    }
+
+    return this.connection.getDocumentSources();
+  }
 }
 
 class RuntimeBridgeConnection {
@@ -210,30 +238,73 @@ class RuntimeBridgeConnection {
   }
 
   public async getSnapshot(documentTypeIds?: readonly string[]): Promise<readonly RuntimeBridgeDocumentSnapshot[]> {
+    const response = await this.request({
+      type: "request",
+      requestId: this.nextRequestId(),
+      action: "getSnapshot",
+      ...(documentTypeIds === undefined ? {} : { documentTypeIds: [...documentTypeIds] }),
+    });
+    if (response.status !== "ok" || response.documents === undefined) {
+      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$", "Snapshot response did not carry documents.");
+    }
+
+    this.snapshotCount += 1;
+    return response.documents;
+  }
+
+  public async acquireLease(): Promise<void> {
+    const response = await this.request({
+      type: "request",
+      requestId: this.nextRequestId(),
+      action: "acquireLease",
+    });
+    if (response.status !== "ok") {
+      throw new RuntimeBridgeProtocolError(response.error, "$", response.detail ?? "Lease acquisition failed.");
+    }
+  }
+
+  public async releaseLease(): Promise<void> {
+    const response = await this.request({
+      type: "request",
+      requestId: this.nextRequestId(),
+      action: "releaseLease",
+    });
+    if (response.status !== "ok") {
+      throw new RuntimeBridgeProtocolError(response.error, "$", response.detail ?? "Lease release failed.");
+    }
+  }
+
+  public async getDocumentSources(): Promise<readonly RuntimeBridgeDocumentSource[]> {
+    const response = await this.request({
+      type: "request",
+      requestId: this.nextRequestId(),
+      action: "getDocumentSources",
+    });
+    if (response.status !== "ok" || response.sources === undefined) {
+      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$", "Sources response did not carry sources.");
+    }
+
+    return response.sources;
+  }
+
+  private nextRequestId(): string {
+    return `req-${randomUUID().slice(0, 8)}`;
+  }
+
+  private async request(payload: RuntimeBridgeSnapshotRequest | RuntimeBridgeLeaseRequest | RuntimeBridgeSourcesRequest): Promise<RuntimeBridgeResponseMessage> {
     if (this.welcome === undefined) {
       throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$", "Runtime bridge is not connected.");
     }
 
-    const requestId = `req-${randomUUID().slice(0, 8)}`;
     // 先注册行等待器再写请求，避免响应在等待器就位前到达被丢弃。
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
       const linePromise = this.waitForLine(deadline);
-      this.socket?.write(serializeRuntimeBridgeMessage({
-        type: "request",
-        requestId,
-        action: "getSnapshot",
-        ...(documentTypeIds === undefined ? {} : { documentTypeIds: [...documentTypeIds] }),
-      }));
+      this.socket?.write(serializeRuntimeBridgeMessage(payload));
       const line = await linePromise;
       const message = parseRuntimeBridgeMessage(JSON.parse(line));
-      if (message.type === "response" && message.requestId === requestId) {
-        if (message.status !== "ok") {
-          throw new RuntimeBridgeProtocolError(message.error, "$", message.detail ?? "Snapshot request failed.");
-        }
-
-        this.snapshotCount += 1;
-        return message.documents;
+      if (message.type === "response" && message.requestId === payload.requestId) {
+        return message;
       }
 
       if (message.type === "error") {
@@ -243,7 +314,7 @@ class RuntimeBridgeConnection {
       this.handleMessage(message);
     }
 
-    throw new Error("Runtime bridge snapshot request timed out.");
+    throw new Error("Runtime bridge request timed out.");
   }
 
   public dispose(): void {

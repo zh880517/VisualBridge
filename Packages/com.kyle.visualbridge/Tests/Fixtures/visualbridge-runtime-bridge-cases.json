@@ -411,6 +411,145 @@
         "startedAt": "2026-08-31T12:00:00.000Z",
         "pipePath": "\\\\.\\pipe\\visualbridge-runtime"
       }
+    },
+    {
+      "label": "valid acquireLease request",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "request",
+        "requestId": "req-l1",
+        "action": "acquireLease"
+      }
+    },
+    {
+      "label": "valid releaseLease request",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "request",
+        "requestId": "req-l2",
+        "action": "releaseLease"
+      }
+    },
+    {
+      "label": "valid getDocumentSources request",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "request",
+        "requestId": "req-s1",
+        "action": "getDocumentSources"
+      }
+    },
+    {
+      "label": "valid ok response with sources",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "response",
+        "requestId": "req-s1",
+        "status": "ok",
+        "sources": [
+          {
+            "documentTypeId": "sample.unity.hero",
+            "documentId": "sample.unity.hero.default",
+            "sourcePath": "Entities/Hero.vbentity",
+            "sourceSha256": "2947f76b27ad04d1ad2a66ac5a248c6a6dba886adbaedbdbb73031994fe7a334"
+          }
+        ]
+      }
+    },
+    {
+      "label": "valid ok lease response without payload",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "response",
+        "requestId": "req-l1",
+        "status": "ok"
+      }
+    },
+    {
+      "label": "valid leaseDenied error response",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "response",
+        "requestId": "req-l3",
+        "status": "error",
+        "error": "runtime.leaseDenied",
+        "detail": "Lease held by client 1b3121ab-2646-4e0f-a789-e970d4fbca8f."
+      }
+    },
+    {
+      "label": "lease request with documentTypeIds is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "request",
+        "requestId": "req-l4",
+        "action": "acquireLease",
+        "documentTypeIds": [
+          "sample.unity.hero"
+        ]
+      }
+    },
+    {
+      "label": "source with invalid sha256 is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "response",
+        "requestId": "req-s2",
+        "status": "ok",
+        "sources": [
+          {
+            "documentTypeId": "sample.unity.hero",
+            "documentId": "sample.unity.hero.default",
+            "sourcePath": "Entities/Hero.vbentity",
+            "sourceSha256": "not-a-hash"
+          }
+        ]
+      }
+    },
+    {
+      "label": "ok response with both documents and sources is rejected",
+      "target": "message",
+      "valid": false,
+      "loaderCode": "runtime.invalidMessage",
+      "value": {
+        "type": "response",
+        "requestId": "req-s3",
+        "status": "ok",
+        "documents": [],
+        "sources": []
+      }
+    },
+    {
+      "label": "discovery record with lease capability is valid",
+      "target": "discoveryRecord",
+      "valid": true,
+      "value": {
+        "formatVersion": 1,
+        "protocolVersion": 1,
+        "coreVersion": 1,
+        "instanceId": "editor-44936",
+        "kind": "editor-play",
+        "capabilities": [
+          "snapshot",
+          "events",
+          "lease",
+          "sources"
+        ],
+        "tcpPort": 4594,
+        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
+        "pid": 44936,
+        "generation": 1,
+        "startedAt": "2026-08-31T12:00:00.000Z"
+      }
     }
   ]
 }

@@ -39,7 +39,9 @@ namespace VisualBridge.Runtime
 
     /// <summary>
     /// 快照中的单个编译产物；同时是 ArtifactStore 的输出单元与
-    /// response/event 消息 documents 数组的元素。
+    /// response/event 消息 documents 数组的元素。Sources 暴露该文档的
+    /// Authoring 源映射（非 table 域来自产物 inputs.document；table 域
+    /// 来自同名 .vbsource.json 映射产物），不进入 documents 的 wire 形状。
     /// </summary>
     public sealed class VisualBridgeRuntimeDocumentSnapshot
     {
@@ -51,6 +53,8 @@ namespace VisualBridge.Runtime
 
         public JObject Data { get; internal set; }
 
+        public IReadOnlyList<VisualBridgeRuntimeDocumentSource> Sources { get; internal set; }
+
         internal JObject ToJson()
         {
             return new JObject
@@ -59,6 +63,32 @@ namespace VisualBridge.Runtime
                 ["documentId"] = DocumentId,
                 ["kind"] = Kind,
                 ["data"] = Data,
+            };
+        }
+    }
+
+    /// <summary>
+    /// 单个运行中文档的 Authoring 源映射（documentSource）：
+    /// 源相对路径 + 内容 SHA-256，供 VS Code 侧做漂移检测。
+    /// </summary>
+    public sealed class VisualBridgeRuntimeDocumentSource
+    {
+        public string DocumentTypeId { get; internal set; }
+
+        public string DocumentId { get; internal set; }
+
+        public string SourcePath { get; internal set; }
+
+        public string SourceSha256 { get; internal set; }
+
+        internal JObject ToJson()
+        {
+            return new JObject
+            {
+                ["documentTypeId"] = DocumentTypeId,
+                ["documentId"] = DocumentId,
+                ["sourcePath"] = SourcePath,
+                ["sourceSha256"] = SourceSha256,
             };
         }
     }
@@ -99,6 +129,8 @@ namespace VisualBridge.Runtime
 
         public IReadOnlyList<VisualBridgeRuntimeDocumentSnapshot> Documents { get; internal set; }
 
+        public IReadOnlyList<VisualBridgeRuntimeDocumentSource> Sources { get; internal set; }
+
         public string EventName { get; internal set; }
 
         public string ErrorCode { get; internal set; }
@@ -135,9 +167,20 @@ namespace VisualBridge.Runtime
         private static readonly Regex InstanceIdPattern = new Regex("^(editor|player)-[0-9]+$", RegexOptions.Compiled);
         private static readonly Regex CompiledKindPattern = new Regex("^visualbridge\\.(structured|entity|table|graph)\\.compiled$", RegexOptions.Compiled);
         private static readonly Regex StartedAtPattern = new Regex("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$", RegexOptions.Compiled);
+        // normalizedPath 语义（primitives Schema）：无前导/、无盘符冒号、无反斜杠、
+        // 无点段（./ ../）、无重复斜杠、无尾斜杠。
+        private static readonly Regex NormalizedPathPattern = new Regex("^(?!/)(?!.*:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*/$).+$", RegexOptions.Compiled);
+        private static readonly Regex Sha256Pattern = new Regex("^[a-f0-9]{64}$", RegexOptions.Compiled);
 
-        private static readonly HashSet<string> Capabilities = new HashSet<string>(StringComparer.Ordinal) { "snapshot", "events" };
+        private static readonly HashSet<string> Capabilities = new HashSet<string>(StringComparer.Ordinal) { "snapshot", "events", "lease", "sources" };
         private static readonly HashSet<string> InstanceKinds = new HashSet<string>(StringComparer.Ordinal) { "editor-play", "player" };
+        private static readonly HashSet<string> RequestActions = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "getSnapshot",
+            "acquireLease",
+            "releaseLease",
+            "getDocumentSources",
+        };
 
         private static readonly HashSet<string> ErrorCodes = new HashSet<string>(StringComparer.Ordinal)
         {
@@ -146,6 +189,9 @@ namespace VisualBridge.Runtime
             "runtime.invalidJson",
             "runtime.invalidMessage",
             "runtime.invalidToken",
+            "runtime.leaseDenied",
+            "runtime.leaseNotHeld",
+            "runtime.leaseRequired",
             "runtime.protocolVersionMismatch",
             "runtime.unknownMessageType",
             "runtime.unknownRequest",
@@ -320,13 +366,27 @@ namespace VisualBridge.Runtime
                     value["status"] = message.IsOk ? "ok" : "error";
                     if (message.IsOk)
                     {
-                        var documents = new JArray();
-                        foreach (var document in message.Documents ?? Array.Empty<VisualBridgeRuntimeDocumentSnapshot>())
+                        // documents 与 sources 互斥；都缺省为租约 ok（无载荷）。
+                        if (message.Sources != null)
                         {
-                            documents.Add(document.ToJson());
-                        }
+                            var sources = new JArray();
+                            foreach (var source in message.Sources)
+                            {
+                                sources.Add(source.ToJson());
+                            }
 
-                        value["documents"] = documents;
+                            value["sources"] = sources;
+                        }
+                        else if (message.Documents != null)
+                        {
+                            var documents = new JArray();
+                            foreach (var document in message.Documents)
+                            {
+                                documents.Add(document.ToJson());
+                            }
+
+                            value["documents"] = documents;
+                        }
                     }
                     else
                     {
@@ -415,6 +475,56 @@ namespace VisualBridge.Runtime
             };
         }
 
+        /// <summary>租约请求（action 限定 acquireLease/releaseLease，不带 documentTypeIds）。</summary>
+        public static VisualBridgeRuntimeBridgeMessage CreateLeaseRequest(string requestId, string action)
+        {
+            if (action != "acquireLease" && action != "releaseLease")
+            {
+                throw new ArgumentException("Lease request action must be 'acquireLease' or 'releaseLease'.", nameof(action));
+            }
+
+            return new VisualBridgeRuntimeBridgeMessage
+            {
+                Type = VisualBridgeRuntimeBridgeMessageType.Request,
+                RequestId = requestId,
+                Action = action,
+            };
+        }
+
+        /// <summary>getDocumentSources 请求（不带 documentTypeIds）。</summary>
+        public static VisualBridgeRuntimeBridgeMessage CreateSourcesRequest(string requestId)
+        {
+            return new VisualBridgeRuntimeBridgeMessage
+            {
+                Type = VisualBridgeRuntimeBridgeMessageType.Request,
+                RequestId = requestId,
+                Action = "getDocumentSources",
+            };
+        }
+
+        /// <summary>租约 ok 响应：无 documents/sources 载荷。</summary>
+        public static VisualBridgeRuntimeBridgeMessage CreateLeaseResponse(string requestId)
+        {
+            return new VisualBridgeRuntimeBridgeMessage
+            {
+                Type = VisualBridgeRuntimeBridgeMessageType.Response,
+                RequestId = requestId,
+                IsOk = true,
+            };
+        }
+
+        /// <summary>getDocumentSources ok 响应：仅携带 sources 数组。</summary>
+        public static VisualBridgeRuntimeBridgeMessage CreateSourcesResponse(string requestId, IReadOnlyList<VisualBridgeRuntimeDocumentSource> sources)
+        {
+            return new VisualBridgeRuntimeBridgeMessage
+            {
+                Type = VisualBridgeRuntimeBridgeMessageType.Response,
+                RequestId = requestId,
+                IsOk = true,
+                Sources = sources,
+            };
+        }
+
         public static VisualBridgeRuntimeBridgeMessage CreateSnapshotResponseOk(string requestId, IReadOnlyList<VisualBridgeRuntimeDocumentSnapshot> documents)
         {
             return new VisualBridgeRuntimeBridgeMessage
@@ -426,7 +536,8 @@ namespace VisualBridge.Runtime
             };
         }
 
-        public static VisualBridgeRuntimeBridgeMessage CreateSnapshotResponseError(string requestId, string errorCode, string detail)
+        /// <summary>请求级 error 响应（任意 runtime.* wire 错误码）。</summary>
+        public static VisualBridgeRuntimeBridgeMessage CreateResponseError(string requestId, string errorCode, string detail)
         {
             return new VisualBridgeRuntimeBridgeMessage
             {
@@ -490,6 +601,42 @@ namespace VisualBridge.Runtime
                 DocumentId = documentId,
                 Kind = kind,
                 Data = data,
+            };
+        }
+
+        internal static VisualBridgeRuntimeDocumentSource ValidateDocumentSource(JObject value, string path)
+        {
+            RequireOnlyKeys(value, path, "documentTypeId", "documentId", "sourcePath", "sourceSha256");
+            var documentTypeId = RequireString(value, "documentTypeId", path + ".documentTypeId");
+            if (!StableIdPattern.IsMatch(documentTypeId))
+            {
+                throw Error("runtime.invalidMessage", path + ".documentTypeId", "Expected a stable document type identifier.");
+            }
+
+            var documentId = RequireString(value, "documentId", path + ".documentId");
+            if (!StableIdPattern.IsMatch(documentId))
+            {
+                throw Error("runtime.invalidMessage", path + ".documentId", "Expected a document identifier.");
+            }
+
+            var sourcePath = RequireString(value, "sourcePath", path + ".sourcePath");
+            if (sourcePath.Length > 1024 || !NormalizedPathPattern.IsMatch(sourcePath))
+            {
+                throw Error("runtime.invalidMessage", path + ".sourcePath", "Expected a normalized relative source path.");
+            }
+
+            var sourceSha256 = RequireString(value, "sourceSha256", path + ".sourceSha256");
+            if (!Sha256Pattern.IsMatch(sourceSha256))
+            {
+                throw Error("runtime.invalidMessage", path + ".sourceSha256", "Expected a lowercase 64-hex SHA-256 digest.");
+            }
+
+            return new VisualBridgeRuntimeDocumentSource
+            {
+                DocumentTypeId = documentTypeId,
+                DocumentId = documentId,
+                SourcePath = sourcePath,
+                SourceSha256 = sourceSha256,
             };
         }
 
@@ -579,13 +726,19 @@ namespace VisualBridge.Runtime
             }
 
             var action = actionToken.Value<string>();
-            if (action != "getSnapshot")
+            if (!RequestActions.Contains(action))
             {
                 throw Error("runtime.unknownRequest", "$.action", $"Unknown request action '{action}'.");
             }
 
-            IReadOnlyList<string> documentTypeIds = null;
+            // Schema allOf 约束：documentTypeIds 仅 getSnapshot 允许携带。
             var filterToken = value["documentTypeIds"];
+            if (filterToken != null && action != "getSnapshot")
+            {
+                throw Error("runtime.invalidMessage", "$.documentTypeIds", $"Action '{action}' must not carry documentTypeIds.");
+            }
+
+            IReadOnlyList<string> documentTypeIds = null;
             if (filterToken != null)
             {
                 if (!(filterToken is JArray filter) || filter.Count == 0)
@@ -624,7 +777,7 @@ namespace VisualBridge.Runtime
 
         private static VisualBridgeRuntimeBridgeMessage ValidateResponse(JObject value)
         {
-            RequireOnlyKeys(value, "$", new[] { "type", "requestId", "status" }, new[] { "documents", "error", "detail" });
+            RequireOnlyKeys(value, "$", new[] { "type", "requestId", "status" }, new[] { "documents", "sources", "error", "detail" });
             var requestId = RequireRequestId(value);
             var statusToken = value["status"];
             if (statusToken == null)
@@ -640,26 +793,39 @@ namespace VisualBridge.Runtime
             var status = statusToken.Value<string>();
             if (status == "ok")
             {
-                var documentsToken = value["documents"];
-                if (!(documentsToken is JArray documentsArray))
-                {
-                    throw Error("runtime.invalidMessage", "$.documents", "Expected a documents array.");
-                }
-
                 if (value.Property("error", StringComparison.Ordinal) != null || value.Property("detail", StringComparison.Ordinal) != null)
                 {
                     throw Error("runtime.invalidMessage", "$", "An ok response must not carry error fields.");
                 }
 
-                var documents = new List<VisualBridgeRuntimeDocumentSnapshot>(documentsArray.Count);
-                for (var index = 0; index < documentsArray.Count; index++)
+                // documents 与 sources 互斥；都缺省为租约 ok（无载荷响应）。
+                var hasDocuments = value.Property("documents", StringComparison.Ordinal) != null;
+                var hasSources = value.Property("sources", StringComparison.Ordinal) != null;
+                if (hasDocuments && hasSources)
                 {
-                    if (!(documentsArray[index] is JObject document))
-                    {
-                        throw Error("runtime.invalidMessage", $"$.documents[{index}]", "Expected a document snapshot object.");
-                    }
+                    throw Error("runtime.invalidMessage", "$", "An ok response must not carry both documents and sources.");
+                }
 
-                    documents.Add(ValidateDocumentSnapshot(document, $"$.documents[{index}]"));
+                if (hasDocuments)
+                {
+                    return new VisualBridgeRuntimeBridgeMessage
+                    {
+                        Type = VisualBridgeRuntimeBridgeMessageType.Response,
+                        RequestId = requestId,
+                        IsOk = true,
+                        Documents = ValidateDocuments(value["documents"], "$.documents"),
+                    };
+                }
+
+                if (hasSources)
+                {
+                    return new VisualBridgeRuntimeBridgeMessage
+                    {
+                        Type = VisualBridgeRuntimeBridgeMessageType.Response,
+                        RequestId = requestId,
+                        IsOk = true,
+                        Sources = ValidateSources(value["sources"], "$.sources"),
+                    };
                 }
 
                 return new VisualBridgeRuntimeBridgeMessage
@@ -667,15 +833,14 @@ namespace VisualBridge.Runtime
                     Type = VisualBridgeRuntimeBridgeMessageType.Response,
                     RequestId = requestId,
                     IsOk = true,
-                    Documents = documents,
                 };
             }
 
             if (status == "error")
             {
-                if (value.Property("documents", StringComparison.Ordinal) != null)
+                if (value.Property("documents", StringComparison.Ordinal) != null || value.Property("sources", StringComparison.Ordinal) != null)
                 {
-                    throw Error("runtime.invalidMessage", "$", "An error response must not carry documents.");
+                    throw Error("runtime.invalidMessage", "$", "An error response must not carry documents or sources.");
                 }
 
                 var errorToken = value["error"];
@@ -701,6 +866,48 @@ namespace VisualBridge.Runtime
             }
 
             throw Error("runtime.invalidMessage", "$.status", "Expected status 'ok' or 'error'.");
+        }
+
+        private static IReadOnlyList<VisualBridgeRuntimeDocumentSnapshot> ValidateDocuments(JToken token, string path)
+        {
+            if (!(token is JArray documentsArray))
+            {
+                throw Error("runtime.invalidMessage", path, "Expected a documents array.");
+            }
+
+            var documents = new List<VisualBridgeRuntimeDocumentSnapshot>(documentsArray.Count);
+            for (var index = 0; index < documentsArray.Count; index++)
+            {
+                if (!(documentsArray[index] is JObject document))
+                {
+                    throw Error("runtime.invalidMessage", $"{path}[{index}]", "Expected a document snapshot object.");
+                }
+
+                documents.Add(ValidateDocumentSnapshot(document, $"{path}[{index}]"));
+            }
+
+            return documents;
+        }
+
+        private static IReadOnlyList<VisualBridgeRuntimeDocumentSource> ValidateSources(JToken token, string path)
+        {
+            if (!(token is JArray sourcesArray))
+            {
+                throw Error("runtime.invalidMessage", path, "Expected a sources array.");
+            }
+
+            var sources = new List<VisualBridgeRuntimeDocumentSource>(sourcesArray.Count);
+            for (var index = 0; index < sourcesArray.Count; index++)
+            {
+                if (!(sourcesArray[index] is JObject source))
+                {
+                    throw Error("runtime.invalidMessage", $"{path}[{index}]", "Expected a document source object.");
+                }
+
+                sources.Add(ValidateDocumentSource(source, $"{path}[{index}]"));
+            }
+
+            return sources;
         }
 
         private static VisualBridgeRuntimeBridgeMessage ValidateEvent(JObject value)

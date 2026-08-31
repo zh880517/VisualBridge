@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { createHash } = require("node:crypto");
 const { readFile, writeFile, stat } = require("node:fs/promises");
 const path = require("node:path");
 const vscode = require("vscode");
@@ -44,6 +45,36 @@ exports.run = async function run() {
     const state = await vscode.commands.executeCommand("visualbridge.test.getRuntimeBridgeState");
     assert.equal(state.connected, true);
     assert.equal(state.lastSnapshotCount, 1);
+  });
+
+  await test("acquires the debug lease and maps document sources with drift detection", async () => {
+    await vscode.commands.executeCommand("visualbridge.test.acquireRuntimeLease");
+    const sources = await vscode.commands.executeCommand("visualbridge.test.getRuntimeDocumentSources");
+    assert.ok(Array.isArray(sources) && sources.length >= 4, `Expected source mappings for all domains, found ${sources?.length}.`);
+    const heroSource = sources.find((source) => source.documentId === "sample.unity.hero.default");
+    assert.ok(heroSource, "Source mapping does not contain the entity fixture.");
+    assert.equal(heroSource.documentTypeId, "sample.unity.hero");
+    assert.match(heroSource.sourcePath, /Entities\/Hero\.vbentity$/);
+    assert.match(heroSource.sourceSha256, /^[0-9a-f]{64}$/);
+
+    // 漂移防护：工作区当前文档字节与运行时加载的源 Hash 必须一致（未修改时）。
+    const heroPath = path.join(repositoryRoot, "UnityProject", "VisualBridgeAuthoring", ...heroSource.sourcePath.split("/"));
+    const currentBytes = await readFile(heroPath);
+    const currentSha = createHash("sha256").update(currentBytes).digest("hex");
+    assert.equal(currentSha, heroSource.sourceSha256, "Unmodified authoring document should not be reported as drifted.");
+
+    // 修改 Authoring 文档后，源映射必须能暴露漂移（运行时仍持有旧 Hash）。
+    const original = await readFile(heroPath, "utf8");
+    try {
+      await writeFile(heroPath, original.replace('"Ranger"', '"Drifted Ranger"'), "utf8");
+      const driftedBytes = await readFile(heroPath);
+      const driftedSha = createHash("sha256").update(driftedBytes).digest("hex");
+      assert.notEqual(driftedSha, heroSource.sourceSha256, "Modified authoring document must differ from the runtime source hash.");
+    } finally {
+      await writeFile(heroPath, original, "utf8");
+    }
+
+    await vscode.commands.executeCommand("visualbridge.test.releaseRuntimeLease");
   });
 
   await test("receives the artifactsChanged event after a compiled artifact changes", async () => {

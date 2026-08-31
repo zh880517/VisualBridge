@@ -276,13 +276,14 @@
     {
       "file": "Schema/visualbridge-runtime-bridge.schema.json",
       "id": "https://visualbridge.dev/schema/visualbridge-runtime-bridge.schema.json",
-      "sha256": "86f31e4393279b26ba892eaf4bb2945110fc2d7641da063822cfb3370abf3340",
+      "sha256": "227129fe4dc28e04ee347541fdfe5ff9228db63e47836e85779fd49b89d37f05",
       "definitions": [
         "capability",
         "capabilityList",
         "coreVersion",
         "discoveryRecord",
         "documentSnapshot",
+        "documentSource",
         "errorCode",
         "errorMessage",
         "eventMessage",

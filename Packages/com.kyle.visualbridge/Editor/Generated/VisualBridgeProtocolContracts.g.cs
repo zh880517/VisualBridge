@@ -31,7 +31,7 @@ namespace VisualBridge.Protocol.Generated
         public const string VisualBridgeGraphCatalogSha256 = "b7fb04d60a986b1ba4c1cf95ec3d9655341af0ff24d8ab215052ae172709d0d2";
         public const string VisualBridgePrimitivesSha256 = "23c83a69a9d557916a9e2a0a120c0664fb09fbc86dc96703aa7bc036030dc639";
         public const string VisualBridgeProjectSha256 = "dde9d43f3fdc09ca0978fe0e8650a731726f6490ad1fda2e62023db69b01c3e9";
-        public const string VisualBridgeRuntimeBridgeSha256 = "86f31e4393279b26ba892eaf4bb2945110fc2d7641da063822cfb3370abf3340";
+        public const string VisualBridgeRuntimeBridgeSha256 = "227129fe4dc28e04ee347541fdfe5ff9228db63e47836e85779fd49b89d37f05";
         public const string VisualBridgeStructuredCatalogSha256 = "0cae8ab7b7a9aa1159669f0939f7178e5e310056366fe0713165cd87687942fe";
         public const string VisualBridgeStructuredSha256 = "24af3e3ecd5f5481c76ad4e1377d5441d09a238faa37b220dfbc1f6fffc0baf8";
         public const string VisualBridgeTableCatalogSha256 = "05e0fea3c73f1290cab52ef4ecbacd79d96ad074232794453fa3ac3f90680f7c";
@@ -1079,16 +1079,19 @@ namespace VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge
         [DataMember(Name = "requestId", IsRequired = false, EmitDefaultValue = false, Order = 14)]
         public string? RequestId { get; set; }
 
-        [DataMember(Name = "startedAt", IsRequired = false, EmitDefaultValue = false, Order = 15)]
+        [DataMember(Name = "sources", IsRequired = false, EmitDefaultValue = false, Order = 15)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge.DocumentSource>? Sources { get; set; }
+
+        [DataMember(Name = "startedAt", IsRequired = false, EmitDefaultValue = false, Order = 16)]
         public string? StartedAt { get; set; }
 
-        [DataMember(Name = "status", IsRequired = false, EmitDefaultValue = false, Order = 16)]
+        [DataMember(Name = "status", IsRequired = false, EmitDefaultValue = false, Order = 17)]
         public string? Status { get; set; }
 
-        [DataMember(Name = "token", IsRequired = false, EmitDefaultValue = false, Order = 17)]
+        [DataMember(Name = "token", IsRequired = false, EmitDefaultValue = false, Order = 18)]
         public string? Token { get; set; }
 
-        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 18)]
+        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 19)]
         public string Type { get; set; } = null!;
     }
 
@@ -1148,6 +1151,22 @@ namespace VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge
     [DataContract]
     public sealed class DocumentSnapshotData
     {
+    }
+
+    [DataContract]
+    public sealed class DocumentSource
+    {
+        [DataMember(Name = "documentId", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public string DocumentId { get; set; } = null!;
+
+        [DataMember(Name = "documentTypeId", IsRequired = true, EmitDefaultValue = true, Order = 1)]
+        public string DocumentTypeId { get; set; } = null!;
+
+        [DataMember(Name = "sourcePath", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public string SourcePath { get; set; } = null!;
+
+        [DataMember(Name = "sourceSha256", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        public string SourceSha256 { get; set; } = null!;
     }
 
     [DataContract]
@@ -1213,10 +1232,13 @@ namespace VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge
         [DataMember(Name = "requestId", IsRequired = true, EmitDefaultValue = true, Order = 3)]
         public string RequestId { get; set; } = null!;
 
-        [DataMember(Name = "status", IsRequired = true, EmitDefaultValue = true, Order = 4)]
+        [DataMember(Name = "sources", IsRequired = false, EmitDefaultValue = false, Order = 4)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeRuntimeBridge.DocumentSource>? Sources { get; set; }
+
+        [DataMember(Name = "status", IsRequired = true, EmitDefaultValue = true, Order = 5)]
         public string Status { get; set; } = null!;
 
-        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 5)]
+        [DataMember(Name = "type", IsRequired = true, EmitDefaultValue = true, Order = 6)]
         public string Type { get; set; } = null!;
     }
 

@@ -12,15 +12,17 @@ namespace VisualBridge.Runtime
 {
     /// <summary>
     /// Runtime Bridge 服务端：监听 127.0.0.1、执行 token 首条消息握手、
-    /// 应答 getSnapshot、轮询产物目录并向订阅客户端推送 artifactsChanged，
-    /// 并按第 17 章语义发布/心跳/清理发现记录。
+    /// 应答 getSnapshot / 租约控制 / getDocumentSources、轮询产物目录并向
+    /// 订阅客户端推送 artifactsChanged，并按第 17 章语义发布/心跳/清理发现记录。
+    /// 单控制者租约（VB-UX-10）：同一时刻至多一个连接持有 debug 租约，
+    /// 租约绑定连接，连接断开自动释放；getSnapshot 不受租约约束（观察者语义）。
     /// 本类是服务端（每连接独立线程，允许并发客户端），与客户端的
     /// 单线程同步请求/响应模型不冲突；Runtime 程序集禁止 Unity API，
     /// 日志走可选回调。
     /// </summary>
     public sealed class VisualBridgeRuntimeBridgeServer : IDisposable
     {
-        public static readonly string[] AdvertisedCapabilities = { "snapshot", "events" };
+        public static readonly string[] AdvertisedCapabilities = { "snapshot", "events", "lease", "sources" };
 
         private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(1);
         private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(1);
@@ -36,6 +38,8 @@ namespace VisualBridge.Runtime
         private readonly string recordPath;
         private readonly object connectionsGate = new object();
         private readonly List<Connection> connections = new List<Connection>();
+        private readonly object leaseGate = new object();
+        private Connection leaseHolder;
 
         private readonly TcpListener listener;
         private readonly Thread acceptThread;
@@ -50,6 +54,7 @@ namespace VisualBridge.Runtime
             public NetworkStream Stream;
             public readonly object WriteGate = new object();
             public bool WantsEvents;
+            public string ClientInstanceId;
             public readonly StringBuilder LineBuffer = new StringBuilder();
             public readonly byte[] ReadBuffer = new byte[8192];
         }
@@ -111,6 +116,12 @@ namespace VisualBridge.Runtime
             return VisualBridgeRuntimeArtifactStore.Snapshot(artifactsRoot);
         }
 
+        /// <summary>全部运行中文档的 Authoring 源映射（每次调用重新读取产物目录）。</summary>
+        public IReadOnlyList<VisualBridgeRuntimeDocumentSource> DocumentSources()
+        {
+            return VisualBridgeRuntimeArtifactStore.DocumentSources(artifactsRoot);
+        }
+
         public void Dispose()
         {
             if (disposed)
@@ -137,6 +148,11 @@ namespace VisualBridge.Runtime
                 }
 
                 connections.Clear();
+            }
+
+            lock (leaseGate)
+            {
+                leaseHolder = null;
             }
 
             JoinThread(acceptThread);
@@ -265,6 +281,7 @@ namespace VisualBridge.Runtime
                 }
 
                 connection.WantsEvents = hello.SupportsCapability("events");
+                connection.ClientInstanceId = hello.ClientInstanceId;
                 var welcome = VisualBridgeRuntimeBridgeValidator.CreateWelcome(
                     instanceId, kind, generation, AdvertisedCapabilities, startedAtText);
                 WriteLine(connection, welcome.ToLine());
@@ -282,7 +299,20 @@ namespace VisualBridge.Runtime
                     connections.Remove(connection);
                 }
 
+                ReleaseLeaseOnDisconnect(connection);
                 CloseConnection(connection);
+            }
+        }
+
+        /// <summary>连接断开时自动释放其持有的租约（租约绑定连接）。</summary>
+        private void ReleaseLeaseOnDisconnect(Connection connection)
+        {
+            lock (leaseGate)
+            {
+                if (leaseHolder == connection)
+                {
+                    leaseHolder = null;
+                }
             }
         }
 
@@ -336,7 +366,7 @@ namespace VisualBridge.Runtime
                         if (requestId != null && !string.IsNullOrEmpty(requestId) && requestId.Length <= 128)
                         {
                             SendLine(connection, VisualBridgeRuntimeBridgeValidator
-                                .CreateSnapshotResponseError(requestId, "runtime.unknownRequest", exception.Message)
+                                .CreateResponseError(requestId, "runtime.unknownRequest", exception.Message)
                                 .ToLine());
                             continue;
                         }
@@ -346,7 +376,31 @@ namespace VisualBridge.Runtime
                     return;
                 }
 
-                RespondToSnapshotRequest(connection, request);
+                HandleRequest(connection, request);
+            }
+        }
+
+        private void HandleRequest(Connection connection, VisualBridgeRuntimeBridgeMessage request)
+        {
+            switch (request.Action)
+            {
+                case "getSnapshot":
+                    RespondToSnapshotRequest(connection, request);
+                    return;
+                case "acquireLease":
+                    RespondToAcquireLease(connection, request);
+                    return;
+                case "releaseLease":
+                    RespondToReleaseLease(connection, request);
+                    return;
+                case "getDocumentSources":
+                    RespondToSourcesRequest(connection, request);
+                    return;
+                default:
+                    SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                        .CreateResponseError(request.RequestId, "runtime.unknownRequest", $"Unknown request action '{request.Action}'.")
+                        .ToLine());
+                    return;
             }
         }
 
@@ -363,13 +417,120 @@ namespace VisualBridge.Runtime
             catch (VisualBridgeRuntimeBridgeException exception)
             {
                 SendLine(connection, VisualBridgeRuntimeBridgeValidator
-                    .CreateSnapshotResponseError(request.RequestId, "runtime.internalError", exception.Message)
+                    .CreateResponseError(request.RequestId, "runtime.internalError", exception.Message)
                     .ToLine());
             }
             catch (Exception exception)
             {
                 SendLine(connection, VisualBridgeRuntimeBridgeValidator
-                    .CreateSnapshotResponseError(request.RequestId, "runtime.internalError", exception.Message)
+                    .CreateResponseError(request.RequestId, "runtime.internalError", exception.Message)
+                    .ToLine());
+            }
+        }
+
+        /// <summary>acquireLease：无持有者或本连接重复获取 → ok；他人持有 → leaseDenied。</summary>
+        private void RespondToAcquireLease(Connection connection, VisualBridgeRuntimeBridgeMessage request)
+        {
+            string deniedDetail = null;
+            lock (leaseGate)
+            {
+                if (leaseHolder == null || leaseHolder == connection)
+                {
+                    leaseHolder = connection;
+                }
+                else
+                {
+                    deniedDetail = $"Lease held by client {leaseHolder.ClientInstanceId}.";
+                }
+            }
+
+            if (deniedDetail != null)
+            {
+                SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                    .CreateResponseError(request.RequestId, "runtime.leaseDenied", deniedDetail)
+                    .ToLine());
+                return;
+            }
+
+            SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                .CreateLeaseResponse(request.RequestId)
+                .ToLine());
+        }
+
+        /// <summary>releaseLease：持有者本人 → ok；无租约 → leaseNotHeld；非持有者 → leaseDenied。</summary>
+        private void RespondToReleaseLease(Connection connection, VisualBridgeRuntimeBridgeMessage request)
+        {
+            string errorCode = null;
+            string detail = null;
+            lock (leaseGate)
+            {
+                if (leaseHolder == null)
+                {
+                    errorCode = "runtime.leaseNotHeld";
+                    detail = "No client currently holds the lease.";
+                }
+                else if (leaseHolder != connection)
+                {
+                    errorCode = "runtime.leaseDenied";
+                    detail = $"Lease held by client {leaseHolder.ClientInstanceId}.";
+                }
+                else
+                {
+                    leaseHolder = null;
+                }
+            }
+
+            if (errorCode != null)
+            {
+                SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                    .CreateResponseError(request.RequestId, errorCode, detail)
+                    .ToLine());
+                return;
+            }
+
+            SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                .CreateLeaseResponse(request.RequestId)
+                .ToLine());
+        }
+
+        /// <summary>getDocumentSources：要求本连接持有租约（无租约 → leaseRequired；他人持有 → leaseDenied）。</summary>
+        private void RespondToSourcesRequest(Connection connection, VisualBridgeRuntimeBridgeMessage request)
+        {
+            string errorCode = null;
+            string detail = null;
+            lock (leaseGate)
+            {
+                if (leaseHolder == null)
+                {
+                    errorCode = "runtime.leaseRequired";
+                    detail = "Document sources require the debug lease.";
+                }
+                else if (leaseHolder != connection)
+                {
+                    errorCode = "runtime.leaseDenied";
+                    detail = $"Lease held by client {leaseHolder.ClientInstanceId}.";
+                }
+            }
+
+            if (errorCode != null)
+            {
+                SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                    .CreateResponseError(request.RequestId, errorCode, detail)
+                    .ToLine());
+                return;
+            }
+
+            try
+            {
+                var sources = VisualBridgeRuntimeArtifactStore.DocumentSources(artifactsRoot);
+                SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                    .CreateSourcesResponse(request.RequestId, sources)
+                    .ToLine());
+            }
+            catch (Exception exception)
+            {
+                SendLine(connection, VisualBridgeRuntimeBridgeValidator
+                    .CreateResponseError(request.RequestId, "runtime.internalError", exception.Message)
                     .ToLine());
             }
         }

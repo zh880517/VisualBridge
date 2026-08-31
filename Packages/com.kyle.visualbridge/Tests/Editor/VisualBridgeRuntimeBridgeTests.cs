@@ -18,6 +18,9 @@ namespace VisualBridge.Editor.Tests
         private static readonly string ValidToken = new string('a', 48);
         private static readonly string OtherToken = new string('b', 48);
         private static readonly string ClientInstanceId = "1b3121ab-2646-4e0f-a789-e970d4fbca8f";
+        private static readonly string ClientInstanceIdB = "3d5343cd-4868-402b-ab0b-92f6cdec9012";
+        private static readonly System.Text.RegularExpressions.Regex Sha256Pattern =
+            new System.Text.RegularExpressions.Regex("^[a-f0-9]{64}$");
 
         [Test]
         public void RuntimeSchemaAndValidatorShareParityFixture()
@@ -27,7 +30,7 @@ namespace VisualBridge.Editor.Tests
             Assert.That(fixtureAsset, Is.Not.Null);
             var root = ParseWithoutDateCoercion(fixtureAsset.text);
             var cases = (JArray)root["cases"];
-            Assert.That(cases.Count, Is.EqualTo(26));
+            Assert.That(cases.Count, Is.EqualTo(36));
             foreach (var testCase in cases.Cast<JObject>())
             {
                 var value = testCase["value"] as JObject;
@@ -82,7 +85,7 @@ namespace VisualBridge.Editor.Tests
                     Assert.That(welcome.Generation, Is.EqualTo(3));
                     Assert.That(welcome.ProtocolVersion, Is.EqualTo(1));
                     Assert.That(welcome.CoreVersion, Is.EqualTo(1));
-                    Assert.That(welcome.Capabilities, Is.EquivalentTo(new[] { "snapshot", "events" }));
+                    Assert.That(welcome.Capabilities, Is.EquivalentTo(new[] { "snapshot", "events", "lease", "sources" }));
                     Assert.That(welcome.StartedAt, Is.Not.Null.And.Not.Empty);
 
                     client.Send(RequestLine("req-1", null));
@@ -259,6 +262,264 @@ namespace VisualBridge.Editor.Tests
         }
 
         [Test]
+        public void RuntimeServerRejectsLeaseRequestWithDocumentTypeIds()
+        {
+            // Schema allOf 约束：documentTypeIds 仅 getSnapshot 允许携带。
+            var exception = Assert.Throws<VisualBridge.Runtime.VisualBridgeRuntimeBridgeException>(
+                () => VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(
+                    "{\"type\":\"request\",\"requestId\":\"req-lf\",\"action\":\"acquireLease\",\"documentTypeIds\":[\"sample.test.hero\"]}"));
+            Assert.That(exception.Code, Is.EqualTo("runtime.invalidMessage"));
+
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-41009"))
+                using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                {
+                    client.Send(HelloLine(ValidToken, new[] { "snapshot", "lease" }));
+                    Assert.That(client.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+
+                    // 校验失败是连接级错误：回发 invalidMessage 后断开。
+                    client.Send("{\"type\":\"request\",\"requestId\":\"req-lf2\",\"action\":\"getDocumentSources\",\"documentTypeIds\":[\"sample.test.hero\"]}");
+                    var error = client.ReadMessage();
+                    Assert.That(error.Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Error));
+                    Assert.That(error.ErrorCode, Is.EqualTo("runtime.invalidMessage"));
+                    Assert.That(client.IsDisconnected(), Is.True);
+                }
+            }
+            finally
+            {
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        [Test]
+        public void RuntimeServerEnforcesSingleControllerLease()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-41010"))
+                using (var first = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                using (var second = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                {
+                    first.Send(HelloLine(ValidToken, new[] { "snapshot", "lease", "sources" }, ClientInstanceId));
+                    second.Send(HelloLine(ValidToken, new[] { "snapshot", "lease", "sources" }, ClientInstanceIdB));
+                    Assert.That(first.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+                    Assert.That(second.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+
+                    // A 获取租约成功（ok 无载荷）。
+                    first.Send(LeaseRequestLine("req-la", "acquireLease"));
+                    var acquired = first.ReadMessage();
+                    Assert.That(acquired.IsOk, Is.True);
+                    Assert.That(acquired.RequestId, Is.EqualTo("req-la"));
+                    Assert.That(acquired.Documents, Is.Null);
+                    Assert.That(acquired.Sources, Is.Null);
+
+                    // B 被拒：leaseDenied 且 detail 含持有者 clientInstanceId。
+                    second.Send(LeaseRequestLine("req-lb", "acquireLease"));
+                    var denied = second.ReadMessage();
+                    Assert.That(denied.IsOk, Is.False);
+                    Assert.That(denied.ErrorCode, Is.EqualTo("runtime.leaseDenied"));
+                    Assert.That(denied.ErrorDetail, Does.Contain(ClientInstanceId));
+
+                    // A 重复获取（幂等）仍 ok。
+                    first.Send(LeaseRequestLine("req-la2", "acquireLease"));
+                    Assert.That(first.ReadMessage().IsOk, Is.True);
+
+                    // A 断开 → 租约自动释放 → B 可获取（轮询等待服务端感知断开）。
+                    first.Dispose();
+                    var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+                    var reacquired = false;
+                    while (DateTime.UtcNow < deadline)
+                    {
+                        second.Send(LeaseRequestLine("req-lb2", "acquireLease"));
+                        var response = second.ReadMessage();
+                        if (response.IsOk)
+                        {
+                            reacquired = true;
+                            break;
+                        }
+
+                        Assert.That(response.ErrorCode, Is.EqualTo("runtime.leaseDenied"));
+                        Thread.Sleep(50);
+                    }
+
+                    Assert.That(reacquired, Is.True, "lease should be released after the holder disconnects");
+                }
+            }
+            finally
+            {
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        [Test]
+        public void RuntimeServerRequiresLeaseForDocumentSources()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-41011"))
+                using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                {
+                    client.Send(HelloLine(ValidToken, new[] { "snapshot", "lease", "sources" }, ClientInstanceId));
+                    Assert.That(client.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+
+                    // 无租约：leaseRequired。
+                    client.Send(SourcesRequestLine("req-src0"));
+                    var error = client.ReadMessage();
+                    Assert.That(error.IsOk, Is.False);
+                    Assert.That(error.RequestId, Is.EqualTo("req-src0"));
+                    Assert.That(error.ErrorCode, Is.EqualTo("runtime.leaseRequired"));
+
+                    // 观察者语义不受租约影响：getSnapshot 无租约仍 ok。
+                    client.Send(RequestLine("req-snap0", null));
+                    var snapshot = client.ReadMessage();
+                    Assert.That(snapshot.IsOk, Is.True);
+                    Assert.That(snapshot.Documents.Count, Is.EqualTo(2));
+                }
+            }
+            finally
+            {
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        [Test]
+        public void RuntimeServerServesDocumentSourcesToLeaseHolder()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-41012"))
+                using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                {
+                    client.Send(HelloLine(ValidToken, new[] { "snapshot", "lease", "sources" }, ClientInstanceId));
+                    Assert.That(client.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+
+                    client.Send(LeaseRequestLine("req-la", "acquireLease"));
+                    Assert.That(client.ReadMessage().IsOk, Is.True);
+
+                    client.Send(SourcesRequestLine("req-src1"));
+                    var response = client.ReadMessage();
+                    Assert.That(response.IsOk, Is.True);
+                    Assert.That(response.RequestId, Is.EqualTo("req-src1"));
+                    Assert.That(response.Documents, Is.Null);
+                    Assert.That(response.Sources.Count, Is.EqualTo(2));
+
+                    var settings = response.Sources.Single(s => s.DocumentTypeId == "sample.test.settings");
+                    Assert.That(settings.DocumentId, Is.EqualTo("sample.test.settings.default"));
+                    Assert.That(settings.SourcePath, Is.EqualTo("Config/sample.test.settings.gamesettings"));
+                    Assert.That(settings.SourceSha256, Does.Match("^[a-f0-9]{64}$"));
+
+                    var hero = response.Sources.Single(s => s.DocumentTypeId == "sample.test.hero");
+                    Assert.That(hero.SourcePath, Is.EqualTo("Entities/sample.test.hero.vbentity"));
+                    Assert.That(hero.SourceSha256, Does.Match("^[a-f0-9]{64}$"));
+                }
+            }
+            finally
+            {
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        [Test]
+        public void RuntimeServerReleaseLeaseSemantics()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-41013"))
+                using (var first = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                using (var second = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                {
+                    first.Send(HelloLine(ValidToken, new[] { "snapshot", "lease" }, ClientInstanceId));
+                    second.Send(HelloLine(ValidToken, new[] { "snapshot", "lease" }, ClientInstanceIdB));
+                    Assert.That(first.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+                    Assert.That(second.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+
+                    first.Send(LeaseRequestLine("req-la", "acquireLease"));
+                    Assert.That(first.ReadMessage().IsOk, Is.True);
+
+                    // 非持有者 release → leaseDenied。
+                    second.Send(LeaseRequestLine("req-rb", "releaseLease"));
+                    var denied = second.ReadMessage();
+                    Assert.That(denied.IsOk, Is.False);
+                    Assert.That(denied.ErrorCode, Is.EqualTo("runtime.leaseDenied"));
+                    Assert.That(denied.ErrorDetail, Does.Contain(ClientInstanceId));
+
+                    // 持有者 release → ok；再 release → leaseNotHeld。
+                    first.Send(LeaseRequestLine("req-ra", "releaseLease"));
+                    Assert.That(first.ReadMessage().IsOk, Is.True);
+                    first.Send(LeaseRequestLine("req-ra2", "releaseLease"));
+                    var notHeld = first.ReadMessage();
+                    Assert.That(notHeld.IsOk, Is.False);
+                    Assert.That(notHeld.ErrorCode, Is.EqualTo("runtime.leaseNotHeld"));
+
+                    // 释放后其他客户端可获取。
+                    second.Send(LeaseRequestLine("req-lb", "acquireLease"));
+                    Assert.That(second.ReadMessage().IsOk, Is.True);
+                }
+            }
+            finally
+            {
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        [Test]
+        public void RuntimeServerServesRealCompiledDocumentSources()
+        {
+            var compiledRoot = Path.Combine(
+                VisualBridgeEditorBridgeService.UnityProjectRoot(), "Library", "VisualBridge", "Compiled");
+            if (!Directory.Exists(compiledRoot))
+            {
+                Assert.Ignore("Library/VisualBridge/Compiled 缺失；先运行 Structured/Entity/Table/Graph Compiler batch。");
+            }
+
+            // ArtifactStore 直查：四域产物全部带源映射。
+            var direct = VisualBridge.Runtime.VisualBridgeRuntimeArtifactStore.DocumentSources(compiledRoot);
+            Assert.That(direct.Count, Is.EqualTo(4));
+
+            using (var server = StartServer(compiledRoot, "editor-41014"))
+            using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
+            {
+                client.Send(HelloLine(ValidToken, new[] { "snapshot", "lease", "sources" }, ClientInstanceId));
+                Assert.That(client.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+
+                client.Send(LeaseRequestLine("req-la", "acquireLease"));
+                Assert.That(client.ReadMessage().IsOk, Is.True);
+
+                client.Send(SourcesRequestLine("req-src1"));
+                var response = client.ReadMessage();
+                Assert.That(response.IsOk, Is.True);
+                Assert.That(response.Sources.Count, Is.EqualTo(4));
+
+                var encounter = response.Sources.Single(s => s.DocumentTypeId == "sample.unity.encounter");
+                Assert.That(encounter.DocumentId, Is.EqualTo("sample.unity.encounter.opening"));
+                Assert.That(encounter.SourcePath, Is.EqualTo("Graphs/Encounter.vbflow"));
+
+                var settings = response.Sources.Single(s => s.DocumentTypeId == "sample.unity.game.settings");
+                Assert.That(settings.SourcePath, Is.EqualTo("Config/Game.gamesettings"));
+
+                var hero = response.Sources.Single(s => s.DocumentTypeId == "sample.unity.hero");
+                Assert.That(hero.SourcePath, Is.EqualTo("Entities/Hero.vbentity"));
+
+                // table 产物无 inputs.document：源映射来自 .vbsource.json 的 sources 数组。
+                var skills = response.Sources.Single(s => s.DocumentTypeId == "sample.unity.skills");
+                Assert.That(skills.DocumentId, Is.EqualTo("sample.unity.skills"));
+                Assert.That(skills.SourcePath, Is.EqualTo("Tables/Skills_Main.csv"));
+
+                foreach (var source in response.Sources)
+                {
+                    Assert.That(source.SourcePath, Is.Not.Null.And.Not.Empty, source.DocumentTypeId);
+                    Assert.That(Sha256Pattern.IsMatch(source.SourceSha256), Is.True, source.DocumentTypeId);
+                }
+            }
+        }
+
+        [Test]
         public void RuntimeArtifactStoreLoadsRealCompiledArtifacts()
         {
             var compiledRoot = Path.Combine(
@@ -375,10 +636,10 @@ namespace VisualBridge.Editor.Tests
                 instanceId, "editor-play", 0, ValidToken, artifactsRoot, generation);
         }
 
-        private static string HelloLine(string token, string[] capabilities)
+        private static string HelloLine(string token, string[] capabilities, string clientInstanceId = null)
         {
             return VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator
-                .CreateHello(ClientInstanceId, token, capabilities).ToLine();
+                .CreateHello(clientInstanceId ?? ClientInstanceId, token, capabilities).ToLine();
         }
 
         private static string RequestLine(string requestId, string[] documentTypeIds)
@@ -387,17 +648,52 @@ namespace VisualBridge.Editor.Tests
                 .CreateSnapshotRequest(requestId, documentTypeIds).ToLine();
         }
 
+        private static string LeaseRequestLine(string requestId, string action)
+        {
+            return VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator
+                .CreateLeaseRequest(requestId, action).ToLine();
+        }
+
+        private static string SourcesRequestLine(string requestId)
+        {
+            return VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator
+                .CreateSourcesRequest(requestId).ToLine();
+        }
+
         /// <summary>临时产物目录：structured + entity 各一份合法产物及其 manifest。</summary>
         private static string CreateTempArtifactsRoot()
         {
             var root = CreateTempDirectory();
-            WriteArtifact(root, "manifest.json", "documents/p1/sample.test.settings/sample.test.settings.default.vbcompiled.json", "visualbridge.structured.compiled", "sample.test.settings", "sample.test.settings.default");
-            WriteArtifact(root, "manifest.entity.json", "documents/p1/sample.test.hero/sample.test.hero.default.vbcompiled.json", "visualbridge.entity.compiled", "sample.test.hero", "sample.test.hero.default");
+            WriteArtifact(
+                root,
+                "manifest.json",
+                "documents/p1/sample.test.settings/sample.test.settings.default.vbcompiled.json",
+                "visualbridge.structured.compiled",
+                "sample.test.settings",
+                "sample.test.settings.default",
+                "Config/sample.test.settings.gamesettings",
+                new string('1', 64));
+            WriteArtifact(
+                root,
+                "manifest.entity.json",
+                "documents/p1/sample.test.hero/sample.test.hero.default.vbcompiled.json",
+                "visualbridge.entity.compiled",
+                "sample.test.hero",
+                "sample.test.hero.default",
+                "Entities/sample.test.hero.vbentity",
+                new string('2', 64));
             return root;
         }
 
         private static void WriteArtifact(
-            string root, string manifestName, string relativePath, string kind, string documentTypeId, string documentId)
+            string root,
+            string manifestName,
+            string relativePath,
+            string kind,
+            string documentTypeId,
+            string documentId,
+            string sourcePath = null,
+            string sourceSha256 = null)
         {
             var absolutePath = Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(absolutePath));
@@ -408,6 +704,15 @@ namespace VisualBridge.Editor.Tests
                 ["projectId"] = "p1",
                 ["documentTypeId"] = documentTypeId,
                 ["documentId"] = documentId,
+                ["inputs"] = new JObject
+                {
+                    // 产物冻结格式：非 table 产物必须登记 Authoring 源路径与摘要。
+                    ["document"] = new JObject
+                    {
+                        ["path"] = sourcePath ?? (documentId + ".vbsource"),
+                        ["sha256"] = sourceSha256 ?? new string('3', 64),
+                    },
+                },
                 ["data"] = new JObject { ["formatVersion"] = 1, ["kind"] = kind },
             };
             File.WriteAllText(absolutePath, artifact.ToString(Newtonsoft.Json.Formatting.None));

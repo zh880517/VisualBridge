@@ -3,9 +3,9 @@ export const RUNTIME_BRIDGE_CORE_VERSION = 1;
 export const RUNTIME_BRIDGE_DISCOVERY_FORMAT_VERSION = 1;
 export const RUNTIME_BRIDGE_DISCOVERY_DIRECTORY = "visualbridge-runtime";
 
-export type RuntimeBridgeCapability = "snapshot" | "events";
+export type RuntimeBridgeCapability = "snapshot" | "events" | "lease" | "sources";
 
-export const RUNTIME_BRIDGE_CAPABILITIES: readonly RuntimeBridgeCapability[] = ["snapshot", "events"];
+export const RUNTIME_BRIDGE_CAPABILITIES: readonly RuntimeBridgeCapability[] = ["snapshot", "events", "lease", "sources"];
 
 export const RUNTIME_BRIDGE_ERROR_CODES = [
   "runtime.capabilityMissing",
@@ -13,6 +13,9 @@ export const RUNTIME_BRIDGE_ERROR_CODES = [
   "runtime.invalidJson",
   "runtime.invalidMessage",
   "runtime.invalidToken",
+  "runtime.leaseDenied",
+  "runtime.leaseNotHeld",
+  "runtime.leaseRequired",
   "runtime.protocolVersionMismatch",
   "runtime.unknownMessageType",
   "runtime.unknownRequest",
@@ -52,11 +55,32 @@ export interface RuntimeBridgeWelcomeMessage {
   readonly startedAt: string;
 }
 
+export type RuntimeBridgeRequestAction = "getSnapshot" | "acquireLease" | "releaseLease" | "getDocumentSources";
+
 export interface RuntimeBridgeSnapshotRequest {
   readonly type: "request";
   readonly requestId: string;
   readonly action: "getSnapshot";
   readonly documentTypeIds?: readonly string[];
+}
+
+export interface RuntimeBridgeLeaseRequest {
+  readonly type: "request";
+  readonly requestId: string;
+  readonly action: "acquireLease" | "releaseLease";
+}
+
+export interface RuntimeBridgeSourcesRequest {
+  readonly type: "request";
+  readonly requestId: string;
+  readonly action: "getDocumentSources";
+}
+
+export interface RuntimeBridgeDocumentSource {
+  readonly documentTypeId: string;
+  readonly documentId: string;
+  readonly sourcePath: string;
+  readonly sourceSha256: string;
 }
 
 export interface RuntimeBridgeDocumentSnapshot {
@@ -67,7 +91,9 @@ export interface RuntimeBridgeDocumentSnapshot {
 }
 
 export type RuntimeBridgeResponseMessage =
-  | { readonly type: "response"; readonly requestId: string; readonly status: "ok"; readonly documents: readonly RuntimeBridgeDocumentSnapshot[] }
+  | { readonly type: "response"; readonly requestId: string; readonly status: "ok"; readonly documents: readonly RuntimeBridgeDocumentSnapshot[]; readonly sources?: undefined }
+  | { readonly type: "response"; readonly requestId: string; readonly status: "ok"; readonly sources: readonly RuntimeBridgeDocumentSource[]; readonly documents?: undefined }
+  | { readonly type: "response"; readonly requestId: string; readonly status: "ok"; readonly documents?: undefined; readonly sources?: undefined }
   | { readonly type: "response"; readonly requestId: string; readonly status: "error"; readonly error: RuntimeBridgeErrorCode; readonly detail?: string };
 
 export interface RuntimeBridgeEventMessage {
@@ -86,6 +112,8 @@ export type RuntimeBridgeMessage =
   | RuntimeBridgeHelloMessage
   | RuntimeBridgeWelcomeMessage
   | RuntimeBridgeSnapshotRequest
+  | RuntimeBridgeLeaseRequest
+  | RuntimeBridgeSourcesRequest
   | RuntimeBridgeResponseMessage
   | RuntimeBridgeEventMessage
   | RuntimeBridgeErrorMessage;
@@ -243,12 +271,20 @@ function parseWelcome(record: Record<string, unknown>): RuntimeBridgeWelcomeMess
   return { type: "welcome", protocolVersion, coreVersion, instanceId, kind, generation, capabilities: requireCapabilities(record, "$.capabilities"), startedAt };
 }
 
-function parseRequest(record: Record<string, unknown>): RuntimeBridgeSnapshotRequest {
+function parseRequest(record: Record<string, unknown>): RuntimeBridgeSnapshotRequest | RuntimeBridgeLeaseRequest | RuntimeBridgeSourcesRequest {
   requireOnlyKeys(record, "$", ["type", "requestId", "action", "documentTypeIds"]);
   const requestId = requireRequestId(record);
   const action = requireString(record, "action", "$.action");
-  if (action !== "getSnapshot") {
+  if (action !== "getSnapshot" && action !== "acquireLease" && action !== "releaseLease" && action !== "getDocumentSources") {
     throw new RuntimeBridgeProtocolError("runtime.unknownRequest", "$.action", `Unknown request action '${action}'.`);
+  }
+
+  if (action !== "getSnapshot" && record.documentTypeIds !== undefined) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.documentTypeIds", "Only getSnapshot accepts a document type filter.");
+  }
+
+  if (action !== "getSnapshot") {
+    return { type: "request", requestId, action };
   }
 
   if (record.documentTypeIds === undefined) {
@@ -275,17 +311,35 @@ function parseRequest(record: Record<string, unknown>): RuntimeBridgeSnapshotReq
   return { type: "request", requestId, action, documentTypeIds };
 }
 
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const NORMALIZED_PATH_PATTERN = /^(?!\/)(?![A-Za-z]:\/)(?!.*:)(?!.*(?:^|\/)\.{1,2}(?:\/|$))(?!.*\\)(?!.*\/\/)(?:[^/]+\/)*[^/]+$/;
+
 function parseResponse(record: Record<string, unknown>): RuntimeBridgeResponseMessage {
-  requireOnlyKeys(record, "$", ["type", "requestId", "status", "documents", "error", "detail"]);
+  requireOnlyKeys(record, "$", ["type", "requestId", "status", "documents", "sources", "error", "detail"]);
   const requestId = requireRequestId(record);
   const status = requireString(record, "status", "$.status");
   if (status === "ok") {
-    if (record.documents === undefined || !Array.isArray(record.documents)) {
-      throw new RuntimeBridgeProtocolError("runtime.missingProperty", "$.documents", "Expected a documents array.");
+    if (record.documents !== undefined && record.sources !== undefined) {
+      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$", "documents and sources are mutually exclusive.");
     }
 
-    const documents = record.documents.map((entry) => parseDocumentSnapshot(entry));
-    return { type: "response", requestId, status, documents };
+    if (record.documents !== undefined) {
+      if (!Array.isArray(record.documents)) {
+        throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.documents", "Expected a documents array.");
+      }
+
+      return { type: "response", requestId, status, documents: record.documents.map((entry) => parseDocumentSnapshot(entry)) };
+    }
+
+    if (record.sources !== undefined) {
+      if (!Array.isArray(record.sources)) {
+        throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.sources", "Expected a sources array.");
+      }
+
+      return { type: "response", requestId, status, sources: record.sources.map((entry) => parseDocumentSource(entry)) };
+    }
+
+    return { type: "response", requestId, status };
   }
 
   if (status !== "error") {
@@ -330,6 +384,32 @@ function parseError(record: Record<string, unknown>): RuntimeBridgeErrorMessage 
   }
 
   return { type: "error", code, ...(record.detail === undefined ? {} : { detail: record.detail as string }) };
+}
+
+function parseDocumentSource(value: unknown): RuntimeBridgeDocumentSource {
+  const record = requireObject(value);
+  requireOnlyKeys(record, "$", ["documentTypeId", "documentId", "sourcePath", "sourceSha256"]);
+  const documentTypeId = requireString(record, "documentTypeId", "$.documentTypeId");
+  if (!STABLE_ID_PATTERN.test(documentTypeId)) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.documentTypeId", "Expected a document type identifier.");
+  }
+
+  const documentId = requireString(record, "documentId", "$.documentId");
+  if (!STABLE_ID_PATTERN.test(documentId)) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.documentId", "Expected a document identifier.");
+  }
+
+  const sourcePath = requireString(record, "sourcePath", "$.sourcePath");
+  if (!NORMALIZED_PATH_PATTERN.test(sourcePath)) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.sourcePath", "Expected a normalized relative source path.");
+  }
+
+  const sourceSha256 = requireString(record, "sourceSha256", "$.sourceSha256");
+  if (!SHA256_PATTERN.test(sourceSha256)) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.sourceSha256", "Expected a lowercase SHA-256 hash.");
+  }
+
+  return { documentTypeId, documentId, sourcePath, sourceSha256 };
 }
 
 function parseDocumentSnapshot(value: unknown): RuntimeBridgeDocumentSnapshot {
