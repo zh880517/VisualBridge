@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 检查适配器）已关闭，VB-UX-12（MCP Debug Tool）待项目方决策（实现检查工具集或按降级条款预留）。
+本清单是 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)（VB-UI 系列）之后的下一大阶段任务规划。前置条件 VB-UI-07 已于 2026-08-31 关闭；当前进度：**阶段 A（离线领域扩展）全部完成**——VB-UX-00 至 VB-UX-06（语言规范、Entity/Graph Catalog Export、Entity/Table/Graph Import/Compile、Adapter API 复核决策）已关闭；VB-UX-07（Runtime 产物形态决策）已关闭，VB-UX-08（Runtime 发现流程 spike 与威胁模型）已关闭，VB-UX-09（共享协议核与 Runtime Bridge）已关闭，VB-UX-10（调试语义：租约权限模型与 Source 映射漂移防护）已关闭，VB-UX-11（VS Code DAP 检查适配器）已关闭，**阶段 B（本机 Runtime 接入）全部完成**——VB-UX-07 至 VB-UX-12 已关闭。阶段 C（远程与设备连接）仍为范围登记，未分配任务。
 
 本阶段分三段：
 
@@ -303,7 +303,7 @@ Exit criteria（按范围裁定修订）：
 - 只检查 DAP 会话（attach/变量树/Source 映射/租约生命周期）经真实 Unity Play 实例与隔离 Extension Host E2E 验证；断点/单步以显式不支持呈现。
 - 多客户端并存（DAP + 预留 MCP 路径）时状态不分叉有测试锁定；Editor Bridge 与阶段 A 门槛全部回归通过。
 
-### VB-UX-12 MCP Debug Tool — `pending`
+### VB-UX-12 MCP Debug Tool — `complete`
 
 依赖：VB-UX-10。可与 VB-UX-11 并行。
 
@@ -311,6 +311,12 @@ Exit criteria（按范围裁定修订）：
 
 - 作为同一调试事实源的第三个客户端接入 MCP Server；权限模型沿用 VB-UX-10 的冻结结论。
 - 允许项目方决策降级为「预留接口不实现」：单一事实源设计保证后续补齐时不需要改动 VB-UX-09/10/11 的任何冻结面；降级决策须记录进架构文档。
+
+项目方决策记录：2026-08-31 项目方确认执行方案 A（实现检查工具集，非降级预留）。
+
+实施与验证记录：同日完成。MCP Server 新增第 8 个只读工具 `visualbridge_runtime`（action：`listInstances`/`getSnapshot`/`getDocumentSources`），Server 内实现精简 Runtime Bridge TCP 客户端（协议常量/NDJSON 分帧/握手/先注册行等待器再写请求/请求配对，与 VS Code 扩展侧同语义但不能共享代码）。**每次调用独立连接**：getDocumentSources 的租约随连接断开自动释放——MCP 工具不长期持锁，与 DAP 会话（长期租约）互不饿死。漂移计算：sourcePath 在 workspace 各 project root 下解析，恰一处存在读字节比对 SHA-256，否则 unknown。条件约束（instanceId 必需性等）只在 zod superRefine 运行时强制、不进 wire Schema（compareSchema 双方一致的取舍，见 ProtocolContracts.md）。
+
+验证记录：`check:mcp` 真实 stdio 三方一致通过（8 live tools）；MCP 测试 25/25（含新 runtime 测试：假 Runtime 实例覆盖 listInstances/getSnapshot 过滤/instanceNotFound/外部持租约 leaseDenied/漂移三态/MCP 调用后新客户端立即可 acquire 证明租约已释放/leaseRequired/陈旧判定）；manifest mcpTools 8 项 + errors.mcpPublic 登记两个服务内部码；根 `npm run check`/`npm test` 全工作区通过；文档（VisualBridgeMcp/ProtocolContracts/手册等 8 处陈旧计数同步）与 `check:docs` 通过。
 
 Exit criteria：
 
