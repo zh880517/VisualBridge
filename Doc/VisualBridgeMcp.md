@@ -469,10 +469,10 @@ Operation Schema 保证每项至少有稳定 `type`，具体字段由对应 Buil
 
 | editor | Operation 定义 |
 | --- | --- |
-| `graph` | [`GraphSemanticModel.md`](GraphSemanticModel.md#mcp-v2-mapping) |
+| `graph` | [`GraphSemanticModel.md`](GraphSemanticModel.md#mcp-v2-映射) |
 | `entity` | [`EntityComponentModel.md`](EntityComponentModel.md#entity-operation) |
 | `structured` | [`StructuredConfigModel.md`](StructuredConfigModel.md#5-operation-与事务) |
-| `table` | [`TableSemanticModel.md`](TableSemanticModel.md#7-semantic-document-and-operations) |
+| `table` | [`TableSemanticModel.md`](TableSemanticModel.md#7-语义文档与操作) |
 
 调用方必须按对应文档构造完整 Operation；不能把别的 editor 的同名字段或原始 JSON Patch 传给统一入口。
 

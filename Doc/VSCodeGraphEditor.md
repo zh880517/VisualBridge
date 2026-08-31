@@ -1,10 +1,10 @@
 # VisualBridge Graph V3
 
-Graph Document V3 and Graph Catalog V4 add multi-Catalog registration, Catalog-defined Graph Types, instance constraints, initial nodes, typed embedded subgraphs, and Catalog-rooted node menus to the semantic editor. Unity, runtime compilation, and debug communication are not connected yet.
+Graph Document V3 与 Graph Catalog V4 为语义编辑器带来了多 Catalog 注册、Catalog 定义的 Graph Type、实例约束、初始 Node、类型化内嵌 subgraph 以及以 Catalog 为根的 Node 菜单。Unity、运行时编译与调试通信尚未接入。
 
-## Project declaration
+## Project 声明
 
-The `VisualBridge.project.vbjson` marker enables the editor and declares its Graph Catalogs:
+`VisualBridge.project.vbjson` 标记文件启用该编辑器并声明其 Graph Catalog：
 
 ```json visualbridge-schema=visualbridge-project.schema.json visualbridge-parser=project
 {
@@ -26,11 +26,11 @@ The `VisualBridge.project.vbjson` marker enables the editor and declares its Gra
 }
 ```
 
-Catalog paths are relative to the marker. The host loads them into one registry. Catalog IDs and Data Type IDs must be globally unique; Node Type and Graph Type IDs and aliases must be globally unambiguous in their respective namespaces. Conflicts invalidate the registry instead of being resolved by load order. Without a valid registry, existing unknown nodes remain readable and editable, but new typed nodes and type replacement are unavailable.
+Catalog 路径相对于该标记文件解析。宿主将它们加载进同一个注册表。Catalog ID 与 Data Type ID 必须全局唯一；Node Type 与 Graph Type 的 ID 和 alias 在各自的命名空间内必须全局无歧义。冲突会使整个注册表失效，而不是按加载顺序解决。注册表无效时，既有的未知 Node 仍可读取和编辑，但新建类型化 Node 与类型替换不可用。
 
-`editor: "graph"` selects the broad Graph editor category, while `id` is the project-defined Graph subtype. The `.vbgraph` suffix above is only the default convenience association: a project may declare any suffix in `include` / `exclude`. Custom suffixes use `VisualBridge: Open Document` or a workspace editor association and are then resolved by the same Project Registry. `VisualBridge: Create Graph Document` selects the subtype first and derives its suggested suffix from that subtype's include pattern.
+`editor: "graph"` 选择宽泛的 Graph 编辑器类别，而 `id` 是项目定义的 Graph 子类型。上文的 `.vbgraph` 后缀只是默认的便利关联：项目可以在 `include` / `exclude` 中声明任意后缀。自定义后缀通过 `VisualBridge: Open Document` 或工作区编辑器关联打开，随后由同一个 Project Registry 解析。`VisualBridge: Create Graph Document` 先选择子类型，再从该子类型的 include 模式推导建议后缀。
 
-## Catalog example
+## Catalog 示例
 
 ```json visualbridge-schema=visualbridge-graph-catalog.schema.json visualbridge-parser=graph-catalog
 {
@@ -112,11 +112,11 @@ Catalog paths are relative to the marker. The host loads them into one registry.
 }
 ```
 
-`valueType` describes the JSON scalar shape and editor control, so integer and floating-point fields both use `valueType: "number"`. Runtime semantics belong to `dataTypeId`: C# numeric contracts use distinct stable IDs such as `int` and `float`, never a shared `number` Data Type. The future Unity exporter maps `System.Int32` to `int` and `System.Single` to `float`. A target Data Type may list accepted source types explicitly; the example lets `float` accept `int` to model the C# widening conversion while keeping `float` to `int` invalid. `acceptsAnySource: true` is a directional input rule: a `stringFromAny` field still declares `valueType: "string"` for its fallback editor, but its matching data input accepts every source Data Type. Ordinary `string` fields remain strict, and nodes perform the actual runtime conversion rather than VisualBridge inserting a conversion node.
+`valueType` 描述 JSON 标量形态和编辑器控件，因此整数字段和浮点字段都使用 `valueType: "number"`。运行时语义归属于 `dataTypeId`：C# 数值契约使用互不相同的稳定 ID，例如 `int` 和 `float`，绝不共用一个 `number` Data Type。未来的 Unity exporter 会把 `System.Int32` 映射为 `int`，把 `System.Single` 映射为 `float`。目标 Data Type 可以显式列出可接受的来源类型；本示例让 `float` 接受 `int`，以建模 C# 的加宽转换，同时保持 `float` 到 `int` 无效。`acceptsAnySource: true` 是一个单向输入规则：`stringFromAny` 字段仍为其回退编辑器声明 `valueType: "string"`，但与其匹配的数据输入接受所有来源 Data Type。普通 `string` 字段保持严格，实际运行时转换由 Node 完成，而不是由 VisualBridge 插入一个转换 Node。
 
-## List fields
+## List 字段
 
-A data `dynamicPortGroup` represents an editable `List<T>` when it declares `listPortMode`. Its ordered instance elements remain in `node.dynamicPorts` so every element has a stable ID across reorder, Undo/Redo, and serialization. The legacy field name is retained for Graph Document V3 compatibility; in `list` mode those item IDs are not connection endpoints.
+声明了 `listPortMode` 的数据 `dynamicPortGroup` 表示一个可编辑的 `List<T>`。其有序的实例元素保留在 `node.dynamicPorts` 中，使每个元素在重排、Undo/Redo 和序列化过程中都拥有稳定 ID。保留旧字段名是为了兼容 Graph Document V3；在 `list` 模式下这些条目 ID 不是连接端点。
 
 ```json visualbridge-schema=visualbridge-graph-catalog.schema.json#/$defs/dynamicPortGroup
 {
@@ -134,38 +134,38 @@ A data `dynamicPortGroup` represents an editable `List<T>` when it declares `lis
 }
 ```
 
-`listPortMode: "list"` creates one input handle using the group ID and requires `port.dataTypeId` to identify the complete list type, such as `int-list`; connecting it hides the entire literal list editor. `listPortMode: "element"` creates one input handle per stable item ID, requires `port.dataTypeId` to equal `item.dataTypeId`, and hides only the connected element editor. Both modes require a data input template and an item `dataTypeId`. Omitting `listPortMode` preserves the existing dynamic flow/data-port behavior. Graph keeps this stable-ID representation instead of using the value-only Form List implementation, but its row action rail follows the same project-wide drag, add-after and delete icon order.
+`listPortMode: "list"` 使用组 ID 创建一个输入手柄，并要求 `port.dataTypeId` 标识完整的列表类型，例如 `int-list`；连接后隐藏整个字面量列表编辑器。`listPortMode: "element"` 为每个稳定的条目 ID 创建一个输入手柄，要求 `port.dataTypeId` 等于 `item.dataTypeId`，并且只隐藏已连接元素的字面量编辑器。两种模式都要求提供数据输入模板和条目 `dataTypeId`。省略 `listPortMode` 则保留既有的动态 flow/data Port 行为。Graph 保留这种基于稳定 ID 的表示，而不采用仅有值的 Form List 实现，但其行操作栏遵循全项目一致的拖拽、向后添加与删除的图标顺序。
 
-## Editing behavior
+## 编辑行为
 
-- New documents select a root-compatible Graph Type; a single candidate is selected automatically. Initial node templates can materialize nodes needed to satisfy Graph Type minimum-instance constraints immediately.
-- Add nodes from the current Graph Type's searchable registered types. A node belongs to its declaring Catalog. `supportedCatalogIds` first restricts the available Catalogs, then `allowedNodeSelectors` optionally refines their nodes. Each declaring Catalog's `title` is the node's root path and `menuPath` is relative to that root, so Catalog `通用`, path `操作 / 整数`, and node `加法` appear as `通用 / 操作 / 整数 / 加法`. Search spans the Catalog title, names, IDs, categories, paths, tags, and traits. Types at a count maximum and typed-subgraph call types are excluded from the atomic-node picker. Every shared field definition already carries a deterministic `defaultValue`.
-- Drop an unfinished connection on empty canvas space to open a filtered list of compatible node ports. Choosing one atomically creates the node and edge at the drop position; kind, direction, registry-wide Data Type assignability, connection limits, supported Catalogs, allowed selectors, and count constraints are respected. `portConnectionRules` supplies the Graph Type's input/output limit and a port's `maxConnections` may only make that limit stricter.
-- Add typed embedded subgraphs by selecting a compatible call-node type and target Graph Type. The call node renders its static fields/data ports together with the child graph's public interfaces.
-- Render declared flow and data ports; flow edges are solid and data edges are dashed.
-- Give every Data Type a stable built-in color derived from its ID. An optional Catalog `color` in `#RRGGBB` format overrides that default. Property inputs, static and dynamic data handles, interface ports, and data edges use the resolved type color; flow ports keep their separate flow color.
-- Permit connection cycles. Data edges never determine execution order.
-- Replace an existing edge automatically when a valid new edge uses an occupied port whose effective connection limit is one. The editor removes the old edge before adding the new edge in the same host operation batch; ports with a multi-connection limit still report capacity instead of guessing which edge to remove.
-- Double-click a subgraph to enter it and use the breadcrumb to return.
-- Render public subgraph interfaces on both the call site and child canvas. The child canvas owns non-deletable Input Parameters and Output Parameters interface nodes. Empty lists expose one Add icon; populated rows keep drag, add-after and delete together, support direct rename, pointer ordering, and `Alt+↑/↓`. The first concrete connection made inside the child or outside on the parent call node locks the shared Data Type. Removing the final connection unlocks it to `any`. Dynamic parameters remain visible on the parent call node by default, with the unlocked `any` state rendered in light gray. The Graph Inspector still does not manage interfaces.
-- Configure an optional text glyph with a node type's `icon` field. Every node reserves a fixed icon slot before its title, keeping titles aligned even when some types omit the icon. Toolbar checkboxes independently control the node type subtitle and stable node instance ID; the type is visible by default and the ID is hidden by default. Both are transient view state and are not serialized.
-- Render static flow inputs and outputs immediately after the node type, before property editors and data ports. Property-bound data inputs stay beside their editor, while remaining static data ports follow the property area. Dynamic handles are rendered on their own element row instead of in the static port section.
-- Edit a node title by double-clicking its header. Catalog-defined fields are edited directly on each node using text, multiline, number/range, checkbox, select, JSON, reference, and read-only presentations. A field and its matching data-input handle share one row; while connected, the literal editor is hidden and the fallback value is retained. Disconnecting restores that value and editor.
-- Reuse the shared Form field definition, recursive validator, Reference traversal and `FieldValueEditor` for Graph properties. Graph Catalog V4 has no separate `required` dialect; newly materialized fields use their declared deterministic `defaultValue`.
-- Add, select, edit, drag-reorder, and remove instance-level dynamic elements directly on a node. A row edits only the element value and places its dynamic handle at the row edge; there is no separate port-name editor. Each row keeps the shared grip, add-after and delete controls together. Deleting removes that element and its related edges in one operation. Dropping a row commits one reorder operation while preserving endpoint IDs, and `Alt+↑/↓` on the grip provides keyboard reordering.
-- Edit `List<T>` elements with the same stable-element controls. Whole-List port mode renders one group input and hides all element editors while connected; element-port mode renders a handle after every element and hides only the connected element's literal editor.
-- Edit only the current Graph's title and Graph Type-defined fields in a Graph-only Inspector that can collapse to the right edge. Assigned Graph Type is read-only.
-- Keep node type display-only; it is never edited as a text field.
-- Drag the left mouse button on empty canvas space to box-select every partially intersected node; drag the middle mouse button to pan. The canvas uses the default arrow cursor and switches to the grabbing cursor only while middle-button panning. Multi-selected nodes and edges are deleted as one Graph Operation batch. When a mixed selection contains Graph Type minimum-required nodes, deletion removes the other selected items and retains only the nodes needed to satisfy those constraints; an all-required selection remains unavailable.
-- Copy, Paste, and Duplicate selected atomic nodes together with edges whose endpoints are both selected. Pasted instances receive fresh node and edge IDs. Singleton nodes required by a Graph Type minimum-instance constraint and embedded subgraphs are intentionally excluded from the V1 clipboard payload.
-- Right-click an atomic or typed-subgraph node to select every node of the same canonical type, replace its type, Copy, Duplicate, or Delete. Right-click an edge or selection to access the applicable selection actions. Only same-kind, lossless replacement candidates that preserve Graph Type constraints are offered; unavailable actions remain visible in a disabled state with a reason tooltip.
-- Right-click empty canvas space for Graph-level Add Node, Add Subgraph, and Paste actions. Newly added nodes and subgraphs use the clicked canvas position. Persistent editing actions live in context menus rather than the top toolbar. Context menus use an opaque editor-widget surface so the graph remains visually separated from menu text.
-- Show the VS Code text document's saved/unsaved state in the top toolbar. Graph Operations make the document dirty through `WorkspaceEdit`; normal VS Code Save clears the indicator after the host observes the save event.
-- Use the MiniMap for large-graph navigation. Viewport, selection, open menus, and clipboard state remain transient editor state.
-- Resolve `graph.element` references through the shared Reference Service, then use the complete Location scope to enter the owning Graph. Graph targets fit the complete canvas; Node and Dynamic Port targets select and center the owning node; Interface Port targets center the matching input/output interface node. The exact element receives a temporary focus-ring highlight. A request ID acknowledgement keeps navigation reliable when a panel is unopened, hidden, or recreating its Webview, while stale Graph/Node/Port scope is rejected instead of guessed.
-- Show structural and semantic diagnostics in the Webview and VS Code Problems.
+- 新文档选择一个与 root 兼容的 Graph Type；只有一个候选时自动选中。初始 Node 模板可立即实例化满足 Graph Type 最小实例约束所需的 Node。
+- 从当前 Graph Type 的可搜索已注册类型中添加 Node。Node 属于声明它的 Catalog。`supportedCatalogIds` 先限定可用的 Catalog，再由 `allowedNodeSelectors` 选择性地精筛其中的 Node。声明 Catalog 的 `title` 是 Node 的根路径，`menuPath` 相对该根，因此 Catalog `通用`、路径 `操作 / 整数` 与 Node `加法` 显示为 `通用 / 操作 / 整数 / 加法`。搜索范围覆盖 Catalog 标题、名称、ID、类别、路径、tag 与 trait。已达数量上限的类型和类型化 subgraph 调用类型不会进入原子 Node 选择器。每个共享字段定义都已带有确定性的 `defaultValue`。
+- 将未完成的连接拖放到空白画布区域，会打开一份经过过滤的兼容 Node Port 列表。选择其中一项会在落点位置以原子方式创建 Node 和 Edge；kind、方向、注册表全局的 Data Type 可赋值性、连接数上限、支持的 Catalog、允许的选择器以及数量约束都会被遵守。`portConnectionRules` 提供 Graph Type 的输入/输出上限，某个 Port 的 `maxConnections` 只能让该上限更严格。
+- 通过选择兼容的调用 Node 类型与目标 Graph Type 来添加类型化内嵌 subgraph。调用 Node 将其静态字段/数据 Port 与子 Graph 的公开接口一并渲染。
+- 渲染声明的 flow 与 data Port；flow Edge 为实线，data Edge 为虚线。
+- 为每个 Data Type 提供由其 ID 派生的稳定内置颜色。Catalog 可选的 `#RRGGBB` 格式 `color` 会覆盖该默认值。属性输入、静态与动态数据手柄、接口 Port 和 data Edge 使用解析后的类型颜色；flow Port 保留独立的 flow 颜色。
+- 允许连接成环。data Edge 绝不决定执行顺序。
+- 当有效的新 Edge 使用一个已被占用且有效连接上限为一的 Port 时，自动替换既有 Edge。编辑器在同一个宿主操作批次中先移除旧 Edge 再添加新 Edge；多连接上限的 Port 仍会报告容量，而不是猜测应移除哪条 Edge。
+- 双击 subgraph 进入其内部，并使用面包屑导航返回。
+- 在调用点和子 Graph 画布两侧都渲染 subgraph 的公开接口。子画布拥有不可删除的 Input Parameters 与 Output Parameters 接口 Node。空列表暴露一个 Add 图标；已有条目的行将拖拽、向后添加与删除放在一起，支持直接重命名、指针排序和 `Alt+↑/↓`。在子 Graph 内部或父调用 Node 外部建立的第一个具体连接会锁定共享 Data Type。移除最后一个连接会将其解锁为 `any`。动态参数默认仍在父调用 Node 上可见，未锁定的 `any` 状态以浅灰色渲染。Graph Inspector 仍不管理接口。
+- 通过 Node Type 的 `icon` 字段配置可选的文本字形。每个 Node 在标题前预留固定的图标槽位，即使某些类型省略图标也能保持标题对齐。工具栏复选框分别控制 Node Type 副标题和稳定的 Node 实例 ID；类型默认可见，ID 默认隐藏。两者都是瞬态视图状态，不参与序列化。
+- 静态 flow 输入与输出紧随 Node Type 之后、属性编辑器和数据 Port 之前渲染。与属性绑定的数据输入保持在其编辑器旁边，其余静态数据 Port 排在属性区之后。动态手柄渲染在独立的元素行上，而不位于静态 Port 区。
+- 双击 Node 头部编辑其标题。Catalog 定义的字段直接在每个 Node 上以文本、多行、数字/范围、复选框、下拉选择、JSON、Reference 和只读形式编辑。字段与其匹配的数据输入手柄共享一行；连接期间字面量编辑器被隐藏，回退值予以保留。断开连接后恢复该值与编辑器。
+- Graph 属性复用共享的 Form 字段定义、递归校验器、Reference 遍历和 `FieldValueEditor`。Graph Catalog V4 没有单独的 `required` 方言；新实例化的字段使用其声明的确定性 `defaultValue`。
+- 直接在 Node 上添加、选择、编辑、拖拽重排和移除实例级动态元素。每行只编辑元素值，并把其动态手柄放在行边缘；没有单独的 Port 名称编辑器。每行将共享的拖拽把手、向后添加与删除控件放在一起。删除会在一个操作中移除该元素及其相关 Edge。放下某行会提交一次重排操作并保留端点 ID，把手上的 `Alt+↑/↓` 提供键盘重排。
+- 使用相同的稳定元素控件编辑 `List<T>` 元素。整列表 Port 模式在连接期间渲染一个组输入并隐藏所有元素编辑器；元素 Port 模式在每个元素后渲染一个手柄，并且只隐藏已连接元素的字面量编辑器。
+- 在仅针对 Graph 的 Inspector 中只编辑当前 Graph 的标题和 Graph Type 定义的字段，该 Inspector 可折叠到右侧边缘。已指派的 Graph Type 为只读。
+- Node Type 保持仅显示；绝不作为文本字段编辑。
+- 在空白画布区域按住鼠标左键拖拽即可框选所有部分相交的 Node；按住鼠标中键拖拽即可平移。画布使用默认箭头光标，仅在按中键平移期间切换为抓取光标。多选的 Node 和 Edge 作为一个 Graph Operation 批次删除。当混合选区包含 Graph Type 最低数量要求的 Node 时，删除会移除其他选中项，仅保留满足这些约束所需的 Node；全部均为必需的选区仍不可用。
+- 对选中的原子 Node 以及两端端点均被选中的 Edge 一起执行复制、粘贴和创建副本。粘贴出的实例获得全新的 Node ID 与 Edge ID。Graph Type 最小实例约束要求的单例 Node 和内嵌 subgraph 有意排除在 V1 剪贴板载荷之外。
+- 右键点击原子 Node 或类型化 subgraph Node，可以全选同一规范类型的所有 Node、替换其类型、复制、创建副本或删除。右键点击 Edge 或选区可使用适用的选区操作。只提供同 kind、无损且保持 Graph Type 约束的替换候选；不可用的操作仍以禁用状态显示，并带有原因提示。
+- 右键点击空白画布区域可执行 Graph 级的添加 Node、添加 subgraph 和粘贴操作。新增的 Node 与 subgraph 使用点击的画布位置。持久化编辑操作位于上下文菜单而非顶部工具栏。上下文菜单使用不透明的编辑器部件表面，使 Graph 与菜单文字在视觉上保持分离。
+- 在顶部工具栏显示 VS Code 文本文档的已保存/未保存状态。Graph Operation 通过 `WorkspaceEdit` 将文档置为脏；常规的 VS Code 保存会在宿主观察到保存事件后清除该指示器。
+- 使用 MiniMap 进行大型 Graph 的导航。视口、选区、打开的菜单和剪贴板状态始终保持为瞬态编辑器状态。
+- 通过共享的 Reference Service 解析 `graph.element` Reference，再使用完整的 Location 范围进入所属 Graph。Graph 目标会缩放适配完整画布；Node 与 Dynamic Port 目标会选中并居中所属 Node；Interface Port 目标会居中匹配的输入/输出接口 Node。确切元素会获得临时的焦点环高亮。请求 ID 确认机制保证面板未打开、被隐藏或正在重建其 Webview 时导航仍然可靠，而陈旧的 Graph/Node/Port 范围会被拒绝而不是靠猜测。
+- 在 Webview 和 VS Code Problems 中显示结构性与语义诊断。
 
-Every persistent action is a Graph Operation applied through `WorkspaceEdit`, retaining VS Code dirty state and Undo/Redo. Each document operation stores its before/after Graph and node selection snapshots, so Undo and Redo restore the matching selection. Clicking or box-selecting only updates the current snapshot and never creates an Undo entry. Node drag emits one operation when the drag ends. External disk changes still require overwrite or discard-and-refresh confirmation.
+每个持久化动作都是一个通过 `WorkspaceEdit` 应用的 Graph Operation，保留 VS Code 脏状态与 Undo/Redo。每个文档操作都会存储操作前后的 Graph 与 Node 选区快照，因此 Undo 和 Redo 会恢复对应的选区。点击或框选只会更新当前快照，绝不产生 Undo 条目。Node 拖拽在拖拽结束时发出一个操作。外部磁盘变更仍需确认覆盖或丢弃并刷新。
 
 ```mermaid
 sequenceDiagram
@@ -188,6 +188,6 @@ sequenceDiagram
     end
 ```
 
-The complete end-user workflow, including opening, navigation, diagnostics, external-change handling, and keyboard-accessible alternatives, is in [`AuthoringUserGuide.md`](AuthoringUserGuide.md).
+完整的最终用户工作流（包括打开、导航、诊断、外部变更处理和键盘可访问的替代方式）见 [`AuthoringUserGuide.md`](AuthoringUserGuide.md)。
 
-React Flow remains a controlled view layer. Selection, viewport, and transient drag positions do not enter `.vbgraph`; the Graph document and Catalog remain authoritative. See `GraphSemanticModel.md` for the complete semantic contract.
+React Flow 始终是受控的视图层。选区、视口和瞬态拖拽位置不会写入 `.vbgraph`；Graph 文档与 Catalog 始终是权威数据。完整语义契约见 `GraphSemanticModel.md`。

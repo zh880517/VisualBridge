@@ -364,7 +364,7 @@ Structured 是首个 Unity 切片，因为它能以最小范围验证 Project �
 4. **Unity EditMode 与 batch command**：运行 EditMode tests，并以 batch entry point 实际执行 Catalog Export 和 Structured Compile，检查 test results、日志、退出码和输出 Hash。
 5. **Bridge E2E**：后续在真实 Unity Editor 与隔离 VS Code Extension Host 之间验证 open/reveal；仅有协议单元测试或 batchmode 不能替代此证明。
 
-当前开发宿主固定记录为 Unity `6000.3.10f1`。改变验证版本或声明更低最低版本前，必须重新执行 Package import、编译、EditMode 和垂直切片验证。
+当前开发宿主固定记录为 Unity `6000.3.10f1`。改变验证版本或声明更低最低版本前，必须重新执行 Package import、编译、EditMode 和垂直切片验证。完整版本兼容矩阵与使用者操作手册见 [`UnityIntegrationManual.md`](UnityIntegrationManual.md)。
 
 完整 Unity 任务顺序、每项 exit criteria 和发布门槛见 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)。
 

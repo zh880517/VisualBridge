@@ -69,6 +69,8 @@ Entity → Table → Graph 是风险递进的范围控制。VB-UX-03 不阻塞 T
 
 实施与验证记录：2026-08-31 完成。`AGENTS.md` 全文中文化并新增「语言规范」一节；`Samples/PreUnityAuthoring/README.md`、`Tools/Documentation/README.md`、`Tools/ProtocolContract/README.md` 翻译为中文并修正其中过时的能力描述（Protocol Contract 工具已生成 C#、Unity Exporter/Compiler/Editor Bridge 已实现）；`Tools/VSCodeExtension/README.md` 的过时能力描述与英文标题同步修正。TypeScript/mjs/cjs 与 Unity Package C# 的全部手写注释中文化；协议生成器模板注释中文化并重新生成四个确定性产物。`Doc/Temp` 仅余 `.gitkeep`，无残留临时文档。`npm run check:docs`、`npm run check:protocol`、`npm run check`、两个 Unity 生成 csproj 的 `dotnet build` 与 `git diff --check` 通过；注释级变更未重跑 Unity batchmode 与 EditMode（以 dotnet 编译为证据）。
 
+同日复查发现首轮仅核对了各文档主标题，`GraphSemanticModel.md`、`ProjectTransaction.md`、`ReleaseQuality.md`、`TableSemanticModel.md`、`VSCodeGraphEditor.md` 五份领域文档为英文正文；已整篇译为中文（代码围栏、行内代码与链接目标逐字节保留），并同步 `AuthoringUserGuide.md` 与 `VisualBridgeMcp.md` 中三处指向这些文档的锚点链接及 `LargeProjectValidation.md` 的英文小节标题。`npm run check:docs` 复验通过。
+
 Exit criteria：
 
 - 语言规范进入 `AGENTS.md`，后续任务与新增文档、注释可据此执行。

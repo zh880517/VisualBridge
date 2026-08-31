@@ -40,7 +40,7 @@ Graph、Entity 和 Structured Config 在提交下一次 Operation 前发现磁�
 
 Table 不提供静默覆盖。任一 CSV 分表或 XLSX Workbook 自打开后被外部修改，Operation/Save 会拒绝并要求重新加载。先保留需要审查的外部文件，随后使用 VS Code Revert/关闭后重开恢复最新磁盘状态。
 
-若 Project Transaction 返回 `writeInProgress`、`baseHashMismatch`、`dependencyChanged` 或 `changedBeforeReplace`，不要删除锁、journal、`.tmp` 或 `.rollback` 文件，也不要原地重复提交旧预览。保存/还原编辑器、刷新 Project、重新读取最新内容并重新发起操作。无法确定磁盘权威状态时按 [Project Transaction 恢复手册](ProjectTransaction.md#8-operational-recovery-manual) 处理。
+若 Project Transaction 返回 `writeInProgress`、`baseHashMismatch`、`dependencyChanged` 或 `changedBeforeReplace`，不要删除锁、journal、`.tmp` 或 `.rollback` 文件，也不要原地重复提交旧预览。保存/还原编辑器、刷新 Project、重新读取最新内容并重新发起操作。无法确定磁盘权威状态时按 [Project Transaction 恢复手册](ProjectTransaction.md#8-运维恢复手册) 处理。
 
 ## 3. 创建文档
 

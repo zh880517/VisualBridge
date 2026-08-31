@@ -1,24 +1,24 @@
-# VisualBridge Graph Semantic Model
+# VisualBridge Graph 语义模型
 
-## Scope
+## 范围
 
-This document defines the landed Graph Document V3 and Graph Catalog V4 authoring contract. It covers stable identity, multi-Catalog registration, Graph Types, flow and data connections, typed embedded subgraphs, catalog-driven validation, and safe node-type replacement. Runtime execution, Unity compilation, and debugging are outside the current implementation.
+本文定义已落地的 Graph Document V3 与 Graph Catalog V4 的 Authoring 契约。内容涵盖稳定身份、多 Catalog 登记、Graph Type、流程与数据连接、带类型的内嵌子图、Catalog 驱动的校验，以及安全的节点类型替换。Runtime 执行、Unity 编译与调试不在当前实现范围内。
 
-## Stable identity
+## 稳定身份
 
-Serialized references never depend on a display label, source filename, C# class name, or namespace. The following values are stable IDs:
+序列化的 Reference 绝不依赖显示名、源文件名、C# 类名或命名空间。以下值是稳定 ID：
 
-- `documentId` and `graphId` identify documents and embedded graphs.
-- `nodeId` identifies a node instance across edits and moves.
-- `nodeTypeId` identifies the semantic node type declared by a Graph Catalog.
-- `graphTypeId` identifies the semantic contract of each root or embedded graph.
-- `portId`, `propertyId`, and `interfacePortId` identify connection and property contracts.
+- `documentId` 与 `graphId` 标识文档与内嵌图。
+- `nodeId` 在编辑与移动过程中标识一个节点实例。
+- `nodeTypeId` 标识由 Graph Catalog 声明的语义节点类型。
+- `graphTypeId` 标识每个根图或内嵌图的语义契约。
+- `portId`、`propertyId` 与 `interfacePortId` 标识连接与属性契约。
 
-Labels may be renamed freely. A node implementation must retain its existing `nodeTypeId` when its source class is renamed. Catalog `aliases` support explicit legacy IDs for node types, Graph Types, ports, and properties. A project loads its declared Catalogs into one registry. Catalog IDs and Data Type IDs are globally unique; Node Type and Graph Type canonical IDs and aliases are globally unambiguous in their respective namespaces. VisualBridge rejects a conflicting registry instead of resolving by Catalog load order. If a type is unavailable, VisualBridge preserves the node and its complete property object and reports it as unknown.
+显示名可以随意重命名。节点实现在其源类被重命名时必须保留现有 `nodeTypeId`。Catalog `aliases` 为节点类型、Graph Type、端口与属性提供显式的旧 ID。项目把其声明的 Catalog 加载进同一个注册表。Catalog ID 与 Data Type ID 全局唯一；Node Type 与 Graph Type 的规范化 ID 及别名在各自命名空间内全局无歧义。VisualBridge 拒绝冲突的注册表，而不是按 Catalog 加载顺序裁决。如果某个类型不可用，VisualBridge 会保留节点及其完整属性对象，并将其报告为未知。
 
-## Document ownership and embedded subgraphs
+## 文档所有权与内嵌子图
 
-A `.vbgraph` contains one root graph and zero or more embedded graphs:
+一个 `.vbgraph` 包含一个根图和零个或多个内嵌图：
 
 ```json visualbridge-schema=visualbridge-graph.schema.json visualbridge-parser=graph-document
 {
@@ -39,34 +39,34 @@ A `.vbgraph` contains one root graph and zero or more embedded graphs:
 }
 ```
 
-Graphs are stored as a flat collection for stable operation addressing. A subgraph node owns another graph through `subgraphId`; every non-root graph has exactly one owner. Removing a subgraph node removes its owned graph hierarchy in the same operation. Flow and data edges may contain cycles, but subgraph ownership must remain an acyclic tree.
+图以扁平集合存储，以保证 Operation 寻址的稳定性。子图节点通过 `subgraphId` 拥有另一个图；每个非根图恰好有一个所有者。删除子图节点会在同一 Operation 中删除其拥有的图层级。流程与数据边可以包含环，但子图所有权必须保持为无环树。
 
-Every graph also owns a JSON `properties` object. Its Graph Type declares the typed fields and editor hints rendered by the collapsible Graph Inspector. Node titles and catalog-defined fields are edited directly on each canvas node; titles enter edit mode only after a header double-click. A property that shares identity with a data-input port is rendered together with that port. Once connected, its literal editor is hidden while the stored fallback value is retained for restoration after disconnect. The Inspector never changes its target based on node or edge selection and does not expose raw JSON or graph-interface management.
+每个图还拥有一个 JSON `properties` 对象。其 Graph Type 声明由可折叠的 Graph Inspector 渲染的类型化字段与编辑器提示。节点标题和 Catalog 定义的字段直接在每个画布节点上编辑；标题只有在双击头部后才进入编辑模式。与数据输入端口共享身份的属性会和该端口一起渲染。一旦连接，其字面量编辑器会被隐藏，同时保留已存储的回退值，以便断开连接后恢复。Inspector 绝不因节点或边的选择而改变其目标，也不暴露原始 JSON 或图接口管理。
 
-Graph properties and dynamic-port item values may additionally declare the shared `reference` contract. Reference values remain ordinary strings or numbers in the Graph document; the Catalog supplies the Provider kind, stable target selector and missing-value policy. The canvas and Inspector use the same host Reference Picker and target navigation as Entity/Table fields, while GraphOperation validation rejects only newly introduced reference errors. See `ReferenceSystem.md`.
+图属性与动态端口条目值还可以额外声明共享的 `reference` 契约。Reference 值在 Graph 文档中仍是普通字符串或数字；Catalog 提供 Provider 种类、稳定的目标选择器与缺失值策略。画布和 Inspector 使用与 Entity/Table 字段相同的宿主 Reference Picker 与目标导航，而 GraphOperation 校验只拒绝新引入的 Reference 错误。参见 `ReferenceSystem.md`。
 
-Subgraphs expose explicit interface ports. From the parent, an input interface is an input handle and an output interface is an output handle. Inside the subgraph, the directions are reversed: an input interface supplies values or flow to internal nodes, while an output interface receives them. Edges cannot bypass this public interface to address nodes in another graph. A subgraph may create `dynamic` data interface ports with `dataTypeId: "any"`. The first concrete connection on either the child interface node or its parent call node locks the shared port to that Data Type. It remains locked while either side has a connection and returns to `any` after the final connection is removed. Dynamic ports are always visible on both the child interface and parent call node; the editor renders the unlocked `any` state in light gray.
+子图暴露显式的接口端口。从父图看，输入接口是输入手柄，输出接口是输出手柄。在子图内部，方向是相反的：输入接口向内部节点提供值或流程，输出接口接收它们。边不能绕过这一公开接口去寻址另一个图中的节点。子图可以创建 `dataTypeId: "any"` 的 `dynamic` 数据接口端口。在子接口节点或其父调用节点任一侧的第一次具体连接会把共享端口锁定为该 Data Type。只要任一侧存在连接，它就保持锁定，并在最后一条连接被移除后回到 `any`。动态端口在子接口与父调用节点两侧始终可见；编辑器以浅灰色渲染未锁定的 `any` 状态。
 
-## Flow and data connections
+## 流程与数据连接
 
-Every edge explicitly declares `kind`:
+每条边都显式声明 `kind`：
 
-- `flow` defines execution order and may form cycles.
-- `data` transfers values and never schedules or orders node execution.
+- `flow` 定义执行顺序，可以成环。
+- `data` 传递值，从不调度或排序节点执行。
 
-Every port declares a stable ID, label, kind, direction, optional data type, and optional `maxConnections`. Subgraph data interfaces may additionally declare `dynamic: true`; flow interfaces and root Graph interfaces cannot be dynamic. Its Graph Type also declares `portConnectionRules.input` and `.output` as `single` or `multiple`. The effective limit is the stricter result: `single` caps the direction at one connection, while a port-level maximum may restrict it further but never loosen it. When the user makes a valid new connection to an occupied single-connection port, the editor submits removal of the old edge and addition of the new edge as one operation batch. Multi-connection ports at capacity still reject the new connection because the editor cannot choose which existing edge to replace. Validation requires output-to-input direction, matching edge and port kinds, compatible data types, existing endpoints, unique connections, and respected cardinality. There is no global cycle validator; a future project-specific validator may impose additional constraints.
+每个端口声明稳定 ID、标签、种类、方向、可选的数据类型和可选的 `maxConnections`。子图数据接口可以额外声明 `dynamic: true`；流程接口与根 Graph 接口不能是动态的。其 Graph Type 还把 `portConnectionRules.input` 和 `.output` 声明为 `single` 或 `multiple`。生效的限制取更严格的结果：`single` 把该方向的连接数限制为一，而端口级上限可以进一步收紧但绝不会放宽。当用户对一个已被占用的单连接端口建立有效的新连接时，编辑器会以一个 Operation 批次提交旧边的移除与新边的添加。已达到容量上限的多连接端口仍会拒绝新连接，因为编辑器无法选择替换哪条已有边。校验要求输出到输入的方向、边与端口种类匹配、数据类型兼容、端点存在、连接唯一以及基数得到遵守。没有全局的环校验器；未来的项目专属校验器可以施加额外约束。
 
-Data compatibility is a registry-wide rule rather than a per-Catalog rule. Ports from different Catalogs may connect when their globally registered Data Types are compatible. Identical types, `any`, target types that explicitly list the source in `accepts`, and target types with `acceptsAnySource: true` are compatible. The wildcard flag is directional and only relaxes a target input; it does not make outputs of that type assignable to every other type. A `stringFromAny` input uses this flag together with a string-valued property, so its disconnected fallback is edited as text while a connection may supply any Data Type for runtime string conversion. It remains distinct from an ordinary `string` input, which only accepts compatible string sources. VisualBridge does not insert implicit conversion nodes. A Data Type may also declare an optional `#RRGGBB` presentation color. Color never affects compatibility or serialization of Graph instances; the editor uses a stable built-in palette when the Catalog omits it.
+数据兼容性是整个注册表范围的规则，而不是按 Catalog 划分的规则。当不同 Catalog 的端口所对应的全局注册 Data Type 兼容时，它们可以连接。相同类型、`any`、在 `accepts` 中显式列出来源类型的目标类型，以及 `acceptsAnySource: true` 的目标类型是兼容的。该通配标志是方向性的，只放宽目标输入；它不会让该类型的输出可以赋给所有其他类型。`stringFromAny` 输入将该标志与字符串值属性搭配使用，因此其断开连接时的回退值按文本编辑，而连接可以提供任意 Data Type 以供运行时字符串转换。它仍然区别于普通 `string` 输入，后者只接受兼容的字符串来源。VisualBridge 不会插入隐式转换节点。Data Type 还可以声明可选的 `#RRGGBB` 展示颜色。颜色绝不影响 Graph 实例的兼容性或序列化；Catalog 未提供时，编辑器使用稳定的内置调色板。
 
-Catalog Data Types preserve runtime distinctions. C# `System.Int32` and `System.Single` are represented by separate stable Data Type IDs (`int` and `float` by default), not by a common `number` type. Numeric properties still use `valueType: "number"` because JSON has one numeric scalar category; their `dataTypeId` carries the C# semantic type. If a project permits the C# widening conversion from `int` to `float`, the `float` Data Type declares `accepts: ["int"]`; the reverse connection remains incompatible unless explicitly modeled.
+Catalog 的 Data Type 保留运行时区别。C# `System.Int32` 与 `System.Single` 由各自独立的稳定 Data Type ID 表示（默认为 `int` 与 `float`），而不是共用一个 `number` 类型。数值属性仍使用 `valueType: "number"`，因为 JSON 只有一个数值标量类别；其 `dataTypeId` 携带 C# 语义类型。如果项目允许 C# 从 `int` 到 `float` 的放宽转换，`float` Data Type 就声明 `accepts: ["int"]`；反方向的连接仍不兼容，除非显式建模。
 
-The editor may use a connection as a node-creation gesture. Dropping an unfinished edge on empty canvas space filters new atomic-node ports with the same semantic rules, then commits `graph.addNode` and `graph.addEdge` together. Data inputs retain their serialized literal as a fallback while connected; the node UI marks that field as overridden and restores editing when the edge is removed.
+编辑器可以把一次连接当作节点创建手势。把未完成的边拖放到画布空白处时，会用相同的语义规则过滤新原子节点的端口，然后一并提交 `graph.addNode` 与 `graph.addEdge`。数据输入在连接期间保留其序列化字面量作为回退值；节点 UI 会把该字段标记为已覆盖，并在边被移除后恢复编辑。
 
-Editable C# `List<T>` fields use data dynamic-port groups with `listPortMode: "list"` or `"element"`. Ordered elements are persisted as stable-ID `dynamicPorts` items even when the whole List is the only port; reordering therefore never changes an element's identity. Whole-List mode exposes the group ID as one `List<T>` input, while its item IDs are values only. Element mode exposes each item ID as a `T` input and does not expose a group port. A connected whole-List input overrides the complete literal list; a connected element input overrides only that element. Unconfigured dynamic groups retain their existing dynamic branch/port semantics.
+可编辑的 C# `List<T>` 字段使用 `listPortMode: "list"` 或 `"element"` 的数据动态端口组。有序元素即使整个 List 是唯一端口，也会作为稳定 ID 的 `dynamicPorts` 条目持久化；因此重排顺序绝不改变元素的身份。整个 List 模式把组 ID 暴露为一个 `List<T>` 输入，其条目 ID 只是值。元素模式把每个条目 ID 暴露为一个 `T` 输入，不暴露组端口。已连接的整个 List 输入覆盖完整的字面量列表；已连接的元素输入只覆盖该元素。未配置的动态组保留其现有的动态分支/端口语义。
 
 ## Graph Catalog
 
-A Graph document type declares one or more project-relative `.vbgraphcatalog` files:
+一个 Graph 文档类型声明一个或多个相对项目路径的 `.vbgraphcatalog` 文件：
 
 ```json visualbridge-schema=visualbridge-project.schema.json#/properties/documentTypes/items
 {
@@ -80,31 +80,31 @@ A Graph document type declares one or more project-relative `.vbgraphcatalog` fi
 }
 ```
 
-Each node type belongs to the Catalog file that declares it. The registry combines all loaded Catalogs and is the authority for Graph Types, node types, ports, Data Types, properties, defaults, aliases, and cross-Catalog references. A Catalog's required `title` is its display name and the root path for its own nodes. A node's optional `menuPath` extends that root and never repeats it; the node `title` is the final path segment. For example, Catalog `通用`, node path `操作 / 整数`, and node title `加法` produce `通用 / 操作 / 整数 / 加法`. Categories, tags, capability traits, source-code provenance, descriptions, and property editor hints remain searchable metadata. Editor hints affect presentation only; the declared value type remains authoritative.
+每个节点类型属于声明它的 Catalog 文件。注册表合并所有已加载的 Catalog，是 Graph Type、节点类型、端口、Data Type、属性、默认值、别名和跨 Catalog 引用的权威。Catalog 必填的 `title` 是其显示名，也是其自身节点的根路径。节点可选的 `menuPath` 在该根路径上扩展且绝不重复它；节点 `title` 是最后一个路径段。例如，Catalog `通用`、节点路径 `操作 / 整数` 与节点标题 `加法` 生成 `通用 / 操作 / 整数 / 加法`。分类、标签、能力特征、源码来源、描述和属性编辑器提示保持为可搜索的元数据。编辑器提示只影响呈现；声明的值类型仍是权威。
 
-Every Graph Catalog V4 also declares the common top-level `source` state. It may be explicitly `unknown` before Unity integration, or carry current/stale external source SHA-256 metadata. The Host computes the Catalog `contentHash` from actual bytes and exposes both through the read-only Catalog Browser; see [`ProjectCatalogManagement.md`](ProjectCatalogManagement.md).
+每个 Graph Catalog V4 还声明公共的顶层 `source` 状态。在 Unity 接入之前它可以显式为 `unknown`，或者携带最新/过期的外部源 SHA-256 元数据。Host 根据实际字节计算 Catalog 的 `contentHash`，并通过只读的 Catalog Browser 同时暴露两者；参见 [`ProjectCatalogManagement.md`](ProjectCatalogManagement.md)。
 
-VS Code and the current MCP V2 adapter use the same parser, registry, operations, validators and serializer. Catalog files are text contracts and should be committed when editing must work without Unity. The current parser accepts Graph Catalog V4 only; V1-V3 and the former property-level `required` dialect are rejected instead of being silently upgraded. This development baseline intentionally removes incompatible legacy interpretation rather than carrying two field models.
+VS Code 与当前 MCP V2 适配器使用相同的解析器、注册表、Operation、校验器与序列化器。Catalog 文件是文本契约；当编辑必须在没有 Unity 的环境下可用时，应当将其提交入库。当前解析器只接受 Graph Catalog V4；V1-V3 以及旧有的属性级 `required` 方言会被拒绝，而不是被静默升级。这个开发基线有意移除不兼容的遗留解释，而不是同时维护两套字段模型。
 
-Catalog serialization is deterministic: unordered type collections and identity aliases are sorted, JSON object keys in defaults are normalized, and the output ends with a newline. Port, dynamic-group, and property arrays preserve declaration order because that order controls the editor layout. This lets a future Unity exporter regenerate the same file without noisy diffs while retaining C# field and branch order.
+Catalog 序列化是确定性的：无序的类型集合和身份别名会排序，defaults 中 JSON object 的键会规范化，输出以换行符结尾。端口、动态组和属性数组保留声明顺序，因为该顺序控制编辑器布局。这让未来的 Unity 导出器能够重新生成相同的文件而不产生噪声 diff，同时保留 C# 字段与分支顺序。
 
-## Graph Types and instance constraints
+## Graph Type 与实例约束
 
-Each Graph Type has a stable ID and aliases, a `usage` of `root`, `subgraph`, or `any`, `supportedCatalogIds`, directional connection rules, Graph property definitions, allowed-node selectors, direct-node count constraints, initial node templates, and a subgraph policy. Catalog support is the coarse node allowlist. `allowedNodeSelectors`, when present, is a second filter within those Catalogs. A selector may match canonical or aliased node type IDs, any listed tag, and all listed traits; selector dimensions are combined with AND, while the allowed-selector list is OR. Initial nodes and explicitly referenced selector nodes must belong to a supported Catalog.
+每个 Graph Type 拥有稳定 ID 与别名、取值为 `root`、`subgraph` 或 `any` 的 `usage`、`supportedCatalogIds`、方向性连接规则、Graph 属性定义、允许节点选择器、直接节点数量约束、初始节点模板和子图策略。Catalog 支持范围是粗粒度的节点允许清单。`allowedNodeSelectors`（如果存在）是这些 Catalog 之内的第二层过滤。选择器可以匹配规范化或别名的节点类型 ID、任意列出的标签，以及全部列出的特征；选择器各维度之间按 AND 组合，而允许选择器列表之间按 OR 组合。初始节点和被显式引用的选择器节点必须属于受支持的 Catalog。
 
-Count constraints have their own stable IDs and non-negative `minInstances`/`maxInstances`. They count direct typed nodes only and never recurse into child graphs. Entry uniqueness is expressed as a normal trait constraint, for example `traits: ["flow.entry"]` with both bounds set to one. Initial templates must satisfy all minimum constraints so newly created root and embedded graphs start valid. Removing, adding, or replacing nodes may not violate a bound; the node picker also hides types whose maximum has already been reached.
+数量约束有自己的稳定 ID 与非负的 `minInstances`/`maxInstances`。它们只统计直接的类型化节点，绝不递归进子图。入口唯一性用普通的特征约束表达，例如 `traits: ["flow.entry"]` 且上下界都为一。初始模板必须满足所有最小值约束，使新建的根图与内嵌图从一开始就有效。移除、添加或替换节点不得违反边界；节点选择器还会隐藏已达到最大数量的类型。
 
-Graph Type assignment is immutable in the current editor. New documents select a root-compatible type, and typed subgraphs select an embedded-compatible type. Legacy V2 documents remain readable as untyped graphs, but arbitrary type migration is deferred to a future lossless conversion workflow.
+Graph Type 的指派在当前编辑器中不可变。新文档选择一个与根图兼容的类型，类型化子图选择一个与内嵌兼容的类型。遗留的 V2 文档仍可作为无类型图读取，但任意类型迁移推迟到未来的无损转换工作流。
 
-## Typed subgraph calls
+## 带类型的子图调用
 
-A subgraph node may carry its own `nodeTypeId` in addition to `subgraphId`. The node type describes call-site properties, static data ports, dynamic data port groups, and compatible target Graph Types. The child graph remains the authority for `graphTypeId` and public interface ports. The effective call-site ports are the union of the node type's static/dynamic ports and the child interface; identities may not collide.
+子图节点除 `subgraphId` 外还可以携带自己的 `nodeTypeId`。该节点类型描述调用点属性、静态数据端口、动态数据端口组以及兼容的目标 Graph Type。子图仍是 `graphTypeId` 与公开接口端口的权威。生效的调用点端口是节点类型的静态/动态端口与子图接口的并集；身份不得冲突。
 
-Static typed-subgraph flow ports are forbidden. Flow crosses the child boundary through public interfaces, while the call node's static contract represents the old `TSubGraphNode<TData,TGraph>` data fields and ports. Unknown call types preserve their properties, connections, and child navigation.
+禁止静态的类型化子图流程端口。流程通过公开接口跨越子图边界，而调用节点的静态契约表示旧的 `TSubGraphNode<TData,TGraph>` 数据字段与端口。未知的调用类型保留其属性、连接与子图导航。
 
-## Stable dynamic ports
+## 稳定的动态端口
 
-A node type may declare `dynamicPortGroups`. Each group defines the connection contract, item value contract, default value, editor hint, aliases, and optional item limit. A node instance stores its items in `dynamicPorts`:
+节点类型可以声明 `dynamicPortGroups`。每个组定义连接契约、条目值契约、默认值、编辑器提示、别名和可选的条目上限。节点实例把其条目存储在 `dynamicPorts` 中：
 
 ```json visualbridge-schema=visualbridge-graph.schema.json#/$defs/dynamicPort
 {
@@ -115,45 +115,45 @@ A node type may declare `dynamicPortGroups`. Each group defines the connection c
 }
 ```
 
-The item `id` is the actual endpoint `portId` and never changes when items are renamed or reordered. Add, update, remove, and reorder are atomic Graph Operations. Removing an item explicitly removes its connected edges in the same undo unit. Group aliases let a generated Catalog rename its declaration without losing existing items. Safe node replacement requires every dynamic item and connection to remain valid in the target type.
+条目 `id` 就是实际的端点 `portId`，在条目重命名或重排时绝不改变。添加、更新、移除与重排都是原子 Graph Operation。移除条目会在同一撤销单元中显式移除其相连的边。组别名让生成的 Catalog 可以重命名其声明而不丢失既有条目。安全节点替换要求每个动态条目与连接在目标类型中保持有效。
 
-## Safe node replacement
+## 安全的节点替换
 
-Node type is display-only on the canvas. Replacement is available from the node context menu and lists only lossless candidates. A candidate is safe when:
+节点类型在画布上仅用于显示。替换可从节点上下文菜单发起，且只列出无损候选。候选安全的条件是：
 
-- every current property ID exists with a compatible value type;
-- every additional target property has its declared deterministic default;
-- every connected port ID remains present with the same kind and direction;
-- every dynamic port group, item value, item limit, and instance port contract remains compatible;
-- existing data types, cardinality, and all other connection rules remain valid.
-- the target type is allowed by the current Graph Type and the replacement preserves every node-count constraint.
+- 每个现有属性 ID 都存在且值类型兼容；
+- 每个目标额外属性都有其声明的确定性默认值；
+- 每个已连接的端口 ID 仍存在且种类与方向不变；
+- 每个动态端口组、条目值、条目上限与实例端口契约保持兼容；
+- 既有数据类型、基数和所有其他连接规则保持有效。
+- 目标类型为当前 Graph Type 所允许，且替换不破坏任何节点数量约束。
 
-`graph.replaceNodeType` changes only the stable type contract and adds deterministic defaults. It preserves node ID, title, position, properties, and connections and is committed as one VS Code Undo/Redo unit. VisualBridge never silently drops properties or disconnects edges during replacement.
+`graph.replaceNodeType` 只更改稳定的类型契约并添加确定性默认值。它保留节点 ID、标题、位置、属性与连接，并作为一个 VS Code Undo/Redo 单元提交。VisualBridge 绝不在替换过程中静默丢弃属性或断开边。
 
-## Editing transactions and transient state
+## 编辑事务与瞬态
 
-Multi-selection, viewport, MiniMap position, menus, and clipboard contents are editor state and are never serialized into `.vbgraph`. Batch delete, Paste, Duplicate, and connection-created nodes are submitted as ordered Graph Operation batches and receive one final semantic validation before the host creates a single `WorkspaceEdit`; therefore VS Code Undo/Redo treats each gesture as one document edit.
+多选、视口、MiniMap 位置、菜单和剪贴板内容属于编辑器状态，绝不序列化进 `.vbgraph`。批量删除、粘贴、复制和由连接创建的节点会作为有序的 Graph Operation 批次提交，并在宿主创建单个 `WorkspaceEdit` 之前接受一次最终语义校验；因此 VS Code Undo/Redo 把每个手势视为一次文档编辑。
 
-`graph.renameElement` atomically renames one instance `graph`, `node`, `interfacePort`, or `dynamicPort` stable ID. Graph renames update `rootGraphId` and every owning `subgraphId`; node renames update matching edge endpoints; interface ports update both child interface endpoints and the parent subgraph-call endpoints; dynamic ports update endpoints on their owning node. The operation rejects collisions and incomplete owner scope, then runs the same complete Graph validation as every other operation. Catalog type IDs and static Catalog port IDs are not instance elements and are not renamed by this operation.
+`graph.renameElement` 原子地重命名一个实例级的 `graph`、`node`、`interfacePort` 或 `dynamicPort` 稳定 ID。图重命名会更新 `rootGraphId` 与所有拥有的 `subgraphId`；节点重命名会更新匹配的边端点；接口端口重命名会同时更新子图接口端点和父级子图调用端点；动态端口重命名会更新其所属节点上的端点。该 Operation 拒绝冲突与不完整的所有者范围，然后运行与其他所有 Operation 相同的完整 Graph 校验。Catalog 类型 ID 与静态 Catalog 端口 ID 不是实例元素，不会由该 Operation 重命名。
 
-The clipboard V1 payload contains selected atomic nodes and only edges whose two endpoints are in that copied set. Paste assigns fresh stable IDs and remaps its internal endpoints. Singleton nodes required by a Graph Type and embedded subgraphs are excluded until a future payload can preserve ownership and required-instance semantics without ambiguity. Clipboard input is treated as untrusted and rejected unless its format, version, identifiers, JSON values, nodes, and edges are structurally valid.
+剪贴板 V1 载荷包含所选的原子节点，以及两端点都在复制集合内的边。粘贴会分配新的稳定 ID 并重映射其内部端点。Graph Type 要求的单例节点和内嵌子图暂被排除，直到未来的载荷能够无歧义地保留所有权与必需实例语义。剪贴板输入被视为不可信，除非其格式、版本、标识符、JSON 值、节点与边在结构上有效，否则会被拒绝。
 
-## Document lifecycle target contract
+## 文档生命周期目标契约
 
-The clipboard payload is not a whole-document copy contract. Under Document Lifecycle V1, Graph lifecycle actions use the shared [`DocumentLifecycle.md`](DocumentLifecycle.md) service:
+剪贴板载荷不是整文档复制契约。在 Document Lifecycle V1 之下，Graph 生命周期动作使用共享的 [`DocumentLifecycle.md`](DocumentLifecycle.md) 服务：
 
-- Path Move preserves the complete source bytes, `documentId`, every graph/element ID and every reference value.
-- Whole-document Copy requires the caller to submit a complete `stableIdRemap` with the preview request for `documentId`, every Graph, Node, Interface Port, Dynamic Port and Edge ID. The adapter applies it to `rootGraphId`, owning `subgraphId` and every matching edge endpoint. Preview validates and canonicalizes the mapping; apply never generates replacement IDs.
-- Safe Delete computes the complete structural closure. A Node closure includes its dynamic ports, incident edges and any owned subgraph hierarchy; an interface or dynamic port includes its incident edges. A root Graph can only be removed with its Document, and a non-root Graph is removed through its owning subgraph Node.
-- Reference coverage must be complete and no occurrence outside the closure may resolve or possibly resolve to the closure. Graph Type count constraints, subgraph ownership and full Graph validation still apply after the structural delete.
+- 路径移动保留完整的源字节、`documentId`、每个图/元素 ID 和每个 Reference 值。
+- 整文档复制要求调用方在预览请求中为 `documentId`、每个 Graph、Node、Interface Port、Dynamic Port 和 Edge ID 提交完整的 `stableIdRemap`。适配器将其应用到 `rootGraphId`、拥有的 `subgraphId` 以及每个匹配的边端点。预览会校验并规范化该映射；应用绝不生成替换 ID。
+- 安全删除计算完整的结构闭包。Node 闭包包括其动态端口、关联边和任何拥有的子图层级；接口或动态端口包括其关联边。根 Graph 只能随其 Document 一起移除，非根 Graph 通过拥有它的子图 Node 移除。
+- Reference 覆盖必须完整，闭包之外的任何出现都不得解析或可能解析到闭包。结构删除之后，Graph Type 数量约束、子图所有权与完整 Graph 校验仍然适用。
 
-`graph.removeNode`, `graph.removeInterfacePort` and `graph.removeDynamicPort` remain low-level domain operations used by an authorized Lifecycle plan, but public editor/MCP submission outside that context returns `lifecycle.required`. `graph.removeEdge` does not remove a Reference target and remains an ordinary Graph Operation.
+`graph.removeNode`、`graph.removeInterfacePort` 与 `graph.removeDynamicPort` 仍是由经授权的 Lifecycle 计划使用的底层领域 Operation，在此上下文之外的公开编辑器/MCP 提交会返回 `lifecycle.required`。`graph.removeEdge` 不会移除 Reference 目标，仍是普通的 Graph Operation。
 
-Lifecycle Delete identifies a Graph target with `kind: "graph.element"`, `graphId`, `elementKind` and `elementId`; Dynamic Port additionally requires its owning `nodeId`. These are full semantic scopes from the current read result, not display labels. Deleting a complete Graph Document instead uses `target.kind: "document"`.
+Lifecycle Delete 用 `kind: "graph.element"`、`graphId`、`elementKind` 与 `elementId` 标识 Graph 目标；Dynamic Port 还额外要求其所属的 `nodeId`。这些是来自当前读取结果的完整语义范围，不是显示名。删除完整的 Graph 文档则使用 `target.kind: "document"`。
 
-## MCP V2 mapping
+## MCP V2 映射
 
-Graph uses the unified MCP tools rather than Graph-specific top-level tools. `visualbridge_catalog` reads/searches Data Type, Graph Type and Node Type definitions; Node Type search accepts `selector.graphTypeId` and `selector.includeSubgraphNodeTypes`. `visualbridge_document` reads/searches/validates one declared Graph; instance search accepts `selector.kind` with `graph`, `node`, `port`, `edge`, `field` or `all`. `visualbridge_apply_operations` accepts an ordered non-empty GraphOperation array and the exact `baseHash` returned by read/validate. A stale hash or active Project Transaction returns `conflict`; parser, operation or newly introduced reference errors return `invalid` without modifying bytes. Persisted writes use the shared recoverable Project Transaction described in `VisualBridgeMcp.md`.
+Graph 使用统一的 MCP 工具，而不是 Graph 专属的顶层工具。`visualbridge_catalog` 读取/搜索 Data Type、Graph Type 与 Node Type 定义；Node Type 搜索接受 `selector.graphTypeId` 与 `selector.includeSubgraphNodeTypes`。`visualbridge_document` 读取/搜索/校验一个已声明的 Graph；实例搜索接受取值为 `graph`、`node`、`port`、`edge`、`field` 或 `all` 的 `selector.kind`。`visualbridge_apply_operations` 接受一个有序非空的 GraphOperation 数组，以及读取/校验返回的确切 `baseHash`。过期的 hash 或进行中的 Project Transaction 返回 `conflict`；解析器、Operation 或新引入的 Reference 错误返回 `invalid` 且不修改字节。持久化写入使用 `VisualBridgeMcp.md` 所述的共享可恢复 Project Transaction。
 
 GraphOperation 的结构化字段如下；`node`、`subgraph`、`edge` 和 `port` 必须使用本文对应 Document 结构的完整对象，不能只传显示名：
 
@@ -194,8 +194,8 @@ Operation 中复用的完整对象结构如下。所有 ID 都是稳定 ID；`no
 
 `properties` 是 JSON object，`dynamicPorts`、`interfacePorts`、`nodes` 和 `edges` 即使为空也必须显式传数组。`graph.addSubgraph` 的 `node.subgraphId` 必须等于 `subgraph.id`，并且两个对象在同一 Operation 中原子加入。
 
-## Automated semantic baseline
+## 自动化语义基线
 
-`TestData/GraphSemanticProject` is the checked-in Graph semantic fixture shared by Core tests and the stdio MCP integration test. Its three Catalogs and one Graph cover Registry identity and aliases, supported-Catalog and selector filtering, directional flow/data cardinality, `int`/`float`/`any`/`stringFromAny` compatibility, both `List<T>` port modes, dynamic subgraph interface locking, declarative references, lossless node replacement, stable element rename propagation, atomic operation batches, and deterministic Graph/Catalog serialization.
+`TestData/GraphSemanticProject` 是签入仓库的 Graph 语义测试夹具，由 Core 测试与 stdio MCP 集成测试共享。它的三个 Catalog 和一个 Graph 覆盖 Registry 身份与别名、受支持 Catalog 与选择器过滤、方向性的流程/数据基数、`int`/`float`/`any`/`stringFromAny` 兼容性、两种 `List<T>` 端口模式、动态子图接口锁定、声明式 Reference、无损节点替换、稳定的元素重命名传播、原子 Operation 批次以及确定性的 Graph/Catalog 序列化。
 
-The Graph package uses Node's built-in test runner and contains no Unity tests. `npm test` runs this semantic suite and then starts the real MCP stdio server against a temporary copy of the same Authoring Project. The integration test proves that stale hashes are rejected without changing the file, valid GraphOperation batches are atomically persisted, and a failed later operation leaves the complete batch unapplied.
+Graph 包使用 Node 内置的测试运行器，不包含 Unity 测试。`npm test` 先运行这套语义测试套件，然后针对同一 Authoring Project 的临时副本启动真实的 MCP stdio 服务器。集成测试证明：过期的 hash 会被拒绝且不修改文件，有效的 GraphOperation 批次会被原子持久化，而后续某个 Operation 失败时整个批次都不会被应用。

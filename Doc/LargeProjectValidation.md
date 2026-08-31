@@ -18,7 +18,7 @@ flowchart LR
   F --> B[JSON and Markdown observation report]
 ```
 
-## Profiles
+## 语料 profile
 
 - `correctness`：自动化测试使用。生成 36 个 JSON 语义文档、2 个 Table 分表和 100 行数据，覆盖 8 个 Catalog 文件。
 - `benchmark`：人工基准使用。生成 3,000 个 JSON 语义文档、10 个 Table 分表和 50,000 行数据。

@@ -8,6 +8,8 @@
 - [Authoring 使用手册](AuthoringUserGuide.md)：Graph、Entity、Structured、Table、Document Browser、Lifecycle、Reference/Refactor、Project Settings、Catalog Browser、冲突恢复和 Restricted Mode。
 - [项目接入与运维手册](IntegrationGuide.md)：Catalog、Document Type、任意扩展名、Provider、MCP、锁与 Hash、日志、授权和故障恢复。
 - [VS Code Extension README](../Tools/VSCodeExtension/README.md)：22 个生产 Command ID、4 个 Custom Editor viewType、2 个 View ID、安装和 Host 自动化。
+- [Unity 接入手册](UnityIntegrationManual.md)：环境与兼容矩阵、Integration Profile 配置、Catalog Export、Structured Compile、日志、冲突恢复和 Editor Bridge 使用。
+- [Unity Package README](../Packages/com.kyle.visualbridge/README.md)：`com.kyle.visualbridge` 的程序集边界、metadata 标注、菜单/batch 入口和边界说明。
 - [Pre-Unity Authoring Sample](../Samples/PreUnityAuthoring/README.md)：四类 Authoring 文档、四类 Catalog 和可选 Provider V2 的维护样例。
 
 ## 总体架构与共享平台

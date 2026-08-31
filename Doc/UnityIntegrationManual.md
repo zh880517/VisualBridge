@@ -1,0 +1,157 @@
+# VisualBridge Unity 接入手册
+
+## 1. 文档定位
+
+本手册面向在 Unity 工程中使用 VisualBridge 的开发者，覆盖环境要求、Integration Profile 配置、Structured Catalog Export、Structured Compile、日志、冲突恢复与 Editor Bridge 使用。设计与冻结决策以 [Unity Editor 接入架构](UnityIntegrationArchitecture.md)为准；任务顺序与验证门槛见 [Unity Editor 接入任务清单](UnityIntegrationRoadmap.md)。当前已落地范围为 Structured、offline、Editor-only 切片与最小 Editor Bridge。
+
+## 2. 系统要求与兼容矩阵
+
+| 组件 | 固定版本 | 说明 |
+| --- | --- | --- |
+| Node.js | `22.22.1` | 由 `.nvmrc`、`engines.node` 与 `packageManager` 声明；`.npmrc` 开启 `engine-strict`。 |
+| npm | `10.9.4` | 与 Node 版本一起锁定。 |
+| VS Code | `1.105.1` | 扩展 `engines.vscode` 与测试宿主 `@vscode/test-electron` 固定。 |
+| VisualBridge VSIX | `0.1.0` | 身份 `kyl.visualbridge`，私有 `UNLICENSED`，不经 Marketplace 分发。 |
+| Unity Editor | `6000.3.10f1` | 由 `UnityProject/ProjectSettings/ProjectVersion.txt` 固定；Package 声明 `unity: 6000.3`。 |
+| `com.kyle.visualbridge` | `0.1.0` | Unity 集成包；依赖 `com.unity.nuget.newtonsoft-json` `3.2.2`。 |
+| Protocol 契约 | `manifestVersion 1` | `protocolContracts 1`、`graphDocument 3`、`graphCatalog 4`、`entityDocument/Catalog 1`、`structuredDocument/Catalog 1`、`tableCatalog 1`、`unityIntegrationProfile 1`、`editorBridge 1`、`documentLifecyclePlan 1`。 |
+| Editor Bridge 协议 | `protocolVersion 1` | 能力集固定 `open` / `reveal`；Schema 为 `visualbridge-editor-bridge.schema.json`。 |
+| Structured Compiler | V1 | 输出根固定 `Library/VisualBridge/Compiled`，内部 Editor 格式。 |
+
+升级约束：改变 Node、VS Code、Unity Editor 或 Newtonsoft 版本，或声明更低最低版本前，必须重新执行[完整验证门槛](#10-验证门槛命令)；Protocol 版本变更属于公开契约变更，须先更新 Schema/manifest 并重新生成 TypeScript/C# 契约。C# 契约只从 Schema 生成，Unity 侧消费生成产物，不引用 TypeScript Core。
+
+## 3. 安装
+
+1. 构建并安装 VSIX（隔离验证后安装到当前配置）：
+
+```powershell
+nvm use 22.22.1
+npm ci
+npm run package:vscode
+npm run test:vscode:cli
+code --install-extension .\Tools\VSCodeExtension\artifacts\visualbridge.vsix --force
+```
+
+2. Unity 侧：本仓库开发宿主即 `UnityProject/`，Package Manager 直接解析本地 `Packages/com.kyle.visualbridge`。第三方工程以嵌入方式安装（复制整个 `Packages/com.kyle.visualbridge` 目录），并按第 4 节配置 Profile。
+3. 打开 VS Code 时使用包含 Authoring Project（`VisualBridge.project.vbjson`）的工作区；样例见 [Pre-Unity Authoring 样例](../Samples/PreUnityAuthoring/README.md)。
+
+## 4. Integration Profile 配置
+
+Profile 固定为 `ProjectSettings/VisualBridgeIntegration.json`，V1 结构如下（示例为开发宿主实际配置）：
+
+```text
+{
+  "formatVersion": 1,
+  "authoringProject": "VisualBridgeAuthoring/VisualBridge.project.vbjson",
+  "catalogExports": [
+    {
+      "catalogId": "sample.unity.gameplay",
+      "title": "Unity Gameplay Settings",
+      "output": "VisualBridgeAuthoring/Catalog/Gameplay.vbstructuredcatalog",
+      "types": ["VisualBridge.Sample.GameSettings, Assembly-CSharp"]
+    }
+  ],
+  "compileOutputRoot": "Library/VisualBridge/Compiled"
+}
+```
+
+约束与对应错误码：
+
+- `formatVersion` 必须为 `1`（`profile.unsupportedVersion`）。
+- V1 只关联一个 Unity Project 内的 Authoring Project；路径从 Unity Project root 解析，拒绝绝对路径、冒号、反斜杠、空/`.`/`..` segment 与盘符别名（`profile.invalidPath`），解析后离开 project root 报 `profile.pathOutsideProject`，祖先段 symlink/reparse-point 报 `profile.symlinkForbidden`。
+- `catalogExports[].output` 必须以 `.vbstructuredcatalog` 结尾；catalogId、输出路径与物理同一文件均不得重复（`profile.duplicateCatalogId` / `profile.duplicateOutput` / `profile.duplicatePhysicalOutput`）。
+- `compileOutputRoot` 在 Compiler V1 必须恰为 `Library/VisualBridge/Compiled`（`compile.outputRootMismatch`）。
+- JSON 必须严格 UTF-8，不允许注释、尾随内容或重复键（`profile.invalidJson`）。
+
+修改 Profile 后无需额外注册：Export/Compile 每次从 Profile 显式解析，不使用进程级缓存或全局状态。
+
+## 5. Structured Catalog Export
+
+C# 类型通过 `VisualBridge.Runtime` 的 attribute 显式标注（`VisualBridgeStructuredCatalog`、`VisualBridgeStructuredConfig`、`VisualBridgeField`，完整字段见 [Package README](../Packages/com.kyle.visualbridge/README.md)）。导出入口：
+
+- 菜单：**Tools / VisualBridge / Generate Structured Catalogs**
+- batchmode：`VisualBridge.Editor.VisualBridgeStructuredCatalogBatch.Generate` / `.Check`
+
+语义：
+
+- **Generate** 从当前程序集快照确定性重写 Catalog 文件（`.vbstructuredcatalog`），并提交 `sourceHash`；不执行配置类型构造函数。
+- **Check** 只读对比，内容漂移时退出码 `2`；执行失败 `1`；一致 `0`。菜单与 batch 复用同一 Exporter 服务。
+- 常见错误：`catalog.typeNotFound`（Profile 引用的类型不存在）、`catalog.identityConflict`（稳定 ID 冲突）、`catalog.invalidDefault` / `catalog.invalidReference`（metadata 声明不一致）、`catalog.staticFieldUnsupported`、`catalog.polymorphismUnsupported`。
+
+Catalog 提交进版本库后由 VS Code 侧作为来源消费；Exporter 是 Catalog 的唯一生成方，禁止手工编辑。
+
+## 6. Structured Compile
+
+输入是 Authoring Project（Project File + Structured 文档）+ 已提交 Catalog + Integration Profile。入口：
+
+- 菜单：**Tools / VisualBridge / Generate Structured Compiled Data**、**Check Structured Compiled Data**
+- batchmode：`VisualBridge.Editor.VisualBridgeStructuredCompilerBatch.Generate` / `.Check`（退出码 `0`/`1`/`2` 同上，Check 把陈旧输出也计为 drift）
+
+输出布局（`Library/VisualBridge/Compiled`，内部 Editor 格式、可随时删除重建）：
+
+```text
+manifest.json
+documents/<projectId>/<documentTypeId>/<documentId>.vbcompiled.json
+mappings/<projectId>/<documentTypeId>/<documentId>.vbsource.json
+```
+
+行为与恢复语义：
+
+- 编译按 Document Type 唯一路由；产物、mapping 与 manifest 以原子方式提交，失败不破坏上次有效产物，残留备份保留在目标旁供人工恢复。
+- `compile.catalogDrift` 表示 Catalog 与程序集快照不一致，先重跑 Catalog Generate；`compile.inputChanged` 表示编译期间输入变化，直接重跑即可；`compile.outputCollision` / `compile.documentOutsideRoot` 属于配置错误，检查 Profile 与 Project File。
+- Compiler 不修改 Authoring Project/File/Document；所有写操作只发生在编译输出根内。
+
+## 7. Editor Bridge 使用（open/reveal）
+
+前置条件：VS Code 打开包含 Authoring Project 的工作区并安装 VSIX；扩展激活后 Bridge 服务器自动启动（本机双端点：命名管道 + 回环 TCP，每秒心跳写发现记录）。
+
+Unity 侧操作：
+
+1. 菜单 **Tools / VisualBridge / Editor Bridge / Open in VS Code…** 打开 Bridge 窗口。
+2. **Refresh** 枚举发现记录：心跳超过 5 秒或进程已死的窗口被跳过并显示原因。
+3. 在列表中**显式选择**一个窗口并 **Connect**（完成 token 握手与 generation 校验）。多个窗口匹配时报 `bridge.windowAmbiguous`，绝不按最近连接猜测。
+4. 输入文档相对路径发送 **Open document**，或输入 Reference 值发送 **Reveal reference**；响应与日志显示在窗口内。
+
+重试与错误：`OpenDocumentWithRetry` / `RevealReferenceWithRetry` 内置重新发现与重连退避（1 秒起、指数翻倍、上限 30 秒），适用于 VS Code 窗口仍在启动的场景。典型错误码：`bridge.invalidToken`（token 不符，重新发现）、`bridge.staleGeneration`（服务端重启过，重新 Connect）、`bridge.documentUnresolved` / `bridge.documentAmbiguous`（路径或引用无唯一解析）、`bridge.protocolVersionMismatch` / `bridge.capabilityMissing`（版本或能力不匹配，升级对端）。
+
+边界：Bridge 只发送 open/reveal 请求；不写 Authoring/Catalog、不触发 Export/Compile，也不包含任何 Runtime、Debug 或 Player 消息。端到端验证命令为 `npm run test:bridge-e2e`（同时拉起真实 Unity Editor 与隔离 Extension Host）。
+
+## 8. 日志与诊断
+
+- Unity 菜单操作：输出进入 Editor.log（`%LOCALAPPDATA%\Unity\Editor\Editor.log`）；Bridge 窗口内另有独立日志面板。
+- batchmode：必须显式 `-logFile`；退出码之外要检查日志中的编译/导入结果与未处理异常。
+- EditMode 测试：`-testResults` 写出的 XML 需审计，不只看退出码。
+- VS Code 侧：Project 刷新、事务与 Bridge 相关日志写入 **Output / VisualBridge**。
+
+## 9. 冲突恢复
+
+| 场景 | 现象 | 恢复 |
+| --- | --- | --- |
+| 编译失败 | 退出码 `1`，日志含 `compile.*` | 上次有效产物未被破坏；修复原因后重跑 Generate。 |
+| Catalog drift | Catalog Check 退出码 `2` | C# metadata 已变更，重跑 Catalog Generate 并提交新 Catalog。 |
+| Authoring 文档外部修改 | VS Code 编辑器提示外部修改冲突 | 按 [Authoring 使用手册](AuthoringUserGuide.md)的冲突恢复流程处理；Unity 侧下次编译自动读取新内容。 |
+| Bridge 记录陈旧 | 窗口列表为空或报 stale | VS Code 窗口仍在则等待下一次心跳；已关闭则重新打开工作区。 |
+| 编译产物损坏 | 任意 `compile.*` | 删除 `Library/VisualBridge/Compiled` 整目录后重跑 Generate（产物为纯派生数据）。 |
+
+## 10. 验证门槛命令
+
+```powershell
+$unityEditor = 'C:\Program Files\Unity 6000.3.10f1\Editor\Unity.exe'
+$unityProject = (Resolve-Path .\UnityProject).Path
+
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -logFile "$env:TEMP\visualbridge-refresh.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeStructuredCatalogBatch.Generate -logFile "$env:TEMP\visualbridge-catalog-generate.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeStructuredCatalogBatch.Check -logFile "$env:TEMP\visualbridge-catalog-check.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeStructuredCompilerBatch.Generate -logFile "$env:TEMP\visualbridge-compile-generate.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeStructuredCompilerBatch.Check -logFile "$env:TEMP\visualbridge-compile-check.log"
+& $unityEditor -batchmode -nographics -runTests -testPlatform EditMode -projectPath $unityProject -testResults "$env:TEMP\visualbridge-editmode.xml" -logFile "$env:TEMP\visualbridge-editmode.log"
+```
+
+Node 侧配套门槛：`npm run check`、`npm test`、`npm run build`、`npm run package:vscode`、`npm run test:vscode:host`、`npm run test:vscode:cli`、`npm run check:docs`、`npm run test:bridge-e2e`，以及 `dotnet build .\UnityProject\Assembly-CSharp-Editor.csproj` 快速编译检查。完整矩阵与发布边界见 [Release Quality](ReleaseQuality.md)。
+
+## 11. 已知限制
+
+- Unity 侧仅 Structured 领域；Graph/Entity/Table 的 Export/Compile 与 Runtime/Debug/Player 接入按 [Unity 领域扩展与 Runtime 接入任务清单](UnityDomainAndRuntimeRoadmap.md)推进。
+- Bridge 为 V1 最小范围（open/reveal），多窗口必须显式选择。
+- `VisualBridge.Runtime` 只是 metadata marker，不提供运行时加载能力。
+- 本仓库验证环境若使用非声明 Node 版本（如 25.x），`npm ci` 会因 `engine-strict` 失败；正式 CI 必须使用 22.22.1。
