@@ -186,6 +186,8 @@ export namespace VisualBridgeMcpTools {
   export type VisualbridgeRefactorReferenceOutput = ToolOutput;
   export type VisualbridgeReferencesInput = { readonly "action": "search" | "resolve"; readonly "allowMissing"?: boolean; readonly "cursor"?: VisualBridgePrimitives.Cursor; readonly "kind": VisualBridgePrimitives.StableId; readonly "limit"?: VisualBridgePrimitives.PageLimit; readonly "projectFile": VisualBridgePrimitives.NormalizedPath; readonly "query"?: VisualBridgePrimitives.Query; readonly "target"?: VisualBridgePrimitives.JsonObject; readonly "value"?: VisualBridgePrimitives.ReferenceValue };
   export type VisualbridgeReferencesOutput = ToolOutput;
+  export type VisualbridgeRuntimeInput = { readonly "action": "listInstances" | "getSnapshot" | "getDocumentSources"; readonly "documentTypeIds"?: readonly VisualBridgePrimitives.StableId[]; readonly "instanceId"?: string };
+  export type VisualbridgeRuntimeOutput = ToolOutput;
 }
 
 // 来源：Protocol/Schema/visualbridge-primitives.schema.json

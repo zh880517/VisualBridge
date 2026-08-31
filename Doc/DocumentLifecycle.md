@@ -274,6 +274,6 @@ Lifecycle 成功后必须清除受影响 Reference 缓存、刷新 Workspace Doc
 
 Document Browser、各领域编辑器和 MCP 以同一个 Core `DocumentLifecycleService` 的规范化、canonical payload 与 apply 比较为边界，并复用领域 Adapter。MCP 已提供单一 `visualbridge_document_lifecycle` 工具，只有 `preview` 和 `apply` 两个 action；具体操作由 `operation.kind` 判别。它不把路径修改伪装成 Document Operation，也不复制 Reference/Codec/Transaction 规则。
 
-当前 MCP V2 共七个工具，Lifecycle Schema、四领域 Adapter、Project Transaction、stdio 垂直切片、VS Code Browser/Editor 入口和跨宿主确定性回归均已交付，不保留按 editor 拆分的兼容别名。
+当前 MCP V2 共八个工具，Lifecycle Schema、四领域 Adapter、Project Transaction、stdio 垂直切片、VS Code Browser/Editor 入口和跨宿主确定性回归均已交付，不保留按 editor 拆分的兼容别名。
 
 VS Code 用户从 Document Browser 发起文档级 Copy、Move 或 Safe Delete；Graph、Entity 和 Table 领域编辑器只从具体 Node/Port/Component/Row 入口发起其拥有的元素级 Safe Delete，Structured 没有可单独删除的内部目标。Host 先显示 preview 的来源、目标、引用影响、blocker 与完整物理文件范围；只有用户确认后才 apply。若编辑器有未保存内容、preview 已过期或发生外部修改，Host 保持源文件不变并要求用户保存/还原、刷新后重新预览。日常操作步骤与故障处理见 [`AuthoringUserGuide.md`](AuthoringUserGuide.md)。

@@ -155,12 +155,27 @@
         }
       ]
     },
+    "visualbridge_runtime.input": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": { "enum": ["listInstances", "getSnapshot", "getDocumentSources"] },
+        "instanceId": { "type": "string", "pattern": "^(editor|player)-[0-9]+$" },
+        "documentTypeIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "visualbridge-primitives.schema.json#/$defs/stableId" }
+        }
+      },
+      "additionalProperties": false
+    },
     "visualbridge_project.output": { "$ref": "#/$defs/toolOutput" },
     "visualbridge_catalog.output": { "$ref": "#/$defs/toolOutput" },
     "visualbridge_document.output": { "$ref": "#/$defs/toolOutput" },
     "visualbridge_apply_operations.output": { "$ref": "#/$defs/toolOutput" },
     "visualbridge_references.output": { "$ref": "#/$defs/toolOutput" },
     "visualbridge_refactor_reference.output": { "$ref": "#/$defs/toolOutput" },
-    "visualbridge_document_lifecycle.output": { "$ref": "#/$defs/toolOutput" }
+    "visualbridge_document_lifecycle.output": { "$ref": "#/$defs/toolOutput" },
+    "visualbridge_runtime.output": { "$ref": "#/$defs/toolOutput" }
   }
 }

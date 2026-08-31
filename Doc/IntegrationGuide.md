@@ -86,7 +86,7 @@ VS Code 只有在本地文件工作区已信任时启动 Project 声明的入口
 
 ## 7. MCP 接入
 
-构建和启动方式见 [`VisualBridgeMcp.md`](VisualBridgeMcp.md)。MCP 是 stdio Server，不是 CLI；当前固定七个工具：Project、Catalog、Document、Apply Operations、References、Reference Refactor、Document Lifecycle。
+构建和启动方式见 [`VisualBridgeMcp.md`](VisualBridgeMcp.md)。MCP 是 stdio Server，不是 CLI；当前固定八个工具：Project、Catalog、Document、Apply Operations、References、Reference Refactor、Document Lifecycle 和 Runtime 检查（`visualbridge_runtime`）。
 
 ```mermaid
 sequenceDiagram

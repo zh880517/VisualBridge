@@ -54,7 +54,7 @@ if (errors.length > 0) {
   throw new Error(`Documentation contract check failed with ${errors.length} issue(s):\n${errors.map((error) => `- ${error}`).join("\n")}`);
 }
 
-console.log(`Checked ${documents.size} Markdown files, relative links/GitHub anchors, Mermaid and JSON fences, Doc coverage, 22 VS Code commands, 4 custom editors, 2 views, and 7 MCP tools.`);
+console.log(`Checked ${documents.size} Markdown files, relative links/GitHub anchors, Mermaid and JSON fences, Doc coverage, 22 VS Code commands, 4 custom editors, 2 views, and 8 MCP tools.`);
 
 function checkRequiredEntrypoints(allDocuments) {
   for (const entrypoint of [
@@ -516,7 +516,7 @@ async function checkMcpSurface(allDocuments) {
   const registered = [...serverSource.matchAll(/registerTool\(\s*["'](visualbridge_[a-z_]+)["']/gsu)].map((match) => match[1]);
   const inputs = Object.keys(schema.$defs ?? {}).filter((name) => name.endsWith(".input")).map((name) => name.slice(0, -6));
   const outputs = Object.keys(schema.$defs ?? {}).filter((name) => name.endsWith(".output")).map((name) => name.slice(0, -7));
-  if (manifest.mcpTools?.length !== 7) fail(`Protocol manifest must register 7 MCP tools; found ${manifest.mcpTools?.length ?? 0}.`);
+  if (manifest.mcpTools?.length !== 8) fail(`Protocol manifest must register 8 MCP tools; found ${manifest.mcpTools?.length ?? 0}.`);
   assertSameSet(registered, manifest.mcpTools ?? [], "MCP runtime/manifest tools");
   assertSameSet(inputs, manifest.mcpTools ?? [], "MCP input Schema/manifest tools");
   assertSameSet(outputs, manifest.mcpTools ?? [], "MCP output Schema/manifest tools");

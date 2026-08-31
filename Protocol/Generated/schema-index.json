@@ -172,7 +172,7 @@
     {
       "file": "Schema/visualbridge-mcp-tools.schema.json",
       "id": "https://visualbridge.dev/schema/visualbridge-mcp-tools.schema.json",
-      "sha256": "1cdedefa725bed70bdcac6d76d92b4f8a7d5b79701b089bead09a1c7ac092aba",
+      "sha256": "d4fd045458aaf620f18624d319d61d47a915cfbf8c94cb2ba9b54d528ecf8cb4",
       "definitions": [
         "mcpLifecycleCreateOperation",
         "mcpLifecycleDeleteTarget",
@@ -194,7 +194,9 @@
         "visualbridge_refactor_reference.input",
         "visualbridge_refactor_reference.output",
         "visualbridge_references.input",
-        "visualbridge_references.output"
+        "visualbridge_references.output",
+        "visualbridge_runtime.input",
+        "visualbridge_runtime.output"
       ]
     },
     {

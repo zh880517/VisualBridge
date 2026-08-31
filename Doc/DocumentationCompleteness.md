@@ -40,7 +40,7 @@
 - 校验机器标记的 JSON 示例以及固定样例的 JSON Schema 与正式产品 Parser；
 - 将文档中的 npm 命令与实际 package scripts 对照；
 - 将 VS Code 生产 Command ID、Custom Editor、View、activation 和 JSON validation 与 extension manifest / runtime 对照；
-- 将七个 MCP Tool 与正式 Schema、contract manifest 和 live `tools/list` 对照。
+- 将八个 MCP Tool 与正式 Schema、contract manifest 和 live `tools/list` 对照。
 
 完整发布还必须执行 `npm run check`、`npm test`、`npm run build`、`npm run package:vscode`、打包 VSIX 的真实 CLI 激活、依赖审计和 `git diff --check`。文档检查不能替代产品测试，产品测试也不能替代文档检查。
 

@@ -19,6 +19,7 @@ import { McpProjectProviderService } from "./projectProviderService.js";
 import { VisualBridgeMcpError, VisualBridgeWorkspace } from "./projectWorkspace.js";
 import { ReferenceRefactorService } from "./refactorService.js";
 import { VisualBridgeReferenceService, referenceDefinition } from "./referenceService.js";
+import { RuntimeService } from "./runtimeService.js";
 import { StructuredService } from "./structuredService.js";
 import { TableService } from "./tableService.js";
 
@@ -39,6 +40,7 @@ const entityService = new EntityService(workspace, referenceService);
 const structuredService = new StructuredService(workspace, referenceService);
 const refactorService = new ReferenceRefactorService(workspace, referenceService, tableService);
 const lifecycleService = new DocumentLifecycleService(workspace, referenceService, tableService);
+const runtimeService = new RuntimeService(workspace);
 const adapters = new McpDocumentAdapterRegistry([
   {
     editor: "entity",
@@ -281,6 +283,29 @@ function createServer(): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
     },
     async (request) => handle(() => lifecycleService.execute(request as DocumentLifecycleHostRequest)),
+  );
+
+  server.registerTool(
+    "visualbridge_runtime",
+    {
+      title: "Inspect VisualBridge Runtime instances",
+      description:
+        "Read-only inspection of local Unity Runtime instances: lists discovery records (no connection), reads a runtime snapshot, or acquires a short-lived debug lease to read document source mappings with workspace drift. Each call uses an independent connection and releases its lease on disconnect.",
+      inputSchema: runtimeInputSchema,
+      outputSchema: toolOutputSchema,
+      annotations: { readOnlyHint: true },
+    },
+    async ({ action, instanceId, documentTypeIds }) => handle(async () => {
+      if (action === "listInstances") {
+        return { instances: await runtimeService.listInstances() };
+      }
+      if (action === "getSnapshot") {
+        const documents = await runtimeService.getSnapshot(instanceId!, documentTypeIds);
+        return { instanceId: instanceId!, documents };
+      }
+      const sources = await runtimeService.getDocumentSources(instanceId!);
+      return { instanceId: instanceId!, sources };
+    }),
   );
 
   return server;
@@ -548,6 +573,23 @@ const documentLifecycleInputSchema = z.discriminatedUnion("action", [
   documentLifecyclePreviewInputSchema,
   documentLifecycleApplyInputSchema,
 ]);
+
+const runtimeInputSchema = z.object({
+  action: z.enum(["listInstances", "getSnapshot", "getDocumentSources"]),
+  instanceId: z.string().regex(/^(editor|player)-[0-9]+$/).optional(),
+  documentTypeIds: z.array(stableId).min(1).optional(),
+}).strict().superRefine((value, context) => {
+  // 跨字段条件约束只在运行时生效：live JSON Schema 不暴露，两边保持一致。
+  if (value.action !== "listInstances" && value.instanceId === undefined) {
+    context.addIssue({ code: "custom", path: ["instanceId"], message: `${value.action} requires instanceId.` });
+  }
+  if (value.action !== "getSnapshot" && value.documentTypeIds !== undefined) {
+    context.addIssue({ code: "custom", path: ["documentTypeIds"], message: "Only getSnapshot accepts documentTypeIds." });
+  }
+  if (value.documentTypeIds !== undefined && new Set(value.documentTypeIds).size !== value.documentTypeIds.length) {
+    context.addIssue({ code: "custom", path: ["documentTypeIds"], message: "documentTypeIds must be unique." });
+  }
+});
 
 async function handle(action: () => Promise<Record<string, unknown>>) {
   try {

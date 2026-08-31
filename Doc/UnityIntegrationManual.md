@@ -132,6 +132,7 @@ Table 是纯消费方：Unity 侧没有 Table Exporter，catalog（`.vbtablecata
 - 调试语义（VB-UX-10）：`acquireLease`/`releaseLease` 管理单控制者租约（绑定连接、断开自动释放、他人持有时 `runtime.leaseDenied`）；`getDocumentSources`（需持租约）返回每个运行中文档的 Authoring 源路径与 SHA-256（structured/entity/graph 取产物 `inputs.document`，table 取其 sourceMapping 的 `sources[]`）；VS Code 侧对照工作区当前文档字节检测漂移——漂移必须显式呈现，防止把新 Authoring 身份映射到旧 Runtime 数据。断点/调用栈消息按「不以占位 Schema 伪装成已完成能力」原则未进入协议，待真实执行运行时出现再冻结。
 - 菜单：**Tools / VisualBridge/Runtime Bridge/Start in Play Mode**、**Status**。E2E：`npm run test:runtime-e2e`（batchmode Play + 隔离 Extension Host，覆盖发现/快照/事件全链路）。
 - DAP 检查会话：VS Code 调试 UI 以 `visualbridge-runtime` 类型 attach 到 Runtime 实例（attach 时持调试租约），变量树展示运行时快照与 `__sourcePath`/`__sourceDrifted`；断点不受支持（只检查会话，见架构文档 §18.3/18.5）。
+- MCP 检查工具：stdio MCP Server 暴露只读的 `visualbridge_runtime` 工具（`listInstances` / `getSnapshot` / `getDocumentSources`），漂移由 MCP 侧对照工作区 Authoring 字节计算；每次调用独立连接、断开即释放租约，与 DAP 检查会话并存（并发时后来者得到 `runtime.leaseDenied`）。
 
 ## 6. Structured Compile
 

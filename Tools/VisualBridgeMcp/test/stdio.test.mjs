@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import net from "node:net";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -19,7 +20,7 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const repositoryRoot = path.resolve(packageRoot, "../..");
 const serverPath = path.join(packageRoot, "dist", "server.js");
 
-test("MCP V2 exposes seven stable tools and routes Graph semantics with real cross-process conflicts", async () => {
+test("MCP V2 exposes eight stable tools and routes Graph semantics with real cross-process conflicts", async () => {
   await withFixture("GraphSemanticProject", async ({ temporaryRoot, projectRoot, client, stderr }) => {
     const listed = await client.listTools();
     assert.deepEqual(
@@ -32,6 +33,7 @@ test("MCP V2 exposes seven stable tools and routes Graph semantics with real cro
         "visualbridge_project",
         "visualbridge_refactor_reference",
         "visualbridge_references",
+        "visualbridge_runtime",
       ],
     );
     for (const tool of listed.tools) {
@@ -320,6 +322,143 @@ test("MCP V2 exposes seven stable tools and routes Graph semantics with real cro
     assert.equal(invalidRead.valid, false);
     assert.ok(invalidRead.diagnostics.some((diagnostic) => diagnostic.severity === "error"));
     assert.equal(stderr(), "", stderr());
+  });
+});
+
+test("MCP runtime tool inspects a live Runtime instance and releases its debug lease per call", async () => {
+  await withFixture("GraphSemanticProject", async ({ temporaryRoot, projectRoot, stderr }) => {
+    const discoveryDirectory = await mkdtemp(path.join(tmpdir(), "visualbridge-runtime-mcp-"));
+    const instanceId = `editor-${process.pid}`;
+    const token = "0123456789abcdef0123456789abcdef0123456789abcdef";
+    const recordPath = path.join(discoveryDirectory, `${instanceId}.json`);
+    const graphSourcePath = "Graph/SemanticSample.vbgraph";
+    const graphBytes = await readFile(path.join(projectRoot, "Graph", "SemanticSample.vbgraph"));
+    const documents = [
+      { documentTypeId: "game.graph", documentId: "graph.sample", kind: "visualbridge.graph.compiled", data: { title: "Sample" } },
+      { documentTypeId: "game.table", documentId: "table.skills", kind: "visualbridge.table.compiled", data: { rows: 2 } },
+    ];
+    const sources = [
+      { documentTypeId: "game.graph", documentId: "graph.sample", sourcePath: graphSourcePath, sourceSha256: hash(graphBytes) },
+      { documentTypeId: "game.graph", documentId: "graph.drifted", sourcePath: graphSourcePath, sourceSha256: "0".repeat(64) },
+      { documentTypeId: "game.table", documentId: "table.missing", sourcePath: "Tables/Missing.skillstable", sourceSha256: "1".repeat(64) },
+    ];
+    const runtime = await startFakeRuntime({ instanceId, token, documents, sources });
+    const writeRecord = async () => {
+      await writeFile(recordPath, `${JSON.stringify({
+        formatVersion: 1,
+        protocolVersion: 1,
+        coreVersion: 1,
+        instanceId,
+        kind: "editor-play",
+        capabilities: ["snapshot", "events", "lease", "sources"],
+        tcpPort: runtime.port,
+        token,
+        pid: process.pid,
+        generation: 1,
+        startedAt: runtime.startedAt,
+      })}\n`, "utf8");
+    };
+    await writeRecord();
+    // 心跳：每秒 touch 记录 mtime，避免测试期间被判陈旧。
+    const heartbeat = setInterval(() => {
+      const now = new Date();
+      void utimes(recordPath, now, now).catch(() => undefined);
+    }, 1000);
+    const running = await startClient(temporaryRoot, { VISUALBRIDGE_RUNTIME_DIR: discoveryDirectory });
+    try {
+      const listed = await call(running.client, "visualbridge_runtime", { action: "listInstances" });
+      assert.equal(listed.instances.length, 1);
+      const view = listed.instances[0];
+      assert.equal(view.instanceId, instanceId);
+      assert.equal(view.kind, "editor-play");
+      assert.equal(view.tcpPort, runtime.port);
+      assert.deepEqual(view.capabilities, ["snapshot", "events", "lease", "sources"]);
+      assert.equal(Object.hasOwn(view, "token"), false, "listInstances must not expose the discovery token.");
+      assert.equal(Object.hasOwn(view, "staleReason"), false);
+
+      const snapshot = await call(running.client, "visualbridge_runtime", { action: "getSnapshot", instanceId });
+      assert.deepEqual(snapshot.documents.map((document) => document.documentId), ["graph.sample", "table.skills"]);
+      const filtered = await call(running.client, "visualbridge_runtime", {
+        action: "getSnapshot",
+        instanceId,
+        documentTypeIds: ["game.graph"],
+      });
+      assert.deepEqual(filtered.documents.map((document) => document.documentId), ["graph.sample"]);
+
+      const missing = await running.client.callTool({
+        name: "visualbridge_runtime",
+        arguments: { action: "getSnapshot", instanceId: "player-4294967294" },
+      });
+      assert.equal(missing.isError, true);
+      assert.equal(missing.structuredContent.error.code, "runtime.instanceNotFound");
+
+      // 跨字段条件约束在分发前被拒绝：非 listInstances 必须带 instanceId；documentTypeIds 仅 getSnapshot 接受。
+      const missingSelector = await running.client.callTool({
+        name: "visualbridge_runtime",
+        arguments: { action: "getSnapshot" },
+      });
+      assert.equal(missingSelector.isError, true);
+      const wrongFilterAction = await running.client.callTool({
+        name: "visualbridge_runtime",
+        arguments: { action: "getDocumentSources", instanceId, documentTypeIds: ["game.graph"] },
+      });
+      assert.equal(wrongFilterAction.isError, true);
+
+      // 外部客户端持有租约时，MCP 的 getDocumentSources 被显式拒绝。
+      const holder = await connectRuntimeClient(runtime.port, token);
+      const acquired = await holder.request("acquireLease");
+      assert.equal(acquired.status, "ok");
+      const denied = await running.client.callTool({
+        name: "visualbridge_runtime",
+        arguments: { action: "getDocumentSources", instanceId },
+      });
+      assert.equal(denied.isError, true);
+      assert.equal(denied.structuredContent.error.code, "runtime.leaseDenied");
+      await holder.close();
+      await untilLeaseAvailable(runtime.port, token);
+
+      // 漂移：同一源路径 sha 匹配为 false、不匹配为 true；不存在路径为 unknown。
+      const sourceResult = await call(running.client, "visualbridge_runtime", { action: "getDocumentSources", instanceId });
+      assert.deepEqual(sourceResult.sources.map((source) => [source.sourcePath, source.drift]), [
+        [graphSourcePath, false],
+        [graphSourcePath, true],
+        ["Tables/Missing.skillstable", "unknown"],
+      ]);
+
+      // MCP 调用完成后租约已随连接释放：新客户端可立即接管。
+      const successor = await connectRuntimeClient(runtime.port, token);
+      assert.equal((await successor.request("acquireLease")).status, "ok");
+      await successor.close();
+      await untilLeaseAvailable(runtime.port, token);
+
+      // 无租约连接上的 getDocumentSources 得到 runtime.leaseRequired（协议语义）。
+      const leaseless = await connectRuntimeClient(runtime.port, token);
+      const required = await leaseless.request("getDocumentSources");
+      assert.equal(required.status, "error");
+      assert.equal(required.error, "runtime.leaseRequired");
+      await leaseless.close();
+
+      // 心跳超时的记录被判陈旧且不可连接。
+      clearInterval(heartbeat);
+      const staleTime = new Date(Date.now() - 60_000);
+      await utimes(recordPath, staleTime, staleTime);
+      const stale = await running.client.callTool({
+        name: "visualbridge_runtime",
+        arguments: { action: "getSnapshot", instanceId },
+      });
+      assert.equal(stale.isError, true);
+      assert.equal(stale.structuredContent.error.code, "runtime.staleInstance");
+      const staleListed = await call(running.client, "visualbridge_runtime", { action: "listInstances" });
+      assert.equal(staleListed.instances[0].staleReason, "runtime.staleRecord");
+
+      assert.equal(running.stderr(), "", running.stderr());
+      assert.equal(stderr(), "", stderr());
+    } finally {
+      clearInterval(heartbeat);
+      await running.client.close().catch(() => undefined);
+      runtime.close();
+      await rm(discoveryDirectory, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1996,6 +2135,190 @@ test("MCP rejects non-allowlisted Provider entries and reports direct Authoring 
     await rewriting.dispose();
   }
 });
+
+// 假 Runtime 实例：实现 Runtime Bridge V1 协议子集（hello/welcome + 四个 request action + 断开自动释放租约）。
+function startFakeRuntime({ instanceId, token, documents, sources }) {
+  const startedAt = new Date().toISOString();
+  const connections = new Set();
+  let leaseHolder;
+  const send = (socket, message) => {
+    if (!socket.destroyed) socket.write(`${JSON.stringify(message)}\n`);
+  };
+  const server = net.createServer((socket) => {
+    connections.add(socket);
+    let buffer = "";
+    let greeted = false;
+    const respond = (message) => {
+      const requestId = message.requestId;
+      if (message.action === "getSnapshot") {
+        const filtered = message.documentTypeIds === undefined
+          ? documents
+          : documents.filter((document) => message.documentTypeIds.includes(document.documentTypeId));
+        send(socket, { type: "response", requestId, status: "ok", documents: filtered });
+        return;
+      }
+      if (message.action === "acquireLease") {
+        // 已销毁的持有者视为已释放（close 事件传播存在异步窗口）。
+        if (leaseHolder !== undefined && leaseHolder !== socket && !leaseHolder.destroyed) {
+          send(socket, { type: "response", requestId, status: "error", error: "runtime.leaseDenied", detail: "Held by another connection." });
+          return;
+        }
+        leaseHolder = socket;
+        send(socket, { type: "response", requestId, status: "ok" });
+        return;
+      }
+      if (message.action === "releaseLease") {
+        if (leaseHolder !== socket) {
+          send(socket, { type: "response", requestId, status: "error", error: "runtime.leaseNotHeld" });
+          return;
+        }
+        leaseHolder = undefined;
+        send(socket, { type: "response", requestId, status: "ok" });
+        return;
+      }
+      if (message.action === "getDocumentSources") {
+        if (leaseHolder !== socket) {
+          send(socket, { type: "response", requestId, status: "error", error: "runtime.leaseRequired" });
+          return;
+        }
+        send(socket, { type: "response", requestId, status: "ok", sources });
+        return;
+      }
+      send(socket, { type: "response", requestId, status: "error", error: "runtime.unknownRequest" });
+    };
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex >= 0) {
+        const line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        let message;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          send(socket, { type: "error", code: "runtime.invalidJson" });
+          socket.destroy();
+          newlineIndex = buffer.indexOf("\n");
+          continue;
+        }
+        if (!greeted) {
+          const validHello = message.type === "hello"
+            && message.token === token
+            && message.protocolVersion === 1
+            && message.coreVersion === 1
+            && Array.isArray(message.capabilities)
+            && message.capabilities.length > 0
+            && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(message.clientInstanceId);
+          if (!validHello) {
+            send(socket, { type: "error", code: "runtime.invalidToken", detail: "Invalid hello." });
+            socket.destroy();
+          } else {
+            greeted = true;
+            send(socket, {
+              type: "welcome",
+              protocolVersion: 1,
+              coreVersion: 1,
+              instanceId,
+              kind: "editor-play",
+              generation: 1,
+              capabilities: ["snapshot", "events", "lease", "sources"],
+              startedAt,
+            });
+          }
+        } else if (message.type !== "request" || typeof message.requestId !== "string") {
+          send(socket, { type: "error", code: "runtime.invalidMessage" });
+          socket.destroy();
+        } else {
+          respond(message);
+        }
+        newlineIndex = buffer.indexOf("\n");
+      }
+    });
+    socket.on("close", () => {
+      connections.delete(socket);
+      if (leaseHolder === socket) leaseHolder = undefined;
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      resolve({
+        port: server.address().port,
+        startedAt,
+        close: () => {
+          for (const socket of connections) socket.destroy();
+          server.close();
+        },
+      });
+    });
+  });
+}
+
+// 直连 Runtime 实例的极简客户端：hello 握手后按 requestId 配对响应。
+function connectRuntimeClient(port, token) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host: "127.0.0.1", port });
+    let buffer = "";
+    let nextId = 0;
+    const pending = new Map();
+    const api = {
+      request(action) {
+        return new Promise((resolveResponse) => {
+          const requestId = `probe-${nextId++}`;
+          pending.set(requestId, resolveResponse);
+          socket.write(`${JSON.stringify({ type: "request", requestId, action })}\n`);
+        });
+      },
+      close: () => {
+        socket.destroy();
+      },
+    };
+    socket.on("error", reject);
+    socket.on("connect", () => {
+      socket.write(`${JSON.stringify({
+        type: "hello",
+        protocolVersion: 1,
+        coreVersion: 1,
+        token,
+        clientInstanceId: randomUUID(),
+        capabilities: ["snapshot", "events", "lease", "sources"],
+      })}\n`);
+    });
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex >= 0) {
+        const line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        const message = JSON.parse(line);
+        if (message.type === "welcome") {
+          resolve(api);
+        } else if (message.type === "response") {
+          const resolveResponse = pending.get(message.requestId);
+          if (resolveResponse !== undefined) {
+            pending.delete(message.requestId);
+            resolveResponse(message);
+          }
+        }
+        newlineIndex = buffer.indexOf("\n");
+      }
+    });
+  });
+}
+
+// 等待前一持有者的断开释放传播到假实例（本地 TCP 关闭事件是异步的）。
+async function untilLeaseAvailable(port, token) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const probe = await connectRuntimeClient(port, token);
+    const response = await probe.request("acquireLease");
+    if (response.status === "ok") {
+      await probe.close();
+      return;
+    }
+    await probe.close();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.fail("Runtime lease was not released after disconnect.");
+}
 
 async function assertNoActiveTransactionArtifacts(projectRoot) {
   const recoveryDirectoryName = ".visualbridge-transaction-recovery";

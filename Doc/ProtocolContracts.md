@@ -2,9 +2,9 @@
 
 ## 1. 定位与范围
 
-本文冻结公开 Authoring 协议、首个 Unity Structured offline slice 使用的 Integration Profile 契约，以及最小 Editor Bridge V1 的本机消息与 discovery 契约。`Protocol/Schema` 中的 15 份 JSON Schema 是跨进程、跨语言传输结构的单一事实来源；`Protocol/contract-manifest.json` 是版本、C# 生成闭包、Hash 域、游标上限、状态和错误码的机器可检查登记表。
+本文冻结公开 Authoring 协议、首个 Unity Structured offline slice 使用的 Integration Profile 契约，以及最小 Editor Bridge V1 的本机消息与 discovery 契约。`Protocol/Schema` 中的 16 份 JSON Schema 是跨进程、跨语言传输结构的单一事实来源；`Protocol/contract-manifest.json` 是版本、C# 生成闭包、Hash 域、游标上限、状态和错误码的机器可检查登记表。
 
-当前冻结范围包括：通用 primitive、Project/Catalog/Document、Graph/Entity/Structured/Table Operation、Reference、Reference Refactor、Document Lifecycle、Project Transaction 的公开输入/结果、Project Provider V2、七个 MCP Tool 的输入/输出、Unity Integration Profile V1，以及 Editor Bridge V1 的 hello/welcome 握手、open/reveal 请求、response/error 消息与 per-window discovery 记录。Unity Compiler 派生产物和 mapping/manifest 当前是 Editor 内部格式，不是公开跨语言 Schema；WebSocket、Runtime 和 Debug 不在本协议中。Editor Bridge 不复用 stdio MCP Tool envelope，其传输选型与信任边界见 [UnityIntegrationArchitecture.md](UnityIntegrationArchitecture.md) 第 12 章。
+当前冻结范围包括：通用 primitive、Project/Catalog/Document、Graph/Entity/Structured/Table Operation、Reference、Reference Refactor、Document Lifecycle、Project Transaction 的公开输入/结果、Project Provider V2、八个 MCP Tool 的输入/输出、Unity Integration Profile V1、Editor Bridge V1 的 hello/welcome 握手、open/reveal 请求、response/error 消息与 per-window discovery 记录，以及 Runtime Bridge V1 的本机发现记录与消息契约。Unity Compiler 派生产物和 mapping/manifest 当前是 Editor 内部格式，不是公开跨语言 Schema；WebSocket 不在本协议中，断点/调用栈等 Debug 执行语义仍未冻结。Editor Bridge 不复用 stdio MCP Tool envelope，其传输选型与信任边界见 [UnityIntegrationArchitecture.md](UnityIntegrationArchitecture.md) 第 12 章。
 
 Project Transaction 的 journal 与 lock 文件是 Node Host 私有的持久恢复格式，不是公开跨语言消息。它们仍登记版本并接受实现一致性检查，恢复语义见 [ProjectTransaction.md](ProjectTransaction.md)。当前 C# contract 与 TypeScript contract 由同一 Schema/manifest 确定性生成；Unity 的 Profile、Project、Catalog 和 Document 消费者先读取 `JObject` 并执行严格语义 validator，不能把生成 DTO 当成 validator。
 
@@ -51,7 +51,8 @@ Protocol/contract-manifest.json
 | `visualbridge-authoring-contracts` | Reference、Refactor、Lifecycle、Transaction 与统一 Document transport。 |
 | `visualbridge-unity-integration-profile` | Unity Project 内固定 Profile V1；显式关联一个 Authoring Project、Structured Catalog export units 与 `Library/VisualBridge/Compiled` 派生输出根。语义权威在 Unity Profile loader。 |
 | `visualbridge-editor-bridge` | 最小 Editor Bridge V1：Unity Editor 客户端与 VS Code 扩展宿主服务器间的 NDJSON 消息（hello/welcome、open/reveal、response/error）与 per-window discovery 记录。首版只有 open/reveal 能力；传输与信任边界冻结在 Unity 接入架构第 12 章。 |
-| `visualbridge-mcp-tools` | 七个 stdio MCP Tool 的严格输入/输出信封。 |
+| `visualbridge-runtime-bridge` | Runtime Bridge V1：Unity Runtime 实例与宿主客户端间的 NDJSON 消息（hello/welcome、快照/租约/Source 映射请求响应、artifactsChanged 事件、连接级 error）与 per-instance 发现记录。语义冻结在 Unity 接入架构第 17/18 章。 |
+| `visualbridge-mcp-tools` | 八个 stdio MCP Tool 的严格输入/输出信封。 |
 
 Graph、Entity、Structured、Table Catalog 中重复出现的 Field/value-shape 序列化定义是冻结后的公共 wire shape；编辑器语义只有一份，权威实现位于 Core Form model 和 `Editors/Form`。Schema parity 不是四个文件的文本或 bytes 相等检查：生成器会把四个 Catalog 的 10 个共享 `$defs` 解析后做结构 `deepEqual`，还会以同一组正反例行为矩阵分别执行四个 validator。最小 scalar、递归 object/array、结构化 select 和 number Reference 等正例必须全部接受；空白标题、重复 alias、错误递归 shape、缺失 select option 等反例必须全部拒绝。结构不同或任一 validator 的接受/拒绝结果不同都构成 drift。Host 或 Unity 不得据此复制另一套字段编辑规则。Table 的语义传输仍是 JSON 值，但 CSV family 与 XLSX 是 Host Codec 边界，其物理格式不由 JSON Schema 描述。
 
@@ -142,11 +143,11 @@ Document Lifecycle 的 Core contract 允许领域 Adapter 拥有 create paramete
 - Refactor 最终 MCP conflict；
 - Reference/Core/Provider business status；
 - Provider JSON-RPC numeric error 与 Host structured error；
-- 七个 MCP Tool 的 public Tool Error code 和 output status。
+- 八个 MCP Tool 的 public Tool Error code 和 output status。
 
 MCP public error code 是稳定机器键，message 面向人类且不作为分支依据。Document diagnostics 的 code 属于 editor/provider 诊断命名空间，故意不做穷举；它们不是 Tool transport failure。新增或删除公开 code/status 必须同步实现、manifest、Schema 和正反例，不能静默复用含义。
 
-## 10. 七个 MCP Tool
+## 10. 八个 MCP Tool
 
 公开工具名固定为：
 
@@ -157,8 +158,9 @@ MCP public error code 是稳定机器键，message 面向人类且不作为分�
 5. `visualbridge_references`
 6. `visualbridge_refactor_reference`
 7. `visualbridge_document_lifecycle`
+8. `visualbridge_runtime`
 
-每个工具都有独立 input/output `$defs`。统一输出含 `contractVersion: 2`；成功结果使用登记的业务 status 和领域 data，失败使用 `status: "error"` 与结构化 error。Refactor 与 Document Lifecycle 的 preview/apply 输入是严格 action 联合：preview 不声明也不接受 apply-only 字段。`check:mcp` 启动真实 stdio Server、调用 `tools/list`，递归比较 type、properties、required、union、`allOf`、`if/then/else/not`、enum/const/default、数值和长度限制、pattern、array、propertyNames 与 unknown-field 规则，并执行无效 action 字段和路径反例。selector/target 只豁免领域内部键，仍强制 JSON object；Operation envelope 至少强制 Stable ID discriminator；只有 output data/error details 是有意 opaque。
+每个工具都有独立 input/output `$defs`。统一输出含 `contractVersion: 2`；成功结果使用登记的业务 status 和领域 data，失败使用 `status: "error"` 与结构化 error。Refactor 与 Document Lifecycle 的 preview/apply 输入是严格 action 联合：preview 不声明也不接受 apply-only 字段。`visualbridge_runtime` 是只读 Runtime 检查工具（`listInstances` / `getSnapshot` / `getDocumentSources`）：其 `instanceId` / `documentTypeIds` 的跨字段条件约束由服务端运行时强制，live Schema 与正式 Schema 一致地不携带 `allOf` 条件表达——该约束语义不进入 wire Schema；工具消费的 Runtime Bridge 契约由 `visualbridge-runtime-bridge` 冻结。`check:mcp` 启动真实 stdio Server、调用 `tools/list`，递归比较 type、properties、required、union、`allOf`、`if/then/else/not`、enum/const/default、数值和长度限制、pattern、array、propertyNames 与 unknown-field 规则，并执行无效 action 字段和路径反例。selector/target 只豁免领域内部键，仍强制 JSON object；Operation envelope 至少强制 Stable ID discriminator；只有 output data/error details 是有意 opaque。
 
 ## 11. 开发与发布流程
 

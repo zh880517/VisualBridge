@@ -663,11 +663,11 @@ AI Host
   -> AI 会话结束后关闭子进程
 ```
 
-当前 MCP Server 独立加载 Authoring Project，不要求 VS Code 正在运行，也不连接 Unity。多个 AI Agent 启动各自的 MCP Server，通过 `baseHash`、Project 锁、依赖 Hash 和原子文件事务协调。Unity 连接与调试并发模型属于后续 Unity/Debug 阶段。
+当前 MCP Server 独立加载 Authoring Project，不要求 VS Code 正在运行；对 Unity 的唯一连接面是只读的 `visualbridge_runtime` 检查工具（Runtime Bridge，本机临时目录发现）。多个 AI Agent 启动各自的 MCP Server，通过 `baseHash`、Project 锁、依赖 Hash 和原子文件事务协调。Unity 调试并发模型属于后续 Unity/Debug 阶段。
 
-当前已落地的 `Tools/VisualBridgeMcp` V2 是仅面向本地 Authoring Project 的 stdio 入口。它从进程工作目录或 `VISUALBRIDGE_WORKSPACE` 环境变量确定发现根目录，只保留 Project、Catalog、Document、Apply Operations、Document Lifecycle、Reference 和 Refactor 七个稳定工具；旧的 Graph、Entity、Structured、Table 专用工具不保留兼容别名。Project read/listDocuments 会保留所有合法稳定 `editor` ID，并以 `adapterAvailable` 明确当前 MCP 是否注册对应 Adapter。除 Project discover 外，所有工具都按各自 strict Schema 显式携带 `projectFile`；Catalog、Document 与 Apply Operations 还必须携带 `documentTypeId` 和 `editor`，Reference、Refactor 与 Lifecycle 则使用各自的 kind/target 或 source/target 结构。最终领域 Adapter 仍由 Project Registry 解析出的 `DocumentType.editor` 决定；未注册 ID 的语义操作返回不支持，调用方也不能借请求字段绕过文件归属或自定义扩展名规则。
+当前已落地的 `Tools/VisualBridgeMcp` V2 是仅面向本地 Authoring Project 的 stdio 入口。它从进程工作目录或 `VISUALBRIDGE_WORKSPACE` 环境变量确定发现根目录，只保留 Project、Catalog、Document、Apply Operations、Document Lifecycle、Reference、Refactor 和 Runtime 检查八个稳定工具；旧的 Graph、Entity、Structured、Table 专用工具不保留兼容别名。Project read/listDocuments 会保留所有合法稳定 `editor` ID，并以 `adapterAvailable` 明确当前 MCP 是否注册对应 Adapter。除 Project discover 外，所有工具都按各自 strict Schema 显式携带 `projectFile`；Catalog、Document 与 Apply Operations 还必须携带 `documentTypeId` 和 `editor`，Reference、Refactor 与 Lifecycle 则使用各自的 kind/target 或 source/target 结构。最终领域 Adapter 仍由 Project Registry 解析出的 `DocumentType.editor` 决定；未注册 ID 的语义操作返回不支持，调用方也不能借请求字段绕过文件归属或自定义扩展名规则。
 
-Core 定义宿主无关的 `SemanticDocumentAdapter`、`DocumentCodec` 与 `CatalogAdapter` 契约，四个 Built-in 包只组合各自既有 Parser、Catalog Registry、Validator、Operation、Reference Collector 和 Serializer。MCP Host 的 Document Adapter Registry 负责路由；没有注册项时只在 Project 能力清单中报告 `adapterAvailable: false`，不会提供 Catalog、Document、Operation、Reference、Refactor 或 Lifecycle 语义。文件系统、安全路径、锁、Hash 和持久化仍留在 Host；Table 的 CSV family 与 XLSX 保持多来源/二进制 Codec，不伪装成单文本文件。MCP 支持按来源 `baseHash` 原子执行普通 Operation，并按完整依赖清单预览和提交 Document Lifecycle 与项目级引用重构。Project Provider V2 可在启动时授权后提供自定义 Reference 和 Validator，但不提供写能力。当前不提供独立 CLI，不连接 Unity，也不包含 Runtime 或 Debug 能力。具体工具、结果信封与写入流程见 [`VisualBridgeMcp.md`](VisualBridgeMcp.md)。
+Core 定义宿主无关的 `SemanticDocumentAdapter`、`DocumentCodec` 与 `CatalogAdapter` 契约，四个 Built-in 包只组合各自既有 Parser、Catalog Registry、Validator、Operation、Reference Collector 和 Serializer。MCP Host 的 Document Adapter Registry 负责路由；没有注册项时只在 Project 能力清单中报告 `adapterAvailable: false`，不会提供 Catalog、Document、Operation、Reference、Refactor 或 Lifecycle 语义。文件系统、安全路径、锁、Hash 和持久化仍留在 Host；Table 的 CSV family 与 XLSX 保持多来源/二进制 Codec，不伪装成单文本文件。MCP 支持按来源 `baseHash` 原子执行普通 Operation，并按完整依赖清单预览和提交 Document Lifecycle 与项目级引用重构。Project Provider V2 可在启动时授权后提供自定义 Reference 和 Validator，但不提供写能力。当前不提供独立 CLI，也不包含 Debug 能力；Runtime 集成仅限只读的 `visualbridge_runtime` 检查工具。具体工具、结果信封与写入流程见 [`VisualBridgeMcp.md`](VisualBridgeMcp.md)。
 
 ### MCP 能力边界
 
@@ -680,12 +680,13 @@ MCP 提供少量稳定的项目级能力：
 - 搜索和解析数据引用。
 - 预览并执行项目级引用重构事务。
 - 预览并执行 Document 创建、复制、移动和安全删除。
+- 只读检查本机 Unity Runtime 实例（发现记录、运行时快照、Source 映射与漂移）。
 
-后续 Unity/Debug 阶段可以在独立协议冻结后增加 Runtime 发现与 Attach、断点、执行控制、调用栈和变量；这些不是当前 `Tools/VisualBridgeMcp` 能力，也不是 Unity 接入前路线图的完成条件。
+后续 Unity/Debug 阶段可以在独立协议冻结后增加 Runtime Attach、断点、执行控制、调用栈和变量；当前 `Tools/VisualBridgeMcp` 已通过 `visualbridge_runtime` 提供只读 Runtime 检查，其余执行语义仍不是 Unity 接入前路线图的完成条件。
 
 不为每个节点或属性操作创建大量顶层 Tool。领域差异通过 Document Operation Schema 表达。
 
-当前统一 V2 工具面固定为 `visualbridge_project`、`visualbridge_catalog`、`visualbridge_document`、`visualbridge_apply_operations`、`visualbridge_document_lifecycle`、`visualbridge_references` 和 `visualbridge_refactor_reference`。Graph、Entity、Structured 与 Table 共用同一 Project selector 和 Adapter 路由。写入必须携带读取时得到的 SHA-256 `baseHash`；所有 MCP 写入共用 Project Transaction 锁、阶段化临时来源、持久化复验与可恢复事务日志。冲突、无效事务和不确定故障使用不同的结构化状态，冲突不会自动重试或覆盖。外部非 VisualBridge 写入不参与协作锁，因此提交仍会在替换前和替换后检查 Hash；若恢复时发现未知外部字节，会保留这些字节并升级为 Tool Error。
+当前统一 V2 工具面固定为 `visualbridge_project`、`visualbridge_catalog`、`visualbridge_document`、`visualbridge_apply_operations`、`visualbridge_document_lifecycle`、`visualbridge_references`、`visualbridge_refactor_reference` 和只读检查本机 Unity Runtime 实例的 `visualbridge_runtime`（消费 Runtime Bridge 契约，每次调用独立连接并在断开时释放调试租约）。Graph、Entity、Structured 与 Table 共用同一 Project selector 和 Adapter 路由。写入必须携带读取时得到的 SHA-256 `baseHash`；所有 MCP 写入共用 Project Transaction 锁、阶段化临时来源、持久化复验与可恢复事务日志。冲突、无效事务和不确定故障使用不同的结构化状态，冲突不会自动重试或覆盖。外部非 VisualBridge 写入不参与协作锁，因此提交仍会在替换前和替换后检查 Hash；若恢复时发现未知外部字节，会保留这些字节并升级为 Tool Error。
 
 ## 后续 Unity 连接与 Debug 设计入口
 
@@ -902,7 +903,7 @@ Domain Reload 会使未来 Unity 连接和运行时身份失效，因此后续�
 
 ## 留待实施阶段确定
 
-Graph V3、Graph Catalog V4、Entity/Structured/Table V1、Project V1、Project Provider V2、MCP V2、Unity Integration Profile V1 和最小 Editor Bridge V1 已由各自正式文档与 Schema 定义。`Protocol/Schema` 当前冻结 15 份正式 JSON Schema，并确定性生成四个产物：`Protocol/Generated/contracts.d.ts`、`schema-index.json`、`contracts.g.cs`，以及 Package 内的 `VisualBridgeProtocolContracts.g.cs`。两份 C# 输出是 wire/data bags，不是语义 validator；Unity Profile/Project/Catalog/Document consumer 以 strict `JObject` validator 执行 unknown-field、版本、union/value shape、ID/path/hash 与 Registry 约束。以下条目是尚未落地的扩展，不表示现有格式与工具字段未定义：
+Graph V3、Graph Catalog V4、Entity/Structured/Table V1、Project V1、Project Provider V2、MCP V2、Unity Integration Profile V1、最小 Editor Bridge V1 和 Runtime Bridge V1 已由各自正式文档与 Schema 定义。`Protocol/Schema` 当前冻结 16 份正式 JSON Schema，并确定性生成四个产物：`Protocol/Generated/contracts.d.ts`、`schema-index.json`、`contracts.g.cs`，以及 Package 内的 `VisualBridgeProtocolContracts.g.cs`。两份 C# 输出是 wire/data bags，不是语义 validator；Unity Profile/Project/Catalog/Document consumer 以 strict `JObject` validator 执行 unknown-field、版本、union/value shape、ID/path/hash 与 Registry 约束。以下条目是尚未落地的扩展，不表示现有格式与工具字段未定义：
 
 - Protocol、C# 生成物、Unity Package 与 Compiler/Bridge 的完整发布兼容矩阵；当前生成闭包、Schema Hash 与 Package `0.1.0` 基线已由 Protocol gate 固定。
 - 新类型的稳定 ID 生成、alias 迁移与旧数据导入策略；当前内置类型的稳定 ID/alias 规则保持由各领域文档定义。

@@ -12,10 +12,11 @@
 - 通过一个统一入口批量执行 GraphOperation、EntityOperation、StructuredOperation 或 TableOperation。
 - 搜索、解析稳定引用，以及预览和提交项目级引用重构。
 - 通过统一 Lifecycle 入口预览或提交 Document 创建、复制、移动和安全删除。
+- 只读检查本机 Unity Runtime 实例：枚举发现记录、读取运行时快照、查询文档 Source 映射与工作区漂移。
 - 在启动时显式授权后，复用 Project Provider V2 的自定义 Reference 与 Validator。
 - 使用 `baseHash`、锁、临时载体、替换前复查、原子替换和冲突拒绝保护写入。
 
-当前没有独立 CLI，不连接 Unity，也不包含 Exporter、Importer、Runtime、Debug、DAP 或 WebSocket 功能。Project Provider 默认禁用，只有 Server 启动环境显式启用并给出规范化绝对入口 allowlist 后才运行；Tool 请求不能提升权限。
+当前没有独立 CLI，也不包含 Exporter、Importer、编辑器内 Debug/DAP 会话或 WebSocket 功能。唯一的 Unity 连接面是只读的 `visualbridge_runtime` 检查工具：它通过本机 Runtime Bridge 发现目录连接 Unity Runtime 实例（发现层与协议见 [UnityIntegrationArchitecture.md](UnityIntegrationArchitecture.md) 第 17/18 章），每次调用独立建连并在断开时释放调试租约。Project Provider 默认禁用，只有 Server 启动环境显式启用并给出规范化绝对入口 allowlist 后才运行；Tool 请求不能提升权限。
 
 ## 架构
 
@@ -87,7 +88,7 @@ stdout 只承载 MCP 协议。Transport 错误和 Provider stderr 写入进程 s
 
 ## V2 稳定工具面
 
-V2 只暴露七个工具；V1 的 Graph、Structured、Table 专用工具已删除，不保留兼容别名。
+V2 只暴露八个工具；V1 的 Graph、Structured、Table 专用工具已删除，不保留兼容别名。
 
 | 工具 | action | 用途 |
 | --- | --- | --- |
@@ -98,6 +99,7 @@ V2 只暴露七个工具；V1 的 Graph、Structured、Table 专用工具已删�
 | `visualbridge_references` | `search` / `resolve` | 搜索或解析稳定引用。 |
 | `visualbridge_refactor_reference` | `preview` / `apply` | 预览或提交项目级稳定引用重构。 |
 | `visualbridge_document_lifecycle` | `preview` / `apply` | 预览或提交创建、复制、路径移动和安全删除。 |
+| `visualbridge_runtime` | `listInstances` / `getSnapshot` / `getDocumentSources` | 只读检查本机 Runtime 实例：发现记录、运行时快照、Source 映射与漂移。 |
 
 写入从 `visualbridge_document` 分离，使 MCP annotation 能准确声明只读性；`visualbridge_apply_operations`、`visualbridge_refactor_reference` 和 `visualbridge_document_lifecycle` 使用保守的 destructive hint。
 
@@ -261,6 +263,29 @@ Document Delete 的 `plan.ownedIdentities` 包含整个 Document；`entity.compo
 - Table copy 对非空 key/dedup identity 要求显式完整、保持值类型的 remap；delete document 删除整个 CSV family 或单个 XLSX Workbook，delete row 只替换拥有该 Row 的载体。
 
 授权边界是“同一次精确 preview 的 apply”，不是通用文件权限：调用者提交 `apply` 只授权 `operation` 与回传 manifest 描述的 Project 内 mutations。服务端不会借此跨 Project、改变 Document Type、覆盖已存在目标、级联删除 blocker 引用或执行任意文件操作。`visualbridge_apply_operations` 也不能绕过该边界删除 Component、Graph Node/Interface/Dynamic Port 或 Table Row；这些请求返回 `lifecycle.required`。MCP 以磁盘快照为权威，无法读取 VS Code 未保存缓冲区，因此 VS Code 与 MCP 同时工作时仍必须先保存编辑器；Hash/依赖复核只负责拒绝已经落盘的外部变化。
+
+## Runtime 检查工具
+
+`visualbridge_runtime` 是只读的 Runtime 检查入口，消费已冻结的 Runtime Bridge V1 契约（发现层与协议见 [UnityIntegrationArchitecture.md](UnityIntegrationArchitecture.md) 第 17/18 章）：
+
+| action | 行为 |
+| --- | --- |
+| `listInstances` | 读取发现目录（默认 `<临时目录>/visualbridge-runtime`，可用 `VISUALBRIDGE_RUNTIME_DIR` 覆盖）中的全部记录；心跳 >5 秒或 pid 已死标记 `staleReason`，不建立连接，也不暴露 `token`。 |
+| `getSnapshot` | 连接实例完成 hello/welcome 握手后读取编译产物快照，可按 `documentTypeIds` 过滤；观察者语义，不要求租约。 |
+| `getDocumentSources` | 连接实例并 `acquireLease` → `getDocumentSources` → 漂移计算 → `releaseLease` → 断开。 |
+
+- 每次调用独立连接：租约绑定连接、断开自动释放，MCP 工具不长期持有租约，与 VS Code DAP 检查会话（attach 期间长期持租约）互不饿死；并发调用期间 DAP attach 可能收到 `runtime.leaseDenied`，属单控制者权限模型的既定语义。
+- `instanceId` 形如 `editor-<pid>`（Editor Play 模式）或 `player-<pid>`（Player）；`documentTypeIds` 仅 `getSnapshot` 接受。action 与字段的跨字段条件约束由服务端运行时严格校验。
+- 漂移 `drift`：`sourcePath` 是 project root 相对路径，服务在 workspace 已发现的各 project root 下解析；恰一处存在时读取字节比对 SHA-256（`false` 一致 / `true` 已漂移），零处或多处命中为 `"unknown"`。漂移只呈现，不写回任何 Authoring 源。
+- 错误码：服务内部判定 `runtime.instanceNotFound` / `runtime.staleInstance`，其余 `runtime.*`（如 `runtime.leaseDenied`、`runtime.leaseRequired`）由实例按协议返回并透传。
+
+```json visualbridge-schema=visualbridge-mcp-tools.schema.json#/$defs/visualbridge_runtime.input
+{
+  "action": "getSnapshot",
+  "instanceId": "editor-1234",
+  "documentTypeIds": ["game.graph"]
+}
+```
 
 ## 公共结果信封
 
@@ -603,4 +628,4 @@ Project Provider 授权只从启动环境读取：`VISUALBRIDGE_PROVIDER_ENABLED
 npm test --workspace @visualbridge/mcp
 ```
 
-stdio 测试使用官方 MCP Client 和临时 Project 副本，精确验证七个工具、strict input/output schema、annotation、四类 Catalog/read/search/validate/apply、Entity 自定义 `.herojson`、Lifecycle Create/Copy/Move/Delete、共享四项 dependency 结构、Copy 完整 source `baseHashes`、preview 冲突、普通删除 Operation guard、无效批次字节不变、两个独立 MCP 进程的 stale `baseHash` 冲突、查询绑定 Cursor、损坏 Table 的统一无错误读取、CSV family、XLSX、Reference、项目级 Refactor、死亡持锁进程恢复，以及恢复遇到未知外部字节时不覆盖。没有 Unity 测试。
+stdio 测试使用官方 MCP Client 和临时 Project 副本，精确验证八个工具、strict input/output schema、annotation、四类 Catalog/read/search/validate/apply、Entity 自定义 `.herojson`、Lifecycle Create/Copy/Move/Delete、共享四项 dependency 结构、Copy 完整 source `baseHashes`、preview 冲突、普通删除 Operation guard、无效批次字节不变、两个独立 MCP 进程的 stale `baseHash` 冲突、查询绑定 Cursor、损坏 Table 的统一无错误读取、CSV family、XLSX、Reference、项目级 Refactor、死亡持锁进程恢复，以及恢复遇到未知外部字节时不覆盖。Runtime 检查工具以进程内假 Runtime 实例（真实 TCP + 发现记录心跳）验证 `listInstances`、快照过滤、租约抢占/释放与漂移三态。没有 Unity 测试。

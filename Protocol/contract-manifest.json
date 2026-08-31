@@ -225,6 +225,8 @@
       "refactor.unsupportedKind",
       "refactor.valueTypeMismatch",
       "request.invalidSelector",
+      "runtime.instanceNotFound",
+      "runtime.staleInstance",
       "structured.catalogInvalid",
       "structured.catalogsNotConfigured",
       "structured.documentTypeUnbound",
@@ -272,6 +274,7 @@
     "visualbridge_apply_operations",
     "visualbridge_references",
     "visualbridge_refactor_reference",
-    "visualbridge_document_lifecycle"
+    "visualbridge_document_lifecycle",
+    "visualbridge_runtime"
   ]
 }
