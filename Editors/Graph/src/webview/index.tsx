@@ -266,6 +266,11 @@ type GraphOperation =
       readonly position: GraphPosition;
     }
   | {
+      readonly type: "graph.autoLayout";
+      readonly graphId: string;
+      readonly direction?: "LR" | "TB";
+    }
+  | {
       readonly type: "graph.updateNode";
       readonly graphId: string;
       readonly nodeId: string;
@@ -1471,6 +1476,7 @@ function GraphEditorApp(): React.JSX.Element {
   const currentRevealRequestIdRef = useRef<string | undefined>(undefined);
   const revealTimerRef = useRef<number | undefined>(undefined);
   const handshakeProposalSentRef = useRef(false);
+  const autoLayoutFitViewRef = useRef(false);
   const [graphDocument, setGraphDocument] = useState<GraphDocument>();
   const [catalogRegistry, setCatalogRegistry] = useState<GraphCatalogRegistry>(emptyCatalogRegistry());
   const [catalogReady, setCatalogReady] = useState(false);
@@ -1671,6 +1677,16 @@ function GraphEditorApp(): React.JSX.Element {
     if (graph?.nodes.some((candidate) => candidate.id === nodeId)) {
       postOperations([{ type: "graph.updateNode", graphId: graph.id, nodeId, title, properties }]);
     }
+  }, [postOperations]);
+
+  const applyAutoLayout = useCallback((): void => {
+    const currentGraph = documentRef.current?.graphs.find((graph) => graph.id === activeGraphIdRef.current);
+    if (currentGraph === undefined) {
+      return;
+    }
+    autoLayoutFitViewRef.current = true;
+    postOperations([{ type: "graph.autoLayout", graphId: currentGraph.id }]);
+    setStatus({ message: "正在自动布局当前图…", error: false });
   }, [postOperations]);
 
   const createClipboardPayload = useCallback((): GraphClipboardPayload | undefined => {
@@ -1953,6 +1969,10 @@ function GraphEditorApp(): React.JSX.Element {
         pendingSelectionHistoryRef.current = undefined;
         pendingRef.current = false;
         setPending(false);
+        if (!message.changed) {
+          // 布局为 no-op（位置未变化）时不需要 fitView。
+          autoLayoutFitViewRef.current = false;
+        }
         if (message.changed && pendingEntry !== undefined) {
           undoSelectionHistoryRef.current.push(pendingEntry);
           redoSelectionHistoryRef.current = [];
@@ -1978,6 +1998,7 @@ function GraphEditorApp(): React.JSX.Element {
         catalogReadyRef.current = false;
         documentVersionRef.current = message.documentVersion;
         pendingRef.current = false;
+        autoLayoutFitViewRef.current = false;
         updateSelection(undefined, true, false);
         setGraphDocument(undefined);
         setCatalogReady(false);
@@ -1999,6 +2020,7 @@ function GraphEditorApp(): React.JSX.Element {
         }
         pendingRef.current = false;
         setPending(false);
+        autoLayoutFitViewRef.current = false;
         setStatus({ message: message.message, error: true });
       }
     };
@@ -2019,6 +2041,17 @@ function GraphEditorApp(): React.JSX.Element {
       referenceBridge.dispose();
     };
   }, [applyDebugFlash, pasteClipboardPayload, postDebugAck, updateSelection]);
+
+  // 自动布局提交后，等下一次文档状态推送（含新坐标）再缩放到全图。
+  useEffect(() => {
+    if (graphDocument === undefined || !autoLayoutFitViewRef.current) {
+      return;
+    }
+    autoLayoutFitViewRef.current = false;
+    if (flowInstance !== undefined) {
+      void flowInstance.fitView({ padding: 0.24, maxZoom: 1, duration: 300 });
+    }
+  }, [graphDocument, flowInstance]);
 
   useEffect(() => {
     if (pendingRevealRequest === undefined) {
@@ -2713,6 +2746,15 @@ function GraphEditorApp(): React.JSX.Element {
           />
           <span>显示节点 ID</span>
         </label>
+        <button
+          type="button"
+          className="secondary"
+          title="对当前图执行自动布局（按连线方向分层重排全部节点位置）"
+          disabled={pending || graphDocument === undefined || activeGraphId === ""}
+          onClick={applyAutoLayout}
+        >
+          自动布局
+        </button>
         <button
           type="button"
           className={`secondary${debugDrawerOpen ? " active" : ""}`}

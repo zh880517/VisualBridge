@@ -164,6 +164,7 @@ GraphOperation 的结构化字段如下；`node`、`subgraph`、`edge` 和 `port
 | `graph.addSubgraph` | `graphId`, `node`, `subgraph` | — |
 | `graph.removeNode` | `graphId`, `nodeId` | — |
 | `graph.moveNode` | `graphId`, `nodeId`, `position: {x,y}` | — |
+| `graph.autoLayout` | `graphId` | `direction: "LR" \| "TB"`（默认 `LR`） |
 | `graph.updateNode` | `graphId`, `nodeId`, `title`, `properties` | — |
 | `graph.replaceNodeType` | `graphId`, `nodeId`, `nodeTypeId` | — |
 | `graph.addDynamicPort` | `graphId`, `nodeId`, `port` | — |
@@ -178,6 +179,8 @@ GraphOperation 的结构化字段如下；`node`、`subgraph`、`edge` 和 `port
 | `graph.updateInterfacePort` | `graphId`, `portId`, `title` | — |
 | `graph.removeInterfacePort` | `graphId`, `portId` | — |
 | `graph.reorderInterfacePorts` | `graphId`, `portIds` | — |
+
+`graph.autoLayout` 是手动触发的整图确定性布局：按节点间连线方向分层重排全部 Node 的位置（`direction` 默认 `LR`，与画布输入在左、输出在右的方向一致）；连向输入接口的 Node 落在首列，连向输出接口的 Node 抬升到下游闭包之外的最深边界列（其节点后继随之级联下移），完全无边的 Node 收进末尾独立列。节点尺寸按端口与属性行数估算，坐标吸附 10px 网格；同一 Graph 与 Catalog 输入总是产生同一结果。空图是合法 no-op。编辑器工具栏与 MCP `visualbridge_apply_operations` 共用该 Operation，它作为一个 VS Code Undo/Redo 单元提交。
 
 Operation 中复用的完整对象结构如下。所有 ID 都是稳定 ID；`nodeTypeId`、`groupId` 和数据类型必须来自当前 Graph Type 允许的 Catalog 定义：
 

@@ -160,6 +160,7 @@ Catalog 路径相对于该标记文件解析。宿主将它们加载进同一个
 - 对选中的原子 Node 以及两端端点均被选中的 Edge 一起执行复制、粘贴和创建副本。粘贴出的实例获得全新的 Node ID 与 Edge ID。Graph Type 最小实例约束要求的单例 Node 和内嵌 subgraph 有意排除在 V1 剪贴板载荷之外。
 - 右键点击原子 Node 或类型化 subgraph Node，可以全选同一规范类型的所有 Node、替换其类型、复制、创建副本或删除。右键点击 Edge 或选区可使用适用的选区操作。只提供同 kind、无损且保持 Graph Type 约束的替换候选；不可用的操作仍以禁用状态显示，并带有原因提示。
 - 右键点击空白画布区域可执行 Graph 级的添加 Node、添加 subgraph 和粘贴操作。新增的 Node 与 subgraph 使用点击的画布位置。持久化编辑操作位于上下文菜单而非顶部工具栏。上下文菜单使用不透明的编辑器部件表面，使 Graph 与菜单文字在视觉上保持分离。
+- 顶部工具栏提供手动"自动布局"按钮，对面包屑当前 Graph 提交一次 `graph.autoLayout` Operation：按连线方向做确定性分层重排，连向输入接口的 Node 落在首列、连向输出接口的 Node 抬升到边界列，完全无边的 Node 收进末尾独立列，坐标吸附 10px 网格。布局作为一个 `WorkspaceEdit` 提交（即一次 Undo/Redo 单元），完成后画布缩放适配全图；接口 Node 仍由画布按最大横坐标自动跟随。语义细节见 [`GraphSemanticModel.md`](GraphSemanticModel.md)。
 - 在顶部工具栏显示 VS Code 文本文档的已保存/未保存状态。Graph Operation 通过 `WorkspaceEdit` 将文档置为脏；常规的 VS Code 保存会在宿主观察到保存事件后清除该指示器。
 - 使用 MiniMap 进行大型 Graph 的导航。视口、选区、打开的菜单和剪贴板状态始终保持为瞬态编辑器状态。
 - 通过共享的 Reference Service 解析 `graph.element` Reference，再使用完整的 Location 范围进入所属 Graph。Graph 目标会缩放适配完整画布；Node 与 Dynamic Port 目标会选中并居中所属 Node；Interface Port 目标会居中匹配的输入/输出接口 Node。确切元素会获得临时的焦点环高亮。请求 ID 确认机制保证面板未打开、被隐藏或正在重建其 Webview 时导航仍然可靠，而陈旧的 Graph/Node/Port 范围会被拒绝而不是靠猜测。

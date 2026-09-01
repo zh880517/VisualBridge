@@ -550,6 +550,115 @@ test("GraphOperation batches are atomic when a later operation fails", () => {
   assert.equal(serializeGraphDocument(document), originalText);
 });
 
+test("graph.autoLayout repositions every node deterministically on the 10px grid", () => {
+  const { document, registry } = loadFixture();
+  const first = applyGraphOperations(document, [{ type: "graph.autoLayout", graphId: "root" }], registry);
+  assert.equal(first.success, true, first.success ? "" : formatDiagnostics(first.diagnostics));
+  if (!first.success) return;
+  const root = first.document.graphs.find((graph) => graph.id === "root");
+  assert.notEqual(root, undefined);
+  if (root === undefined) return;
+  for (const node of root.nodes) {
+    assert.ok(
+      node.position.x % 10 === 0 && node.position.y % 10 === 0,
+      `Node '${node.id}' is not aligned to the 10px grid: ${JSON.stringify(node.position)}`,
+    );
+  }
+  const positions = new Map(root.nodes.map((node) => [node.id, node.position]));
+  // 连线方向决定列序：entry -> step_a -> step_b，int_source -> float_sink。
+  assert.ok((positions.get("step_a")?.x ?? -1) > (positions.get("entry")?.x ?? -1));
+  assert.ok((positions.get("step_b")?.x ?? -1) > (positions.get("step_a")?.x ?? -1));
+  assert.ok((positions.get("float_sink")?.x ?? -1) > (positions.get("int_source")?.x ?? -1));
+  // 完全无边的节点（list_node、subgraph_call 等）收进主图右侧的独立列。
+  const connectedIds = new Set(["entry", "step_a", "step_b", "int_source", "float_sink", "string_any_sink", "string_source", "string_sink"]);
+  const connectedMaxX = Math.max(...root.nodes
+    .filter((node) => connectedIds.has(node.id))
+    .map((node) => node.position.x));
+  assert.ok((positions.get("list_node")?.x ?? -1) > connectedMaxX);
+  assert.ok((positions.get("subgraph_call")?.x ?? -1) > connectedMaxX);
+  // 同一输入重复执行得到完全一致的结果。
+  const second = applyGraphOperations(document, [{ type: "graph.autoLayout", graphId: "root" }], registry);
+  assert.equal(second.success, true);
+  assert.equal(serializeGraphDocument(second.success ? second.document : document), serializeGraphDocument(first.document));
+});
+
+test("graph.autoLayout honors the TB direction by swapping the primary axis", () => {
+  const { document, registry } = loadFixture();
+  const result = applyGraphOperations(document, [{ type: "graph.autoLayout", graphId: "root", direction: "TB" }], registry);
+  assert.equal(result.success, true, result.success ? "" : formatDiagnostics(result.diagnostics));
+  if (!result.success) return;
+  const root = result.document.graphs.find((graph) => graph.id === "root");
+  assert.notEqual(root, undefined);
+  if (root === undefined) return;
+  const positions = new Map(root.nodes.map((node) => [node.id, node.position]));
+  assert.ok((positions.get("step_a")?.y ?? -1) > (positions.get("entry")?.y ?? -1));
+  assert.ok((positions.get("step_b")?.y ?? -1) > (positions.get("step_a")?.y ?? -1));
+  assert.ok((positions.get("float_sink")?.y ?? -1) > (positions.get("int_source")?.y ?? -1));
+});
+
+test("graph.autoLayout anchors interface-connected nodes at the flow boundary", () => {
+  const { document, registry } = loadFixture();
+  const prepared = applyGraphOperations(document, [
+    { type: "graph.addInterfacePort", graphId: "root", port: { id: "trigger", title: "Trigger", kind: "data", direction: "input", dataTypeId: "int" } },
+    { type: "graph.addInterfacePort", graphId: "root", port: { id: "result", title: "Result", kind: "data", direction: "output", dataTypeId: "int" } },
+    {
+      type: "graph.addEdge",
+      graphId: "root",
+      edge: {
+        id: "interface_trigger_edge",
+        kind: "data",
+        source: { kind: "interface", portId: "trigger" },
+        target: { kind: "node", nodeId: "int_sink", portId: "value" },
+      },
+    },
+    {
+      type: "graph.addEdge",
+      graphId: "root",
+      edge: {
+        id: "interface_result_edge",
+        kind: "data",
+        source: { kind: "node", nodeId: "int_source", portId: "value" },
+        target: { kind: "interface", portId: "result" },
+      },
+    },
+    { type: "graph.autoLayout", graphId: "root" },
+  ], registry);
+  assert.equal(prepared.success, true, prepared.success ? "" : formatDiagnostics(prepared.diagnostics));
+  if (!prepared.success) return;
+  const root = prepared.document.graphs.find((graph) => graph.id === "root");
+  assert.notEqual(root, undefined);
+  if (root === undefined) return;
+  const positions = new Map(root.nodes.map((node) => [node.id, node.position]));
+  // 连向输入接口的节点固定在首列（与同为第 0 层的 entry 同列）。
+  assert.equal(positions.get("int_sink")?.x, positions.get("entry")?.x);
+  // 连向输出接口的节点抬升到下游闭包之外的最深层（step_b 所在列），其节点后继级联到更深的列。
+  assert.equal(positions.get("int_source")?.x, positions.get("step_b")?.x);
+  assert.ok((positions.get("float_sink")?.x ?? -1) > (positions.get("step_b")?.x ?? -1));
+  assert.ok((positions.get("string_any_sink")?.x ?? -1) > (positions.get("step_b")?.x ?? -1));
+});
+
+test("graph.autoLayout rejects unknown graphs, invalid directions and stays atomic", () => {
+  const { document, registry } = loadFixture();
+  const originalText = serializeGraphDocument(document);
+  const missingGraph = applyGraphOperations(document, [{ type: "graph.autoLayout", graphId: "missing" }], registry);
+  assert.equal(missingGraph.success, false);
+  assert.ok(!missingGraph.success && missingGraph.diagnostics.some((diagnostic) => diagnostic.code === "graph.graphNotFound"));
+  const invalidDirection = applyGraphOperations(document, [
+    { type: "graph.autoLayout", graphId: "root", direction: "DIAGONAL" },
+  ], registry);
+  assert.equal(invalidDirection.success, false);
+  assert.ok(!invalidDirection.success && invalidDirection.diagnostics.some((diagnostic) => diagnostic.code === "graph.invalidLayoutDirection"));
+  const failedBatch = applyGraphOperations(document, [
+    { type: "graph.autoLayout", graphId: "root" },
+    { type: "graph.removeEdge", graphId: "root", edgeId: "missing" },
+  ], registry);
+  assert.equal(failedBatch.success, false);
+  assert.equal(serializeGraphDocument(document), originalText);
+  // 无 Catalog 时同样可用（尺寸估算退化为默认值）。
+  const withoutCatalog = applyGraphOperations(document, [{ type: "graph.autoLayout", graphId: "root" }], undefined);
+  assert.equal(withoutCatalog.success, true, withoutCatalog.success ? "" : formatDiagnostics(withoutCatalog.diagnostics));
+});
+
 test("Graph and Catalog serialization is deterministic while interface and dynamic order stay explicit", () => {
   const { catalogs, document } = loadFixture();
   const shuffled = JSON.parse(JSON.stringify(document)) as GraphDocument;
