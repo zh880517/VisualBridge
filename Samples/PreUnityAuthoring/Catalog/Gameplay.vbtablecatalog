@@ -79,6 +79,61 @@
               "cellEncoding": {
                 "kind": "scalar"
               }
+            },
+            {
+              "id": "prerequisiteSkill",
+              "title": "Prerequisite Skill",
+              "aliases": [],
+              "nameKey": "PrerequisiteSkill",
+              "nameKeyAliases": [],
+              "valueType": "number",
+              "dataTypeId": "int",
+              "defaultValue": 101,
+              "editor": {
+                "kind": "reference",
+                "integer": true
+              },
+              "reference": {
+                "kind": "table.row",
+                "target": {
+                  "tableTypeId": "sample.skills",
+                  "sheetId": "skills"
+                }
+              },
+              "cellEncoding": {
+                "kind": "scalar"
+              }
+            },
+            {
+              "id": "comboSkills",
+              "title": "Combo Skills",
+              "aliases": [],
+              "nameKey": "ComboSkills",
+              "nameKeyAliases": [],
+              "valueType": "array",
+              "defaultValue": [
+                101
+              ],
+              "item": {
+                "valueType": "number",
+                "dataTypeId": "int",
+                "defaultValue": 101,
+                "editor": {
+                  "kind": "reference",
+                  "integer": true
+                },
+                "reference": {
+                  "kind": "table.row",
+                  "target": {
+                    "tableTypeId": "sample.skills",
+                    "sheetId": "skills"
+                  }
+                }
+              },
+              "cellEncoding": {
+                "kind": "delimited",
+                "separator": ","
+              }
             }
           ]
         }

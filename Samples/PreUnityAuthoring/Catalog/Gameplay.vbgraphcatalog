@@ -6,62 +6,404 @@
     "status": "unknown"
   },
   "dataTypes": [
-    {
-      "id": "string",
-      "title": "String",
-      "accepts": []
-    }
+    { "id": "bool", "title": "Boolean", "color": "#D17CF3", "accepts": [] },
+    { "id": "float", "title": "Float", "color": "#70C1B3", "accepts": ["int"] },
+    { "id": "int", "title": "Integer", "color": "#4DA3FF", "accepts": [] },
+    { "id": "int-list", "title": "Integer List", "color": "#F2C94C", "accepts": [] },
+    { "id": "string", "title": "String", "color": "#F2994A", "accepts": [] },
+    { "id": "stringFromAny", "title": "String From Any", "color": "#F2994A", "acceptsAnySource": true, "accepts": [] }
   ],
   "graphTypes": [
     {
-      "id": "sample.encounter.root",
+      "id": "sample.encounter.branch",
       "aliases": [],
-      "title": "Encounter",
-      "usage": "root",
-      "supportedCatalogIds": [
-        "sample.gameplay.graph"
-      ],
-      "portConnectionRules": {
-        "input": "single",
-        "output": "multiple"
-      },
-      "allowedNodeSelectors": [
-        {
-          "tags": [
-            "sample"
-          ]
-        }
-      ],
+      "title": "Encounter Branch",
+      "description": "A reusable branch embedded by an encounter graph.",
+      "usage": "subgraph",
+      "supportedCatalogIds": ["sample.gameplay.graph"],
+      "portConnectionRules": { "input": "single", "output": "multiple" },
+      "allowedNodeSelectors": [{ "tags": ["sample"] }],
       "properties": [],
       "nodeConstraints": [],
       "initialNodes": [],
       "allowSubgraphs": false
+    },
+    {
+      "id": "sample.encounter.root",
+      "aliases": [],
+      "title": "Encounter",
+      "description": "A root encounter flow with typed data and embedded branches.",
+      "usage": "root",
+      "supportedCatalogIds": ["sample.gameplay.graph"],
+      "portConnectionRules": { "input": "single", "output": "multiple" },
+      "allowedNodeSelectors": [{ "tags": ["sample"] }],
+      "properties": [
+        {
+          "id": "priority",
+          "aliases": [],
+          "title": "Priority",
+          "valueType": "number",
+          "dataTypeId": "int",
+          "defaultValue": 0,
+          "editor": { "kind": "number", "integer": true, "min": 0, "max": 100, "step": 1 }
+        }
+      ],
+      "nodeConstraints": [
+        { "id": "entry", "selector": { "traits": ["flow.entry"] }, "minInstances": 1, "maxInstances": 1 }
+      ],
+      "initialNodes": [{ "nodeTypeId": "sample.entry", "title": "Encounter Start" }],
+      "allowSubgraphs": true,
+      "allowedSubgraphTypeIds": ["sample.encounter.branch"]
     }
   ],
   "nodeTypes": [
     {
-      "id": "sample.message",
+      "id": "sample.compare",
       "aliases": [],
-      "title": "Message",
-      "category": "Sample",
-      "menuPath": [
-        "Sample"
+      "title": "Compare Integer",
+      "icon": "≷",
+      "category": "Logic",
+      "menuPath": ["Logic", "Compare"],
+      "tags": ["sample"],
+      "traits": ["flow.branch"],
+      "ports": [
+        { "id": "execIn", "aliases": [], "title": "In", "kind": "flow", "direction": "input", "maxConnections": 1 },
+        { "id": "valueIn", "aliases": [], "title": "Value", "kind": "data", "direction": "input", "dataTypeId": "int", "maxConnections": 1 },
+        { "id": "trueOut", "aliases": [], "title": "True", "kind": "flow", "direction": "output" },
+        { "id": "falseOut", "aliases": [], "title": "False", "kind": "flow", "direction": "output" },
+        { "id": "resultOut", "aliases": [], "title": "Result", "kind": "data", "direction": "output", "dataTypeId": "bool" }
       ],
-      "tags": [
-        "sample"
-      ],
-      "traits": [],
-      "ports": [],
       "dynamicPortGroups": [],
       "properties": [
         {
-          "id": "text",
-          "title": "Text",
+          "id": "operator",
           "aliases": [],
+          "title": "Operator",
           "valueType": "string",
-          "dataTypeId": "string",
-          "defaultValue": "Hello"
+          "defaultValue": ">=",
+          "editor": {
+            "kind": "select",
+            "options": [
+              { "title": "Greater or Equal", "value": ">=" },
+              { "title": "Greater", "value": ">" },
+              { "title": "Equal", "value": "==" },
+              { "title": "Less", "value": "<" }
+            ]
+          }
+        },
+        {
+          "id": "threshold",
+          "aliases": [],
+          "title": "Threshold",
+          "valueType": "number",
+          "dataTypeId": "int",
+          "defaultValue": 10,
+          "editor": { "kind": "number", "integer": true, "min": 0, "max": 100, "step": 1 }
         }
+      ]
+    },
+    {
+      "id": "sample.entry",
+      "aliases": [],
+      "title": "Encounter Start",
+      "icon": "▶",
+      "category": "Flow",
+      "menuPath": ["Flow"],
+      "tags": ["sample"],
+      "traits": ["flow.entry"],
+      "ports": [
+        { "id": "flow.out", "aliases": [], "title": "Start", "kind": "flow", "direction": "output" }
+      ],
+      "dynamicPortGroups": [],
+      "properties": []
+    },
+    {
+      "id": "sample.floatSink",
+      "aliases": [],
+      "title": "Float Parameter",
+      "icon": "ƒ",
+      "category": "Data",
+      "menuPath": ["Data", "Parameter"],
+      "tags": ["sample"],
+      "traits": ["data.sink"],
+      "ports": [
+        { "id": "value", "aliases": [], "title": "Value", "kind": "data", "direction": "input", "dataTypeId": "float", "maxConnections": 1 }
+      ],
+      "dynamicPortGroups": [],
+      "properties": [
+        { "id": "fallback", "aliases": [], "title": "Fallback", "valueType": "number", "dataTypeId": "float", "defaultValue": 1, "editor": { "kind": "number", "step": 0.1 } }
+      ]
+    },
+    {
+      "id": "sample.floatSource",
+      "aliases": [],
+      "title": "Float Constant",
+      "icon": "ƒ",
+      "category": "Data",
+      "menuPath": ["Data", "Constant"],
+      "tags": ["sample"],
+      "traits": ["data.source"],
+      "ports": [
+        { "id": "value", "aliases": [], "title": "Value", "kind": "data", "direction": "output", "dataTypeId": "float" }
+      ],
+      "dynamicPortGroups": [],
+      "properties": [
+        { "id": "constant", "aliases": [], "title": "Constant", "valueType": "number", "dataTypeId": "float", "defaultValue": 1, "editor": { "kind": "number", "step": 0.1 } }
+      ]
+    },
+    {
+      "id": "sample.intSink",
+      "aliases": [],
+      "title": "Integer Parameter",
+      "icon": "#",
+      "category": "Data",
+      "menuPath": ["Data", "Parameter"],
+      "tags": ["sample"],
+      "traits": ["data.sink"],
+      "ports": [
+        { "id": "value", "aliases": [], "title": "Value", "kind": "data", "direction": "input", "dataTypeId": "int", "maxConnections": 1 }
+      ],
+      "dynamicPortGroups": [],
+      "properties": [
+        { "id": "fallback", "aliases": [], "title": "Fallback", "valueType": "number", "dataTypeId": "int", "defaultValue": 0, "editor": { "kind": "number", "integer": true, "step": 1 } }
+      ]
+    },
+    {
+      "id": "sample.intSource",
+      "aliases": [],
+      "title": "Integer Constant",
+      "icon": "#",
+      "category": "Data",
+      "menuPath": ["Data", "Constant"],
+      "tags": ["sample"],
+      "traits": ["data.source"],
+      "ports": [
+        { "id": "value", "aliases": [], "title": "Value", "kind": "data", "direction": "output", "dataTypeId": "int" }
+      ],
+      "dynamicPortGroups": [],
+      "properties": [
+        { "id": "constant", "aliases": [], "title": "Constant", "valueType": "number", "dataTypeId": "int", "defaultValue": 1, "editor": { "kind": "number", "integer": true, "step": 1 } }
+      ]
+    },
+    {
+      "id": "sample.list",
+      "aliases": [],
+      "title": "Reward List",
+      "icon": "☷",
+      "category": "Data",
+      "menuPath": ["Data", "List"],
+      "tags": ["sample"],
+      "traits": ["data.list"],
+      "ports": [
+        { "id": "flow.in", "aliases": [], "title": "In", "kind": "flow", "direction": "input", "maxConnections": 1 },
+        { "id": "flow.out", "aliases": [], "title": "Out", "kind": "flow", "direction": "output" }
+      ],
+      "dynamicPortGroups": [
+        {
+          "id": "list.whole",
+          "aliases": [],
+          "title": "Whole List",
+          "description": "Connect one complete integer list.",
+          "listPortMode": "list",
+          "port": { "kind": "data", "direction": "input", "dataTypeId": "int-list", "maxConnections": 1 },
+          "item": { "valueType": "number", "dataTypeId": "int", "defaultValue": 0 },
+          "maxItems": 8
+        },
+        {
+          "id": "list.elements",
+          "aliases": [],
+          "title": "Reward IDs",
+          "description": "Add, remove and reorder individual reward inputs.",
+          "listPortMode": "element",
+          "port": { "kind": "data", "direction": "input", "dataTypeId": "int", "maxConnections": 1 },
+          "item": { "valueType": "number", "dataTypeId": "int", "defaultValue": 0 },
+          "maxItems": 8
+        }
+      ],
+      "properties": [
+        { "id": "deliverAsync", "aliases": [], "title": "Deliver Async", "valueType": "boolean", "defaultValue": true, "editor": { "kind": "checkbox" } }
+      ]
+    },
+    {
+      "id": "sample.flowRouter",
+      "aliases": [],
+      "title": "Dynamic Flow Router",
+      "icon": "⑂",
+      "category": "Flow",
+      "menuPath": ["Flow", "Router"],
+      "tags": ["sample"],
+      "traits": ["flow.branch", "flow.dynamic"],
+      "ports": [
+        { "id": "flow.in", "aliases": [], "title": "In", "kind": "flow", "direction": "input", "maxConnections": 1 }
+      ],
+      "dynamicPortGroups": [
+        {
+          "id": "route.outputs",
+          "aliases": [],
+          "title": "Flow Outputs",
+          "description": "Add, remove and reorder flow output ports.",
+          "port": { "kind": "flow", "direction": "output" },
+          "item": { "valueType": "string", "defaultValue": "route" },
+          "maxItems": 6
+        }
+      ],
+      "properties": []
+    },
+    {
+      "id": "sample.step",
+      "aliases": [],
+      "title": "Encounter Step",
+      "icon": "◆",
+      "category": "Flow",
+      "menuPath": ["Flow", "Step"],
+      "tags": ["sample"],
+      "traits": ["flow.step"],
+      "ports": [
+        { "id": "flow.in", "aliases": [], "title": "In", "kind": "flow", "direction": "input", "maxConnections": 1 },
+        { "id": "flow.out", "aliases": [], "title": "Out", "kind": "flow", "direction": "output" }
+      ],
+      "dynamicPortGroups": [],
+      "properties": [
+        { "id": "label", "aliases": [], "title": "Label", "valueType": "string", "defaultValue": "Encounter step" },
+        { "id": "tint", "aliases": [], "title": "Tint", "valueType": "string", "defaultValue": "#336699FF", "editor": { "kind": "color" } },
+        {
+          "id": "mode",
+          "aliases": [],
+          "title": "Mode",
+          "valueType": "string",
+          "defaultValue": "normal",
+          "editor": {
+            "kind": "select",
+            "options": [
+              { "title": "Normal", "value": "normal" },
+              { "title": "Cinematic", "value": "cinematic" },
+              { "title": "Background", "value": "background" }
+            ]
+          }
+        },
+        {
+          "id": "settings",
+          "aliases": [],
+          "title": "Settings",
+          "valueType": "object",
+          "defaultValue": { "enabled": true, "targetId": 101, "targets": [101, 102], "position": { "x": 0, "y": 0, "z": 0 } },
+          "fields": [
+            { "id": "enabled", "aliases": [], "title": "Enabled", "valueType": "boolean", "defaultValue": true, "editor": { "kind": "checkbox" } },
+            {
+              "id": "targetId",
+              "aliases": [],
+              "title": "Primary Skill",
+              "valueType": "number",
+              "dataTypeId": "int",
+              "defaultValue": 101,
+              "editor": { "kind": "reference", "integer": true },
+              "reference": { "kind": "table.row", "target": { "tableTypeId": "sample.skills", "sheetId": "skills" } }
+            },
+            {
+              "id": "targets",
+              "aliases": [],
+              "title": "Skill Sequence",
+              "valueType": "array",
+              "defaultValue": [101, 102],
+              "item": {
+                "valueType": "number",
+                "dataTypeId": "int",
+                "defaultValue": 101,
+                "editor": { "kind": "reference", "integer": true },
+                "reference": { "kind": "table.row", "target": { "tableTypeId": "sample.skills", "sheetId": "skills" } }
+              }
+            },
+            {
+              "id": "position",
+              "aliases": [],
+              "title": "Position",
+              "valueType": "object",
+              "defaultValue": { "x": 0, "y": 0, "z": 0 },
+              "fields": [
+                { "id": "x", "aliases": [], "title": "X", "valueType": "number", "defaultValue": 0, "editor": { "kind": "number", "step": 0.1 } },
+                { "id": "y", "aliases": [], "title": "Y", "valueType": "number", "defaultValue": 0, "editor": { "kind": "number", "step": 0.1 } },
+                { "id": "z", "aliases": [], "title": "Z", "valueType": "number", "defaultValue": 0, "editor": { "kind": "number", "step": 0.1 } }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "payload",
+          "aliases": [],
+          "title": "Payload",
+          "valueType": "json",
+          "defaultValue": { "camera": "wide", "music": "encounter_intro", "flags": ["tutorial", "skippable"] },
+          "editor": { "kind": "json" }
+        }
+      ]
+    },
+    {
+      "id": "sample.stringAnySink",
+      "aliases": [],
+      "title": "Display Any Value",
+      "icon": "Aa",
+      "category": "Data",
+      "menuPath": ["Data", "Parameter"],
+      "tags": ["sample"],
+      "traits": ["data.sink"],
+      "ports": [
+        { "id": "value", "aliases": [], "title": "Value", "kind": "data", "direction": "input", "dataTypeId": "stringFromAny", "maxConnections": 1 }
+      ],
+      "dynamicPortGroups": [],
+      "properties": [
+        { "id": "fallback", "aliases": [], "title": "Fallback", "valueType": "string", "dataTypeId": "stringFromAny", "defaultValue": "No value" }
+      ]
+    },
+    {
+      "id": "sample.stringSink",
+      "aliases": [],
+      "title": "String Parameter",
+      "icon": "Aa",
+      "category": "Data",
+      "menuPath": ["Data", "Parameter"],
+      "tags": ["sample"],
+      "traits": ["data.sink"],
+      "ports": [
+        { "id": "value", "aliases": [], "title": "Value", "kind": "data", "direction": "input", "dataTypeId": "string", "maxConnections": 1 }
+      ],
+      "dynamicPortGroups": [],
+      "properties": [
+        { "id": "fallback", "aliases": [], "title": "Fallback", "valueType": "string", "dataTypeId": "string", "defaultValue": "No value" }
+      ]
+    },
+    {
+      "id": "sample.stringSource",
+      "aliases": [],
+      "title": "String Constant",
+      "icon": "Aa",
+      "category": "Data",
+      "menuPath": ["Data", "Constant"],
+      "tags": ["sample"],
+      "traits": ["data.source"],
+      "ports": [
+        { "id": "value", "aliases": [], "title": "Value", "kind": "data", "direction": "output", "dataTypeId": "string" }
+      ],
+      "dynamicPortGroups": [],
+      "properties": [
+        { "id": "constant", "aliases": [], "title": "Constant", "valueType": "string", "dataTypeId": "string", "defaultValue": "Encounter" }
+      ]
+    },
+    {
+      "id": "sample.subgraphCall",
+      "aliases": [],
+      "title": "Encounter Branch Call",
+      "icon": "◇",
+      "category": "Subgraph",
+      "menuPath": ["Flow", "Subgraph"],
+      "tags": ["sample"],
+      "traits": ["flow.subgraph"],
+      "subgraph": { "graphTypeIds": ["sample.encounter.branch"] },
+      "ports": [
+        { "id": "context", "aliases": [], "title": "Context", "kind": "data", "direction": "input", "dataTypeId": "string", "maxConnections": 1 }
+      ],
+      "dynamicPortGroups": [],
+      "properties": [
+        { "id": "debugLabel", "aliases": [], "title": "Debug Label", "valueType": "string", "defaultValue": "Victory Branch" }
       ]
     }
   ]

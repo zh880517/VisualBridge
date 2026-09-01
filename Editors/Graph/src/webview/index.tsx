@@ -839,6 +839,23 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
             },
           ]);
         };
+        const selectedPortIndex = ports.findIndex((port) => port.id === selectedPortId);
+        const deleteSelectedPort = (): void => {
+          const selectedPort = ports[selectedPortIndex];
+          if (selectedPort === undefined || !window.confirm("删除这个动态元素？相关连线也会被删除。")) {
+            return;
+          }
+          const nextSelectedPort = ports.length <= 1
+            ? undefined
+            : ports[Math.min(selectedPortIndex, ports.length - 2)];
+          setSelectedPortId(nextSelectedPort?.id);
+          data.commitOperations([{
+            type: "graph.removeDynamicPort",
+            graphId: data.graphId,
+            nodeId: data.model.id,
+            portId: selectedPort.id,
+          }]);
+        };
         const groupDragState = dragState !== undefined && ports.some((port) => port.id === dragState.sourcePortId)
           ? dragState
           : undefined;
@@ -860,16 +877,26 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
                   />
                 )}
               </div>
-              {!listConnected && ports.length === 0 && <div className="graph-dynamic-port-group-actions vb-list-actions">
+              {!listConnected && <div className="graph-dynamic-port-group-actions vb-list-actions">
                 <button
                   type="button"
                   className="secondary graph-list-add"
                   disabled={pending || !canAdd}
-                  aria-label={`${group.listPortMode === undefined ? "添加动态端口" : "添加列表元素"} ${group.title}`}
-                  title="添加元素"
-                  onClick={() => addPort(0)}
+                  aria-label={`${group.listPortMode === undefined ? "添加动态端口" : "添加列表元素"} ${group.title}${selectedPortIndex < 0 ? "" : "，在选中项后"}`}
+                  title={selectedPortIndex < 0 ? "添加元素" : "在选中项后添加"}
+                  onClick={() => addPort(selectedPortIndex < 0 ? ports.length : selectedPortIndex + 1)}
                 >
                   <CommonIcon name="add" />
+                </button>
+                <button
+                  type="button"
+                  className="secondary graph-list-delete"
+                  disabled={pending || selectedPortIndex < 0}
+                  aria-label={`删除 ${group.title} 选中项`}
+                  title="删除选中项"
+                  onClick={deleteSelectedPort}
+                >
+                  <CommonIcon name="delete" />
                 </button>
               </div>}
             </header>
@@ -908,19 +935,6 @@ function InlineDynamicPorts({ data, pending }: { readonly data: GraphNodeData; r
                     reorder(port.id, target.id, offset < 0 ? "before" : "after");
                   }
                 }}
-                canAdd={canAdd}
-                onAdd={() => addPort(portIndex + 1)}
-                onDelete={() => {
-                  if (window.confirm("删除这个动态元素？相关连线也会被删除。")) {
-                    setSelectedPortId(undefined);
-                    data.commitOperations([{
-                      type: "graph.removeDynamicPort",
-                      graphId: data.graphId,
-                      nodeId: data.model.id,
-                      portId: port.id,
-                    }]);
-                  }
-                }}
               />
               ))}
             {!listConnected && ports.length === 0 && (
@@ -949,9 +963,6 @@ function DynamicPortRow({
   onDrop,
   onDragEnd,
   onKeyboardMove,
-  canAdd,
-  onAdd,
-  onDelete,
 }: {
   readonly data: GraphNodeData;
   readonly group: DynamicPortGroupDefinition;
@@ -968,9 +979,6 @@ function DynamicPortRow({
   readonly onDrop: (sourcePortId: string, position: "before" | "after") => void;
   readonly onDragEnd: () => void;
   readonly onKeyboardMove: (offset: -1 | 1) => void;
-  readonly canAdd: boolean;
-  readonly onAdd: () => void;
-  readonly onDelete: () => void;
 }): React.JSX.Element {
   const dataTypes = useContext(GraphDataTypesContext);
   const model = data.model;
@@ -1042,28 +1050,6 @@ function DynamicPortRow({
             }
           }}
         ><CommonIcon name="drag" /></button>
-        <button
-          type="button"
-          className="secondary graph-list-add"
-          disabled={pending || !canAdd}
-          aria-label={`在 ${port.title} 后添加`}
-          title="在后面添加"
-          onClick={(event) => {
-            event.stopPropagation();
-            onAdd();
-          }}
-        ><CommonIcon name="add" /></button>
-        <button
-          type="button"
-          className="secondary graph-list-delete"
-          disabled={pending}
-          aria-label={`删除 ${port.title}`}
-          title="删除"
-          onClick={(event) => {
-            event.stopPropagation();
-            onDelete();
-          }}
-        ><CommonIcon name="delete" /></button>
       </div>
       {connected
         ? <div className="graph-list-element-connected"><span>元素</span><em>已连接</em></div>
@@ -1184,20 +1170,44 @@ function VisualBridgeInterfaceNode({ data }: NodeProps<GraphFlowNode>): React.JS
   const revealedPortId = reveal?.elementKind === "interfacePort" && reveal.graphId === data.graphId
     ? reveal.portId
     : undefined;
+  const selectedPortIndex = dynamicPorts.findIndex((port) => port.id === selectedPortId);
+  const deleteSelectedParameter = (): void => {
+    const selectedPort = dynamicPorts[selectedPortIndex];
+    if (selectedPort === undefined) {
+      return;
+    }
+    const nextSelectedPort = dynamicPorts.length <= 1
+      ? undefined
+      : dynamicPorts[Math.min(selectedPortIndex, dynamicPorts.length - 2)];
+    setSelectedPortId(nextSelectedPort?.id);
+    data.commitOperations([{
+      type: "graph.removeInterfacePort",
+      graphId: data.graphId,
+      portId: selectedPort.id,
+    }]);
+  };
   return (
     <article className={`graph-interface-node ${data.side}${revealedPortId === undefined ? "" : " revealed"}`}>
       <header>
         <span>{data.title}</span>
-        {data.editable && dynamicPorts.length === 0 && (
+        {data.editable && (
           <span className="graph-interface-actions vb-list-actions nodrag nowheel">
             <button
               type="button"
               className="secondary graph-list-add"
               disabled={pending}
               aria-label={`添加${data.side === "inputs" ? "输入" : "输出"}参数`}
-              title={`添加${data.side === "inputs" ? "输入" : "输出"}参数`}
-              onClick={() => addParameter()}
+              title={selectedPortIndex < 0 ? `添加${data.side === "inputs" ? "输入" : "输出"}参数` : "在选中参数后添加"}
+              onClick={() => addParameter(selectedPortIndex < 0 ? undefined : selectedPortId)}
             ><CommonIcon name="add" /></button>
+            <button
+              type="button"
+              className="secondary graph-list-delete"
+              disabled={pending || selectedPortIndex < 0}
+              aria-label={`删除选中的${data.side === "inputs" ? "输入" : "输出"}参数`}
+              title="删除选中参数"
+              onClick={deleteSelectedParameter}
+            ><CommonIcon name="delete" /></button>
           </span>
         )}
       </header>
@@ -1228,15 +1238,6 @@ function VisualBridgeInterfaceNode({ data }: NodeProps<GraphFlowNode>): React.JS
               }}
               onKeyboardMove={(offset) => moveByKeyboard(port.id, offset)}
               editable={data.editable}
-              onAdd={() => addParameter(port.id)}
-              onDelete={() => {
-                setSelectedPortId(undefined);
-                data.commitOperations([{
-                  type: "graph.removeInterfacePort",
-                  graphId: data.graphId,
-                  portId: port.id,
-                }]);
-              }}
             />
           ))}
         </div>
@@ -1260,8 +1261,6 @@ function InterfaceParameterRow({
   onDragEnd,
   onKeyboardMove,
   editable,
-  onAdd,
-  onDelete,
 }: {
   readonly data: GraphInterfaceData;
   readonly port: PortDefinition;
@@ -1277,8 +1276,6 @@ function InterfaceParameterRow({
   readonly onDragEnd: () => void;
   readonly onKeyboardMove: (offset: -1 | 1) => void;
   readonly editable: boolean;
-  readonly onAdd: () => void;
-  readonly onDelete: () => void;
 }): React.JSX.Element {
   const dataTypes = useContext(GraphDataTypesContext);
   const [title, setTitle] = useState(port.title);
@@ -1367,28 +1364,6 @@ function InterfaceParameterRow({
               }
             }}
           ><CommonIcon name="drag" /></button>
-          <button
-            type="button"
-            className="secondary graph-list-add"
-            disabled={pending}
-            aria-label={`在 ${port.title} 后添加参数`}
-            title="在后面添加"
-            onClick={(event) => {
-              event.stopPropagation();
-              onAdd();
-            }}
-          ><CommonIcon name="add" /></button>
-          <button
-            type="button"
-            className="secondary graph-list-delete"
-            disabled={pending}
-            aria-label={`删除 ${port.title}`}
-            title="删除"
-            onClick={(event) => {
-              event.stopPropagation();
-              onDelete();
-            }}
-          ><CommonIcon name="delete" /></button>
         </div>
       )}
       <input

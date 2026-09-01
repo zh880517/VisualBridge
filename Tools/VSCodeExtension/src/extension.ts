@@ -180,6 +180,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         () => ({ documents: documents.documents, stats: documents.refreshStats }),
       ),
       vscode.commands.registerCommand(
+        "visualbridge.test.getDocumentBrowserIncomingReferences",
+        () => browser.incomingReferenceTestSnapshot(),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.getDocumentDetailsSnapshot",
+        (selector: { readonly projectId: string; readonly path: string }) => (
+          browser.documentDetailsTestSnapshot(selector)
+        ),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.showDocumentDetails",
+        (
+          selector: { readonly projectId: string; readonly path: string },
+          group: "diagnostics" | "references",
+        ) => browser.showDocumentDetailsForTest(selector, group),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.localizeDocumentDiagnostic",
+        (diagnostic: import("@visualbridge/core").DocumentDiagnostic) => browser.localizeDiagnosticForTest(diagnostic),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.revealDocumentBrowserIncomingReference",
+        (selector: {
+          readonly projectId: string;
+          readonly targetPath: string;
+          readonly sourcePath: string;
+          readonly occurrencePath: string;
+        }) => browser.revealIncomingReferenceForTest(selector),
+      ),
+      vscode.commands.registerCommand(
         "visualbridge.test.rebuildDocumentIndex",
         async () => {
           const result = await documents.rebuild();

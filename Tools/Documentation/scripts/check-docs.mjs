@@ -54,7 +54,7 @@ if (errors.length > 0) {
   throw new Error(`Documentation contract check failed with ${errors.length} issue(s):\n${errors.map((error) => `- ${error}`).join("\n")}`);
 }
 
-console.log(`Checked ${documents.size} Markdown files, relative links/GitHub anchors, Mermaid and JSON fences, Doc coverage, 22 VS Code commands, 4 custom editors, 2 views, and 8 MCP tools.`);
+console.log(`Checked ${documents.size} Markdown files, relative links/GitHub anchors, Mermaid and JSON fences, Doc coverage, 25 VS Code commands, 4 custom editors, 3 views, and 8 MCP tools.`);
 
 function checkRequiredEntrypoints(allDocuments) {
   for (const entrypoint of [
@@ -421,9 +421,9 @@ async function checkVsCodeSurface(allDocuments) {
   const commands = contributions.commands?.map((entry) => entry.command) ?? [];
   const customEditors = contributions.customEditors?.map((entry) => entry.viewType) ?? [];
   const views = Object.values(contributions.views ?? {}).flat().map((entry) => entry.id);
-  if (commands.length !== 22) fail(`VS Code manifest must expose 22 commands; found ${commands.length}.`);
+  if (commands.length !== 25) fail(`VS Code manifest must expose 25 commands; found ${commands.length}.`);
   if (customEditors.length !== 4) fail(`VS Code manifest must expose 4 custom editors; found ${customEditors.length}.`);
-  if (views.length !== 2) fail(`VS Code manifest must expose 2 views; found ${views.length}.`);
+  if (views.length !== 3) fail(`VS Code manifest must expose 3 views; found ${views.length}.`);
   assertUnique(commands, "VS Code commands");
   assertUnique(customEditors, "VS Code custom editors");
   assertUnique(views, "VS Code views");
@@ -502,7 +502,7 @@ async function checkVsCodeSurface(allDocuments) {
   }
 
   const hostGuide = allDocuments.get("Doc/VSCodeHost.md")?.text ?? "";
-  if (!/22\s*条[^\n]*命令/u.test(hostGuide)) fail("Doc/VSCodeHost.md must state the 22-command public surface.");
+  if (!/25\s*条[^\n]*命令/u.test(hostGuide)) fail("Doc/VSCodeHost.md must state the 25-command public surface.");
   if (!/4\s*个\s*Custom Editor/iu.test(hostGuide)) fail("Doc/VSCodeHost.md must state the four Custom Editor surface.");
   for (const id of [...customEditors, ...views]) {
     if (!hostGuide.includes(id)) fail(`Doc/VSCodeHost.md does not mention '${id}'.`);

@@ -53,6 +53,9 @@ Manifest 的默认 `visualbridge.documentEditor` selector 包含 `.vbgraph`、`.
 | `visualbridge.documentBrowser.renamePath` | Rename Path (Keep Stable IDs) | 只改变物理路径，保留稳定身份与引用值。 |
 | `visualbridge.documentBrowser.move` | Move Document (Keep Stable IDs) | 移动完整物理 source manifest。 |
 | `visualbridge.documentBrowser.safeDelete` | Safe Delete Document | 拒绝存在闭包外入站引用的文档删除。 |
+| `visualbridge.documentBrowser.showProblems` | 查看 Problems | 展开并聚焦当前文件的 Problems 详情。 |
+| `visualbridge.documentBrowser.showReferences` | 查看 References | 展开并聚焦当前文件的 References 详情。 |
+| `visualbridge.documentBrowser.copyProblem` | 复制问题详情 | 从问题项右键菜单复制中文问题、文件、位置和代码。 |
 | `visualbridge.documentBrowser.revealReference` | Reveal Reference | 跳转唯一解析的 Reference 目标。 |
 | `visualbridge.documentBrowser.renameReferenceTarget` | Rename Reference Target | 预览并原子重命名目标稳定值及全部入站引用。 |
 | `visualbridge.catalogBrowser.refresh` | Refresh Catalogs | 重新加载 Catalog Registry 与来源状态。 |
@@ -64,10 +67,11 @@ Manifest 的默认 `visualbridge.documentEditor` selector 包含 `.vbgraph`、`.
 
 | View ID | 显示名 | 作用 |
 | --- | --- | --- |
-| `visualbridge.documents` | Documents | 文档、物理来源、诊断、Outgoing/Incoming Reference 和 Lifecycle 入口。 |
+| `visualbridge.documents` | Documents | 按 Project / Document Type 显示叶子文件、Problems/References 计数和 Lifecycle 入口。 |
 | `visualbridge.catalogs` | Catalogs | 只读 Registry、类型、alias、Hash、stale 状态和诊断。 |
+| `visualbridge.documentDetails` | Problems / References | 显示 Documents 当前选中文件的中文 Problems 和合并后的 Outgoing/Incoming References。 |
 
-两个 View 都位于 `visualbridge` Activity Bar container。
+三个 View 都位于 `visualbridge` Activity Bar container；详情 View 可独立折叠，点击文件行后的 Problems/References 图标会重新展开并聚焦对应分组。
 
 ### Custom Editor
 

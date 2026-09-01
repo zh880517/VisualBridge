@@ -1,4 +1,4 @@
-Skill ID	Skill Name	Power
-Id	Name	Power
-101	Fireball	25
-102	Blink	0
+Skill ID	Skill Name	Power	Prerequisite Skill	Combo Skills
+Id	Name	Power	PrerequisiteSkill	ComboSkills
+101	Fireball	25	102	101,102
+102	Blink	0	101	102,101

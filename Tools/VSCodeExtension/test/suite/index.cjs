@@ -17,6 +17,7 @@ const EXPECTED_COMMANDS = [
   "visualbridge.createTableDocument",
   "visualbridge.documentBrowser.create",
   "visualbridge.documentBrowser.copy",
+  "visualbridge.documentBrowser.copyProblem",
   "visualbridge.documentBrowser.move",
   "visualbridge.documentBrowser.open",
   "visualbridge.documentBrowser.refresh",
@@ -25,6 +26,8 @@ const EXPECTED_COMMANDS = [
   "visualbridge.documentBrowser.revealReference",
   "visualbridge.documentBrowser.search",
   "visualbridge.documentBrowser.safeDelete",
+  "visualbridge.documentBrowser.showProblems",
+  "visualbridge.documentBrowser.showReferences",
   "visualbridge.documentBrowser.validateAll",
   "visualbridge.catalogBrowser.open",
   "visualbridge.catalogBrowser.refresh",
@@ -964,6 +967,13 @@ exports.run = async function run() {
         readValue: (value) => value.graphs.find((graph) => graph.id === "root")?.title,
         beforeValue: "Semantic Sample",
         afterValue: "Host Operation Graph",
+        followUpOperations: [{
+          type: "graph.updateGraph",
+          graphId: "root",
+          title: "Host Operation Graph Again",
+          properties: { priority: 2 },
+        }],
+        followUpValue: "Host Operation Graph Again",
       },
       {
         editor: "entity",
@@ -972,6 +982,8 @@ exports.run = async function run() {
         readValue: (value) => value.title,
         beforeValue: "Sample Player",
         afterValue: "Host Operation Entity",
+        followUpOperations: [{ type: "entity.setTitle", title: "Host Operation Entity Again" }],
+        followUpValue: "Host Operation Entity Again",
       },
       {
         editor: "structured",
@@ -980,6 +992,8 @@ exports.run = async function run() {
         readValue: (value) => value.properties.maxPlayers,
         beforeValue: 5,
         afterValue: 8,
+        followUpOperations: [{ type: "structured.setField", fieldId: "maxPlayers", value: 9 }],
+        followUpValue: 9,
       },
     ];
 
@@ -1009,19 +1023,31 @@ exports.run = async function run() {
           10_000,
           `${entry.editor} operation did not update the authoritative TextDocument.`,
         );
+        await vscode.commands.executeCommand(
+          "visualbridge.test.applyDocumentOperations",
+          entry.uri,
+          entry.editor,
+          entry.followUpOperations,
+        );
+        await waitFor(
+          () => entry.readValue(JSON.parse(document.getText())),
+          (value) => value === entry.followUpValue,
+          10_000,
+          `${entry.editor} consecutive operation was mistaken for an external modification.`,
+        );
         assert.equal(document.isDirty, true);
 
         await vscode.commands.executeCommand("undo");
         await waitFor(
           () => entry.readValue(JSON.parse(document.getText())),
-          (value) => value === entry.beforeValue,
+          (value) => value === entry.afterValue,
           10_000,
-          `${entry.editor} undo did not restore the semantic source.`,
+          `${entry.editor} undo did not restore the previous semantic edit.`,
         );
         await vscode.commands.executeCommand("redo");
         await waitFor(
           () => entry.readValue(JSON.parse(document.getText())),
-          (value) => value === entry.afterValue,
+          (value) => value === entry.followUpValue,
           10_000,
           `${entry.editor} redo did not restore the operation.`,
         );
@@ -1031,7 +1057,7 @@ exports.run = async function run() {
         const diskValue = entry.readValue(JSON.parse(new TextDecoder().decode(
           await vscode.workspace.fs.readFile(entry.uri),
         )));
-        assert.equal(diskValue, entry.afterValue);
+        assert.equal(diskValue, entry.followUpValue);
       } finally {
         if (document?.isDirty) {
           await vscode.commands.executeCommand("workbench.action.files.revert").catch(() => undefined);
@@ -1086,6 +1112,88 @@ exports.run = async function run() {
     } finally {
       await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
     }
+  });
+
+  await test("shows Graph and node names for incoming references and reveals the referencing node", async () => {
+    const graphUri = vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "Graph", "SemanticSample.vbgraph"));
+    const selector = {
+      projectId: "GraphSemanticProject",
+      targetPath: "Tables/Skills_Main.skillstable",
+      sourcePath: "Graph/SemanticSample.vbgraph",
+      occurrencePath: "graphs[1].nodes[2].properties.settings.targetId",
+    };
+    try {
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+      const incomingItems = await vscode.commands.executeCommand(
+        "visualbridge.test.getDocumentBrowserIncomingReferences",
+      );
+      const item = incomingItems.find((candidate) => (
+        candidate.projectId === selector.projectId
+        && candidate.targetPath === selector.targetPath
+        && candidate.sourcePath === selector.sourcePath
+        && candidate.occurrencePath === selector.occurrencePath
+      ));
+      assert.ok(item, "Graph incoming reference was not exposed by the Document Browser.");
+      assert.equal(item.label, "Semantic Sample · Step B");
+      assert.equal(item.description, "settings.targetId · 101");
+      assert.equal(item.graphTitle, "Semantic Sample");
+      assert.equal(item.nodeTitle, "Step B");
+      assert.equal(item.command, "visualbridge.documentBrowser.revealReference");
+
+      await withTimeout(vscode.commands.executeCommand(
+        "visualbridge.test.revealDocumentBrowserIncomingReference",
+        selector,
+      ), 20_000, "Incoming Graph reference did not complete its reveal command.");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorState", graphUri),
+        (state) => state.lastRevealResults.some((result) => (
+          result.found === true
+          && result.target.graphId === "root"
+          && result.target.nodeId === "step_b"
+        )),
+        20_000,
+        "Incoming Graph reference did not select and focus its source node.",
+      );
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+    }
+  });
+
+  await test("shows flat document counters and linked Problems and References details", async () => {
+    const selector = {
+      projectId: "GraphSemanticProject",
+      path: "Graph/SemanticSample.vbgraph",
+    };
+    await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    const snapshot = await vscode.commands.executeCommand(
+      "visualbridge.test.getDocumentDetailsSnapshot",
+      selector,
+    );
+    assert.equal(snapshot.row.collapsibleState, vscode.TreeItemCollapsibleState.None);
+    assert.match(snapshot.row.label, /^Semantic Sample\s+\$\(issues\) \d+\s+\$\(references\) \d+$/);
+    assert.deepEqual(snapshot.details.groups.map((group) => group.label), ["Problems", "References"]);
+    assert.equal(snapshot.details.groups[0].count, snapshot.details.groups[0].items.length);
+    assert.equal(snapshot.details.groups[1].count, snapshot.details.groups[1].items.length);
+    assert.ok(snapshot.details.groups[1].count > 0, "The selected Graph should expose reference details.");
+
+    assert.equal(
+      await vscode.commands.executeCommand("visualbridge.test.localizeDocumentDiagnostic", {
+        severity: "error",
+        code: "reference.missingTarget",
+        path: "graphs[0].nodes[10].properties.settings.targets[1]",
+        message: "Reference '0' does not resolve for kind 'table.row'.",
+      }),
+      "引用值“0”无法解析为“table.row”类型。",
+    );
+
+    const detailState = await vscode.commands.executeCommand(
+      "visualbridge.test.showDocumentDetails",
+      selector,
+      "references",
+    );
+    assert.equal(detailState.visible, true);
+    assert.equal(detailState.selectedDocument, selector.path);
+    assert.equal(detailState.selectedGroup, "references");
   });
 
   await test("rejects Structured operations after external changes before and after a save", async () => {

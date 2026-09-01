@@ -7,25 +7,751 @@
       "id": "root",
       "graphTypeId": "sample.encounter.root",
       "title": "Opening Encounter",
-      "properties": {},
+      "properties": {
+        "priority": 20
+      },
       "interfacePorts": [],
       "nodes": [
         {
           "kind": "node",
-          "id": "welcome",
-          "nodeTypeId": "sample.message",
-          "title": "Welcome",
+          "id": "branch_result",
+          "nodeTypeId": "sample.stringSink",
+          "title": "Branch Result",
           "position": {
-            "x": 80,
-            "y": 80
+            "x": 1510,
+            "y": 520
           },
           "properties": {
-            "text": "Welcome to VisualBridge"
+            "fallback": "No branch result"
+          },
+          "dynamicPorts": []
+        },
+        {
+          "kind": "node",
+          "id": "debug_value",
+          "nodeTypeId": "sample.stringAnySink",
+          "title": "Debug Player Level",
+          "position": {
+            "x": 860,
+            "y": 560
+          },
+          "properties": {
+            "fallback": "Unknown level"
+          },
+          "dynamicPorts": []
+        },
+        {
+          "kind": "node",
+          "id": "difficulty_input",
+          "nodeTypeId": "sample.floatSink",
+          "title": "Resolved Difficulty",
+          "position": {
+            "x": 560,
+            "y": 640
+          },
+          "properties": {
+            "fallback": 1
+          },
+          "dynamicPorts": []
+        },
+        {
+          "kind": "node",
+          "id": "difficulty_scale",
+          "nodeTypeId": "sample.floatSource",
+          "title": "Difficulty Scale",
+          "position": {
+            "x": 260,
+            "y": 600
+          },
+          "properties": {
+            "constant": 1.25
+          },
+          "dynamicPorts": []
+        },
+        {
+          "kind": "node",
+          "id": "encounter_context",
+          "nodeTypeId": "sample.stringSource",
+          "title": "Encounter Context",
+          "position": {
+            "x": 560,
+            "y": 440
+          },
+          "properties": {
+            "constant": "tutorial.opening"
+          },
+          "dynamicPorts": []
+        },
+        {
+          "kind": "node",
+          "id": "entry",
+          "nodeTypeId": "sample.entry",
+          "title": "Encounter Start",
+          "position": {
+            "x": 40,
+            "y": 80
+          },
+          "properties": {},
+          "dynamicPorts": []
+        },
+        {
+          "kind": "node",
+          "id": "failure_step",
+          "nodeTypeId": "sample.step",
+          "title": "Show Level Warning",
+          "position": {
+            "x": 860,
+            "y": 300
+          },
+          "properties": {
+            "label": "Player level is too low",
+            "mode": "normal",
+            "payload": {
+              "requiredLevel": 10,
+              "result": "blocked"
+            },
+            "settings": {
+              "enabled": true,
+              "position": {
+                "x": 0,
+                "y": 2,
+                "z": 0
+              },
+              "targetId": 101,
+              "targets": [
+                101
+              ]
+            },
+            "tint": "#C94B4BFF"
+          },
+          "dynamicPorts": []
+        },
+        {
+          "kind": "node",
+          "id": "level_check",
+          "nodeTypeId": "sample.compare",
+          "title": "Check Player Level",
+          "position": {
+            "x": 560,
+            "y": 60
+          },
+          "properties": {
+            "operator": ">=",
+            "threshold": 10
+          },
+          "dynamicPorts": []
+        },
+        {
+          "kind": "node",
+          "id": "outcome_router",
+          "nodeTypeId": "sample.flowRouter",
+          "title": "Route Encounter Outcome",
+          "position": {
+            "x": 860,
+            "y": -20
+          },
+          "properties": {},
+          "dynamicPorts": [
+            {
+              "id": "route_subgraph",
+              "groupId": "route.outputs",
+              "title": "Victory Subgraph",
+              "value": "subgraph"
+            },
+            {
+              "id": "route_preview",
+              "groupId": "route.outputs",
+              "title": "Preview Rewards",
+              "value": "preview"
+            },
+            {
+              "id": "route_retry",
+              "groupId": "route.outputs",
+              "title": "Retry Encounter",
+              "value": "retry"
+            }
+          ]
+        },
+        {
+          "kind": "node",
+          "id": "player_level",
+          "nodeTypeId": "sample.intSource",
+          "title": "Player Level",
+          "position": {
+            "x": 260,
+            "y": 420
+          },
+          "properties": {
+            "constant": 12
+          },
+          "dynamicPorts": []
+        },
+        {
+          "kind": "node",
+          "id": "preview_rewards_step",
+          "nodeTypeId": "sample.step",
+          "title": "Preview Rewards",
+          "position": {
+            "x": 1210,
+            "y": 180
+          },
+          "properties": {
+            "label": "Preview rewards without granting",
+            "mode": "background",
+            "payload": {
+              "result": "preview",
+              "showSummary": true
+            },
+            "settings": {
+              "enabled": true,
+              "position": {
+                "x": 12,
+                "y": 1,
+                "z": 0
+              },
+              "targetId": 101,
+              "targets": [
+                101,
+                102
+              ]
+            },
+            "tint": "#4D83C4FF"
+          },
+          "dynamicPorts": []
+        },
+        {
+          "kind": "node",
+          "id": "reward_list",
+          "nodeTypeId": "sample.list",
+          "title": "Grant Rewards",
+          "position": {
+            "x": 1510,
+            "y": -340
+          },
+          "properties": {
+            "deliverAsync": true
+          },
+          "dynamicPorts": [
+            {
+              "id": "reward_primary",
+              "groupId": "list.elements",
+              "title": "Primary Reward",
+              "value": 101
+            },
+            {
+              "id": "reward_bonus",
+              "groupId": "list.elements",
+              "title": "Bonus Reward",
+              "value": 102
+            },
+            {
+              "id": "reward_fallback",
+              "groupId": "list.whole",
+              "title": "Fallback Reward",
+              "value": 103
+            }
+          ]
+        },
+        {
+          "kind": "node",
+          "id": "retry_encounter_step",
+          "nodeTypeId": "sample.step",
+          "title": "Retry Encounter",
+          "position": {
+            "x": 1210,
+            "y": 520
+          },
+          "properties": {
+            "label": "Queue encounter retry",
+            "mode": "normal",
+            "payload": {
+              "delaySeconds": 3,
+              "result": "retry"
+            },
+            "settings": {
+              "enabled": true,
+              "position": {
+                "x": 8,
+                "y": 0,
+                "z": -1
+              },
+              "targetId": 102,
+              "targets": [
+                102,
+                101
+              ]
+            },
+            "tint": "#D58B3CFF"
+          },
+          "dynamicPorts": []
+        },
+        {
+          "kind": "node",
+          "id": "success_step",
+          "nodeTypeId": "sample.step",
+          "title": "Finish Encounter",
+          "position": {
+            "x": 1800,
+            "y": -80
+          },
+          "properties": {
+            "label": "Finish encounter",
+            "mode": "normal",
+            "payload": {
+              "result": "success",
+              "showSummary": true
+            },
+            "settings": {
+              "enabled": true,
+              "position": {
+                "x": 16,
+                "y": 0,
+                "z": 2
+              },
+              "targetId": 102,
+              "targets": [
+                102
+              ]
+            },
+            "tint": "#48A868FF"
+          },
+          "dynamicPorts": []
+        },
+        {
+          "kind": "subgraph",
+          "id": "victory_call",
+          "nodeTypeId": "sample.subgraphCall",
+          "subgraphId": "victory_branch",
+          "title": "Victory Subgraph Call",
+          "position": {
+            "x": 1210,
+            "y": -360
+          },
+          "properties": {
+            "debugLabel": "Opening Encounter Victory"
+          },
+          "dynamicPorts": []
+        },
+        {
+          "kind": "node",
+          "id": "welcome",
+          "nodeTypeId": "sample.step",
+          "title": "Show Opening",
+          "position": {
+            "x": 260,
+            "y": 40
+          },
+          "properties": {
+            "label": "Show encounter opening",
+            "mode": "cinematic",
+            "payload": {
+              "camera": "opening_wide",
+              "flags": [
+                "tutorial",
+                "skippable"
+              ],
+              "music": "encounter_intro"
+            },
+            "settings": {
+              "enabled": true,
+              "position": {
+                "x": 4,
+                "y": 1.5,
+                "z": -2
+              },
+              "targetId": 101,
+              "targets": [
+                101,
+                102
+              ]
+            },
+            "tint": "#336699FF"
           },
           "dynamicPorts": []
         }
       ],
-      "edges": []
+      "edges": [
+        {
+          "id": "data_branch_result",
+          "kind": "data",
+          "source": {
+            "kind": "node",
+            "nodeId": "victory_call",
+            "portId": "result"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "branch_result",
+            "portId": "value"
+          }
+        },
+        {
+          "id": "data_context_subgraph",
+          "kind": "data",
+          "source": {
+            "kind": "node",
+            "nodeId": "encounter_context",
+            "portId": "value"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "victory_call",
+            "portId": "context"
+          }
+        },
+        {
+          "id": "data_difficulty_float",
+          "kind": "data",
+          "source": {
+            "kind": "node",
+            "nodeId": "difficulty_scale",
+            "portId": "value"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "difficulty_input",
+            "portId": "value"
+          }
+        },
+        {
+          "id": "data_level_check",
+          "kind": "data",
+          "source": {
+            "kind": "node",
+            "nodeId": "player_level",
+            "portId": "value"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "level_check",
+            "portId": "valueIn"
+          }
+        },
+        {
+          "id": "data_level_debug",
+          "kind": "data",
+          "source": {
+            "kind": "node",
+            "nodeId": "player_level",
+            "portId": "value"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "debug_value",
+            "portId": "value"
+          }
+        },
+        {
+          "id": "data_level_reward",
+          "kind": "data",
+          "source": {
+            "kind": "node",
+            "nodeId": "player_level",
+            "portId": "value"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "reward_list",
+            "portId": "reward_primary"
+          }
+        },
+        {
+          "id": "data_level_subgraph",
+          "kind": "data",
+          "source": {
+            "kind": "node",
+            "nodeId": "player_level",
+            "portId": "value"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "victory_call",
+            "portId": "parameter"
+          }
+        },
+        {
+          "id": "flow_check_failure",
+          "kind": "flow",
+          "source": {
+            "kind": "node",
+            "nodeId": "level_check",
+            "portId": "falseOut"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "failure_step",
+            "portId": "flow.in"
+          }
+        },
+        {
+          "id": "flow_check_victory",
+          "kind": "flow",
+          "source": {
+            "kind": "node",
+            "nodeId": "level_check",
+            "portId": "trueOut"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "outcome_router",
+            "portId": "flow.in"
+          }
+        },
+        {
+          "id": "flow_entry_welcome",
+          "kind": "flow",
+          "source": {
+            "kind": "node",
+            "nodeId": "entry",
+            "portId": "flow.out"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "welcome",
+            "portId": "flow.in"
+          }
+        },
+        {
+          "id": "flow_rewards_success",
+          "kind": "flow",
+          "source": {
+            "kind": "node",
+            "nodeId": "reward_list",
+            "portId": "flow.out"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "success_step",
+            "portId": "flow.in"
+          }
+        },
+        {
+          "id": "flow_route_preview",
+          "kind": "flow",
+          "source": {
+            "kind": "node",
+            "nodeId": "outcome_router",
+            "portId": "route_preview"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "preview_rewards_step",
+            "portId": "flow.in"
+          }
+        },
+        {
+          "id": "flow_route_retry",
+          "kind": "flow",
+          "source": {
+            "kind": "node",
+            "nodeId": "outcome_router",
+            "portId": "route_retry"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "retry_encounter_step",
+            "portId": "flow.in"
+          }
+        },
+        {
+          "id": "flow_route_subgraph",
+          "kind": "flow",
+          "source": {
+            "kind": "node",
+            "nodeId": "outcome_router",
+            "portId": "route_subgraph"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "victory_call",
+            "portId": "start"
+          }
+        },
+        {
+          "id": "flow_victory_rewards",
+          "kind": "flow",
+          "source": {
+            "kind": "node",
+            "nodeId": "victory_call",
+            "portId": "finish"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "reward_list",
+            "portId": "flow.in"
+          }
+        },
+        {
+          "id": "flow_welcome_check",
+          "kind": "flow",
+          "source": {
+            "kind": "node",
+            "nodeId": "welcome",
+            "portId": "flow.out"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "level_check",
+            "portId": "execIn"
+          }
+        }
+      ]
+    },
+    {
+      "id": "victory_branch",
+      "graphTypeId": "sample.encounter.branch",
+      "title": "Victory Branch",
+      "properties": {},
+      "interfacePorts": [
+        {
+          "id": "start",
+          "title": "Start",
+          "kind": "flow",
+          "direction": "input",
+          "maxConnections": 1
+        },
+        {
+          "id": "finish",
+          "title": "Finish",
+          "kind": "flow",
+          "direction": "output"
+        },
+        {
+          "id": "parameter",
+          "title": "Player Level",
+          "kind": "data",
+          "direction": "input",
+          "dataTypeId": "int",
+          "maxConnections": 1
+        },
+        {
+          "id": "result",
+          "title": "Result Text",
+          "kind": "data",
+          "direction": "output",
+          "dataTypeId": "string"
+        }
+      ],
+      "nodes": [
+        {
+          "kind": "node",
+          "id": "child_level_sink",
+          "nodeTypeId": "sample.intSink",
+          "title": "Consume Player Level",
+          "position": {
+            "x": 300,
+            "y": 360
+          },
+          "properties": {
+            "fallback": 1
+          },
+          "dynamicPorts": []
+        },
+        {
+          "kind": "node",
+          "id": "child_result_source",
+          "nodeTypeId": "sample.stringSource",
+          "title": "Victory Result",
+          "position": {
+            "x": 560,
+            "y": 360
+          },
+          "properties": {
+            "constant": "Victory rewards prepared"
+          },
+          "dynamicPorts": []
+        },
+        {
+          "kind": "node",
+          "id": "child_step",
+          "nodeTypeId": "sample.step",
+          "title": "Prepare Victory Rewards",
+          "position": {
+            "x": 280,
+            "y": 80
+          },
+          "properties": {
+            "label": "Prepare victory rewards",
+            "mode": "cinematic",
+            "payload": {
+              "camera": "victory",
+              "flags": [
+                "show_rewards"
+              ],
+              "music": "encounter_victory"
+            },
+            "settings": {
+              "enabled": true,
+              "position": {
+                "x": 12.5,
+                "y": 0,
+                "z": -4
+              },
+              "targetId": 101,
+              "targets": [
+                101,
+                102
+              ]
+            },
+            "tint": "#48A868FF"
+          },
+          "dynamicPorts": []
+        }
+      ],
+      "edges": [
+        {
+          "id": "child_flow_finish",
+          "kind": "flow",
+          "source": {
+            "kind": "node",
+            "nodeId": "child_step",
+            "portId": "flow.out"
+          },
+          "target": {
+            "kind": "interface",
+            "portId": "finish"
+          }
+        },
+        {
+          "id": "child_flow_start",
+          "kind": "flow",
+          "source": {
+            "kind": "interface",
+            "portId": "start"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "child_step",
+            "portId": "flow.in"
+          }
+        },
+        {
+          "id": "child_level_parameter",
+          "kind": "data",
+          "source": {
+            "kind": "interface",
+            "portId": "parameter"
+          },
+          "target": {
+            "kind": "node",
+            "nodeId": "child_level_sink",
+            "portId": "value"
+          }
+        },
+        {
+          "id": "child_result_output",
+          "kind": "data",
+          "source": {
+            "kind": "node",
+            "nodeId": "child_result_source",
+            "portId": "value"
+          },
+          "target": {
+            "kind": "interface",
+            "portId": "result"
+          }
+        }
+      ]
     }
   ]
 }

@@ -1,6 +1,6 @@
 # Pre-Unity Authoring 样例
 
-这是在 Unity 集成存在之前覆盖全部四类内置 Authoring 文档家族的最小维护样例项目。它的源文件与 Catalog 刻意保持为可直接审阅的普通文件。
+这是在 Unity 集成存在之前覆盖全部四类内置 Authoring 文档家族的维护样例项目。它的源文件与 Catalog 刻意保持为可直接审阅的普通文件。
 
 样例包含：
 
@@ -8,6 +8,7 @@
 - 自定义 `.encounter`、`.character`、`.settingsdata` 文档扩展名；
 - Graph V3、Entity V1、Structured V1 与 Table CSV 文档；
 - 配套的 Graph V4、Entity V1、Structured V1 与 Table V1 Catalog；
+- Graph 样例包含 Flow/Data 混合端口、复杂属性、数据类型兼容、动态列表端口，以及带 Flow/Data 接口的 typed subgraph；
 - 一个可选的 Project Provider V2 进程，提供 `sample.asset` 引用与一条告警诊断。
 
 安装 VisualBridge VSIX 后在 VS Code 中打开本目录。项目自定义扩展名使用 **VisualBridge: Open Document** 或 VisualBridge Documents 视图打开；CSV 文件可用 **VisualBridge Table Editor** 打开。

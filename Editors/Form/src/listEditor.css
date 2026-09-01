@@ -4,9 +4,28 @@
   gap: 6px;
 }
 
+.vb-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  color: var(--vb-color-muted);
+}
+
+.vb-list-toolbar-actions {
+  display: flex;
+  gap: 3px;
+}
+
+.vb-list-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .vb-list-item {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
+  grid-template-columns: 28px 24px minmax(0, 1fr);
   align-items: start;
   gap: 8px;
   padding: 7px;
@@ -14,6 +33,10 @@
   border: 1px solid var(--vb-color-border);
   border-radius: var(--vb-radius-small);
   transition: border-color 100ms ease, box-shadow 100ms ease, opacity 100ms ease;
+}
+
+.vb-list-item.selected {
+  border-color: var(--vscode-focusBorder, var(--vb-color-focus));
 }
 
 .vb-list-item.drop-target {
@@ -48,12 +71,9 @@
   cursor: grabbing;
 }
 
-.vb-list-empty-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.vb-list-empty {
   min-height: 36px;
-  padding: 4px 5px 4px 10px;
+  padding: 9px 10px;
   color: var(--vb-color-muted);
   background: var(--vb-color-background);
   border: 1px dashed var(--vb-color-border);
@@ -80,11 +100,6 @@
 
 @media (max-width: 720px) {
   .vb-list-item {
-    grid-template-columns: 22px minmax(0, 1fr);
-  }
-
-  .vb-list-actions {
-    grid-column: 2;
-    justify-content: flex-end;
+    grid-template-columns: 28px 22px minmax(0, 1fr);
   }
 }

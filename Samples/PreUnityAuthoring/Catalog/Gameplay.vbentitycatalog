@@ -44,6 +44,51 @@
             "integer": true,
             "min": 1
           }
+        },
+        {
+          "id": "primarySkill",
+          "title": "Primary Skill",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "int",
+          "defaultValue": 101,
+          "editor": {
+            "kind": "reference",
+            "integer": true
+          },
+          "reference": {
+            "kind": "table.row",
+            "target": {
+              "tableTypeId": "sample.skills",
+              "sheetId": "skills"
+            }
+          }
+        },
+        {
+          "id": "skillSequence",
+          "title": "Skill Sequence",
+          "aliases": [],
+          "valueType": "array",
+          "defaultValue": [
+            101,
+            102
+          ],
+          "item": {
+            "valueType": "number",
+            "dataTypeId": "int",
+            "defaultValue": 101,
+            "editor": {
+              "kind": "reference",
+              "integer": true
+            },
+            "reference": {
+              "kind": "table.row",
+              "target": {
+                "tableTypeId": "sample.skills",
+                "sheetId": "skills"
+              }
+            }
+          }
         }
       ]
     }

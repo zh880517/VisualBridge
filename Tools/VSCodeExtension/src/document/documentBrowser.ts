@@ -5,14 +5,16 @@ import type {
   DocumentLifecyclePlan,
   DocumentTypeDefinition,
   IndexedDocument,
-  IndexedDocumentReference,
   StableIdentityRemap,
 } from "@visualbridge/core";
 import { compareUtf16CodeUnits } from "@visualbridge/core";
 import { createDocument } from "../commands/createDocument";
 import type { CreateDocumentSelection } from "../commands/createDocumentSupport";
 import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
-import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
+import {
+  REVEAL_REFERENCE_COMMAND,
+  type WorkspaceReferenceService,
+} from "../reference/workspaceReferenceService";
 import type { WorkspaceReferenceRefactor } from "../refactor/workspaceReferenceRefactor";
 import {
   WorkspaceDocumentLifecycle,
@@ -20,21 +22,24 @@ import {
 } from "./workspaceDocumentLifecycle";
 import {
   WorkspaceDocumentIndex,
-  type IncomingDocumentReference,
 } from "./workspaceDocumentIndex";
+import {
+  copiedDiagnosticText,
+  DocumentDetailsView,
+  type DocumentDetailsGroup,
+  type DocumentDetailsNode,
+  localizeDocumentDiagnostic,
+} from "./documentDetailsView";
 
 export const DOCUMENT_BROWSER_VIEW_ID = "visualbridge.documents";
 
 type DocumentBrowserNode =
   | ProjectNode
   | DocumentTypeNode
-  | ProblemsNode
   | DocumentNode
-  | DetailGroupNode
-  | DiagnosticNode
-  | ReferenceNode
-  | SourceNode
   | EmptyNode;
+
+type DocumentBrowserActionNode = DocumentBrowserNode | DocumentDetailsNode;
 
 interface ProjectNode {
   readonly kind: "project";
@@ -47,43 +52,9 @@ interface DocumentTypeNode {
   readonly documentType: DocumentTypeDefinition;
 }
 
-interface ProblemsNode {
-  readonly kind: "problems";
-  readonly project: ProjectContext;
-  readonly documents: readonly IndexedDocument[];
-}
-
 interface DocumentNode {
   readonly kind: "document";
   readonly document: IndexedDocument;
-  readonly problemContext: boolean;
-}
-
-interface DetailGroupNode {
-  readonly kind: "detailGroup";
-  readonly group: "diagnostics" | "outgoing" | "incoming" | "sources";
-  readonly document: IndexedDocument;
-  readonly count: number;
-}
-
-interface DiagnosticNode {
-  readonly kind: "diagnostic";
-  readonly document: IndexedDocument;
-  readonly diagnostic: DocumentDiagnostic;
-}
-
-interface ReferenceNode {
-  readonly kind: "reference";
-  readonly document: IndexedDocument;
-  readonly direction: "outgoing" | "incoming";
-  readonly reference: IndexedDocumentReference;
-  readonly incoming?: IncomingDocumentReference;
-}
-
-interface SourceNode {
-  readonly kind: "source";
-  readonly document: IndexedDocument;
-  readonly path: string;
 }
 
 interface EmptyNode {
@@ -95,6 +66,7 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
   private readonly changeEmitter = new vscode.EventEmitter<DocumentBrowserNode | undefined>();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly tree: vscode.TreeView<DocumentBrowserNode>;
+  private readonly details: DocumentDetailsView;
 
   public readonly onDidChangeTreeData = this.changeEmitter.event;
 
@@ -109,15 +81,21 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
       treeDataProvider: this,
       showCollapseAll: true,
     });
+    this.details = new DocumentDetailsView(documents);
     this.disposables.push(
       this.changeEmitter,
       this.tree,
+      this.details,
+      this.tree.onDidChangeSelection((event) => {
+        const selected = event.selection[0];
+        this.details.select(selected?.kind === "document" ? selected.document : undefined);
+      }),
       projects.onDidChange(() => this.refreshTree()),
       documents.onDidChange(() => this.refreshTree()),
       vscode.commands.registerCommand("visualbridge.documentBrowser.refresh", async () => {
         await vscode.window.withProgress({
           location: vscode.ProgressLocation.Window,
-          title: "Refreshing VisualBridge documents…",
+          title: "正在刷新 VisualBridge 文档…",
         }, () => this.documents.refresh());
       }),
       vscode.commands.registerCommand("visualbridge.documentBrowser.search", async () => {
@@ -126,7 +104,7 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
       vscode.commands.registerCommand("visualbridge.documentBrowser.validateAll", async () => {
         await this.validateAll();
       }),
-      vscode.commands.registerCommand("visualbridge.documentBrowser.open", async (node?: DocumentBrowserNode) => {
+      vscode.commands.registerCommand("visualbridge.documentBrowser.open", async (node?: DocumentBrowserActionNode) => {
         await this.open(node);
       }),
       vscode.commands.registerCommand("visualbridge.documentBrowser.create", async (node?: DocumentBrowserNode) => {
@@ -144,10 +122,19 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
       vscode.commands.registerCommand("visualbridge.documentBrowser.safeDelete", async (node?: DocumentBrowserNode) => {
         await this.safeDelete(node);
       }),
-      vscode.commands.registerCommand("visualbridge.documentBrowser.revealReference", async (node?: DocumentBrowserNode) => {
+      vscode.commands.registerCommand("visualbridge.documentBrowser.showProblems", async (node?: DocumentBrowserNode) => {
+        await this.showDetails(node, "diagnostics");
+      }),
+      vscode.commands.registerCommand("visualbridge.documentBrowser.showReferences", async (node?: DocumentBrowserNode) => {
+        await this.showDetails(node, "references");
+      }),
+      vscode.commands.registerCommand("visualbridge.documentBrowser.copyProblem", async (node?: DocumentDetailsNode) => {
+        await this.copyProblem(node);
+      }),
+      vscode.commands.registerCommand("visualbridge.documentBrowser.revealReference", async (node?: DocumentBrowserActionNode) => {
         await this.revealReference(node);
       }),
-      vscode.commands.registerCommand("visualbridge.documentBrowser.renameReferenceTarget", async (node?: DocumentBrowserNode) => {
+      vscode.commands.registerCommand("visualbridge.documentBrowser.renameReferenceTarget", async (node?: DocumentBrowserActionNode) => {
         await this.renameReferenceTarget(node);
       }),
     );
@@ -176,104 +163,21 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
       ].join("\n"));
       return item;
     }
-    if (node.kind === "problems") {
-      const counts = diagnosticCounts(node.documents);
-      const item = new vscode.TreeItem("Problems", vscode.TreeItemCollapsibleState.Collapsed);
-      item.contextValue = "visualbridge.problems";
-      item.iconPath = counts.errors > 0 ? errorIcon() : warningIcon();
-      item.description = `${counts.errors} errors · ${counts.warnings} warnings`;
-      return item;
-    }
     if (node.kind === "document") {
       const counts = diagnosticCounts([node.document]);
-      const hasDetails = counts.errors + counts.warnings + node.document.references.length
-        + this.documents.incomingReferences(node.document).length
-        + (node.document.sourcePaths.length > 1 ? 1 : 0) > 0;
+      const problemCount = counts.errors + counts.warnings;
+      const referenceCount = node.document.references.length + this.documents.incomingReferences(node.document).length;
       const item = new vscode.TreeItem(
-        node.document.title,
-        hasDetails ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None,
-      );
-      item.contextValue = "visualbridge.document";
-      item.iconPath = counts.errors > 0
-        ? errorIcon()
-        : counts.warnings > 0
-          ? warningIcon()
-          : editorIcon(node.document.editor);
-      item.description = node.document.path;
-      item.tooltip = documentTooltip(node.document, counts.errors, counts.warnings);
-      item.command = {
-        command: "visualbridge.documentBrowser.open",
-        title: "Open Document",
-        arguments: [node],
-      };
-      return item;
-    }
-    if (node.kind === "detailGroup") {
-      const label = node.group === "diagnostics"
-        ? "Problems"
-        : node.group === "outgoing"
-          ? "References"
-          : node.group === "incoming"
-            ? "Referenced By"
-            : "Sources";
-      const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.Expanded);
-      item.contextValue = `visualbridge.${node.group}`;
-      item.description = String(node.count);
-      item.iconPath = node.group === "diagnostics"
-        ? new vscode.ThemeIcon("issues")
-        : node.group === "sources"
-          ? new vscode.ThemeIcon("files")
-          : new vscode.ThemeIcon("references");
-      return item;
-    }
-    if (node.kind === "diagnostic") {
-      const item = new vscode.TreeItem(node.diagnostic.message, vscode.TreeItemCollapsibleState.None);
-      item.contextValue = "visualbridge.diagnostic";
-      item.description = node.diagnostic.path;
-      item.iconPath = node.diagnostic.severity === "error" ? errorIcon() : warningIcon();
-      item.tooltip = `${node.diagnostic.code}\n${node.diagnostic.path}: ${node.diagnostic.message}`;
-      item.command = {
-        command: "visualbridge.documentBrowser.open",
-        title: "Open Document",
-        arguments: [node],
-      };
-      return item;
-    }
-    if (node.kind === "reference") {
-      const occurrence = node.reference.occurrence;
-      const resolution = node.reference.resolution;
-      const candidate = resolution.candidates[0];
-      const sourceTitle = node.incoming?.source.title;
-      const item = new vscode.TreeItem(
-        node.direction === "incoming"
-          ? `${sourceTitle ?? "Document"} · ${occurrence.path}`
-          : candidate?.title ?? String(occurrence.value),
+        `${escapeCodiconText(node.document.title)}  $(issues) ${problemCount}  $(references) ${referenceCount}`,
         vscode.TreeItemCollapsibleState.None,
       );
-      item.contextValue = node.direction === "outgoing"
-        ? "visualbridge.outgoingReference"
-        : "visualbridge.incomingReference";
-      item.description = node.direction === "incoming"
-        ? String(occurrence.value)
-        : `${occurrence.definition.kind} · ${resolution.status}`;
-      item.iconPath = referenceIcon(resolution.status);
-      item.tooltip = referenceTooltip(node);
-      item.command = {
-        command: node.direction === "outgoing"
-          ? "visualbridge.documentBrowser.revealReference"
-          : "visualbridge.documentBrowser.open",
-        title: node.direction === "outgoing" ? "Reveal Reference" : "Open Referencing Document",
-        arguments: [node],
-      };
-      return item;
-    }
-    if (node.kind === "source") {
-      const item = new vscode.TreeItem(node.path, vscode.TreeItemCollapsibleState.None);
-      item.contextValue = "visualbridge.source";
-      item.iconPath = new vscode.ThemeIcon("file");
+      item.contextValue = "visualbridge.document";
+      item.iconPath = editorIcon(node.document.editor);
+      item.description = node.document.path;
+      item.tooltip = documentTooltip(node.document, counts.errors, counts.warnings, referenceCount);
       item.command = {
         command: "visualbridge.documentBrowser.open",
-        title: "Open Source",
+        title: "打开文档",
         arguments: [node],
       };
       return item;
@@ -295,80 +199,18 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
         .map((project) => ({ kind: "project", project }));
     }
     if (node.kind === "project") {
-      const projectDocuments = this.documents.documents.filter(
-        (document) => document.projectId === node.project.definition.projectId,
-      );
-      const problemDocuments = projectDocuments.filter((document) => document.diagnostics.length > 0);
       const types: DocumentTypeNode[] = node.project.definition.documentTypes
         .filter((documentType) => ["graph", "entity", "structured", "table"].includes(documentType.editor))
         .slice()
         .sort((left, right) => compareUtf16CodeUnits(`${left.editor}\u0000${left.id}`, `${right.editor}\u0000${right.id}`))
         .map((documentType) => ({ kind: "documentType", project: node.project, documentType }));
-      return [
-        ...(problemDocuments.length === 0 ? [] : [{ kind: "problems" as const, project: node.project, documents: problemDocuments }]),
-        ...types,
-      ];
+      return types;
     }
     if (node.kind === "documentType") {
       const documents = this.documentsForType(node.project, node.documentType);
       return documents.length === 0
         ? [{ kind: "empty", label: this.documents.loading ? "Indexing…" : "No documents" }]
-        : documents.map((document) => ({ kind: "document", document, problemContext: false }));
-    }
-    if (node.kind === "problems") {
-      return node.documents.map((document) => ({ kind: "document", document, problemContext: true }));
-    }
-    if (node.kind === "document") {
-      const incoming = this.documents.incomingReferences(node.document);
-      return [
-        ...(node.document.diagnostics.length === 0 ? [] : [{
-          kind: "detailGroup" as const,
-          group: "diagnostics" as const,
-          document: node.document,
-          count: node.document.diagnostics.length,
-        }]),
-        ...(node.document.references.length === 0 ? [] : [{
-          kind: "detailGroup" as const,
-          group: "outgoing" as const,
-          document: node.document,
-          count: node.document.references.length,
-        }]),
-        ...(incoming.length === 0 ? [] : [{
-          kind: "detailGroup" as const,
-          group: "incoming" as const,
-          document: node.document,
-          count: incoming.length,
-        }]),
-        ...(node.document.sourcePaths.length < 2 ? [] : [{
-          kind: "detailGroup" as const,
-          group: "sources" as const,
-          document: node.document,
-          count: node.document.sourcePaths.length,
-        }]),
-      ];
-    }
-    if (node.kind === "detailGroup") {
-      if (node.group === "diagnostics") {
-        return node.document.diagnostics.map((diagnostic) => ({ kind: "diagnostic", document: node.document, diagnostic }));
-      }
-      if (node.group === "outgoing") {
-        return node.document.references.map((reference) => ({
-          kind: "reference",
-          document: node.document,
-          direction: "outgoing",
-          reference,
-        }));
-      }
-      if (node.group === "incoming") {
-        return this.documents.incomingReferences(node.document).map((incoming) => ({
-          kind: "reference",
-          document: node.document,
-          direction: "incoming",
-          reference: incoming.reference,
-          incoming,
-        }));
-      }
-      return node.document.sourcePaths.map((path) => ({ kind: "source", document: node.document, path }));
+        : documents.map((document) => ({ kind: "document", document }));
     }
     return [];
   }
@@ -379,12 +221,97 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
     }
   }
 
+  public incomingReferenceTestSnapshot(): readonly {
+    readonly projectId: string;
+    readonly targetPath: string;
+    readonly sourcePath: string;
+    readonly occurrencePath: string;
+    readonly label: string;
+    readonly description?: string;
+    readonly command?: string;
+    readonly graphTitle?: string;
+    readonly nodeTitle?: string;
+  }[] {
+    return this.details.incomingReferenceTestSnapshot();
+  }
+
+  public documentDetailsTestSnapshot(selector: {
+    readonly projectId: string;
+    readonly path: string;
+  }): {
+    readonly row: {
+      readonly label: string;
+      readonly description?: string;
+      readonly collapsibleState: vscode.TreeItemCollapsibleState;
+    };
+    readonly details: ReturnType<DocumentDetailsView["snapshot"]>;
+  } {
+    const document = this.findDocument(selector);
+    const row = this.getTreeItem({ kind: "document", document });
+    return {
+      row: {
+        label: treeItemLabel(row.label),
+        ...(typeof row.description === "string" ? { description: row.description } : {}),
+        collapsibleState: row.collapsibleState ?? vscode.TreeItemCollapsibleState.None,
+      },
+      details: this.details.snapshot(document),
+    };
+  }
+
+  public async showDocumentDetailsForTest(
+    selector: { readonly projectId: string; readonly path: string },
+    group: DocumentDetailsGroup,
+  ): Promise<ReturnType<DocumentDetailsView["testState"]>> {
+    await this.details.show(this.findDocument(selector), group);
+    return this.details.testState();
+  }
+
+  public localizeDiagnosticForTest(diagnostic: DocumentDiagnostic): string {
+    return localizeDocumentDiagnostic(diagnostic);
+  }
+
+  public async revealIncomingReferenceForTest(selector: {
+    readonly projectId: string;
+    readonly targetPath: string;
+    readonly sourcePath: string;
+    readonly occurrencePath: string;
+  }): Promise<void> {
+    const document = this.documents.documents.find((candidate) => (
+      candidate.projectId === selector.projectId && candidate.path === selector.targetPath
+    ));
+    const incoming = document === undefined
+      ? undefined
+      : this.documents.incomingReferences(document).find((candidate) => (
+          candidate.source.path === selector.sourcePath
+          && candidate.reference.occurrence.path === selector.occurrencePath
+        ));
+    if (document === undefined || incoming === undefined) {
+      throw new Error("Incoming reference test target is not indexed.");
+    }
+    await this.revealReference({
+      kind: "reference",
+      document,
+      direction: "incoming",
+      reference: incoming.reference,
+      incoming,
+    });
+  }
+
   private refreshTree(): void {
     const summary = this.documents.summary;
     this.tree.description = this.documents.loading
       ? "Indexing…"
-      : `${summary.documentCount} documents · ${summary.errorCount} errors`;
+      : `${summary.documentCount} 个文档 · ${summary.errorCount} 个错误`;
+    this.details.refresh(this.documents.documents);
     this.changeEmitter.fire(undefined);
+  }
+
+  private findDocument(selector: { readonly projectId: string; readonly path: string }): IndexedDocument {
+    const document = this.documents.documents.find((candidate) => (
+      candidate.projectId === selector.projectId && candidate.path === selector.path
+    ));
+    if (document === undefined) throw new Error("Document Browser test target is not indexed.");
+    return document;
   }
 
   private documentsForType(
@@ -411,7 +338,7 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
           description: `${editorTitle(document.editor)} · ${document.documentTypeId}`,
           detail: `${document.projectId} · ${document.path}${counts.errors + counts.warnings === 0
             ? ""
-            : ` · ${counts.errors} errors · ${counts.warnings} warnings`}`,
+            : ` · ${counts.errors} 个错误 · ${counts.warnings} 个警告`}`,
           alwaysShow: true,
           document,
         };
@@ -423,7 +350,7 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
         const selected = quickPick.selectedItems[0];
         quickPick.hide();
         if (selected !== undefined) {
-          void this.open({ kind: "document", document: selected.document, problemContext: false });
+          void this.open({ kind: "document", document: selected.document });
         }
       }),
       quickPick.onDidHide(() => quickPick.dispose()),
@@ -435,34 +362,33 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
   private async validateAll(): Promise<void> {
     const summary = await vscode.window.withProgress({
       location: vscode.ProgressLocation.Notification,
-      title: "Validating VisualBridge documents",
+      title: "正在校验 VisualBridge 文档",
       cancellable: false,
     }, () => this.documents.validateAll());
-    const message = `${summary.documentCount} documents: ${summary.errorCount} errors, ${summary.warningCount} warnings, ${summary.referenceCount} references.`;
+    const message = `已校验 ${summary.documentCount} 个文档：${summary.errorCount} 个错误、${summary.warningCount} 个警告、${summary.referenceCount} 个引用。`;
     if (summary.errorCount > 0) {
-      const action = await vscode.window.showWarningMessage(message, "Show Problems");
-      if (action === "Show Problems") {
-        await vscode.commands.executeCommand("workbench.actions.view.problems");
+      const action = await vscode.window.showWarningMessage(message, "查看 Problems");
+      if (action === "查看 Problems") {
+        const firstProblem = this.documents.documents.find((document) => document.diagnostics.length > 0);
+        if (firstProblem !== undefined) await this.details.show(firstProblem, "diagnostics");
       }
     } else {
       void vscode.window.showInformationMessage(message);
     }
   }
 
-  private async open(node?: DocumentBrowserNode): Promise<void> {
+  private async open(node?: DocumentBrowserActionNode): Promise<void> {
     const document = node?.kind === "document"
       ? node.document
       : node?.kind === "diagnostic"
         ? node.document
         : node?.kind === "reference"
           ? node.incoming?.source ?? node.document
-          : node?.kind === "source"
-            ? node.document
-            : undefined;
+          : undefined;
     if (document === undefined) {
       return;
     }
-    const path = node?.kind === "source" ? node.path : document.path;
+    const path = document.path;
     const project = this.projects.projects.find((entry) => entry.definition.projectId === document.projectId);
     if (project === undefined) {
       void vscode.window.showWarningMessage(`VisualBridge Project '${document.projectId}' is no longer available.`);
@@ -472,8 +398,16 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
     await vscode.commands.executeCommand("visualbridge.openDocument", uri);
   }
 
-  private async revealReference(node?: DocumentBrowserNode): Promise<void> {
-    if (node?.kind !== "reference" || node.direction !== "outgoing") {
+  private async revealReference(node?: DocumentBrowserActionNode): Promise<void> {
+    if (node?.kind !== "reference") {
+      return;
+    }
+    if (node.direction === "incoming") {
+      if (node.incoming?.navigation === undefined) {
+        await this.open(node);
+        return;
+      }
+      await vscode.commands.executeCommand(REVEAL_REFERENCE_COMMAND, node.incoming.navigation.location);
       return;
     }
     const project = this.projects.projects.find(
@@ -489,7 +423,7 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
     );
   }
 
-  private async renameReferenceTarget(node?: DocumentBrowserNode): Promise<void> {
+  private async renameReferenceTarget(node?: DocumentBrowserActionNode): Promise<void> {
     if (node?.kind !== "reference") {
       return;
     }
@@ -498,6 +432,17 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
       return;
     }
     await this.refactors.rename(source, node.reference);
+  }
+
+  private async showDetails(node: DocumentBrowserNode | undefined, group: DocumentDetailsGroup): Promise<void> {
+    if (node?.kind !== "document") return;
+    await this.details.show(node.document, group);
+  }
+
+  private async copyProblem(node: DocumentDetailsNode | undefined): Promise<void> {
+    if (node?.kind !== "diagnostic") return;
+    await vscode.env.clipboard.writeText(copiedDiagnosticText(node));
+    void vscode.window.showInformationMessage("已复制问题详情。");
   }
 
   private async moveDocument(node: DocumentBrowserNode | undefined, title: string): Promise<void> {
@@ -679,47 +624,34 @@ function editorIcon(editor: string): vscode.ThemeIcon {
           : "file-code");
 }
 
-function errorIcon(): vscode.ThemeIcon {
-  return new vscode.ThemeIcon("error", new vscode.ThemeColor("problemsErrorIcon.foreground"));
-}
-
-function warningIcon(): vscode.ThemeIcon {
-  return new vscode.ThemeIcon("warning", new vscode.ThemeColor("problemsWarningIcon.foreground"));
-}
-
-function referenceIcon(status: IndexedDocumentReference["resolution"]["status"]): vscode.ThemeIcon {
-  return status === "resolved"
-    ? new vscode.ThemeIcon("link-external")
-    : status === "providerUnavailable"
-      ? warningIcon()
-      : errorIcon();
-}
-
-function documentTooltip(document: IndexedDocument, errors: number, warnings: number): vscode.MarkdownString {
+function documentTooltip(
+  document: IndexedDocument,
+  errors: number,
+  warnings: number,
+  references: number,
+): vscode.MarkdownString {
   const tooltip = new vscode.MarkdownString();
   tooltip.appendMarkdown(`**${escapeMarkdown(document.title)}**\n\n`);
-  tooltip.appendMarkdown(`Project: \`${escapeMarkdown(document.projectId)}\`  \n`);
-  tooltip.appendMarkdown(`Document Type: \`${escapeMarkdown(document.documentTypeId)}\`  \n`);
+  tooltip.appendMarkdown(`工程：\`${escapeMarkdown(document.projectId)}\`  \n`);
+  tooltip.appendMarkdown(`文档类型：\`${escapeMarkdown(document.documentTypeId)}\`  \n`);
   if (document.documentId !== undefined) {
-    tooltip.appendMarkdown(`Document ID: \`${escapeMarkdown(document.documentId)}\`  \n`);
+    tooltip.appendMarkdown(`文档 ID：\`${escapeMarkdown(document.documentId)}\`  \n`);
   }
-  tooltip.appendMarkdown(`Path: \`${escapeMarkdown(document.path)}\`  \n`);
-  tooltip.appendMarkdown(`Problems: ${errors} errors, ${warnings} warnings  \n`);
-  tooltip.appendMarkdown(`References: ${document.references.length}`);
+  tooltip.appendMarkdown(`路径：\`${escapeMarkdown(document.path)}\`  \n`);
+  tooltip.appendMarkdown(`Problems：${errors} 个错误、${warnings} 个警告  \n`);
+  tooltip.appendMarkdown(`References：${references}  \n\n`);
+  tooltip.appendMarkdown("选择文件可在下方详情视图查看；点击文件后的图标可直接展开对应分组。");
   return tooltip;
 }
 
-function referenceTooltip(node: ReferenceNode): string {
-  const occurrence = node.reference.occurrence;
-  const candidates = node.reference.resolution.candidates;
-  return [
-    `${occurrence.definition.kind}: ${String(occurrence.value)}`,
-    `Path: ${occurrence.path}`,
-    `Status: ${node.reference.resolution.status}`,
-    ...candidates.map((candidate) => candidate.location?.path ?? candidate.title),
-  ].join("\n");
+function treeItemLabel(label: string | vscode.TreeItemLabel | undefined): string {
+  return typeof label === "string" ? label : label?.label ?? "";
 }
 
 function escapeMarkdown(value: string): string {
   return value.replace(/[\\`*_{}\[\]()#+\-.!]/g, "\\$&");
+}
+
+function escapeCodiconText(value: string): string {
+  return value.replace(/\$\(/g, "$\u200B(");
 }

@@ -122,13 +122,11 @@ export class EntityEditorSession {
                 ? { historyAction: "redo" as const }
                 : {}),
           });
-          if (!event.document.isDirty) {
-            this.baseDiskTextHash = hashText(event.document.getText());
-          }
         } else if (this.getCatalogUris().some((catalogUri) => sameUri(event.document.uri, catalogUri))) {
           void this.sendState();
         }
       }),
+      // WorkspaceEdit 的变更事件与 isDirty 落脏存在时序窗口，磁盘基线不能在这里提前更新。
       vscode.workspace.onDidSaveTextDocument((savedDocument) => {
         if (sameUri(savedDocument.uri, this.document.uri)) {
           this.baseDiskTextHash = hashText(savedDocument.getText());
@@ -367,6 +365,10 @@ export class EntityEditorSession {
     const diskText = new TextDecoder("utf-8", { fatal: true }).decode(diskBytes);
     const diskTextHash = hashText(diskText);
     if (diskTextHash === this.baseDiskTextHash) {
+      return true;
+    }
+    if (diskText === this.document.getText()) {
+      this.baseDiskTextHash = diskTextHash;
       return true;
     }
     if (!this.document.isDirty) {

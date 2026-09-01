@@ -504,6 +504,45 @@ button.link {
   gap: 4px;
 }
 
+.graph-node-property:has(> .graph-node-property-value > .vb-object-editor),
+.graph-node-property:has(> .graph-node-property-value > .vb-list-editor),
+.graph-node-property:has(> .graph-node-property-value > textarea) {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+
+.graph-node-property-value > *,
+.graph-node-property-value .vb-object-editor,
+.graph-node-property-value .vb-list-editor,
+.graph-node-property-value .vb-list-item {
+  min-width: 0;
+}
+
+.graph-node-property-value .vb-object-editor {
+  padding-left: 10px;
+}
+
+.graph-node-property-value .vb-object-editor .vb-object-editor {
+  margin-left: 0;
+  padding-left: 10px;
+}
+
+.graph-node-property-value .vb-object-editor .vb-field {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  min-width: 0;
+}
+
+.graph-node-property-value .vb-object-editor .vb-field-label {
+  padding-top: 0;
+}
+
+.graph-node-property-value .vb-list-item {
+  grid-template-columns: 28px 18px minmax(0, 1fr);
+  gap: 4px;
+  padding: 4px;
+}
+
 .graph-node-property-value .vb-field-label {
   font-size: 11px;
   white-space: nowrap;

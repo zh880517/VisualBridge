@@ -498,7 +498,7 @@ VS Code 扩展一旦在某个窗口内激活，通常持续到该窗口关闭或
 
 ### 原生 Explorer 与文件编辑器关联
 
-用户继续使用 VS Code 原生 Explorer 处理普通文件，不要求先执行“启动插件”命令。基础插件同时提供补充性的 Document Browser，以 Project / Document Type 语义组织 Authoring Document、诊断和引用；它不是第二份文件所有权或权威状态。VS Code 工作区中只有发现并成功解析 VisualBridge Project File 后，才启用这些功能。插件启用后，用户在 Explorer、Document Browser、Quick Open、搜索结果或引用跳转中打开该工程声明的指定类型文件时，才创建对应的编辑窗口：
+用户继续使用 VS Code 原生 Explorer 处理普通文件，不要求先执行“启动插件”命令。基础插件同时提供补充性的 Document Browser，以 Project / Document Type 语义组织 Authoring Document；文件行携带 Problems/References 计数，当前文件的中文诊断和双向引用显示在同容器内独立可折叠的详情 View，它们都不是第二份文件所有权或权威状态。VS Code 工作区中只有发现并成功解析 VisualBridge Project File 后，才启用这些功能。插件启用后，用户在 Explorer、Document Browser、Quick Open、搜索结果或引用跳转中打开该工程声明的指定类型文件时，才创建对应的编辑窗口：
 
 ```text
 VS Code 原生 Explorer

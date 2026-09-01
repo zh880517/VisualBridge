@@ -134,6 +134,21 @@
         "icon": "$(trash)"
       },
       {
+        "command": "visualbridge.documentBrowser.showProblems",
+        "title": "查看 Problems",
+        "icon": "$(issues)"
+      },
+      {
+        "command": "visualbridge.documentBrowser.showReferences",
+        "title": "查看 References",
+        "icon": "$(references)"
+      },
+      {
+        "command": "visualbridge.documentBrowser.copyProblem",
+        "title": "复制问题详情",
+        "icon": "$(copy)"
+      },
+      {
         "command": "visualbridge.documentBrowser.revealReference",
         "title": "Reveal Reference",
         "icon": "$(link-external)"
@@ -172,6 +187,10 @@
         {
           "id": "visualbridge.catalogs",
           "name": "Catalogs"
+        },
+        {
+          "id": "visualbridge.documentDetails",
+          "name": "Problems / References"
         }
       ]
     },
@@ -230,8 +249,18 @@
         },
         {
           "command": "visualbridge.documentBrowser.open",
-          "when": "view == visualbridge.documents && (viewItem == visualbridge.document || viewItem == visualbridge.source || viewItem == visualbridge.diagnostic || viewItem == visualbridge.incomingReference)",
+          "when": "(view == visualbridge.documents && viewItem == visualbridge.document) || (view == visualbridge.documentDetails && (viewItem == visualbridge.diagnostic || viewItem == visualbridge.incomingReference))",
           "group": "inline@1"
+        },
+        {
+          "command": "visualbridge.documentBrowser.showProblems",
+          "when": "view == visualbridge.documents && viewItem == visualbridge.document",
+          "group": "inline@2"
+        },
+        {
+          "command": "visualbridge.documentBrowser.showReferences",
+          "when": "view == visualbridge.documents && viewItem == visualbridge.document",
+          "group": "inline@3"
         },
         {
           "command": "visualbridge.documentBrowser.copy",
@@ -255,13 +284,18 @@
         },
         {
           "command": "visualbridge.documentBrowser.revealReference",
-          "when": "view == visualbridge.documents && viewItem == visualbridge.outgoingReference",
+          "when": "view == visualbridge.documentDetails && (viewItem == visualbridge.outgoingReference || viewItem == visualbridge.incomingReference)",
           "group": "inline@1"
         },
         {
           "command": "visualbridge.documentBrowser.renameReferenceTarget",
-          "when": "view == visualbridge.documents && (viewItem == visualbridge.outgoingReference || viewItem == visualbridge.incomingReference)",
+          "when": "view == visualbridge.documentDetails && (viewItem == visualbridge.outgoingReference || viewItem == visualbridge.incomingReference)",
           "group": "inline@2"
+        },
+        {
+          "command": "visualbridge.documentBrowser.copyProblem",
+          "when": "view == visualbridge.documentDetails && viewItem == visualbridge.diagnostic",
+          "group": "navigation@1"
         }
       ]
     },

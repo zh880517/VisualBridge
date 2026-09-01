@@ -72,6 +72,35 @@ test("PreUnityAuthoring sample passes official project, catalog, document, and P
   const graphRegistry = buildOrThrow("Graph Catalog Registry", graph.buildGraphCatalogRegistry([graphCatalog]));
   const graphDocument = parseOrThrow("Graph Document", graph.parseGraphDocument(jsonSources.get("Logic/Opening.encounter")));
   assertNoErrors("Graph Document", graph.validateGraphDocument(graphDocument, graphRegistry));
+  const rootGraph = graphDocument.graphs.find((candidate) => candidate.id === graphDocument.rootGraphId);
+  assert.notEqual(rootGraph, undefined, "Authoring sample must contain its declared root graph.");
+  const flowRouterType = graph.resolveNodeType(graphRegistry, "sample.flowRouter");
+  assert.notEqual(flowRouterType, undefined, "Authoring sample Catalog must declare the dynamic flow router.");
+  const flowOutputGroup = flowRouterType.dynamicPortGroups.find((group) => group.id === "route.outputs");
+  assert.notEqual(flowOutputGroup, undefined, "Dynamic flow router must declare its output group.");
+  assert.equal(flowOutputGroup.port.kind, "flow");
+  assert.equal(flowOutputGroup.port.direction, "output");
+  assert.equal(flowOutputGroup.listPortMode, undefined, "Dynamic flow outputs must not be modeled as data-list ports.");
+  const flowRouter = rootGraph.nodes.find((node) => node.id === "outcome_router");
+  assert.notEqual(flowRouter, undefined, "Root graph must exercise the dynamic flow router.");
+  const routedPorts = flowRouter.dynamicPorts.filter((port) => port.groupId === "route.outputs");
+  assert.equal(routedPorts.length, 3, "Dynamic flow router must expose three sample flow outputs.");
+  const routedPortIds = new Set(routedPorts.map((port) => port.id));
+  const routedFlowEdges = rootGraph.edges.filter((edge) => edge.kind === "flow"
+    && edge.source.kind === "node"
+    && edge.source.nodeId === flowRouter.id
+    && routedPortIds.has(edge.source.portId));
+  assert.equal(routedFlowEdges.length, 3, "Every sample dynamic flow output must be connected.");
+  const subgraphCall = rootGraph.nodes.find((node) => node.id === "victory_call");
+  assert.equal(subgraphCall?.kind, "subgraph", "Root graph must visibly exercise a subgraph call node.");
+  const childGraph = graphDocument.graphs.find((candidate) => candidate.id === subgraphCall?.subgraphId);
+  assert.notEqual(childGraph, undefined, "Subgraph call must resolve to an embedded child graph.");
+  assert.notEqual(childGraph.nodes.length, 0, "Embedded child graph must contain test nodes.");
+  assert.notEqual(childGraph.edges.length, 0, "Embedded child graph must contain test edges.");
+  assert.equal(routedFlowEdges.some((edge) => edge.source.portId === "route_subgraph"
+    && edge.target.kind === "node"
+    && edge.target.nodeId === subgraphCall.id
+    && edge.target.portId === "start"), true, "One dynamic flow output must route into the real subgraph call.");
 
   const entityCatalog = parseOrThrow(
     "Entity Catalog",
@@ -111,6 +140,41 @@ test("PreUnityAuthoring sample passes official project, catalog, document, and P
   );
   assertNoErrors("Table Document", table.validateTableDocument(tableDocument, tableType));
   assert.deepEqual(tableDocument.sheets[0].rows.map((row) => row.cells.id), [101, 102]);
+  assert.deepEqual(
+    tableDocument.sheets[0].rows.map((row) => [row.cells.prerequisiteSkill, row.cells.comboSkills]),
+    [[102, [101, 102]], [101, [102, 101]]],
+  );
+  const tableRowValues = new Set(tableDocument.sheets[0].rows.map((row) => row.cells.id));
+  const tableRowDefaults = [
+    ...collectReferenceDefaults(graphCatalog.nodeTypes, "table.row"),
+    ...collectReferenceDefaults(entityCatalog.entityTypes, "table.row"),
+    ...collectReferenceDefaults(entityCatalog.componentTypes, "table.row"),
+    ...collectReferenceDefaults(
+      tableType.sheets.map((sheet) => ({ id: sheet.id, properties: sheet.columns })),
+      "table.row",
+    ),
+  ];
+  assert.notEqual(tableRowDefaults.length, 0, "Authoring sample Catalogs must exercise table.row defaults.");
+  tableRowDefaults.forEach(({ path: referencePath, value }) => {
+    assert.equal(
+      tableRowValues.has(value),
+      true,
+      `${referencePath} default '${String(value)}' must resolve to a sample.skills row.`,
+    );
+  });
+  const tableRowReferences = [
+    ...graph.collectGraphReferences(graphDocument, graphRegistry),
+    ...entity.collectEntityReferences(entityDocument, entityRegistry),
+    ...table.collectTableReferences(tableDocument, tableType),
+  ].filter((occurrence) => occurrence.definition.kind === "table.row");
+  assert.notEqual(tableRowReferences.length, 0, "Authoring sample documents must exercise table.row values.");
+  tableRowReferences.forEach(({ path: referencePath, value }) => {
+    assert.equal(
+      tableRowValues.has(value),
+      true,
+      `${referencePath} value '${String(value)}' must resolve to a sample.skills row.`,
+    );
+  });
 
   const providerEntry = path.join(sampleRoot, "Providers", "sample-provider.mjs");
   const host = await ProjectProviderHost.create({
@@ -209,6 +273,21 @@ function formatProjectIssues(result) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function collectReferenceDefaults(fieldOwners, referenceKind) {
+  const results = [];
+  const visit = (definition, definitionPath) => {
+    if (definition.reference?.kind === referenceKind) {
+      results.push({ path: definitionPath, value: definition.defaultValue });
+    }
+    definition.fields?.forEach((field) => visit(field, `${definitionPath}.fields.${field.id}`));
+    if (definition.item !== undefined) visit(definition.item, `${definitionPath}.item`);
+  };
+  fieldOwners.forEach((owner) => owner.properties.forEach((property) => (
+    visit(property, `fieldOwners.${owner.id}.properties.${property.id}`)
+  )));
+  return results;
 }
 
 async function read(relativePath) {

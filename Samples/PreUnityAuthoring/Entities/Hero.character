@@ -4,8 +4,13 @@
   "entityTypeId": "sample.hero",
   "title": "Sample Hero",
   "properties": {
+    "health": 120,
     "name": "Ranger",
-    "health": 120
+    "primarySkill": 102,
+    "skillSequence": [
+      101,
+      102
+    ]
   },
   "components": [
     {
@@ -14,6 +19,14 @@
       "enabled": true,
       "properties": {
         "speed": 6.5
+      }
+    },
+    {
+      "id": "component_aab1b7c9-d994-4d50-80c6-1d260edaf30a",
+      "componentTypeId": "sample.movement",
+      "enabled": true,
+      "properties": {
+        "speed": 5
       }
     }
   ]

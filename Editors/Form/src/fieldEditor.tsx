@@ -4,7 +4,7 @@ import { Checkbox } from "@base-ui/react/checkbox";
 import { Popover } from "@base-ui/react/popover";
 import { DragDropProvider } from "@dnd-kit/react";
 import { isSortable, useSortable } from "@dnd-kit/react/sortable";
-import { CommonIcon, IconButton, ListItemActions, PropertyGrid } from "@visualbridge/editor-ui";
+import { CommonIcon, IconButton, PropertyGrid } from "@visualbridge/editor-ui";
 import { HexAlphaColorPicker, HexColorPicker } from "react-colorful";
 import {
   acceptReferenceSelection,
@@ -55,7 +55,7 @@ export function FieldsEditor(props: FieldsEditorProps): ReactElement {
             <label className="vb-field-label" htmlFor={`field-${definition.id}`}>{definition.title}</label>
             <div className="vb-field-value">
               <FieldValueEditor
-                key={`${definition.id}:${JSON.stringify(value)}`}
+                key={definition.id}
                 definition={definition}
                 value={value}
                 disabled={props.disabled}
@@ -211,12 +211,23 @@ function ListEditor(props: FieldValueEditorProps & {
   readonly disabled: boolean;
 }): ReactElement {
   const instanceId = useId();
+  const [selectedIndex, setSelectedIndex] = useState<number | undefined>(
+    props.values.length === 0 ? undefined : props.values.length - 1,
+  );
   const itemIds = props.values.map((_, index) => `${instanceId}:${index}`);
-  const addAt = (index: number): void => props.onCommit(insertArrayItem(
-    props.values,
-    index,
-    props.item.defaultValue,
-  ));
+  const addAt = (index: number): void => {
+    setSelectedIndex(index);
+    props.onCommit(insertArrayItem(props.values, index, props.item.defaultValue));
+  };
+  useEffect(() => {
+    setSelectedIndex((current) => {
+      if (props.values.length === 0) return undefined;
+      if (current === undefined) return props.values.length - 1;
+      return Math.min(current, props.values.length - 1);
+    });
+  }, [props.values.length]);
+
+  const selectedItemNumber = selectedIndex === undefined ? undefined : selectedIndex + 1;
   return (
     <DragDropProvider
       onDragEnd={(event) => {
@@ -225,40 +236,60 @@ function ListEditor(props: FieldValueEditorProps & {
         }
         const { source } = event.operation;
         if (isSortable(source) && source.initialIndex !== source.index) {
+          setSelectedIndex(source.index);
           props.onCommit(moveArrayItem(props.values, source.initialIndex, source.index));
         }
       }}
     >
       <div className="vb-list-editor">
-        {props.values.map((entry, index) => (
-          <SortableListItem
-            key={itemIds[index]}
-            id={itemIds[index]!}
-            group={instanceId}
-            index={index}
-            entry={entry}
-            item={props.item}
-            values={props.values}
-            disabled={props.disabled}
-            ariaLabel={props.ariaLabel}
-            referenceActions={props.referenceActions}
-            onCommit={props.onCommit}
-            onAdd={() => addAt(index + 1)}
-          />
-        ))}
-        {props.values.length === 0 && (
-          <div className="vb-list-empty-actions">
-            <span>列表为空</span>
+        <div className="vb-list-toolbar" role="toolbar" aria-label={`${props.ariaLabel ?? "列表"}操作`}>
+          <span>{props.values.length} 项</span>
+          <div className="vb-list-toolbar-actions">
             <IconButton
               className="secondary"
               icon="add"
-              label="添加第 1 项"
-              title="添加"
+              label={selectedItemNumber === undefined ? "添加第 1 项" : `在第 ${selectedItemNumber} 项后添加`}
+              title={selectedItemNumber === undefined ? "添加" : "在选中项后添加"}
               disabled={props.disabled}
-              onClick={() => addAt(0)}
+              onClick={() => addAt(selectedIndex === undefined ? 0 : selectedIndex + 1)}
+            />
+            <IconButton
+              className="secondary danger-text"
+              icon="delete"
+              label={selectedItemNumber === undefined ? "没有可删除项" : `删除第 ${selectedItemNumber} 项`}
+              title="删除选中项"
+              disabled={props.disabled || selectedIndex === undefined}
+              onClick={() => {
+                if (selectedIndex !== undefined) {
+                  setSelectedIndex(props.values.length === 1
+                    ? undefined
+                    : Math.min(selectedIndex, props.values.length - 2));
+                  props.onCommit(props.values.filter((_, index) => index !== selectedIndex));
+                }
+              }}
             />
           </div>
-        )}
+        </div>
+        <div className="vb-list-items" role="listbox" aria-label={props.ariaLabel ?? "列表"}>
+          {props.values.map((entry, index) => (
+            <SortableListItem
+              key={itemIds[index]}
+              id={itemIds[index]!}
+              group={instanceId}
+              index={index}
+              entry={entry}
+              item={props.item}
+              values={props.values}
+              selected={selectedIndex === index}
+              disabled={props.disabled}
+              ariaLabel={props.ariaLabel}
+              referenceActions={props.referenceActions}
+              onCommit={props.onCommit}
+              onSelect={() => setSelectedIndex(index)}
+            />
+          ))}
+          {props.values.length === 0 && <div className="vb-list-empty">列表为空</div>}
+        </div>
       </div>
     </DragDropProvider>
   );
@@ -271,11 +302,12 @@ function SortableListItem(props: {
   readonly entry: JsonValue;
   readonly item: FieldValueDefinition;
   readonly values: readonly JsonValue[];
+  readonly selected: boolean;
   readonly disabled: boolean;
   readonly ariaLabel?: string | undefined;
   readonly referenceActions?: ReferenceEditorActions | undefined;
   readonly onCommit: (value: JsonValue) => void;
-  readonly onAdd: () => void;
+  readonly onSelect: () => void;
 }): ReactElement {
   const { ref, handleRef, isDragging, isDropTarget } = useSortable({
     id: props.id,
@@ -288,8 +320,20 @@ function SortableListItem(props: {
   return (
     <div
       ref={ref}
-      className={`vb-list-item${isDragging ? " dragging" : ""}${isDropTarget ? " drop-target" : ""}`}
+      className={`vb-list-item${props.selected ? " selected" : ""}${isDragging ? " dragging" : ""}${isDropTarget ? " drop-target" : ""}`}
+      role="option"
+      aria-selected={props.selected}
+      onPointerDownCapture={props.onSelect}
+      onFocusCapture={props.onSelect}
     >
+      <IconButton
+        buttonRef={handleRef}
+        className="secondary vb-list-drag"
+        icon="drag"
+        label={`拖动第 ${props.index + 1} 项排序`}
+        title="拖动排序"
+        disabled={props.disabled}
+      />
       <span className="vb-list-index">{props.index + 1}</span>
       <FieldValueEditor
         definition={props.item}
@@ -298,15 +342,6 @@ function SortableListItem(props: {
         ariaLabel={`${props.ariaLabel ?? "List"} ${props.index + 1}`}
         referenceActions={props.referenceActions}
         onCommit={(nextEntry) => props.onCommit(replaceArrayItem(props.values, props.index, nextEntry))}
-      />
-      <ListItemActions
-        dragRef={handleRef}
-        dragLabel={`拖动第 ${props.index + 1} 项排序`}
-        addLabel={`在第 ${props.index + 1} 项后添加`}
-        deleteLabel={`删除第 ${props.index + 1} 项`}
-        disabled={props.disabled}
-        onAdd={props.onAdd}
-        onDelete={() => props.onCommit(props.values.filter((_, index) => index !== props.index))}
       />
     </div>
   );

@@ -9,6 +9,7 @@ import {
   type DocumentIndexSummary,
   type IndexedDocument,
   type IndexedDocumentReference,
+  type ReferenceLocation,
 } from "@visualbridge/core";
 import type { ProjectRegistry } from "../project/projectRegistry";
 import type { WorkspaceProjectProviderService } from "../provider/workspaceProjectProviderService";
@@ -24,6 +25,14 @@ const SUPPORTED_EDITORS = new Set(["graph", "entity", "structured", "table"]);
 export interface IncomingDocumentReference {
   readonly source: IndexedDocument;
   readonly reference: IndexedDocumentReference;
+  readonly navigation?: IncomingGraphReferenceNavigation;
+}
+
+export interface IncomingGraphReferenceNavigation {
+  readonly graphTitle: string;
+  readonly nodeTitle?: string;
+  readonly fieldPath?: string;
+  readonly location: ReferenceLocation;
 }
 
 export type DocumentIndexRefreshResult =
@@ -104,13 +113,24 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
 
   public incomingReferences(target: IndexedDocument): readonly IncomingDocumentReference[] {
     const targetPaths = new Set(target.sourcePaths);
+    const preparedByDocument = new Map(this.semanticStore.snapshot.values.map((entry) => [
+      indexedDocumentKey(entry.document),
+      entry,
+    ]));
     return this.documentsValue.flatMap((source) => source.references.flatMap((reference) => (
       reference.resolution.candidates.some((candidate) => {
         const location = candidate.location;
         return location?.projectId === target.projectId
           && location.documentTypeId === target.documentTypeId
           && targetPaths.has(location.path);
-      }) ? [{ source, reference }] : []
+      }) ? [{
+          source,
+          reference,
+          ...graphReferenceNavigation(
+            preparedByDocument.get(indexedDocumentKey(source)),
+            reference.occurrence.path,
+          ),
+        }] : []
   ))).sort((left, right) => compareUtf16CodeUnits(
       `${left.source.title}\u0000${left.reference.occurrence.path}`,
       `${right.source.title}\u0000${right.reference.occurrence.path}`,
@@ -343,6 +363,61 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
       }
     }
   }
+}
+
+function graphReferenceNavigation(
+  prepared: PreparedWorkspaceDocument | undefined,
+  occurrencePath: string,
+): { readonly navigation: IncomingGraphReferenceNavigation } | Record<string, never> {
+  const source = prepared?.graphReferenceDocument;
+  const graphMatch = /^graphs\[(\d+)\](?:\.(.*))?$/u.exec(occurrencePath);
+  if (source === undefined || graphMatch === null) return {};
+  const graph = source.document.graphs[Number.parseInt(graphMatch[1]!, 10)];
+  if (graph === undefined) return {};
+  const graphRemainder = graphMatch[2];
+  const nodeMatch = graphRemainder === undefined
+    ? null
+    : /^nodes\[(\d+)\](?:\.(.*))?$/u.exec(graphRemainder);
+  const node = nodeMatch === null
+    ? undefined
+    : graph.nodes[Number.parseInt(nodeMatch[1]!, 10)];
+  const fieldPath = (nodeMatch?.[2] ?? graphRemainder)?.replace(/^properties\./u, "");
+  const baseLocation = {
+    projectId: source.projectId,
+    documentTypeId: source.documentTypeId,
+    path: source.path,
+    documentId: source.document.documentId,
+    graphId: graph.id,
+  };
+  return {
+    navigation: node === undefined
+      ? {
+          graphTitle: graph.title,
+          ...(fieldPath === undefined ? {} : { fieldPath }),
+          location: {
+            ...baseLocation,
+            elementKind: "graph",
+            elementId: graph.id,
+          },
+        }
+      : {
+          graphTitle: graph.title,
+          nodeTitle: node.title,
+          ...(fieldPath === undefined ? {} : { fieldPath }),
+          location: {
+            ...baseLocation,
+            elementKind: "node",
+            elementId: node.id,
+            nodeId: node.id,
+          },
+        },
+  };
+}
+
+function indexedDocumentKey(
+  document: Pick<IndexedDocument, "projectId" | "documentTypeId" | "path">,
+): string {
+  return `${document.projectId}\u0000${document.documentTypeId}\u0000${document.path}`;
 }
 
 function toVscodeDiagnostic(item: DocumentDiagnostic): vscode.Diagnostic {

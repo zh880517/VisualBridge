@@ -8,7 +8,7 @@
 
 ## 激活与公开入口
 
-扩展在工作区包含 `VisualBridge.project.vbjson` 时激活。激活过程创建 Project Registry、Project Provider Service、Workspace Document Index、Reference Service、Reference Refactor、Document Lifecycle、三个文本文档编辑会话族、Table CustomDocument Provider、Project Settings Provider，以及 Document/Catalog 两棵 Tree View。服务、provider、watcher、diagnostic collection 和命令都进入扩展订阅统一释放。
+扩展在工作区包含 `VisualBridge.project.vbjson` 时激活。激活过程创建 Project Registry、Project Provider Service、Workspace Document Index、Reference Service、Reference Refactor、Document Lifecycle、三个文本文档编辑会话族、Table CustomDocument Provider、Project Settings Provider，以及 Documents、Catalogs、Problems / References 三棵 Tree View。服务、provider、watcher、diagnostic collection 和命令都进入扩展订阅统一释放。
 
 manifest 当前公开 4 个 Custom Editor view type：
 
@@ -21,7 +21,7 @@ manifest 当前公开 4 个 Custom Editor view type：
 
 `visualbridge.documentEditor` 与 `.option` 由同一个 Provider 接受，再由 Project Registry 的可扩展稳定 `documentTypes[].editor` ID 路由：已注册的 `graph`、`entity`、`structured` 进入领域会话，未注册 ID 进入显示 Project/Type/Adapter/路径和当前源码的通用只读 Document Shell。Shell 不建立领域编辑、语义索引、Reference 或 Lifecycle。Table 独立使用 CustomDocument，因为一个逻辑文档可能拥有多个 CSV 物理源或一个二进制 workbook。所有 view 都允许同一文档打开多个编辑器实例，并设置 `retainContextWhenHidden: false`。
 
-两棵 Tree View 是 `visualbridge.documents` 和 `visualbridge.catalogs`。manifest 贡献 22 条用户命令：Project 刷新/打开、Project Settings、四类文档创建、通用创建、元素安全删除；Document Browser 的刷新、搜索、全量校验、打开、创建、复制、重命名路径、移动、安全删除、揭示引用和重命名引用目标；Catalog Browser 的刷新与打开。内部用于 UI 协作的命令不计入这 22 条公开命令。
+三棵 Tree View 是 `visualbridge.documents`、`visualbridge.catalogs` 和 `visualbridge.documentDetails`。Documents 中的文件是叶子节点，文件名后直接显示 Problems 与 References 图标和数量；选择文件会让同层级、可折叠的 `visualbridge.documentDetails` 显示该文件的两组扁平详情。文件行的两个内联图标可展开并聚焦对应分组，Problems 使用中文说明，问题项右键可复制中文详情。manifest 贡献 25 条用户命令：Project 刷新/打开、Project Settings、四类文档创建、通用创建、元素安全删除；Document Browser 的刷新、搜索、全量校验、打开、创建、复制、重命名路径、移动、安全删除、显示 Problems、显示 References、复制问题详情、揭示引用和重命名引用目标；Catalog Browser 的刷新与打开。内部测试命令不计入这 25 条公开命令。
 
 ## Project Registry 与编辑器路由
 

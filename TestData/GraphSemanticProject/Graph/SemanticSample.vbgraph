@@ -33,7 +33,23 @@
       "nodes": [
         { "kind": "node", "id": "entry", "nodeTypeId": "legacy.entry", "title": "Entry", "position": { "x": 0, "y": 0 }, "properties": {}, "dynamicPorts": [] },
         { "kind": "node", "id": "step_a", "nodeTypeId": "sample.step", "title": "Step A", "position": { "x": 240, "y": 0 }, "properties": { "label": "A" }, "dynamicPorts": [] },
-        { "kind": "node", "id": "step_b", "nodeTypeId": "sample.step", "title": "Step B", "position": { "x": 480, "y": 0 }, "properties": { "label": "B" }, "dynamicPorts": [] },
+        {
+          "kind": "node",
+          "id": "step_b",
+          "nodeTypeId": "sample.step",
+          "title": "Step B",
+          "position": { "x": 480, "y": 0 },
+          "properties": {
+            "label": "B",
+            "settings": {
+              "enabled": true,
+              "targetId": 101,
+              "targets": [102, 103],
+              "position": { "x": 1, "y": 2, "z": 3 }
+            }
+          },
+          "dynamicPorts": []
+        },
         { "kind": "node", "id": "int_source", "nodeTypeId": "sample.intSource", "title": "Integer Source", "position": { "x": 0, "y": 240 }, "properties": {}, "dynamicPorts": [] },
         { "kind": "node", "id": "float_source", "nodeTypeId": "sample.floatSource", "title": "Float Source", "position": { "x": 0, "y": 360 }, "properties": {}, "dynamicPorts": [] },
         { "kind": "node", "id": "string_source", "nodeTypeId": "sample.stringSource", "title": "String Source", "position": { "x": 0, "y": 480 }, "properties": {}, "dynamicPorts": [] },

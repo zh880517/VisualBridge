@@ -31,7 +31,7 @@ Project Refactoring 只处理稳定语义身份重命名。物理文件或 Table
 
 ## 4. VS Code 影响预览
 
-Document Browser 的 `References` 和 `Referenced By` 项提供通用 Replace 图标。命令先输入同类型的新值，再显示模态影响预览：
+Document Browser 选中文件后，`Problems / References` 详情 View 的 Outgoing/Incoming Reference 项提供通用 Replace 图标。命令先输入同类型的新值，再显示模态影响预览：
 
 - 目标物理载体；
 - Reference Occurrence 数量；
