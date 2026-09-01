@@ -120,7 +120,8 @@ flowchart TB
     end
     Protocol["Protocol/Schema\nfrozen public transport contracts"]
     Core["Core + BuiltInExtensions\nparse · operation · validate · reference"]
-    Form["Editors/Form and editor UIs"]
+    Ui["Editors/Ui\ntheme · shell · layout"]
+    Form["Editors/Form\nfield semantics"]
     NodeHost["Tools/NodeHost\nProject Transaction"]
     VSCode["Tools/VSCodeExtension\nhuman authoring"]
     MCP["Tools/VisualBridgeMcp\nAI authoring"]
@@ -132,6 +133,8 @@ flowchart TB
     Provider --> Core
     Protocol --> MCP
     Protocol --> UnityOffline
+    Ui --> Form
+    Ui --> VSCode
     Core --> Form
     Core --> VSCode
     Core --> MCP
@@ -336,6 +339,7 @@ AI 不直接读取或改写 `.xlsx` 和 `.csv` 载体。即使 `.csv` 在物理�
 
 当前基础插件提供有限但高复用的编辑器原语：
 
+- 共享 Authoring UI：VS Code 主题 Token、Shell、Toolbar、Status、Split/Inspector 布局、属性密度、图标和反馈表面。
 - Graph Canvas。
 - 可折叠 Graph Inspector，以及节点内联字段编辑。
 - 共享 Form Field Editor：数值、颜色、选择项、对象、集合和 JSON。
@@ -349,6 +353,8 @@ AI 不直接读取或改写 `.xlsx` 和 `.csv` 载体。即使 `.csv` 在物理�
 Dictionary 专用编辑器、通用 Diff Preview 和 Runtime Trace Overlay 尚未实现；未来若需要，必须先明确可复用语义和真实用例，不能把普通 object/list 控件描述成已经具备这些能力。
 
 业务 Document Type 应优先组合原语，而不是为每种配置重新实现完整 Webview。
+
+共享视觉的实现包、依赖方向、主题运行时切换、高对比度和属性密度契约见 [`AuthoringEditorUi.md`](AuthoringEditorUi.md)。`Editors/Ui` 不拥有 Document、Operation 或 Host 消息；`Editors/Form` 在其上提供字段值语义。领域编辑器不得各自复制 `body/button/input` 与 `.vb-field*` 基础样式。
 
 ### 编辑事务
 
@@ -528,6 +534,8 @@ VisualBridge Document Browser
 ### Webview 边界
 
 Webview 使用 HTML、CSS 和 JavaScript/React 实现复杂编辑器。Webview 只负责视图与交互，不直接访问文件系统、Node.js、Unity 或调试连接。
+
+内置 Webview 的 `--vb-*` 语义 Token 始终映射当前 `--vscode-*`，不缓存主题 ID。亮色、暗色和高对比度在页面存活期间由 CSS 级联更新；主题变化不得重载页面或改变 Document/Operation 状态。
 
 ```text
 Webview
@@ -739,10 +747,11 @@ VisualBridge/
 │  ├─ Provider/
 │  └─ Reference/
 ├─ Editors/
-│  ├─ Shared/
+│  ├─ Ui/
 │  ├─ Graph/
 │  ├─ Entity/
 │  ├─ Form/
+│  ├─ Project/
 │  ├─ Structured/
 │  └─ Table/
 ├─ BuiltInExtensions/
@@ -877,6 +886,7 @@ Domain Reload 会使未来 Unity 连接和运行时身份失效，因此后续�
 - Catalog/Schema 描述能力，Document 保存实例。
 - Document Type 是核心扩展点。
 - 基础插件提供 Graph、Form、Table、Reference 等通用原语。
+- 内置 Webview 通过 `@visualbridge/editor-ui` 共享主题 Token、Shell、布局、状态、图标和属性密度；该包不依赖领域模块，字段值语义继续由 `@visualbridge/form-editor` 拥有。
 - 基础插件采用 N 合一扩展形式，Host 模块静态打包并在激活时注册；具体文件的 DocumentSession 和 Webview bundle 只在打开时建立。
 - 用户使用 VS Code 原生 Explorer 处理普通文件，并可使用补充性的 Document Browser 浏览语义文档、诊断和引用。默认 VisualBridge 后缀可以直接进入对应 Custom Editor；Project 自定义后缀由 Document Browser、`VisualBridge: Open Document` 或工程级编辑器关联进入通配 Custom Editor，随后统一由 Project Registry 按 Document Type 路由。
 - 插件实例按 VS Code 窗口隔离，每个文件创建独立 DocumentSession，多个文件共享当前窗口的 Extension Host。
@@ -910,7 +920,7 @@ Graph V3、Graph Catalog V4、Entity/Structured/Table V1、Project V1、Project 
 - Structured Config 已完成首个 Unity offline Import/Compile；其当前派生产物仍是 Editor 内部格式。Table 以及 Graph/Entity 进入 Unity 后的跨语言冻结仍待各自垂直切片，当前 JSON/CSV/XLSX Authoring 格式保持有效。
 - 未来 Unity/DAP 协议的错误码、诊断位置和生成契约；当前 Provider JSON-RPC V2、MCP V2 Operation 与错误信封已经固定。
 - 可选 Provider SDK 的发布形态；当前 Provider 直接面向 [`ProjectProvider.md`](ProjectProvider.md) 与 JSON Schema，入口/Node/依赖策略已经固定。
-- Entity / Form 之外的 Webview UI SDK、组件模型、隔离和热重载方式。
+- 面向项目自定义 Webview 的公开 UI SDK、组件模型、隔离和热重载方式；内置编辑器私有共享 UI 已由 [`AuthoringEditorUi.md`](AuthoringEditorUi.md) 固定。
 - Unity Catalog Generator、Importer 和 Compiler API。
 - WebSocket 消息、认证、配对和安全策略。
 - 多客户端控制、断线恢复和调试事件缓存策略。

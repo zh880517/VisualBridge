@@ -6,6 +6,7 @@ import type {
   StructuredDocument,
   StructuredOperation,
 } from "@visualbridge/structured";
+import { EditorShell, EditorStatusBar, EditorToolbar, SaveState } from "@visualbridge/editor-ui";
 import { FieldsEditor, WebviewReferenceBridge } from "@visualbridge/form-editor";
 import "../styles.css";
 
@@ -122,10 +123,10 @@ function StructuredEditorApp(): ReactElement {
   }
 
   return (
-    <div className="structured-app">
-      <header className="structured-toolbar">
-        <SaveState dirty={state.isDirty} pending={pending} />
-      </header>
+    <EditorShell className="structured-app">
+      <EditorToolbar className="structured-toolbar">
+        <SaveState dirty={state.isDirty} pending={pending} pendingLabel="正在修改" />
+      </EditorToolbar>
       <main className="structured-scroll">
         <section className="structured-card">
           <header>
@@ -141,11 +142,11 @@ function StructuredEditorApp(): ReactElement {
           />
         </section>
       </main>
-      <footer className="structured-status">
+      <EditorStatusBar className="structured-status">
         <span>{status}</span>
         <span>{formatDiagnosticSummary(state.diagnostics)}</span>
-      </footer>
-    </div>
+      </EditorStatusBar>
+    </EditorShell>
   );
 }
 
@@ -153,11 +154,6 @@ function withWebviewToken(message: unknown, token: string | undefined): unknown 
   return token === undefined || typeof message !== "object" || message === null || Array.isArray(message)
     ? message
     : { ...message, webviewToken: token };
-}
-
-function SaveState(props: { readonly dirty: boolean; readonly pending: boolean }): ReactElement {
-  const text = props.pending ? "正在修改" : props.dirty ? "未保存" : "已保存";
-  return <span className={`structured-save-state${props.dirty ? " dirty" : ""}${props.pending ? " pending" : ""}`}><i />{text}</span>;
 }
 
 function Diagnostics(props: { readonly diagnostics: readonly DocumentDiagnostic[] }): ReactElement {

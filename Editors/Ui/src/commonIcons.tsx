@@ -26,23 +26,22 @@ export type CommonIconName =
   | "open"
   | "search";
 
+const commonIcons: Readonly<Record<CommonIconName, LucideIcon>> = {
+  add: Plus,
+  check: Check,
+  chevronDown: ChevronDown,
+  chevronRight: ChevronRight,
+  close: X,
+  copy: Copy,
+  delete: Trash2,
+  drag: GripVertical,
+  open: ExternalLink,
+  search: Search,
+};
+
 export function CommonIcon(props: { readonly name: CommonIconName }): ReactElement {
-  const icons: Record<CommonIconName, LucideIcon> = {
-    add: Plus,
-    check: Check,
-    chevronDown: ChevronDown,
-    chevronRight: ChevronRight,
-    close: X,
-    copy: Copy,
-    delete: Trash2,
-    drag: GripVertical,
-    open: ExternalLink,
-    search: Search,
-  };
-  const Icon = icons[props.name];
-  return (
-    <Icon className="vb-common-icon" size={16} strokeWidth={1.8} aria-hidden="true" />
-  );
+  const Icon = commonIcons[props.name];
+  return <Icon className="vb-common-icon" size={16} strokeWidth={1.8} aria-hidden="true" />;
 }
 
 export function IconButton(props: {

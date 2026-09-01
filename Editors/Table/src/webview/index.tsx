@@ -4,7 +4,19 @@ import { Button } from "@base-ui/react/button";
 import { DragDropProvider } from "@dnd-kit/react";
 import { isSortable, useSortable } from "@dnd-kit/react/sortable";
 import type { DocumentDiagnostic, JsonValue } from "@visualbridge/core";
-import { CommonIcon, FieldsEditor, IconButton, ListItemActions, WebviewReferenceBridge } from "@visualbridge/form-editor";
+import {
+  CommonIcon,
+  EditorShell,
+  EditorStatusBar,
+  EditorToolbar,
+  IconButton,
+  InspectorPane,
+  ListItemActions,
+  NavigatorPane,
+  SaveState,
+  SplitWorkspace,
+} from "@visualbridge/editor-ui";
+import { FieldsEditor, WebviewReferenceBridge } from "@visualbridge/form-editor";
 import {
   buildTableRowSearchText,
   formatTableRowDisplayName,
@@ -231,9 +243,9 @@ function TableEditorApp(): ReactElement {
   }
 
   return (
-    <div className="table-app">
-      <header className="table-toolbar">
-        <SaveState dirty={state.isDirty} pending={pending} />
+    <EditorShell className="table-app">
+      <EditorToolbar className="table-toolbar">
+        <SaveState dirty={state.isDirty} pending={pending} pendingLabel="修改中" />
         <span className="table-path">{rootElement!.dataset.relativePath}</span>
         <IconButton
           className="secondary"
@@ -243,7 +255,7 @@ function TableEditorApp(): ReactElement {
           disabled={pending || sheet === undefined || definition === undefined}
           onClick={() => insertRowAt(sheet?.rows.length ?? 0)}
         />
-      </header>
+      </EditorToolbar>
       <nav className="sheet-tabs" aria-label="表格分表">
         {state.document.sheets.map((candidate) => (
           <Button
@@ -264,8 +276,8 @@ function TableEditorApp(): ReactElement {
       {sheet === undefined || definition === undefined
         ? <main className="table-loading"><p>Catalog 中没有可编辑的分表定义。</p></main>
         : (
-          <main className="table-workspace">
-            <aside className="record-list">
+          <SplitWorkspace className="table-workspace">
+            <NavigatorPane className="record-list">
               <div className="record-search">
                 <CommonIcon name="search" />
                 <input
@@ -324,8 +336,8 @@ function TableEditorApp(): ReactElement {
                   )}
                 />
               </DragDropProvider>
-            </aside>
-            <section className="record-editor">
+            </NavigatorPane>
+            <InspectorPane className="record-editor">
               {selectedRow === undefined
                 ? <p className="record-editor-empty">从左侧选择一条记录开始编辑。</p>
                 : (
@@ -364,14 +376,14 @@ function TableEditorApp(): ReactElement {
                     </div>
                   </>
                 )}
-            </section>
-          </main>
+            </InspectorPane>
+          </SplitWorkspace>
         )}
-      <footer className="table-status">
+      <EditorStatusBar className="table-status">
         <span>{status}</span>
         <span>{state.diagnostics.length === 0 ? "校验通过" : `${state.diagnostics.length} 个诊断`}</span>
-      </footer>
-    </div>
+      </EditorStatusBar>
+    </EditorShell>
   );
 }
 
@@ -570,11 +582,6 @@ function displayRowName(row: TableRow, definition: TableSheetDefinition): string
 
 function tableRecordListEntryKey(entry: TableRecordListEntry): string {
   return entry.row.id;
-}
-
-function SaveState(props: { readonly dirty: boolean; readonly pending: boolean }): ReactElement {
-  const label = props.pending ? "修改中" : props.dirty ? "未保存" : "已保存";
-  return <span className={`table-save-state${props.dirty ? " dirty" : ""}${props.pending ? " pending" : ""}`}><i />{label}</span>;
 }
 
 function Diagnostics(props: { readonly diagnostics: readonly DocumentDiagnostic[] }): ReactElement {

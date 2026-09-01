@@ -10,26 +10,26 @@
   align-items: start;
   gap: 8px;
   padding: 7px;
-  background: var(--vscode-editor-background, #1e1e1e);
-  border: 1px solid var(--vscode-panel-border, #3c3c3c);
-  border-radius: 3px;
+  background: var(--vb-color-background);
+  border: 1px solid var(--vb-color-border);
+  border-radius: var(--vb-radius-small);
   transition: border-color 100ms ease, box-shadow 100ms ease, opacity 100ms ease;
 }
 
 .vb-list-item.drop-target {
-  border-color: var(--vscode-focusBorder, #007fd4);
-  box-shadow: inset 0 0 0 1px var(--vscode-focusBorder, #007fd4);
+  border-color: var(--vscode-contrastActiveBorder, var(--vb-color-focus));
+  box-shadow: inset 0 0 0 1px var(--vscode-contrastActiveBorder, var(--vb-color-focus));
 }
 
 .vb-list-item.dragging {
   z-index: 2;
   opacity: .72;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .28);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--vb-color-foreground) 20%, transparent);
 }
 
 .vb-list-index {
   padding-top: 6px;
-  color: var(--vscode-descriptionForeground, #999999);
+  color: var(--vb-color-muted);
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
@@ -54,10 +54,10 @@
   justify-content: space-between;
   min-height: 36px;
   padding: 4px 5px 4px 10px;
-  color: var(--vscode-descriptionForeground, #999999);
-  background: var(--vscode-editor-background, #1e1e1e);
-  border: 1px dashed var(--vscode-panel-border, #3c3c3c);
-  border-radius: 3px;
+  color: var(--vb-color-muted);
+  background: var(--vb-color-background);
+  border: 1px dashed var(--vb-color-border);
+  border-radius: var(--vb-radius-small);
 }
 
 .vb-reference-editor {
@@ -69,8 +69,8 @@
 
 .vb-reference-editor > input {
   min-width: 0;
-  color: var(--vscode-input-foreground, inherit);
-  background: var(--vscode-input-background, transparent);
+  color: var(--vb-control-foreground);
+  background: var(--vb-control-background);
 }
 
 .vb-reference-actions {

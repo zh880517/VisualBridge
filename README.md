@@ -10,7 +10,7 @@ VisualBridge 是一个基于 VS Code 的游戏语义内容创作平台。当前�
 
 - 通过固定的 `VisualBridge.project.vbjson` 发现 Authoring Project，并按 Project 中的 `include` / `exclude` 和 `editor` 路由任意扩展名。
 - 编辑 Graph V3、Entity V1、Structured Config V1，以及 UTF-8 CSV-compatible / XLSX Table V1。
-- 使用共享 Form Field、Reference Picker、Document Browser、Project Settings 和只读 Catalog Browser。
+- 使用共享 Authoring UI、Form Field、Reference Picker、Document Browser、Project Settings 和只读 Catalog Browser；Webview 跟随 VS Code 亮色、暗色和高对比度主题运行时更新。
 - 预览并执行 Document Copy、Path Rename、Move、Safe Delete，以及项目级稳定引用重构。
 - 通过 Project 锁、SHA-256 前置条件、阶段化写入、journal 和条件回滚保护 VS Code 与 MCP 的并发修改。
 - 通过七个稳定的 stdio MCP V2 工具读取、校验和修改同一套 Authoring 数据。

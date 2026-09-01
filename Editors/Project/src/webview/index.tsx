@@ -9,7 +9,14 @@ import type {
   ProjectProviderDefinition,
   VisualBridgeProjectDefinition,
 } from "@visualbridge/core";
-import { CommonIcon } from "@visualbridge/form-editor";
+import {
+  CommonIcon,
+  EditorShell,
+  EditorStatusBar,
+  EditorToolbar,
+  SaveState,
+  ToolbarSpacer,
+} from "@visualbridge/editor-ui";
 import "../styles.css";
 
 interface VsCodeApi { postMessage(message: unknown): void }
@@ -100,12 +107,12 @@ function ProjectEditorApp(): ReactElement {
     return <main className="loading"><h1>VisualBridge Project Settings</h1><p>{status}</p><IssueList issues={invalid?.issues ?? []} /></main>;
   }
   const project = state.project;
-  return <div className="project-app">
-    <header className="toolbar">
+  return <EditorShell className="project-app">
+    <EditorToolbar className="toolbar">
       <strong>Project Settings</strong>
-      <span className="spacer" />
-      <span className={state.isDirty ? "dirty" : ""}>{pending ? "正在修改" : state.isDirty ? "未保存" : "已保存"}</span>
-    </header>
+      <ToolbarSpacer />
+      <SaveState dirty={state.isDirty} pending={pending} pendingLabel="正在修改" />
+    </EditorToolbar>
     <main className="scroll">
       <section className="settings-section general">
         <SectionTitle title="General" />
@@ -172,8 +179,8 @@ function ProjectEditorApp(): ReactElement {
       </section>
       <IssueList issues={state.issues} />
     </main>
-    <footer className="status"><span>{status}</span><span>{state.issues.length} 个问题</span></footer>
-  </div>;
+    <EditorStatusBar className="status"><span>{status}</span><span>{state.issues.length} 个问题</span></EditorStatusBar>
+  </EditorShell>;
 }
 
 function DocumentTypeCard(props: {

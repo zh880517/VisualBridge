@@ -18,9 +18,16 @@ import type {
 } from "@visualbridge/entity";
 import {
   CommonIcon,
-  FieldsEditor,
+  EditorShell,
+  EditorStatusBar,
+  EditorToolbar,
   IconButton,
   ListItemActions,
+  SaveState,
+  ToolbarSpacer,
+} from "@visualbridge/editor-ui";
+import {
+  FieldsEditor,
   WebviewReferenceBridge,
   type ReferenceEditorActions,
 } from "@visualbridge/form-editor";
@@ -224,13 +231,13 @@ function EntityEditorApp(): ReactElement {
 
   const entityType = resolveEntityType(state.catalogRegistry, state.document.entityTypeId);
   return (
-    <div className="entity-app">
-      <header className="entity-toolbar">
-        <SaveState dirty={state.isDirty} pending={pending} />
+    <EditorShell className="entity-app">
+      <EditorToolbar className="entity-toolbar">
+        <SaveState dirty={state.isDirty} pending={pending} pendingLabel="修改中" />
         <span className="entity-path">{rootElement!.dataset.relativePath}</span>
-        <span className="entity-toolbar-spacer" />
+        <ToolbarSpacer />
         <span className="entity-type-label">{entityType?.title ?? state.document.entityTypeId}</span>
-      </header>
+      </EditorToolbar>
       <div className="entity-scroll">
         <div className="entity-content">
           <section className="entity-card entity-header-card">
@@ -321,10 +328,10 @@ function EntityEditorApp(): ReactElement {
           </DragDropProvider>
         </div>
       </div>
-      <footer className="entity-status">
+      <EditorStatusBar className="entity-status">
         <span>{status}</span>
         <span>{state.diagnostics.filter((diagnostic) => diagnostic.severity === "error").length} 错误 · {state.diagnostics.filter((diagnostic) => diagnostic.severity === "warning").length} 警告</span>
-      </footer>
+      </EditorStatusBar>
       {addOpen && entityType !== undefined && (
         <AddComponentDialog
           registry={state.catalogRegistry}
@@ -345,7 +352,7 @@ function EntityEditorApp(): ReactElement {
           }}
         />
       )}
-    </div>
+    </EditorShell>
   );
 }
 
@@ -568,11 +575,6 @@ function TitleEditor(props: {
       }}
     />
   );
-}
-
-function SaveState(props: { readonly dirty: boolean; readonly pending: boolean }): ReactElement {
-  const label = props.pending ? "修改中" : props.dirty ? "未保存" : "已保存";
-  return <span className={`entity-save-state${props.dirty ? " dirty" : ""}${props.pending ? " pending" : ""}`}><i />{label}</span>;
 }
 
 function Diagnostics(props: { readonly diagnostics: readonly DocumentDiagnostic[] }): ReactElement {

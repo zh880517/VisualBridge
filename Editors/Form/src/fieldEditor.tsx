@@ -4,8 +4,8 @@ import { Checkbox } from "@base-ui/react/checkbox";
 import { Popover } from "@base-ui/react/popover";
 import { DragDropProvider } from "@dnd-kit/react";
 import { isSortable, useSortable } from "@dnd-kit/react/sortable";
+import { CommonIcon, IconButton, ListItemActions, PropertyGrid } from "@visualbridge/editor-ui";
 import { HexAlphaColorPicker, HexColorPicker } from "react-colorful";
-import { CommonIcon, IconButton, ListItemActions } from "./commonIcons";
 import {
   acceptReferenceSelection,
   jsonValuesEqual,
@@ -22,6 +22,7 @@ import type {
   ReferenceDefinition,
 } from "@visualbridge/core";
 import { cloneJsonValue } from "@visualbridge/core";
+import "./fieldEditor.css";
 import "./listEditor.css";
 
 export interface FieldsEditorProps {
@@ -46,7 +47,7 @@ export function FieldsEditor(props: FieldsEditorProps): ReactElement {
     return <p className="vb-fields-empty">没有可编辑字段</p>;
   }
   return (
-    <div className="vb-fields">
+    <PropertyGrid>
       {props.definitions.map((definition) => {
         const value = resolvePropertyValue(props.properties, definition);
         return (
@@ -66,7 +67,7 @@ export function FieldsEditor(props: FieldsEditorProps): ReactElement {
           </div>
         );
       })}
-    </div>
+    </PropertyGrid>
   );
 }
 

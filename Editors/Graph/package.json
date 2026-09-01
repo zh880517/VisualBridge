@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@visualbridge/core": "*",
+    "@visualbridge/editor-ui": "*",
     "@visualbridge/form-editor": "*",
     "@xyflow/react": "12.11.5",
     "react": "19.2.8",

@@ -41,7 +41,16 @@ import {
   type JsonValue,
 } from "@visualbridge/core";
 import { FieldValueEditor, WebviewReferenceBridge } from "@visualbridge/form-editor";
-import { CommonIcon } from "@visualbridge/form-editor/icons";
+import {
+  CommonIcon,
+  EditorShell,
+  EditorStatusBar,
+  EditorToolbar,
+  PropertySection,
+  SaveState,
+  SplitWorkspace,
+  ToolbarSpacer,
+} from "@visualbridge/editor-ui";
 import "@xyflow/react/dist/style.css";
 import {
   GRAPH_INTERFACE_INPUT_NODE_ID,
@@ -2703,8 +2712,8 @@ function GraphEditorApp(): React.JSX.Element {
 
   return (
     <GraphDataTypesContext.Provider value={catalogRegistry.dataTypes}>
-      <div className="graph-app" onClick={() => setContextMenu(undefined)}>
-      <header className="graph-toolbar">
+      <EditorShell className="graph-app" data-vb-property-density="compact" onClick={() => setContextMenu(undefined)}>
+      <EditorToolbar className="graph-toolbar">
         <nav className="graph-breadcrumb" aria-label="Graph breadcrumb">
           {path.map((item, index) => (
             <span key={item.id}>
@@ -2737,18 +2746,19 @@ function GraphEditorApp(): React.JSX.Element {
         >
           执行调试
         </button>
-        <span className="graph-toolbar-spacer" />
-        <span
-          className={`graph-save-state ${saveState.kind}`}
+        <ToolbarSpacer />
+        <SaveState
+          dirty={saveState.kind === "dirty"}
+          pending={saveState.kind === "pending"}
+          savedLabel={saveState.label}
+          dirtyLabel={saveState.label}
+          pendingLabel={saveState.label}
           title={saveState.title}
-        >
-          <i aria-hidden="true" />
-          {saveState.label}
-        </span>
+        />
         <span className="graph-metadata" title={rootMetadata.relativePath}>
           {rootMetadata.projectId} · {rootMetadata.documentType} · {rootMetadata.relativePath}
         </span>
-      </header>
+      </EditorToolbar>
 
       {graphDocument === undefined
         ? invalidDiagnostics.length > 0
@@ -2757,7 +2767,7 @@ function GraphEditorApp(): React.JSX.Element {
         : activeGraph === undefined
           ? <InvalidDocument diagnostics={[{ severity: "error", code: "graph.missingActiveGraph", path: "graphs", message: "当前子图不存在。" }]} />
           : (
-            <main className={`graph-content${inspectorCollapsed ? " inspector-collapsed" : ""}`}>
+            <SplitWorkspace className={`graph-content${inspectorCollapsed ? " inspector-collapsed" : ""}`}>
               <div
                 ref={canvasRef}
                 className={`graph-canvas${revealedElement?.elementKind === "graph" && revealedElement.graphId === activeGraph.id ? " revealed" : ""}`}
@@ -2851,7 +2861,7 @@ function GraphEditorApp(): React.JSX.Element {
                   onFollow={enterDebugFollow}
                 />
               )}
-            </main>
+            </SplitWorkspace>
           )}
 
       {contextMenu?.kind === "node" && activeGraph !== undefined && (() => {
@@ -3009,8 +3019,8 @@ function GraphEditorApp(): React.JSX.Element {
         />
       )}
 
-        <footer className={`graph-status${status.error ? " error" : ""}`}><span>{status.message}</span></footer>
-      </div>
+        <EditorStatusBar className="graph-status" error={status.error}><span>{status.message}</span></EditorStatusBar>
+      </EditorShell>
     </GraphDataTypesContext.Provider>
   );
 }
@@ -3350,32 +3360,37 @@ function GraphInspector({
     postOperations([{ type: "graph.assignType", graphId: graph.id, graphTypeId: nextType.id }, ...initialOperations]);
   };
   return (
-    <aside className="graph-inspector">
+    <aside className="graph-inspector" data-vb-property-density="sidebar">
       <h2>Graph Inspector</h2>
-      <ReadonlyField label="Graph ID" value={graph.id} />
-      {graphType !== undefined
-        ? <ReadonlyField label="Graph Type" value={`${graphType.title} · ${graphType.id}`} />
-        : graph.graphTypeId !== undefined
-          ? <ReadonlyField label="Graph Type" value={`Unknown · ${graph.graphTypeId}`} />
-          : (
-            <section className="graph-assign-type">
-              <label className="graph-field">
-                <span>Graph Type</span>
-                <select value={selectedGraphTypeId} disabled={!catalogReady} onChange={(event) => setSelectedGraphTypeId(event.target.value)}>
-                  {assignableTypes.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.catalogTitle} / {candidate.title}</option>)}
-                </select>
-              </label>
-              <button type="button" disabled={pending || !catalogReady || graph.nodes.length > 0 || selectedGraphTypeId.length === 0} onClick={assignType}>设置 Graph Type</button>
-              {!catalogReady && <p className="graph-empty">Catalog 尚未就绪，不能设置 Graph Type。</p>}
-              {graph.nodes.length > 0 && <p className="graph-empty">已有节点的旧 Graph 需要后续安全迁移，不能直接设置类型。</p>}
-            </section>
-          )}
-      <form onSubmit={submit}>
-        <InputField label="名称" value={title} onChange={setTitle} />
-        <button type="submit" disabled={pending || title === graph.title}>应用名称修改</button>
-      </form>
-      <h3>Graph 属性</h3>
-      <InlineNodeProperties data={propertyData} pending={pending} />
+      <PropertySection title="标识">
+        <ReadonlyField label="Graph ID" value={graph.id} />
+        {graphType !== undefined
+          ? <ReadonlyField label="Graph Type" value={`${graphType.title} · ${graphType.id}`} />
+          : graph.graphTypeId !== undefined
+            ? <ReadonlyField label="Graph Type" value={`Unknown · ${graph.graphTypeId}`} />
+            : (
+              <section className="graph-assign-type">
+                <label className="graph-field">
+                  <span>Graph Type</span>
+                  <select value={selectedGraphTypeId} disabled={!catalogReady} onChange={(event) => setSelectedGraphTypeId(event.target.value)}>
+                    {assignableTypes.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.catalogTitle} / {candidate.title}</option>)}
+                  </select>
+                </label>
+                <button type="button" disabled={pending || !catalogReady || graph.nodes.length > 0 || selectedGraphTypeId.length === 0} onClick={assignType}>设置 Graph Type</button>
+                {!catalogReady && <p className="graph-empty">Catalog 尚未就绪，不能设置 Graph Type。</p>}
+                {graph.nodes.length > 0 && <p className="graph-empty">已有节点的旧 Graph 需要后续安全迁移，不能直接设置类型。</p>}
+              </section>
+            )}
+      </PropertySection>
+      <PropertySection title="名称">
+        <form onSubmit={submit}>
+          <InputField label="名称" value={title} onChange={setTitle} />
+          <button type="submit" disabled={pending || title === graph.title}>应用名称修改</button>
+        </form>
+      </PropertySection>
+      <PropertySection title="Graph 属性">
+        <InlineNodeProperties data={propertyData} pending={pending} />
+      </PropertySection>
     </aside>
   );
 }

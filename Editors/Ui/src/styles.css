@@ -1,0 +1,316 @@
+:root {
+  color-scheme: light dark;
+  --vb-font-ui: var(--vscode-font-family, system-ui, sans-serif);
+  --vb-font-code: var(--vscode-editor-font-family, ui-monospace, monospace);
+  --vb-color-foreground: var(--vscode-foreground, CanvasText);
+  --vb-color-muted: var(--vscode-descriptionForeground, GrayText);
+  --vb-color-background: var(--vscode-editor-background, Canvas);
+  --vb-color-surface: var(--vscode-editorWidget-background, var(--vb-color-background));
+  --vb-color-sidebar: var(--vscode-sideBar-background, var(--vb-color-surface));
+  --vb-color-toolbar: var(--vscode-editorGroupHeader-tabsBackground, var(--vb-color-surface));
+  --vb-color-border: var(--vscode-panel-border, var(--vscode-widget-border, GrayText));
+  --vb-color-focus: var(--vscode-focusBorder, Highlight);
+  --vb-control-background: var(--vscode-input-background, Field);
+  --vb-control-foreground: var(--vscode-input-foreground, FieldText);
+  --vb-control-border: var(--vscode-input-border, var(--vb-color-border));
+  --vb-radius-small: 3px;
+  --vb-radius-panel: 6px;
+  --vb-toolbar-height: 42px;
+  --vb-status-height: 26px;
+  --vb-property-label-width: 130px;
+  --vb-property-label-ratio: 0.34fr;
+  --vb-property-value-ratio: 0.66fr;
+  --vb-property-row-gap: 9px;
+  --vb-property-column-gap: 12px;
+  --vb-color-swatch-width: 38px;
+  --vb-color-swatch-height: 28px;
+  --vb-color-swatch-gap: 6px;
+  --vb-control-padding: 5px 7px;
+  font-family: var(--vb-font-ui);
+  color: var(--vb-color-foreground);
+  background: var(--vb-color-background);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body,
+button,
+input,
+textarea,
+select {
+  font: 13px var(--vb-font-ui);
+}
+
+body {
+  color: var(--vb-color-foreground);
+  background: var(--vb-color-background);
+}
+
+code,
+pre,
+.vb-code {
+  font-family: var(--vb-font-code);
+}
+
+button {
+  min-height: 28px;
+  padding: 4px 10px;
+  color: var(--vscode-button-foreground, ButtonText);
+  background: var(--vscode-button-background, ButtonFace);
+  border: 1px solid transparent;
+  border-radius: var(--vb-radius-small);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground, var(--vscode-button-background, ButtonFace));
+}
+
+button.secondary {
+  color: var(--vb-color-foreground);
+  background: var(--vscode-button-secondaryBackground, var(--vb-color-surface));
+}
+
+button.secondary:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground, var(--vb-color-surface)));
+}
+
+button:disabled {
+  cursor: default;
+  opacity: .5;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 1px solid var(--vscode-contrastActiveBorder, var(--vb-color-focus));
+  outline-offset: 1px;
+}
+
+button.icon {
+  display: inline-grid;
+  width: 28px;
+  min-width: 28px;
+  padding: 2px;
+  place-items: center;
+}
+
+button.danger-text,
+button.danger {
+  color: var(--vscode-errorForeground, MarkText);
+}
+
+.vb-common-icon {
+  display: block;
+  flex: none;
+  pointer-events: none;
+}
+
+.vb-editor-shell {
+  display: grid;
+  grid-template-rows: var(--vb-toolbar-height) minmax(0, 1fr) var(--vb-status-height);
+  width: 100%;
+  height: 100%;
+  color: var(--vb-color-foreground);
+  background: var(--vb-color-background);
+}
+
+.vb-editor-toolbar,
+.vb-editor-status {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+  padding: 0 12px;
+  background: var(--vb-color-toolbar);
+  border-color: var(--vb-color-border);
+}
+
+.vb-editor-toolbar {
+  border-bottom: 1px solid var(--vb-color-border);
+}
+
+.vb-editor-status {
+  justify-content: space-between;
+  overflow: hidden;
+  color: var(--vb-color-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  border-top: 1px solid var(--vb-color-border);
+}
+
+.vb-editor-status.error {
+  color: var(--vscode-statusBarItem-errorForeground, var(--vscode-errorForeground));
+  background: var(--vscode-statusBarItem-errorBackground, var(--vb-color-toolbar));
+}
+
+.vb-toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+.vb-toolbar-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.vb-save-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--vb-color-muted);
+  white-space: nowrap;
+}
+
+.vb-save-state > i {
+  width: 8px;
+  height: 8px;
+  background: var(--vscode-testing-iconPassed, var(--vscode-charts-green, currentColor));
+  border-radius: 50%;
+}
+
+.vb-save-state.dirty > i {
+  background: var(--vscode-gitDecoration-modifiedResourceForeground, var(--vscode-charts-yellow, currentColor));
+}
+
+.vb-save-state.pending > i {
+  background: var(--vscode-progressBar-background, var(--vscode-charts-blue, currentColor));
+}
+
+.vb-fields {
+  display: grid;
+  gap: var(--vb-property-row-gap);
+}
+
+.vb-fields[data-density="sidebar"],
+[data-vb-property-density="sidebar"] {
+  --vb-property-label-width: 96px;
+  --vb-property-label-ratio: 0.32fr;
+  --vb-property-value-ratio: 0.68fr;
+  --vb-property-row-gap: 8px;
+  --vb-property-column-gap: 9px;
+}
+
+.vb-fields[data-density="compact"],
+[data-vb-property-density="compact"] {
+  --vb-property-label-width: 64px;
+  --vb-property-label-ratio: 0.36fr;
+  --vb-property-value-ratio: 0.64fr;
+  --vb-property-row-gap: 7px;
+  --vb-property-column-gap: 7px;
+  --vb-color-swatch-width: 34px;
+  --vb-color-swatch-height: 27px;
+  --vb-color-swatch-gap: 5px;
+  --vb-control-padding: 4px 5px;
+}
+
+.vb-field {
+  display: grid;
+  grid-template-columns: minmax(var(--vb-property-label-width), var(--vb-property-label-ratio)) minmax(0, var(--vb-property-value-ratio));
+  align-items: start;
+  gap: var(--vb-property-column-gap);
+}
+
+.vb-field-label {
+  padding-top: 5px;
+  overflow: hidden;
+  color: var(--vb-color-muted);
+  text-overflow: ellipsis;
+}
+
+.vb-field-value {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.vb-fields-empty {
+  margin: 0;
+  padding: 10px;
+  color: var(--vb-color-muted);
+  background: var(--vscode-textBlockQuote-background, var(--vb-color-surface));
+  border-left: 3px solid var(--vscode-textBlockQuote-border, var(--vb-color-border));
+}
+
+.vb-property-section > h3 {
+  margin: 0 0 10px;
+  color: var(--vb-color-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.vb-split-workspace {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+}
+
+.vb-navigator-pane,
+.vb-inspector-pane,
+.vb-inspector-rail {
+  min-width: 0;
+  min-height: 0;
+}
+
+.vb-navigator-pane {
+  background: var(--vb-color-sidebar);
+  border-color: var(--vb-color-border);
+}
+
+.vb-inspector-pane,
+.vb-inspector-rail {
+  background: var(--vb-color-sidebar);
+}
+
+.vb-feedback {
+  margin: 0;
+  padding: 10px;
+  color: var(--vb-color-muted);
+  background: var(--vscode-textBlockQuote-background, var(--vb-color-surface));
+  border-left: 3px solid var(--vscode-textBlockQuote-border, var(--vb-color-border));
+}
+
+.vb-feedback.error {
+  color: var(--vscode-errorForeground, var(--vb-color-foreground));
+  background: var(--vscode-inputValidation-errorBackground, var(--vb-color-surface));
+  border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+}
+
+body.vscode-high-contrast,
+body.vscode-high-contrast-light {
+  --vb-color-border: var(--vscode-contrastBorder, var(--vscode-panel-border, CanvasText));
+  --vb-control-border: var(--vscode-contrastBorder, CanvasText);
+}
+
+body.vscode-high-contrast button,
+body.vscode-high-contrast input,
+body.vscode-high-contrast textarea,
+body.vscode-high-contrast select,
+body.vscode-high-contrast-light button,
+body.vscode-high-contrast-light input,
+body.vscode-high-contrast-light textarea,
+body.vscode-high-contrast-light select {
+  border-color: var(--vscode-contrastBorder, currentColor);
+}
+
+@media (max-width: 700px) {
+  .vb-field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+}

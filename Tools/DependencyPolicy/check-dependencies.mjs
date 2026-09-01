@@ -49,6 +49,30 @@ for (const packagePath of packagePaths) {
   }
 }
 
+const editorUi = await readJson("Editors/Ui/package.json");
+for (const section of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+  for (const name of Object.keys(editorUi[section] ?? {})) {
+    if (name.startsWith("@visualbridge/")) {
+      errors.push(`Editors/Ui/package.json ${section}.${name} violates the host- and domain-independent UI boundary.`);
+    }
+  }
+}
+for (const packagePath of [
+  "Editors/Form",
+  "Editors/Entity",
+  "Editors/Graph",
+  "Editors/Project",
+  "Editors/Structured",
+  "Editors/Table",
+]) {
+  const manifest = await readJson(`${packagePath}/package.json`);
+  checkEqual(
+    `${packagePath}/package.json dependencies.@visualbridge/editor-ui`,
+    manifest.dependencies?.["@visualbridge/editor-ui"],
+    "*",
+  );
+}
+
 const extension = await readJson("Tools/VSCodeExtension/package.json");
 checkEqual("VS Code test-electron", extension.devDependencies?.["@vscode/test-electron"], versions.vscodeTestElectron);
 checkEqual("VS Code types", extension.devDependencies?.["@types/vscode"], versions.vscodeTypes);

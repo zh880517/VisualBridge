@@ -18,6 +18,7 @@
 - [Unity Editor 接入架构](UnityIntegrationArchitecture.md)：已落地的 Structured offline Editor-only 切片、C# wire/data bags、UPM Package、固定 Profile、Catalog Export、派生编译、信任边界和后续最小 Editor Bridge。
 - [VS Code Host](VSCodeHost.md)：激活、Project Registry、Custom Editor 路由、Webview epoch、保存/冲突、诊断和 Trust。
 - [Form Field Editor](FormFieldEditor.md)：跨 Graph、Entity、Structured、Table 的共享字段语义、React 控件、Reference Bridge 和提交边界。
+- [Authoring 编辑器共享 UI](AuthoringEditorUi.md)：内置 Webview 的主题 Token、公共 Shell/布局/图标、属性密度、Graph 与属性面板视觉边界。
 - [Project Settings 与 Catalog Browser](ProjectCatalogManagement.md)：Project File、文件归属、Project Operation、Catalog 来源 Hash/过期状态和只读 Browser。
 - [Document Browser V1](DocumentBrowser.md)：统一语义树、搜索、创建、全量校验、物理来源、引用和错误入口。
 - [Workspace Index 与大工程编辑性能](WorkspaceIndexPerformance.md)：不可变增量快照、刷新取消、Reference/Provider 缓存、稳定分页和 Table 虚拟化。
