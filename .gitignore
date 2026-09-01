@@ -114,3 +114,6 @@ InitTestScene*.unity*
 
 # Auto-generated cache in Assets folder
 /UnityProject/[Aa]ssets/[Ss]ceneDependencyCache*
+
+# ZCode session state (auto-saved plans, session artifacts)
+.zcode/
