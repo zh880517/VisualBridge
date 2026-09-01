@@ -325,64 +325,6 @@ test("MCP V2 exposes eight stable tools and routes Graph semantics with real cro
   });
 });
 
-test("MCP graph auto layout applies deterministic grid-aligned positions through apply_operations", async () => {
-  await withFixture("GraphSemanticProject", async ({ projectRoot, client, stderr }) => {
-    const discovery = await call(client, "visualbridge_project", { action: "discover" });
-    const projectFile = discovery.projects[0].projectFile;
-    const selector = { projectFile, documentTypeId: "logicGraph", editor: "graph" };
-    const graphPath = "Graph/SemanticSample.vbgraph";
-    const read = await call(client, "visualbridge_document", { ...selector, action: "read", path: graphPath });
-    assert.equal(read.valid, true);
-
-    const applied = await call(client, "visualbridge_apply_operations", {
-      ...selector,
-      path: graphPath,
-      baseHash: read.baseHash,
-      operations: [{ type: "graph.autoLayout", graphId: "root" }],
-    });
-    assert.equal(applied.status, "applied");
-
-    const reread = await call(client, "visualbridge_document", { ...selector, action: "read", path: graphPath });
-    assert.equal(reread.valid, true);
-    const root = reread.document.graphs.find((entry) => entry.id === "root");
-    for (const node of root.nodes) {
-      assert.ok(
-        node.position.x % 10 === 0 && node.position.y % 10 === 0,
-        `Node '${node.id}' is not aligned to the 10px grid: ${JSON.stringify(node.position)}`,
-      );
-    }
-    const positions = new Map(root.nodes.map((node) => [node.id, node.position]));
-    assert.ok(positions.get("step_a").x > positions.get("entry").x);
-    assert.ok(positions.get("step_b").x > positions.get("step_a").x);
-    assert.ok(positions.get("float_sink").x > positions.get("int_source").x);
-
-    // 布局只依赖图结构：对已布局的同一图重复提交得到相同字节（unchanged）。
-    const secondRead = await call(client, "visualbridge_document", { ...selector, action: "read", path: graphPath });
-    const second = await call(client, "visualbridge_apply_operations", {
-      ...selector,
-      path: graphPath,
-      baseHash: secondRead.baseHash,
-      operations: [{ type: "graph.autoLayout", graphId: "root" }],
-    });
-    assert.equal(second.status, "unchanged");
-
-    // 未知的 graphId 与非法 direction 以结构化 invalid 拒绝且不改字节。
-    const beforeInvalid = await readFile(path.join(projectRoot, graphPath));
-    const invalid = await call(client, "visualbridge_apply_operations", {
-      ...selector,
-      path: graphPath,
-      baseHash: secondRead.baseHash,
-      operations: [
-        { type: "graph.autoLayout", graphId: "missing" },
-        { type: "graph.autoLayout", graphId: "root", direction: "DIAGONAL" },
-      ],
-    });
-    assert.equal(invalid.status, "invalid");
-    assert.deepEqual(await readFile(path.join(projectRoot, graphPath)), beforeInvalid);
-
-    assert.equal(stderr(), "", stderr());
-  });
-});
 
 test("MCP runtime tool inspects a live Runtime instance and releases its debug lease per call", async () => {
   await withFixture("GraphSemanticProject", async ({ temporaryRoot, projectRoot, stderr }) => {

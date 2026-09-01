@@ -63,6 +63,7 @@ import {
   type GraphRevealRequest,
   type GraphRevealResult,
 } from "../graphReveal";
+import { computeGraphAutoLayout, type GraphLayoutSize } from "./graphLayout";
 import "./styles.css";
 
 type PortKind = "flow" | "data";
@@ -264,11 +265,6 @@ type GraphOperation =
       readonly graphId: string;
       readonly nodeId: string;
       readonly position: GraphPosition;
-    }
-  | {
-      readonly type: "graph.autoLayout";
-      readonly graphId: string;
-      readonly direction?: "LR" | "TB";
     }
   | {
       readonly type: "graph.updateNode";
@@ -1681,13 +1677,33 @@ function GraphEditorApp(): React.JSX.Element {
 
   const applyAutoLayout = useCallback((): void => {
     const currentGraph = documentRef.current?.graphs.find((graph) => graph.id === activeGraphIdRef.current);
-    if (currentGraph === undefined) {
+    if (currentGraph === undefined || flowInstance === undefined) {
+      return;
+    }
+    // 用 React Flow 渲染后的实测尺寸计算布局，高节点不会再按估算值排版而重叠。
+    const sizes = new Map<string, GraphLayoutSize>();
+    for (const flowNode of flowInstance.getNodes()) {
+      if (flowNode.data.flavor !== "node" || flowNode.measured?.width === undefined || flowNode.measured.height === undefined) {
+        continue;
+      }
+      sizes.set(flowNode.id, { width: flowNode.measured.width, height: flowNode.measured.height });
+    }
+    const layout = computeGraphAutoLayout(currentGraph.nodes, currentGraph.edges, sizes);
+    const operations = currentGraph.nodes.flatMap((node) => {
+      const position = layout.get(node.id);
+      if (position === undefined || position.x === node.position.x && position.y === node.position.y) {
+        return [];
+      }
+      return [{ type: "graph.moveNode" as const, graphId: currentGraph.id, nodeId: node.id, position }];
+    });
+    if (operations.length === 0) {
+      setStatus({ message: "当前图已处于自动布局位置。", error: false });
       return;
     }
     autoLayoutFitViewRef.current = true;
-    postOperations([{ type: "graph.autoLayout", graphId: currentGraph.id }]);
+    postOperations(operations);
     setStatus({ message: "正在自动布局当前图…", error: false });
-  }, [postOperations]);
+  }, [flowInstance, postOperations]);
 
   const createClipboardPayload = useCallback((): GraphClipboardPayload | undefined => {
     const graph = documentRef.current?.graphs.find((candidate) => candidate.id === activeGraphIdRef.current);
@@ -2749,7 +2765,7 @@ function GraphEditorApp(): React.JSX.Element {
         <button
           type="button"
           className="secondary"
-          title="对当前图执行自动布局（按连线方向分层重排全部节点位置）"
+          title="对当前图执行自动布局（按连线方向分层，使用节点实际尺寸重排位置）"
           disabled={pending || graphDocument === undefined || activeGraphId === ""}
           onClick={applyAutoLayout}
         >

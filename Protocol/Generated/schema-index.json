@@ -5,7 +5,7 @@
     {
       "file": "Schema/visualbridge-authoring-contracts.schema.json",
       "id": "https://visualbridge.dev/schema/visualbridge-authoring-contracts.schema.json",
-      "sha256": "41ae6645b5039d5236505be665547ea3820a29ce5c1f682f277ba27f2c2501e1",
+      "sha256": "1e6a9056d13f50826c72a7d47e055089f345b7494ede4b46a0f8f6749e27aca7",
       "definitions": [
         "applyOperationsRequest",
         "documentOperation",
@@ -17,7 +17,6 @@
         "graphAddNode",
         "graphAddSubgraph",
         "graphAssignType",
-        "graphAutoLayout",
         "graphMoveNode",
         "graphNodeIdOperation",
         "graphOperation",

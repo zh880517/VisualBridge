@@ -31,7 +31,6 @@ import {
   type GraphPortKind,
   type GraphTypeDefinition,
 } from "./graphCatalog";
-import { computeGraphAutoLayout, type GraphAutoLayoutDirection } from "./graphLayout";
 
 export const GRAPH_DOCUMENT_FORMAT_VERSION = 3;
 export const GRAPH_EDITOR_ID = "graph";
@@ -142,11 +141,6 @@ export type GraphOperation =
       readonly graphId: string;
       readonly nodeId: string;
       readonly position: GraphPosition;
-    }
-  | {
-      readonly type: "graph.autoLayout";
-      readonly graphId: string;
-      readonly direction?: GraphAutoLayoutDirection;
     }
   | {
       readonly type: "graph.updateNode";
@@ -953,19 +947,6 @@ function parseOperation(value: unknown, index: number, diagnostics: DocumentDiag
         ? undefined
         : { type: value.type, graphId, nodeId, position };
     }
-    case "graph.autoLayout": {
-      const direction = value.direction === undefined
-        ? undefined
-        : value.direction === "LR" || value.direction === "TB"
-          ? value.direction
-          : undefined;
-      if (value.direction !== undefined && direction === undefined) {
-        diagnostics.push(error("graph.invalidLayoutDirection", `${path}.direction`, "Expected 'LR' or 'TB'."));
-      }
-      return graphId === undefined || (value.direction !== undefined && direction === undefined)
-        ? undefined
-        : { type: value.type, graphId, ...(direction === undefined ? {} : { direction }) };
-    }
     case "graph.updateNode": {
       const nodeId = readIdentifier(value.nodeId, `${path}.nodeId`, diagnostics);
       const title = readString(value.title, `${path}.title`, diagnostics);
@@ -1129,17 +1110,6 @@ function applyOperation(
         return error("graph.nodeNotFound", path, `Node '${operation.nodeId}' does not exist in graph '${graph.id}'.`);
       }
       node.position = { ...operation.position };
-      return undefined;
-    }
-    case "graph.autoLayout": {
-      // 整图确定性布局；坐标按 10px 网格取整，空图为合法 no-op。
-      const positions = computeGraphAutoLayout(graph, catalog, operation.direction ?? "LR");
-      for (const node of graph.nodes) {
-        const position = positions.get(node.id);
-        if (position !== undefined) {
-          node.position = { ...position };
-        }
-      }
       return undefined;
     }
     case "graph.updateNode": {
