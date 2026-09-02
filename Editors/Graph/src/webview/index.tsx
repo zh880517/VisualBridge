@@ -63,7 +63,7 @@ import {
   type GraphRevealRequest,
   type GraphRevealResult,
 } from "../graphReveal";
-import { computeGraphAutoLayout, type GraphLayoutSize } from "./graphLayout";
+import { computeGraphAutoLayout, GRAPH_LAYOUT_RANK_SPACING, type GraphLayoutSize } from "./graphLayout";
 import "./styles.css";
 
 type PortKind = "flow" | "data";
@@ -1688,7 +1688,14 @@ function GraphEditorApp(): React.JSX.Element {
       }
       sizes.set(flowNode.id, { width: flowNode.measured.width, height: flowNode.measured.height });
     }
-    const layout = computeGraphAutoLayout(currentGraph.nodes, currentGraph.edges, sizes);
+    // 子图的"输入参数"桩固定在画布左侧（x:-100）且宽度自适应，布局主区需要让出它的实测宽度。
+    const inputStub = flowInstance.getNodes().find((node) => node.id === INTERFACE_INPUT_NODE_ID);
+    const startX = inputStub !== undefined && inputStub.measured?.width !== undefined
+      ? inputStub.position.x + inputStub.measured.width + GRAPH_LAYOUT_RANK_SPACING
+      : undefined;
+    const layout = computeGraphAutoLayout(currentGraph.nodes, currentGraph.edges, sizes, {
+      ...(startX === undefined ? {} : { startX }),
+    });
     const operations = currentGraph.nodes.flatMap((node) => {
       const position = layout.get(node.id);
       if (position === undefined || position.x === node.position.x && position.y === node.position.y) {

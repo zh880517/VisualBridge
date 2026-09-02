@@ -31,10 +31,16 @@ export interface GraphLayoutEdge {
 
 // 默认尺寸对齐 .graph-node 卡片（宽 292、最小高 112），仅在拿不到实测值时使用。
 const FALLBACK_SIZE: GraphLayoutSize = { width: 292, height: 112 };
+export const GRAPH_LAYOUT_RANK_SPACING = 120;
 const NODE_GAP = 40;
-const RANK_SPACING = 120;
 const LAYOUT_MARGIN = 80;
 const LAYOUT_GRID = 10;
+
+export interface GraphLayoutOptions {
+  readonly direction?: GraphLayoutDirection;
+  /** 布局主区起始 X；调用方用它让出固定在画布左侧的输入接口桩。 */
+  readonly startX?: number;
+}
 
 function edgeKey(source: string, target: string): string {
   return `${source}\u0000${target}`;
@@ -165,8 +171,10 @@ export function computeGraphAutoLayout(
   nodes: readonly GraphLayoutNode[],
   edges: readonly GraphLayoutEdge[],
   sizes: ReadonlyMap<string, GraphLayoutSize>,
-  direction: GraphLayoutDirection = "LR",
+  options: GraphLayoutOptions = {},
 ): ReadonlyMap<string, GraphLayoutPosition> {
+  const direction = options.direction ?? "LR";
+  const startX = Math.max(LAYOUT_MARGIN, options.startX ?? LAYOUT_MARGIN);
   const positions = new Map<string, GraphLayoutPosition>();
   const sortedNodes = [...nodes].sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
   if (sortedNodes.length === 0) {
@@ -308,7 +316,7 @@ export function computeGraphAutoLayout(
     const groupTotals = groups.map((members) =>
       members.reduce((sum, nodeId) => sum + sizeOf(nodeId).height + NODE_GAP, -NODE_GAP));
     const maxGroupTotal = Math.max(0, ...groupTotals);
-    let xCursor = LAYOUT_MARGIN;
+    let xCursor = startX;
     groups.forEach((members, groupIndex) => {
       const groupTotal = groupTotals[groupIndex] ?? 0;
       let yCursor = LAYOUT_MARGIN + (maxGroupTotal - groupTotal) / 2;
@@ -320,7 +328,7 @@ export function computeGraphAutoLayout(
         groupWidth = Math.max(groupWidth, size.width);
       }
       // 空组是孤立节点区与主图之间的额外间距列。
-      xCursor += members.length === 0 ? RANK_SPACING : groupWidth + RANK_SPACING;
+      xCursor += members.length === 0 ? GRAPH_LAYOUT_RANK_SPACING : groupWidth + GRAPH_LAYOUT_RANK_SPACING;
     });
   } else {
     // 主轴为 Y（层行，行高取该行最高节点），行内沿 X 堆叠并整体水平居中。
@@ -332,12 +340,12 @@ export function computeGraphAutoLayout(
     let yCursor = LAYOUT_MARGIN;
     groups.forEach((members, groupIndex) => {
       const groupTotal = groupTotals[groupIndex] ?? 0;
-      let xCursor = LAYOUT_MARGIN + (maxGroupTotal - groupTotal) / 2;
+      let xCursor = startX + (maxGroupTotal - groupTotal) / 2;
       for (const nodeId of members) {
         positions.set(nodeId, { x: gridRound(xCursor), y: gridRound(yCursor) });
         xCursor += sizeOf(nodeId).width + NODE_GAP;
       }
-      yCursor += (groupHeights[groupIndex] ?? 0) + RANK_SPACING;
+      yCursor += (groupHeights[groupIndex] ?? 0) + GRAPH_LAYOUT_RANK_SPACING;
     });
   }
 

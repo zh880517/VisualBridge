@@ -18,8 +18,8 @@
           "nodeTypeId": "sample.stringSink",
           "title": "Branch Result",
           "position": {
-            "x": 1510,
-            "y": 520
+            "x": 2140,
+            "y": 670
           },
           "properties": {
             "fallback": "No branch result"
@@ -32,8 +32,8 @@
           "nodeTypeId": "sample.stringAnySink",
           "title": "Debug Player Level",
           "position": {
-            "x": 860,
-            "y": 560
+            "x": 490,
+            "y": 1330
           },
           "properties": {
             "fallback": "Unknown level"
@@ -46,8 +46,8 @@
           "nodeTypeId": "sample.floatSink",
           "title": "Resolved Difficulty",
           "position": {
-            "x": 560,
-            "y": 640
+            "x": 490,
+            "y": 390
           },
           "properties": {
             "fallback": 1
@@ -60,8 +60,8 @@
           "nodeTypeId": "sample.floatSource",
           "title": "Difficulty Scale",
           "position": {
-            "x": 260,
-            "y": 600
+            "x": 80,
+            "y": 610
           },
           "properties": {
             "constant": 1.25
@@ -74,8 +74,8 @@
           "nodeTypeId": "sample.stringSource",
           "title": "Encounter Context",
           "position": {
-            "x": 560,
-            "y": 440
+            "x": 80,
+            "y": 780
           },
           "properties": {
             "constant": "tutorial.opening"
@@ -88,8 +88,8 @@
           "nodeTypeId": "sample.entry",
           "title": "Encounter Start",
           "position": {
-            "x": 40,
-            "y": 80
+            "x": 80,
+            "y": 960
           },
           "properties": {},
           "dynamicPorts": []
@@ -100,8 +100,8 @@
           "nodeTypeId": "sample.step",
           "title": "Show Level Warning",
           "position": {
-            "x": 860,
-            "y": 300
+            "x": 1320,
+            "y": 430
           },
           "properties": {
             "label": "Player level is too low",
@@ -132,8 +132,8 @@
           "nodeTypeId": "sample.compare",
           "title": "Check Player Level",
           "position": {
-            "x": 560,
-            "y": 60
+            "x": 900,
+            "y": 820
           },
           "properties": {
             "operator": ">=",
@@ -147,8 +147,8 @@
           "nodeTypeId": "sample.flowRouter",
           "title": "Route Encounter Outcome",
           "position": {
-            "x": 860,
-            "y": -20
+            "x": 1320,
+            "y": 1140
           },
           "properties": {},
           "dynamicPorts": [
@@ -178,8 +178,8 @@
           "nodeTypeId": "sample.intSource",
           "title": "Player Level",
           "position": {
-            "x": 260,
-            "y": 420
+            "x": 80,
+            "y": 1110
           },
           "properties": {
             "constant": 12
@@ -192,8 +192,8 @@
           "nodeTypeId": "sample.step",
           "title": "Preview Rewards",
           "position": {
-            "x": 1210,
-            "y": 180
+            "x": 1730,
+            "y": 80
           },
           "properties": {
             "label": "Preview rewards without granting",
@@ -221,45 +221,12 @@
         },
         {
           "kind": "node",
-          "id": "reward_list",
-          "nodeTypeId": "sample.list",
-          "title": "Grant Rewards",
-          "position": {
-            "x": 1510,
-            "y": -340
-          },
-          "properties": {
-            "deliverAsync": true
-          },
-          "dynamicPorts": [
-            {
-              "id": "reward_primary",
-              "groupId": "list.elements",
-              "title": "Primary Reward",
-              "value": 101
-            },
-            {
-              "id": "reward_bonus",
-              "groupId": "list.elements",
-              "title": "Bonus Reward",
-              "value": 102
-            },
-            {
-              "id": "reward_fallback",
-              "groupId": "list.whole",
-              "title": "Fallback Reward",
-              "value": 103
-            }
-          ]
-        },
-        {
-          "kind": "node",
           "id": "retry_encounter_step",
           "nodeTypeId": "sample.step",
           "title": "Retry Encounter",
           "position": {
-            "x": 1210,
-            "y": 520
+            "x": 1730,
+            "y": 1060
           },
           "properties": {
             "label": "Queue encounter retry",
@@ -287,12 +254,45 @@
         },
         {
           "kind": "node",
+          "id": "reward_list",
+          "nodeTypeId": "sample.list",
+          "title": "Grant Rewards",
+          "position": {
+            "x": 2140,
+            "y": 850
+          },
+          "properties": {
+            "deliverAsync": true
+          },
+          "dynamicPorts": [
+            {
+              "id": "reward_primary",
+              "groupId": "list.elements",
+              "title": "Primary Reward",
+              "value": 101
+            },
+            {
+              "id": "reward_bonus",
+              "groupId": "list.elements",
+              "title": "Bonus Reward",
+              "value": 102
+            },
+            {
+              "id": "reward_fallback",
+              "groupId": "list.whole",
+              "title": "Fallback Reward",
+              "value": 103
+            }
+          ]
+        },
+        {
+          "kind": "node",
           "id": "success_step",
           "nodeTypeId": "sample.step",
           "title": "Finish Encounter",
           "position": {
-            "x": 1800,
-            "y": -80
+            "x": 2550,
+            "y": 590
           },
           "properties": {
             "label": "Finish encounter",
@@ -324,8 +324,8 @@
           "subgraphId": "victory_branch",
           "title": "Victory Subgraph Call",
           "position": {
-            "x": 1210,
-            "y": -360
+            "x": 1730,
+            "y": 840
           },
           "properties": {
             "debugLabel": "Opening Encounter Victory"
@@ -338,8 +338,8 @@
           "nodeTypeId": "sample.step",
           "title": "Show Opening",
           "position": {
-            "x": 260,
-            "y": 40
+            "x": 490,
+            "y": 570
           },
           "properties": {
             "label": "Show encounter opening",
@@ -639,8 +639,8 @@
           "nodeTypeId": "sample.intSink",
           "title": "Consume Player Level",
           "position": {
-            "x": 300,
-            "y": 360
+            "x": 270,
+            "y": 80
           },
           "properties": {
             "fallback": 1
@@ -653,8 +653,8 @@
           "nodeTypeId": "sample.stringSource",
           "title": "Victory Result",
           "position": {
-            "x": 560,
-            "y": 360
+            "x": 270,
+            "y": 260
           },
           "properties": {
             "constant": "Victory rewards prepared"
@@ -667,8 +667,8 @@
           "nodeTypeId": "sample.step",
           "title": "Prepare Victory Rewards",
           "position": {
-            "x": 280,
-            "y": 80
+            "x": 270,
+            "y": 430
           },
           "properties": {
             "label": "Prepare victory rewards",
