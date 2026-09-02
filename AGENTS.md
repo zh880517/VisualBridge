@@ -20,6 +20,7 @@ VisualBridge 是平台实现的 monorepo。`Core/` 存放与宿主无关的 Type
 - `npm run check` — 对 VisualBridgeCore 与 VS Code 扩展做类型检查。
 - `npm run build` — 编译 Core 并把扩展打包到 `Tools/VSCodeExtension/dist/`。
 - `npm run package:vscode` — 在 `Tools/VSCodeExtension/artifacts/` 下生成 VSIX。
+- `npm run install:vscode` — 打包 VSIX 并安装到本地 VS Code（需要 code CLI 在 PATH；可用 `CODE_CLI` 环境变量指定其它路径）。
 - `npm run test:vscode:host` — 构建扩展并在隔离的 Extension Host 中对固定 VisualBridge fixtures 跑集成测试。
 - `npm run test:vscode:cli` — 打包 VSIX、安装进隔离的 VS Code 用户/扩展目录并验证打包后的运行时资产。
 - `npm run check:docs` — 校验正式文档覆盖、链接、锚点、Mermaid 图、命令/编辑器 manifest 与绑定 Schema 的 JSON 示例。

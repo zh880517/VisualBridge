@@ -18,6 +18,11 @@ import { DocumentBrowser } from "./document/documentBrowser";
 import { WorkspaceDocumentIndex } from "./document/workspaceDocumentIndex";
 import { WorkspaceDocumentLifecycle, WorkspaceLifecycleError } from "./document/workspaceDocumentLifecycle";
 import {
+  UnsavedDocumentsTree,
+  discardAllUnsavedDocuments,
+  saveAllUnsavedDocuments,
+} from "./document/unsavedDocuments";
+import {
   DEFAULT_EDITOR_VIEW_TYPE,
   DocumentEditorProvider,
   OPTIONAL_EDITOR_VIEW_TYPE,
@@ -94,10 +99,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
   const browser = new DocumentBrowser(projects, documents, references, refactors, lifecycle);
   const catalogBrowser = new CatalogBrowser(projects, catalogDiagnostics, output);
+  // 在注册任何编辑器/命令之前完成项目加载：窗口重启恢复编辑器标签页时，
+  // VS Code 会在提供器注册后立刻调用 openCustomDocument，此时若 Project Registry
+  // 尚未完成首次刷新，文档解析会失败并留下无法恢复的死标签页。
+  await projects.initialize();
   const catalogTree = vscode.window.createTreeView("visualbridge.catalogs", {
     treeDataProvider: catalogBrowser,
     showCollapseAll: true,
   });
+  const unsavedDocumentsTree = new UnsavedDocumentsTree(projects, tableEditorProvider);
+  const unsavedDocumentsView = vscode.window.createTreeView("visualbridge.unsavedDocuments", {
+    treeDataProvider: unsavedDocumentsTree,
+  });
+  unsavedDocumentsTree.attachView(unsavedDocumentsView);
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   status.name = "VisualBridge Projects";
   status.command = "visualbridge.refreshProjects";
@@ -581,9 +595,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       try {
         return await safeDeleteElement(request, true);
       } catch (errorValue) {
+        if (errorValue instanceof WorkspaceLifecycleError && errorValue.code === "lifecycle.workspaceDirty") {
+          // 弹窗必须 fire-and-forget：该命令运行在编辑器的串行消息队列里，
+          // await 用户点击会阻塞队列，导致面板 ready 握手永远排不上队（表格一直"正在加载"）。
+          void vscode.window.showWarningMessage(errorValue.message, "管理未保存的文档").then((choice) => {
+            if (choice !== undefined) {
+              void vscode.commands.executeCommand("visualbridge.manageUnsavedDocuments");
+            }
+          });
+          return undefined;
+        }
         void vscode.window.showWarningMessage(errorValue instanceof Error ? errorValue.message : String(errorValue));
         return undefined;
       }
+    }),
+    vscode.commands.registerCommand("visualbridge.manageUnsavedDocuments", () => (
+      // 报错弹窗的入口：聚焦常驻的"未保存的文档"树视图。
+      vscode.commands.executeCommand("visualbridge.unsavedDocuments.focus")
+    )),
+    vscode.commands.registerCommand("visualbridge.unsavedDocuments.refresh", () => (
+      unsavedDocumentsTree.refresh()
+    )),
+    vscode.commands.registerCommand("visualbridge.unsavedDocuments.saveAll", async () => {
+      const saved = await saveAllUnsavedDocuments(projects, tableEditorProvider);
+      unsavedDocumentsTree.refresh();
+      void vscode.window.showInformationMessage(`已保存 ${saved} 个文档。`);
+    }),
+    vscode.commands.registerCommand("visualbridge.unsavedDocuments.discardAll", async () => {
+      const choice = await vscode.window.showWarningMessage(
+        "确定放弃所有未保存的 VisualBridge 文档改动？",
+        { modal: true },
+        "放弃改动",
+      );
+      if (choice === undefined) {
+        return;
+      }
+      const reverted = await discardAllUnsavedDocuments(projects, tableEditorProvider);
+      unsavedDocumentsTree.refresh();
+      void vscode.window.showInformationMessage(`已放弃 ${reverted} 个文档的改动。`);
     }),
     vscode.commands.registerCommand(REVEAL_REFERENCE_COMMAND, async (location) => {
       if (isTableReferenceLocation(location)) {
@@ -634,9 +683,31 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
-  await projects.initialize();
+  // projects.initialize 已在注册块之前完成（见上）；documents 索引在注册后初始化。
   await documents.initialize();
   await catalogBrowser.refresh();
+
+  // "未保存的文档"树视图的自动刷新：文本编辑、保存/打开/关闭、项目变化与 Table 编辑器状态。
+  let unsavedRefreshTimer: NodeJS.Timeout | undefined;
+  const scheduleUnsavedRefresh = (): void => {
+    if (unsavedRefreshTimer !== undefined) {
+      clearTimeout(unsavedRefreshTimer);
+    }
+    unsavedRefreshTimer = setTimeout(() => {
+      unsavedRefreshTimer = undefined;
+      unsavedDocumentsTree.refresh();
+    }, 400);
+  };
+  context.subscriptions.push(
+    unsavedDocumentsView,
+    projects.onDidChange(scheduleUnsavedRefresh),
+    tableEditorProvider.onDidChangeDocuments(scheduleUnsavedRefresh),
+    vscode.workspace.onDidChangeTextDocument(scheduleUnsavedRefresh),
+    vscode.workspace.onDidSaveTextDocument(scheduleUnsavedRefresh),
+    vscode.workspace.onDidOpenTextDocument(scheduleUnsavedRefresh),
+    vscode.workspace.onDidCloseTextDocument(scheduleUnsavedRefresh),
+  );
+  unsavedDocumentsTree.refresh();
 
   const bridgeServer = new EditorBridgeServer(projects, documents, output);
   context.subscriptions.push(bridgeServer);

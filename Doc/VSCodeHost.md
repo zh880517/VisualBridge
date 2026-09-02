@@ -21,7 +21,7 @@ manifest 当前公开 4 个 Custom Editor view type：
 
 `visualbridge.documentEditor` 与 `.option` 由同一个 Provider 接受，再由 Project Registry 的可扩展稳定 `documentTypes[].editor` ID 路由：已注册的 `graph`、`entity`、`structured` 进入领域会话，未注册 ID 进入显示 Project/Type/Adapter/路径和当前源码的通用只读 Document Shell。Shell 不建立领域编辑、语义索引、Reference 或 Lifecycle。Table 独立使用 CustomDocument，因为一个逻辑文档可能拥有多个 CSV 物理源或一个二进制 workbook。所有 view 都允许同一文档打开多个编辑器实例，并设置 `retainContextWhenHidden: false`。
 
-三棵 Tree View 是 `visualbridge.documents`、`visualbridge.catalogs` 和 `visualbridge.documentDetails`。Documents 中的文件是叶子节点，文件名后直接显示 Problems 与 References 图标和数量；选择文件会让同层级、可折叠的 `visualbridge.documentDetails` 显示该文件的两组扁平详情。文件行的两个内联图标可展开并聚焦对应分组，Problems 使用中文说明，问题项右键可复制中文详情。manifest 贡献 25 条用户命令：Project 刷新/打开、Project Settings、四类文档创建、通用创建、元素安全删除；Document Browser 的刷新、搜索、全量校验、打开、创建、复制、重命名路径、移动、安全删除、显示 Problems、显示 References、复制问题详情、揭示引用和重命名引用目标；Catalog Browser 的刷新与打开。内部测试命令不计入这 25 条公开命令。
+四棵 Tree View 是 `visualbridge.documents`、`visualbridge.catalogs`、`visualbridge.documentDetails` 和 `visualbridge.unsavedDocuments`；Unsaved Documents 常驻列出全部已编辑未保存的 VisualBridge 文档（语义文档、Project 元数据/Catalog、Table 编辑器），标题实时显示未保存数量，点击条目打开文档，标题栏提供全部保存与放弃所有改动按钮，并随文本编辑、保存、打开/关闭与 Table 编辑器状态自动刷新。Documents 中的文件是叶子节点，文件名后直接显示 Problems 与 References 图标和数量；选择文件会让同层级、可折叠的 `visualbridge.documentDetails` 显示该文件的两组扁平详情。文件行的两个内联图标可展开并聚焦对应分组，Problems 使用中文说明，问题项右键可复制中文详情。manifest 贡献 29 条用户命令：Project 刷新/打开、Project Settings、四类文档创建、通用创建、元素安全删除、未保存文档管理（聚焦 Unsaved Documents 视图，另含该视图的刷新、全部保存、放弃所有改动三个按钮命令；Lifecycle 的 `lifecycle.workspaceDirty` 报错也可直接打开）；Document Browser 的刷新、搜索、全量校验、打开、创建、复制、重命名路径、移动、安全删除、显示 Problems、显示 References、复制问题详情、揭示引用和重命名引用目标；Catalog Browser 的刷新与打开。内部测试命令不计入这 26 条公开命令。
 
 ## Project Registry 与编辑器路由
 

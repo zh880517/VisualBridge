@@ -89,6 +89,12 @@
         "icon": "$(trash)"
       },
       {
+        "command": "visualbridge.manageUnsavedDocuments",
+        "title": "VisualBridge: Show Unsaved Documents",
+        "enablement": "visualbridge.hasProjects",
+        "icon": "$(save-all)"
+      },
+      {
         "command": "visualbridge.documentBrowser.refresh",
         "title": "Refresh Documents",
         "icon": "$(refresh)"
@@ -167,6 +173,23 @@
         "command": "visualbridge.catalogBrowser.open",
         "title": "Open Catalog",
         "icon": "$(go-to-file)"
+      },
+      {
+        "command": "visualbridge.unsavedDocuments.refresh",
+        "title": "Refresh Unsaved Documents",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "visualbridge.unsavedDocuments.saveAll",
+        "title": "Save All Unsaved Documents",
+        "icon": "$(save-all)",
+        "enablement": "visualbridge.hasProjects"
+      },
+      {
+        "command": "visualbridge.unsavedDocuments.discardAll",
+        "title": "Discard All Unsaved Changes",
+        "icon": "$(discard)",
+        "enablement": "visualbridge.hasProjects"
       }
     ],
     "viewsContainers": {
@@ -191,6 +214,10 @@
         {
           "id": "visualbridge.documentDetails",
           "name": "Problems / References"
+        },
+        {
+          "id": "visualbridge.unsavedDocuments",
+          "name": "Unsaved Documents"
         }
       ]
     },
@@ -239,6 +266,21 @@
           "command": "visualbridge.catalogBrowser.refresh",
           "when": "view == visualbridge.catalogs",
           "group": "navigation@2"
+        },
+        {
+          "command": "visualbridge.unsavedDocuments.saveAll",
+          "when": "view == visualbridge.unsavedDocuments",
+          "group": "navigation"
+        },
+        {
+          "command": "visualbridge.unsavedDocuments.discardAll",
+          "when": "view == visualbridge.unsavedDocuments",
+          "group": "navigation"
+        },
+        {
+          "command": "visualbridge.unsavedDocuments.refresh",
+          "when": "view == visualbridge.unsavedDocuments",
+          "group": "navigation"
         }
       ],
       "view/item/context": [

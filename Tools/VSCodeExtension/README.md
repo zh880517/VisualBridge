@@ -44,6 +44,10 @@ Manifest 的默认 `visualbridge.documentEditor` selector 包含 `.vbgraph`、`.
 | `visualbridge.createTableDocument` | VisualBridge: Create Table Document | 创建 CSV-compatible 或 XLSX Table。 |
 | `visualbridge.createDocument` | VisualBridge: Create Document | 从 Project Document Type 统一选择并创建。 |
 | `visualbridge.safeDeleteElement` | VisualBridge: Safe Delete Element | 由领域编辑器携带结构化目标发起元素 Safe Delete；不接受无目标的手工删除。 |
+| `visualbridge.manageUnsavedDocuments` | VisualBridge: Show Unsaved Documents | 聚焦 Unsaved Documents 视图；Lifecycle 的 workspaceDirty 报错也可直接打开。 |
+| `visualbridge.unsavedDocuments.refresh` | Refresh Unsaved Documents | 刷新未保存文档视图。 |
+| `visualbridge.unsavedDocuments.saveAll` | Save All Unsaved Documents | 全部保存未保存的 VisualBridge 文档。 |
+| `visualbridge.unsavedDocuments.discardAll` | Discard All Unsaved Changes | 确认后放弃全部未保存改动。 |
 | `visualbridge.documentBrowser.refresh` | Refresh Documents | 刷新 Documents 语义索引。 |
 | `visualbridge.documentBrowser.search` | Search Documents | 搜索标题、ID、路径、诊断和引用。 |
 | `visualbridge.documentBrowser.validateAll` | Validate All Documents | 完整校验并发布 Problems。 |
