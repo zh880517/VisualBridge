@@ -11,6 +11,7 @@ import {
   createEntityComponentReferenceProvider,
   entityDocumentAdapter,
   entityTextDocumentCodec,
+  findDanglingComponentReferenceDiagnostics,
   parseEntityCatalog,
   parseEntityDocument,
   renameEntityDocumentId,
@@ -70,6 +71,23 @@ function readFixture(...segments: string[]): string {
 function formatDiagnostics(diagnostics: readonly { readonly code: string; readonly message: string }[]): string {
   return diagnostics.map((diagnostic) => `${diagnostic.code}: ${diagnostic.message}`).join("\n");
 }
+
+test("removing a component rejects dangling same-document references", () => {
+  const { document, registry } = loadFixture();
+  // primaryComponentId 引用同文档的 health 组件，删除 health 会留下悬空引用。
+  const removed = applyEntityOperations(document, [{ type: "entity.removeComponent", componentId: "health" }], registry);
+  assert.equal(removed.success, true, removed.success ? "" : formatDiagnostics(removed.diagnostics));
+  if (!removed.success) return;
+  const dangling = findDanglingComponentReferenceDiagnostics(document, removed.document, registry);
+  assert.ok(dangling.some((diagnostic) => diagnostic.code === "entity.removedComponentReferenced"));
+  // 删除未被引用的 move 组件不产生诊断。
+  const unreferenced = applyEntityOperations(document, [{ type: "entity.removeComponent", componentId: "move" }], registry);
+  assert.equal(unreferenced.success, true);
+  assert.deepEqual(
+    unreferenced.success ? findDanglingComponentReferenceDiagnostics(document, unreferenced.document, registry) : [],
+    [],
+  );
+});
 
 test("Entity document IDs rename through validated document semantics", () => {
   const { document, registry } = loadFixture();
@@ -214,6 +232,26 @@ test("Entity Operations add, edit, enable, move, duplicate, and remove Component
   assert.equal(result.document.components[0]?.enabled, true);
   assert.deepEqual(result.document.components[2]?.properties.damageStages, [12, 24, 48]);
   assert.equal(result.document.components[1]?.properties.maxHealth, 250);
+});
+
+test("Component Types are single-instance per Entity", () => {
+  const { document, registry } = loadFixture();
+  // 重复添加同类型组件被批次末尾校验拒绝。
+  const duplicateAdd = applyEntityOperations(document, [{
+    type: "entity.addComponent",
+    componentId: "health_again",
+    componentTypeId: "legacy.component.health",
+  }], registry);
+  assert.equal(duplicateAdd.success, false);
+  assert.ok(duplicateAdd.diagnostics.some((diagnostic) => diagnostic.code === "entity.duplicateComponentType"));
+  // 只复制不删除原件同样被拒。
+  const duplicateOnly = applyEntityOperations(document, [{
+    type: "entity.duplicateComponent",
+    componentId: "health",
+    newComponentId: "health_copy",
+  }], registry);
+  assert.equal(duplicateOnly.success, false);
+  assert.ok(duplicateOnly.diagnostics.some((diagnostic) => diagnostic.code === "entity.duplicateComponentType"));
 });
 
 test("Entity Operations rename stable Component instance IDs atomically", () => {

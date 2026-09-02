@@ -224,13 +224,14 @@ flowchart TD
 
 ## 9. Ordinary Operation guard
 
-“安全删除”是所有 VisualBridge 写入口的约束，不只是 Document Browser 按钮。以下会移除可被 Reference Provider 寻址目标的 Operation 不能由公共编辑入口或 `visualbridge_apply_operations` 直接提交：
+元素级删除守卫已整体移除。文件内的编辑操作——包括 `entity.removeComponent`、`graph.removeNode`、`graph.removeInterfacePort`、`graph.removeDynamicPort` 与 `table.removeRow`——都是普通的单文件 Operation，可由公共编辑入口和 `visualbridge_apply_operations` 直接提交，**不依赖引用方文件的保存状态**。安全边界如下：
 
-- `entity.removeComponent`；
-- `graph.removeNode`、`graph.removeInterfacePort`、`graph.removeDynamicPort`；
-- `table.removeRow`。
+- 同文档内仍引用被删目标的删除会被原子拒绝（`entity.removedComponentReferenced`、`graph.removedElementReferenced`）。
+- 跨文档悬空引用由持有方文档的 Reference 校验兜底：读取/校验时报告 missing target 诊断。
+- 稳定 ID 重命名仍必须走 Reference Refactor（`refactor.required`）。
+- 显式 Lifecycle Delete（`entity.component`、`graph.element`、`table.row` target）仍可用于需要完整闭包预览与授权计划的调用方，行为不变。
 
-未处于同一 Lifecycle apply 上下文时，Host 返回 `lifecycle.required`，权威来源不变。Entity、Graph 和 Table 编辑器的删除按钮必须把精确 source selector 与 stable delete target 提交给 Lifecycle preview/apply；Lifecycle 在完成入站检查后，才在内部授权上下文中复用既有领域 Operation。`graph.removeEdge` 等不删除 Reference target 的普通结构操作不受此 guard 限制。
+整文档级 Lifecycle 操作（create/copy/move/delete）保留完整授权流程。VS Code Host 的 Lifecycle preview 与 apply 仍要求 Project 内没有未保存的 VisualBridge TextDocument（`lifecycle.workspaceDirty`）；报错信息会列出具体未保存的文件，并提供"管理未保存的文档"入口。
 
 ## 10. Project Transaction states
 

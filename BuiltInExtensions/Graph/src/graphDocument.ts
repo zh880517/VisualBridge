@@ -31,6 +31,7 @@ import {
   type GraphPortKind,
   type GraphTypeDefinition,
 } from "./graphCatalog";
+import { GRAPH_ELEMENT_REFERENCE_KIND } from "./graphReferences";
 
 export const GRAPH_DOCUMENT_FORMAT_VERSION = 3;
 export const GRAPH_EDITOR_ID = "graph";
@@ -535,6 +536,57 @@ export function collectGraphReferences(
     });
     return occurrences;
   });
+}
+
+/**
+ * 元素删除是单文件 Operation；该检查保证删除后同文档内不再残留指向被删元素的引用。
+ * 常规 Reference 校验解析目标时读取写入前的磁盘字节，无法拦截同文档目标消失，
+ * 因此删除路径需要在语义层显式比对前后元素集合。
+ */
+export function findDanglingGraphElementReferenceDiagnostics(
+  before: GraphDocument,
+  after: GraphDocument,
+  catalog: GraphCatalogRegistry,
+): readonly DocumentDiagnostic[] {
+  const afterElementIds = collectGraphElementIds(after);
+  const removedIds = new Set(
+    [...collectGraphElementIds(before)].filter((id) => !afterElementIds.has(id)),
+  );
+  if (removedIds.size === 0) {
+    return [];
+  }
+  const diagnostics: DocumentDiagnostic[] = [];
+  for (const occurrence of collectGraphReferences(after, catalog)) {
+    if (occurrence.definition.kind !== GRAPH_ELEMENT_REFERENCE_KIND
+      || typeof occurrence.value !== "string"
+      || !removedIds.has(occurrence.value)) {
+      continue;
+    }
+    diagnostics.push({
+      severity: "error",
+      code: "graph.removedElementReferenced",
+      path: occurrence.path,
+      message: `Graph element '${occurrence.value}' is still referenced by this document and cannot be removed.`,
+    });
+  }
+  return diagnostics;
+}
+
+function collectGraphElementIds(document: GraphDocument): Set<string> {
+  const ids = new Set<string>();
+  for (const graph of document.graphs) {
+    ids.add(graph.id);
+    for (const port of graph.interfacePorts) {
+      ids.add(port.id);
+    }
+    for (const node of graph.nodes) {
+      ids.add(node.id);
+      for (const port of node.dynamicPorts) {
+        ids.add(port.id);
+      }
+    }
+  }
+  return ids;
 }
 
 export function replaceGraphReferenceValues(

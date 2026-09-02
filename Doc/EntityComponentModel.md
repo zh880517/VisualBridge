@@ -295,7 +295,7 @@ Serializer 固定顶层字段顺序，按字段键确定性排序，并保留 Co
 - `entity.setComponentProperty`
 - `entity.duplicateComponent`
 
-一批 Operation 先在副本上完整执行和校验。任一操作失败或引入新的语义 error 时，整批拒绝且原文档不变。添加 Component 会从 Catalog 字段创建默认属性；复制 Component 使用新的实例 ID 并深复制 JSON 值；项目级 Component 重命名通过 `entity.renameComponent` 修改目标实例，再由统一重构计划更新所有解析到该完整位置的引用。
+一批 Operation 先在副本上完整执行和校验。任一操作失败或引入新的语义 error 时，整批拒绝且原文档不变。添加 Component 会从 Catalog 字段创建默认属性；Component 按 Entity 单实例，同类型重复会被 `entity.duplicateComponentType` 校验拒绝（"复制 + 同批删除原件"的替换工作流仍可用）；项目级 Component 重命名通过 `entity.renameComponent` 修改目标实例，再由统一重构计划更新所有解析到该完整位置的引用。
 
 ## Document Lifecycle V1
 
@@ -306,7 +306,7 @@ Entity 的完整生命周期使用共享 [`DocumentLifecycle.md`](DocumentLifecy
 - Safe Delete Document 的 closure 包含 Document 与全部 Component；Safe Delete Component 的 closure 只包含目标 Component。闭包外任何可能解析到这些身份的 occurrence 都会阻止删除。
 - 未知 Component Type、字段结构、Catalog 或 Reference Provider 使 coverage 不完整时 fail closed；删除后仍必须满足 Entity Type/Group/Component 约束和完整字段校验。
 
-`entity.removeComponent` 是 Lifecycle 内部可复用的低层 Operation。当前公共编辑器和 `visualbridge_apply_operations` 直接提交该操作会返回 `lifecycle.required`；Component 卡片的删除按钮调用共享 Lifecycle preview/apply。Component Duplicate 仍是同一文档内的普通 Operation，与 whole-document Copy 不同。
+`entity.removeComponent` 是普通的单文件 Operation，可由公共编辑器和 `visualbridge_apply_operations` 直接提交；Component 没有跨文件引用语义，删除仅影响所属 Entity 文档；被同文档字段引用的 Component 会被原子拒绝（`entity.removedComponentReferenced`）。Component 卡片的删除按钮与其他编辑操作一样走统一 apply 通道。显式 Lifecycle Delete（`entity.component` target）仍可用于需要完整闭包与授权计划的调用方。Component 复制仍是同一文档内的普通 Operation（与 whole-document Copy 不同），但单独复制必然造成同类型重复，只与删除原组件同批提交。
 
 Component Safe Delete 的 target 固定为 `{ "kind": "entity.component", "componentId": "..." }`，并与完整 source selector 一起提交；Document Delete 使用 `{ "kind": "document" }`。`componentId` 必须来自当前语义文档，不能传 Component Type ID、标题或菜单路径。
 
@@ -333,7 +333,7 @@ Entity 不定义专用顶层 Tool。`visualbridge_catalog` 读取或搜索 Compo
 当前 Entity Webview 提供：
 
 - Entity 标题、类型和根字段编辑。
-- Component 卡片折叠、启用开关、复制，以及共享列表风格的拖拽排序、在后添加和删除操作组；删除当前已进入共享 Lifecycle preview/apply，直接提交低层领域 Operation 会被 guard 拒绝。
+- Component 卡片折叠、启用开关，以及共享列表风格的拖拽排序、在后添加和删除操作组；Component 按 Entity 单实例，添加菜单不显示已有类型，卡片不提供复制按钮；组件删除是普通的单文件 Operation。
 - 按 Catalog / Group / 菜单路径组织的可搜索 Add Component 对话框。
 - 数值、颜色、选择项、普通对象和 List 的共享字段控件。
 - 未知 Component Type 的只读 JSON 展示与原样保留。

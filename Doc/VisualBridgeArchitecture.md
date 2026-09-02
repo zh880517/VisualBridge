@@ -406,7 +406,7 @@ Lifecycle 不属于普通 Document Operation：它会改变物理 source manifes
 
 V1 只允许同一 Project、同一 Project Document Type 内操作。Graph/Entity/Structured 的 Path Move 保持单文件字节不变；Table 的 CSV family 以完整分表 manifest 为一个逻辑 Document，XLSX 以整个 Workbook 为单位。Copy 由领域 Adapter 显式 remap 全部可寻址内部身份；Delete 在 Reference coverage 不完整或闭包外存在入站 occurrence 时拒绝，不提供通用级联。
 
-所有公开写入口都受 Safe Delete guard 约束。直接移除 Component、Graph Node/Interface/Dynamic Port 或 Table Row 的普通 Operation 在 Lifecycle apply 上下文外返回 `lifecycle.required`；领域编辑器、Document Browser 与目标 MCP 入口必须调用同一 Lifecycle Service。目标 Project Transaction 将 physical mutation 表达为 `replace`、`create`、`delete` 或 `move`，同时校验 `baseHash` 与 mutation 的 `targetMustBeAbsent`。
+元素级删除（Component、Graph Node/Interface/Dynamic Port、Table Row）是普通单文件 Operation，不受 Safe Delete guard 约束；同文档悬空引用被原子拒绝，跨文档悬空引用由持有方文档的 Reference 校验兜底。整文档级操作与显式元素 Lifecycle Delete 仍由领域编辑器、Document Browser 与目标 MCP 入口调用同一 Lifecycle Service。目标 Project Transaction 将 physical mutation 表达为 `replace`、`create`、`delete` 或 `move`，同时校验 `baseHash` 与 mutation 的 `targetMustBeAbsent`。
 
 Lifecycle preview/apply 要求 Project 中没有未保存的 VisualBridge TextDocument 或 Table CustomDocument；干净的已打开 Table Editor 不会单独阻止 Lifecycle。Explorer、Git 和外部脚本不是协作写者，只能依靠文件监听、Hash/absence 复核和重新索引检测；本地文件系统事务不承诺 Remote Workspace、突然断电或最后一次原子文件系统调用处的数据库级隔离。
 

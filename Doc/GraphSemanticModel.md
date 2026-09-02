@@ -147,7 +147,7 @@ Graph Type 的指派在当前编辑器中不可变。新文档选择一个与根
 - 安全删除计算完整的结构闭包。Node 闭包包括其动态端口、关联边和任何拥有的子图层级；接口或动态端口包括其关联边。根 Graph 只能随其 Document 一起移除，非根 Graph 通过拥有它的子图 Node 移除。
 - Reference 覆盖必须完整，闭包之外的任何出现都不得解析或可能解析到闭包。结构删除之后，Graph Type 数量约束、子图所有权与完整 Graph 校验仍然适用。
 
-`graph.removeNode`、`graph.removeInterfacePort` 与 `graph.removeDynamicPort` 仍是由经授权的 Lifecycle 计划使用的底层领域 Operation，在此上下文之外的公开编辑器/MCP 提交会返回 `lifecycle.required`。`graph.removeEdge` 不会移除 Reference 目标，仍是普通的 Graph Operation。
+`graph.removeNode`、`graph.removeInterfacePort` 与 `graph.removeDynamicPort` 是普通的单文件 Operation，可直接由编辑器与 MCP 提交，不依赖引用方文件的保存状态；被同文档字段引用的元素会被原子拒绝（`graph.removedElementReferenced`），跨文档悬空引用由持有方文档的 Reference 校验兜底。`graph.removeEdge` 同样是普通的 Graph Operation。
 
 Lifecycle Delete 用 `kind: "graph.element"`、`graphId`、`elementKind` 与 `elementId` 标识 Graph 目标；Dynamic Port 还额外要求其所属的 `nodeId`。这些是来自当前读取结果的完整语义范围，不是显示名。删除完整的 Graph 文档则使用 `target.kind: "document"`。
 

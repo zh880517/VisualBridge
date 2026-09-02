@@ -720,15 +720,27 @@ export class WorkspaceDocumentLifecycle {
       ...project.definition.documentTypes.flatMap((documentType) => documentType.catalogs)
         .map((path) => projectUri(project, path).toString()),
     ]);
+    // 报错时列出具体未保存的文件，避免使用者不知道要保存哪个编辑器。
+    const dirtyPaths: string[] = [];
     const dirtyText = vscode.workspace.textDocuments.find((document) => {
       if (!document.isDirty) return false;
-      return metadataUris.has(document.uri.toString())
-        || this.projects.resolveDocument(document.uri)?.project.markerUri.toString() === project.markerUri.toString();
+      if (metadataUris.has(document.uri.toString())
+        || this.projects.resolveDocument(document.uri)?.project.markerUri.toString() === project.markerUri.toString()) {
+        dirtyPaths.push(vscode.workspace.asRelativePath(document.uri));
+        return true;
+      }
+      return false;
     });
-    if (dirtyText !== undefined || this.tableEditors.hasDirtyProject(project)) {
+    const dirtyTables = this.tableEditors.hasDirtyProject(project);
+    if (dirtyText !== undefined || dirtyTables) {
+      const details = [
+        dirtyPaths.length > 0 ? `Unsaved editors: ${dirtyPaths.join(", ")}.` : "",
+        dirtyTables ? "Unsaved Table editors are open." : "",
+      ].filter(Boolean).join(" ");
       throw new WorkspaceLifecycleError(
         "lifecycle.workspaceDirty",
-        `Save or revert every dirty VisualBridge editor in '${project.definition.projectId}' before preview/apply.`,
+        `Save or revert every dirty VisualBridge editor in '${project.definition.projectId}' before preview/apply.`
+          + (details.length > 0 ? ` ${details}` : ""),
       );
     }
   }

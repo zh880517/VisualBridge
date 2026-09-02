@@ -7,11 +7,6 @@ import {
   withProjectTransaction,
 } from "@visualbridge/node-host";
 import { compareUtf16CodeUnits, referenceValuesEqual } from "@visualbridge/core";
-import {
-  containsLifecycleGuardedRemoval,
-  lifecycleDeleteTarget,
-  LIFECYCLE_REQUIRED_MESSAGE,
-} from "../document/lifecycleOperationGuard";
 import type {
   DocumentDiagnostic,
   JsonValue,
@@ -194,7 +189,10 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
   ): Promise<TableCustomDocument> {
     const match = this.projects.resolveDocument(uri);
     if (match === undefined || match.documentType.editor !== TABLE_EDITOR_ID) {
-      throw new Error("The file is not configured as a VisualBridge Table document.");
+      throw new Error(
+        `The file '${vscode.workspace.asRelativePath(uri)}' is not configured as a VisualBridge Table document;`
+        + " check the Project document type include patterns or wait for the Project to load.",
+      );
     }
     const layout = match.project.definition.tableLayout;
     if (layout === undefined) {
@@ -219,7 +217,10 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       layout,
       loaded.sources,
       loaded.document,
-      (current) => this.updateReferenceDocument(current),
+      (current) => {
+        this.updateReferenceDocument(current);
+        this.notifyDocumentChange();
+      },
       (current) => this.references.removeTableDocument(current.uri.toString()),
     );
     this.updateReferenceDocument(document);
@@ -439,6 +440,19 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
     ));
   }
 
+  private readonly documentChangeEmitter = new vscode.EventEmitter<void>();
+  /** 任意 Table 文档内容或保存状态变化时触发（供"未保存文档"树视图刷新）。 */
+  public readonly onDidChangeDocuments = this.documentChangeEmitter.event;
+
+  private notifyDocumentChange(): void {
+    this.documentChangeEmitter.fire();
+  }
+
+  /** 列出当前打开且未保存的 Table 文档，供"未保存文档管理"窗口使用。 */
+  public listDirtyDocuments(): readonly TableCustomDocument[] {
+    return [...this.panels.keys()].filter((document) => document.isDirty);
+  }
+
   public setReferenceTargetRenamer(
     renamer: (request: WorkspaceReferenceTargetRenameRequest) => Promise<WorkspaceReferenceTargetRenameResult>,
   ): void {
@@ -553,6 +567,7 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
   }
 
   public dispose(): void {
+    this.documentChangeEmitter.dispose();
     for (const disposable of this.disposables.splice(0)) {
       disposable.dispose();
     }
@@ -660,29 +675,8 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       });
       return;
     }
-    if (containsLifecycleGuardedRemoval("table", message.operations)) {
-      const target = lifecycleDeleteTarget("table", message.operations);
-      if (target === undefined || document.isDirty) {
-        await panel.webview.postMessage({
-          type: "operationRejected",
-          message: document.isDirty
-            ? "lifecycle.workspaceDirty: Save or revert this Table before Safe Delete."
-            : LIFECYCLE_REQUIRED_MESSAGE,
-        });
-        return;
-      }
-      const result = await vscode.commands.executeCommand("visualbridge.safeDeleteElement", {
-        projectId: document.match.project.definition.projectId,
-        documentTypeId: document.match.documentType.id,
-        path: document.match.relativePath,
-        target,
-      });
-      if (result !== undefined) {
-        await this.revertCustomDocument(document);
-        await this.sendState(document);
-      }
-      return;
-    }
+    // 行删除是普通单文件 Operation：不再路由到 Safe Delete；
+    // 引用方文档的悬空引用由其各自校验兜底。
     const identityRefactor = await this.applyExistingKeyRefactor(document, message.operations, true);
     if (identityRefactor !== undefined) {
       if (!identityRefactor.success) {

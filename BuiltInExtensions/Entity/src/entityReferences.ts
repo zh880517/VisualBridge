@@ -9,7 +9,8 @@ import {
   type ReferenceSearchPageRequest,
 } from "@visualbridge/core";
 import { resolveEntityComponentType, type EntityCatalogRegistry } from "./entityCatalog";
-import type { EntityDocument } from "./entityDocument";
+import { collectEntityReferences, type EntityDocument } from "./entityDocument";
+import type { DocumentDiagnostic } from "@visualbridge/core";
 
 export const ENTITY_COMPONENT_REFERENCE_KIND = "entity.component";
 
@@ -80,6 +81,40 @@ export function validateEntityComponentReferenceTarget(
   return readTarget(value) === undefined
     ? "Entity component references require only a stable documentTypeId selector."
     : undefined;
+}
+
+/**
+ * 组件删除是单文件 Operation；该检查保证删除后同文档内不再残留指向被删组件的引用。
+ * 常规 Reference 校验解析目标时读取的是写入前的磁盘字节，无法拦截同文档目标消失，
+ * 因此删除路径需要在语义层显式比对前后组件集合。
+ */
+export function findDanglingComponentReferenceDiagnostics(
+  before: EntityDocument,
+  after: EntityDocument,
+  registry: EntityCatalogRegistry,
+): readonly DocumentDiagnostic[] {
+  const afterIds = new Set(after.components.map((component) => component.id));
+  const removedIds = new Set(before.components
+    .map((component) => component.id)
+    .filter((id) => !afterIds.has(id)));
+  if (removedIds.size === 0) {
+    return [];
+  }
+  const diagnostics: DocumentDiagnostic[] = [];
+  for (const occurrence of collectEntityReferences(after, registry)) {
+    if (occurrence.definition.kind !== ENTITY_COMPONENT_REFERENCE_KIND
+      || typeof occurrence.value !== "string"
+      || !removedIds.has(occurrence.value)) {
+      continue;
+    }
+    diagnostics.push({
+      severity: "error",
+      code: "entity.removedComponentReferenced",
+      path: occurrence.path,
+      message: `Component '${occurrence.value}' is still referenced by this document and cannot be removed.`,
+    });
+  }
+  return diagnostics;
 }
 
 function collectCandidates(

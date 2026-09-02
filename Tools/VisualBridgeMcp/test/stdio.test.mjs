@@ -697,23 +697,60 @@ test("MCP document lifecycle copies, moves, and safely deletes Entity content wi
     await assert.rejects(readFile(copyFile), { code: "ENOENT" });
     assert.equal(JSON.parse(await readFile(movedFile, "utf8")).title, "Changed after lifecycle preview");
 
-    const sourceDocument = await call(client, "visualbridge_document", {
+    // 组件删除是普通单文件 Operation：临时添加一个不同类型组件再直接删除，不影响后续 lifecycle 用例。
+    const documentSelector = { projectFile, documentTypeId: selector.documentTypeId, editor: selector.editor };
+    const addBase = await call(client, "visualbridge_document", {
+      ...documentSelector,
       action: "read",
-      projectFile,
-      documentTypeId: selector.documentTypeId,
-      editor: selector.editor,
       path: sourcePath,
     });
-    const guarded = await call(client, "visualbridge_apply_operations", {
-      projectFile,
-      documentTypeId: selector.documentTypeId,
-      editor: selector.editor,
+    const added = await call(client, "visualbridge_apply_operations", {
+      ...documentSelector,
       path: sourcePath,
-      baseHash: sourceDocument.baseHash,
-      operations: [{ type: "entity.removeComponent", componentId: "move" }],
+      baseHash: addBase.baseHash,
+      operations: [{ type: "entity.addComponent", componentId: "temporary_attack", componentTypeId: "sample.component.attack" }],
     });
-    assert.equal(guarded.status, "invalid");
-    assert.ok(guarded.diagnostics.some((diagnostic) => diagnostic.code === "lifecycle.required"));
+    assert.equal(added.status, "applied", JSON.stringify(added.diagnostics));
+    const removeBase = await call(client, "visualbridge_document", {
+      ...documentSelector,
+      action: "read",
+      path: sourcePath,
+    });
+    const removed = await call(client, "visualbridge_apply_operations", {
+      ...documentSelector,
+      path: sourcePath,
+      baseHash: removeBase.baseHash,
+      operations: [{ type: "entity.removeComponent", componentId: "temporary_attack" }],
+    });
+    assert.equal(removed.status, "applied", JSON.stringify(removed.diagnostics));
+    // Component 按 Entity 单实例：重复添加同类型组件被校验拒绝。
+    const duplicateBase = await call(client, "visualbridge_document", {
+      ...documentSelector,
+      action: "read",
+      path: sourcePath,
+    });
+    const duplicate = await call(client, "visualbridge_apply_operations", {
+      ...documentSelector,
+      path: sourcePath,
+      baseHash: duplicateBase.baseHash,
+      operations: [{ type: "entity.addComponent", componentId: "temporary_move", componentTypeId: "sample.component.move" }],
+    });
+    assert.equal(duplicate.status, "invalid");
+    assert.ok(duplicate.diagnostics.some((diagnostic) => diagnostic.code === "entity.duplicateComponentType"));
+    // 被同文档字段引用的组件（primaryComponentId -> health）仍被 Reference 校验拒绝。
+    const referencedBase = await call(client, "visualbridge_document", {
+      ...documentSelector,
+      action: "read",
+      path: sourcePath,
+    });
+    const referencedRemoval = await call(client, "visualbridge_apply_operations", {
+      ...documentSelector,
+      path: sourcePath,
+      baseHash: referencedBase.baseHash,
+      operations: [{ type: "entity.removeComponent", componentId: "health" }],
+    });
+    assert.equal(referencedRemoval.status, "invalid");
+    assert.ok(referencedRemoval.diagnostics.some((diagnostic) => diagnostic.code === "entity.removedComponentReferenced"));
 
     const deleteOperation = {
       kind: "delete",
@@ -1302,18 +1339,21 @@ test("MCP V2 Table adapter preserves CSV families and XLSX through the shared co
     });
     assert.equal(validation.valid, true);
 
-    const guardedRowDelete = await call(client, "visualbridge_apply_operations", {
+    // 行删除已不受 Lifecycle guard：未知名直接得到语义错误（而非 lifecycle.required），
+    // 文件保持不变，后续用例继续使用该 baseHash。
+    const unguardedRowDelete = await call(client, "visualbridge_apply_operations", {
       ...selector,
       path: csvPath,
       baseHash: csv.baseHash,
       operations: [{
         type: "table.removeRow",
         sheetId: "skills:Skills_A",
-        rowId: "Skills_A:key-101",
+        rowId: "missing",
       }],
     });
-    assert.equal(guardedRowDelete.status, "invalid");
-    assert.ok(guardedRowDelete.diagnostics.some((diagnostic) => diagnostic.code === "lifecycle.required"));
+    assert.equal(unguardedRowDelete.status, "invalid");
+    assert.ok(unguardedRowDelete.diagnostics.some((diagnostic) => diagnostic.severity === "error"));
+    assert.ok(unguardedRowDelete.diagnostics.every((diagnostic) => diagnostic.code !== "lifecycle.required"));
     const guardedKeyRename = await call(client, "visualbridge_apply_operations", {
       ...selector,
       path: csvPath,
@@ -1451,6 +1491,25 @@ test("MCP V2 Table adapter preserves CSV families and XLSX through the shared co
       selector: { sheetId: "skills:Skills_A" },
     });
     assert.equal(updatedXlsx.page.rows[0].cells.name, "Ice Bolt MCP V2");
+    // 行删除是普通单文件 Operation：直接提交即可生效。
+    const rowDeleted = await call(client, "visualbridge_apply_operations", {
+      ...selector,
+      path: xlsxPath,
+      baseHash: updatedXlsx.baseHash,
+      operations: [{
+        type: "table.removeRow",
+        sheetId: "skills:Skills_A",
+        rowId: "Skills_A:key-301",
+      }],
+    });
+    assert.equal(rowDeleted.status, "applied", JSON.stringify(rowDeleted.diagnostics));
+    const afterRowDelete = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "read",
+      path: xlsxPath,
+      selector: { sheetId: "skills:Skills_A" },
+    });
+    assert.ok(!afterRowDelete.page.rows.some((row) => row.id === "Skills_A:key-301"));
     const tableEntries = await readdir(path.join(projectRoot, "Tables"));
     assert.ok(!tableEntries.some((name) => name.includes(".visualbridge")));
 

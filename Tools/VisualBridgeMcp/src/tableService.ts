@@ -917,14 +917,8 @@ function tableLifecycleGuard(loaded: LoadedTable, operations: unknown): readonly
   return operations.flatMap((raw, index): readonly DocumentDiagnostic[] => {
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return [];
     const operation = raw as Readonly<Record<string, unknown>>;
-    if (operation.type === "table.removeRow") {
-      return [{
-        severity: "error",
-        code: "lifecycle.required",
-        path: `operations[${index}].type`,
-        message: "Removing a Table row requires visualbridge_document_lifecycle Safe Delete.",
-      }];
-    }
+    // 行删除已不受守卫（单文件 Operation，悬空引用由持有方校验兜底）；
+    // 仅键列修改仍必须走 Reference Refactor。
     if (operation.type !== "table.setCell"
       || typeof operation.sheetId !== "string"
       || typeof operation.columnId !== "string") return [];

@@ -4,6 +4,7 @@ import {
   entityCatalogAdapter,
   entityDocumentAdapter,
   entityTextDocumentCodec,
+  findDanglingComponentReferenceDiagnostics,
   searchEntityComponentTypes,
   type EntityCatalogRegistry,
   type EntityDocument,
@@ -197,6 +198,15 @@ export class EntityService {
       if (!operationResult.success) {
         return { valid: false, diagnostics: operationResult.diagnostics };
       }
+      // 组件删除是单文件 Operation：同文档内仍引用被删组件时原子拒绝。
+      const dangling = findDanglingComponentReferenceDiagnostics(
+        parseResult.document,
+        operationResult.document,
+        semanticContext.registry,
+      );
+      if (dangling.length > 0) {
+        return { valid: false, diagnostics: dangling };
+      }
       const referenceResult = await this.references.validateChange(
         context.project.projectFile,
         entityDocumentAdapter.collectReferences(parseResult.document, semanticContext),
@@ -330,14 +340,14 @@ function entityLifecycleGuard(value: unknown): readonly DocumentDiagnostic[] {
     const type = typeof entry === "object" && entry !== null
       ? (entry as { readonly type?: unknown }).type
       : undefined;
-    if (type !== "entity.renameComponent" && type !== "entity.removeComponent") return [];
+    // entity.removeComponent 不再受守卫：组件没有跨文件引用语义，
+    // 删除是普通单文件 Operation（同文档引用由 Reference 校验拒绝）。
+    if (type !== "entity.renameComponent") return [];
     return [{
       severity: "error" as const,
       code: "lifecycle.required",
       path: `operations[${index}].type`,
-      message: type === "entity.renameComponent"
-        ? "Stable Component IDs must be changed through visualbridge_refactor_reference."
-        : "Referenced Components must be removed through visualbridge_document_lifecycle safe delete.",
+      message: "Stable Component IDs must be changed through visualbridge_refactor_reference.",
     }];
   });
 }

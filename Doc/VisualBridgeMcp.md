@@ -262,7 +262,7 @@ Document Delete 的 `plan.ownedIdentities` 包含整个 Document；`entity.compo
 - XLSX create 用显式 `format: "xlsx"` 创建一个 Workbook；copy/move 处理单一完整 Workbook，不根据路径后缀识别格式。
 - Table copy 对非空 key/dedup identity 要求显式完整、保持值类型的 remap；delete document 删除整个 CSV family 或单个 XLSX Workbook，delete row 只替换拥有该 Row 的载体。
 
-授权边界是“同一次精确 preview 的 apply”，不是通用文件权限：调用者提交 `apply` 只授权 `operation` 与回传 manifest 描述的 Project 内 mutations。服务端不会借此跨 Project、改变 Document Type、覆盖已存在目标、级联删除 blocker 引用或执行任意文件操作。`visualbridge_apply_operations` 也不能绕过该边界删除 Component、Graph Node/Interface/Dynamic Port 或 Table Row；这些请求返回 `lifecycle.required`。MCP 以磁盘快照为权威，无法读取 VS Code 未保存缓冲区，因此 VS Code 与 MCP 同时工作时仍必须先保存编辑器；Hash/依赖复核只负责拒绝已经落盘的外部变化。
+授权边界是“同一次精确 preview 的 apply”，不是通用文件权限：调用者提交 `apply` 只授权 `operation` 与回传 manifest 描述的 Project 内 mutations。服务端不会借此跨 Project、改变 Document Type、覆盖已存在目标、级联删除 blocker 引用或执行任意文件操作。元素级删除（Component、Graph Node/Interface/Dynamic Port、Table Row）是普通单文件 Operation，可由 `visualbridge_apply_operations` 直接提交，不受该边界约束。MCP 以磁盘快照为权威，无法读取 VS Code 未保存缓冲区，因此 VS Code 与 MCP 同时工作时仍必须先保存编辑器；Hash/依赖复核只负责拒绝已经落盘的外部变化。
 
 ## Runtime 检查工具
 
@@ -501,7 +501,7 @@ Operation Schema 保证每项至少有稳定 `type`，具体字段由对应 Buil
 
 调用方必须按对应文档构造完整 Operation；不能把别的 editor 的同名字段或原始 JSON Patch 传给统一入口。
 
-在当前 Document Lifecycle contract 下，移除 Reference Provider 可寻址目标的普通 Operation 受 Lifecycle guard 保护：`entity.removeComponent`、`graph.removeNode`、`graph.removeInterfacePort`、`graph.removeDynamicPort` 和 `table.removeRow` 不能由 `visualbridge_apply_operations` 直接提交；没有 Lifecycle apply 授权上下文时返回 `lifecycle.required` 且不修改来源。`graph.removeEdge` 等不删除 Reference target 的结构操作仍走普通 Operation。
+元素级删除已不受 Lifecycle guard：`entity.removeComponent`、`graph.removeNode`、`graph.removeInterfacePort`、`graph.removeDynamicPort` 和 `table.removeRow` 都是普通的单文件 Operation，可由 `visualbridge_apply_operations` 直接提交，不依赖引用方文件的保存状态。被同文档字段引用的目标会被原子拒绝（`entity.removedComponentReferenced`、`graph.removedElementReferenced`）；跨文档悬空引用由持有方文档的 Reference 校验兜底。稳定 ID 重命名仍必须走 `visualbridge_refactor_reference`。显式 Lifecycle Delete 仍可用于需要完整闭包预览的调用方。
 
 Graph、Entity、Structured、Table 和 Refactor 共用同一 Project Transaction；单文本写入也是该事务的一项：
 

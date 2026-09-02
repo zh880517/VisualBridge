@@ -78,7 +78,7 @@ Reference 字段的选择按钮调用共享 Reference Picker，跳转按钮定�
 
 1. 编辑 Entity 标题和 Catalog 声明的共享字段。
 2. 使用 Component 搜索按 Group、菜单路径、类型或 alias 查找可添加类型；Entity Type 和 Group 限制会过滤非法候选。
-3. Component 卡片可以启用/禁用、拖动排序和 Duplicate。复制会生成新的 Component 稳定 ID，并深复制字段值。
+3. Component 卡片可以启用/禁用和拖动排序。Component 按 Entity 单实例：同一类型不能重复添加，卡片没有复制按钮。
 4. 在卡片内编辑数值、颜色、选择项、递归对象、List 和 Reference。List 通过拖动手柄排序，并在一次字段提交中更新。
 5. 删除 Component 使用 Safe Delete。若 `entity.component` 被其他文档引用，删除不会级联，必须先处理引用或取消操作。
 6. 从引用节点执行 **Rename Reference Target** 可以在预览确认后同时修改 Component ID 及全部唯一解析到该位置的入站引用。

@@ -1,10 +1,7 @@
 import { createHash } from "node:crypto";
 import * as vscode from "vscode";
 import {
-  containsLifecycleGuardedRemoval,
   containsReferenceRefactorGuardedRename,
-  lifecycleDeleteTarget,
-  LIFECYCLE_REQUIRED_MESSAGE,
   REFERENCE_REFACTOR_REQUIRED_MESSAGE,
 } from "../document/lifecycleOperationGuard";
 import type { DocumentDiagnostic, JsonValue } from "@visualbridge/core";
@@ -12,6 +9,7 @@ import {
   GRAPH_EDITOR_ID,
   applyGraphOperations,
   collectGraphReferences,
+  findDanglingGraphElementReferenceDiagnostics,
   getReplacementCandidates,
   parseGraphDocument,
   serializeGraphDocument,
@@ -334,23 +332,8 @@ export class GraphEditorSession {
       return;
     }
     const documentVersion = message.documentVersion;
-    if (containsLifecycleGuardedRemoval("graph", message.operations)) {
-      const target = lifecycleDeleteTarget("graph", message.operations);
-      if (target === undefined || this.document.isDirty) {
-        await this.rejectOperation(this.document.isDirty
-          ? "lifecycle.workspaceDirty: Save or revert this document before Safe Delete."
-          : LIFECYCLE_REQUIRED_MESSAGE);
-        return;
-      }
-      const result = await vscode.commands.executeCommand("visualbridge.safeDeleteElement", {
-        projectId: this.match.project.definition.projectId,
-        documentTypeId: this.match.documentType.id,
-        path: this.match.relativePath,
-        target,
-      });
-      if (result !== undefined) await this.sendState({ documentChanged: true });
-      return;
-    }
+    // 节点/接口端口/动态端口删除是普通单文件 Operation：不再路由到 Safe Delete，
+    // 同文档悬空引用由 apply 流程的引用检查拒绝，跨文档引用由持有方校验兜底。
     if (containsReferenceRefactorGuardedRename("graph", message.operations)) {
       await this.rejectOperation(REFERENCE_REFACTOR_REQUIRED_MESSAGE);
       return;
@@ -386,6 +369,17 @@ export class GraphEditorSession {
     if (!operationResult.success) {
       this.updateDiagnostics([...catalogResult.diagnostics, ...operationResult.diagnostics]);
       await this.rejectOperation(formatDiagnostics(operationResult.diagnostics));
+      return;
+    }
+    // 元素删除是单文件 Operation：同文档内仍引用被删元素时原子拒绝。
+    const dangling = findDanglingGraphElementReferenceDiagnostics(
+      parseResult.document,
+      operationResult.document,
+      catalogResult.registry,
+    );
+    if (dangling.length > 0) {
+      this.updateDiagnostics([...catalogResult.diagnostics, ...operationResult.diagnostics, ...dangling]);
+      await this.rejectOperation(formatDiagnostics(dangling));
       return;
     }
     if (catalogResult.ready) {

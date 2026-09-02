@@ -222,7 +222,7 @@ Table 生命周期使用共享的 [`DocumentLifecycle.md`](DocumentLifecycle.md)
 - Table 没有虚构的 Document ID。整文档复制要求为每个 `kind: "table.row"` 可引用的严格类型 key 列身份提供一个完整的 `stableIdRemap` 条目。如果 `deduplicateByColumnId` 与 key 列不同，则每个 `kind: "table.dedup"` 身份还要求一个同类型、不冲突的目标；同一物理列绝不会被映射两次。内部 `table.row` Reference 只使用行 key 映射，而外部 Reference 保持不变。目标承载文件中面向 Operation 的 Row ID 和物理 Sheet ID 由 Table Codec 重新推导，不是稳定身份。
 - 安全删除文档覆盖所有物理来源和有效行。安全删除行覆盖确切的物理 Row 及其稳定 key 目标；任何能解析到该目标的外部出现都会阻止删除。
 
-`table.removeRow` 仍是被授权的 Lifecycle 计划使用的底层语义变更。在 PU-03 守卫下，直接公开提交会返回 `lifecycle.required`；记录列表的删除必须使用 Lifecycle 预览/应用。既有行的 Operation ID 仍是面向 Operation 的物理 ID，而 Reference 身份仍是严格的带类型 key 列值。
+`table.removeRow` 是普通的单文件 Operation，可直接由编辑器与 MCP 提交，不依赖引用方文件的保存状态；跨文档悬空引用由持有方文档的 Reference 校验兜底。键列修改仍必须走 Reference Refactor。既有行的 Operation ID 仍是面向 Operation 的物理 ID，而 Reference 身份仍是严格的带类型 key 列值。
 
 行安全删除使用 `{ "kind": "table.row", "sheetId": "...", "rowId": "..." }`，两个 ID 都原样取自当前语义读取；它不接受用业务 key 代替 `rowId`。整逻辑 Table 删除则使用 `{ "kind": "document" }`，删除每个 CSV 家族成员或整个 XLSX 工作簿。
 

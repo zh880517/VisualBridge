@@ -4,6 +4,7 @@ import {
   graphCatalogAdapter,
   graphDocumentAdapter,
   graphTextDocumentCodec,
+  findDanglingGraphElementReferenceDiagnostics,
   searchGraphNodeTypes,
   type GraphCatalogRegistry,
   type GraphDocument,
@@ -197,6 +198,15 @@ export class GraphService {
       if (!operationResult.success) {
         return { valid: false, diagnostics: operationResult.diagnostics };
       }
+      // 元素删除是单文件 Operation：同文档内仍引用被删元素时原子拒绝。
+      const dangling = findDanglingGraphElementReferenceDiagnostics(
+        parseResult.document,
+        operationResult.document,
+        semanticContext.registry,
+      );
+      if (dangling.length > 0) {
+        return { valid: false, diagnostics: dangling };
+      }
       if (operationResult.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
         return { valid: false, diagnostics: operationResult.diagnostics };
       }
@@ -314,23 +324,17 @@ export class GraphService {
 
 function graphLifecycleGuard(value: unknown): readonly DocumentDiagnostic[] {
   if (!Array.isArray(value)) return [];
-  const protectedTypes = new Set([
-    "graph.renameElement",
-    "graph.removeNode",
-    "graph.removeDynamicPort",
-    "graph.removeInterfacePort",
-  ]);
+  // 元素删除已不受守卫（单文件 Operation，悬空引用由校验兜底）；
+  // 仅稳定 ID 重命名仍必须走 Reference Refactor。
   return value.flatMap((entry, index) => (
     typeof entry === "object"
       && entry !== null
-      && protectedTypes.has((entry as { readonly type?: unknown }).type as string)
+      && (entry as { readonly type?: unknown }).type === "graph.renameElement"
       ? [{
           severity: "error" as const,
           code: "lifecycle.required",
           path: `operations[${index}].type`,
-          message: (entry as { readonly type: string }).type === "graph.renameElement"
-            ? "Stable Graph element IDs must be changed through visualbridge_refactor_reference."
-            : "Referenced Graph elements must be removed through visualbridge_document_lifecycle safe delete.",
+          message: "Stable Graph element IDs must be changed through visualbridge_refactor_reference.",
         }]
       : []
   ));
