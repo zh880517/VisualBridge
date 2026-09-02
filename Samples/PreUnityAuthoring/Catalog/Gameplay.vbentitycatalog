@@ -10,6 +10,16 @@
       "id": "sample.group.movement",
       "title": "Movement",
       "aliases": []
+    },
+    {
+      "id": "sample.group.combat",
+      "title": "Combat",
+      "aliases": []
+    },
+    {
+      "id": "sample.group.presence",
+      "title": "Presence",
+      "aliases": []
     }
   ],
   "entityTypes": [
@@ -18,7 +28,9 @@
       "title": "Hero",
       "aliases": [],
       "allowedComponentGroupIds": [
-        "sample.group.movement"
+        "sample.group.movement",
+        "sample.group.combat",
+        "sample.group.presence"
       ],
       "properties": [
         {
@@ -112,6 +124,184 @@
             "kind": "number",
             "min": 0,
             "step": 0.1
+          }
+        }
+      ]
+    },
+    {
+      "id": "sample.health",
+      "title": "Health",
+      "aliases": [],
+      "groupId": "sample.group.presence",
+      "menuPath": [],
+      "properties": [
+        {
+          "id": "maxHealth",
+          "title": "Max Health",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "int",
+          "defaultValue": 100,
+          "editor": {
+            "kind": "number",
+            "integer": true,
+            "min": 1
+          }
+        },
+        {
+          "id": "regenEnabled",
+          "title": "Regen Enabled",
+          "aliases": [],
+          "valueType": "boolean",
+          "defaultValue": false,
+          "editor": {
+            "kind": "checkbox"
+          }
+        },
+        {
+          "id": "regenRate",
+          "title": "Regen Rate",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "float",
+          "defaultValue": 0.5,
+          "editor": {
+            "kind": "number",
+            "min": 0,
+            "step": 0.1
+          }
+        }
+      ]
+    },
+    {
+      "id": "sample.attack",
+      "title": "Attack",
+      "aliases": [],
+      "groupId": "sample.group.combat",
+      "menuPath": [],
+      "properties": [
+        {
+          "id": "power",
+          "title": "Power",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "float",
+          "defaultValue": 10,
+          "editor": {
+            "kind": "number",
+            "min": 0,
+            "step": 0.5
+          }
+        },
+        {
+          "id": "range",
+          "title": "Range",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "float",
+          "defaultValue": 2.5,
+          "editor": {
+            "kind": "number",
+            "min": 0,
+            "step": 0.1
+          }
+        },
+        {
+          "id": "cooldown",
+          "title": "Cooldown",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "float",
+          "defaultValue": 1,
+          "editor": {
+            "kind": "number",
+            "min": 0,
+            "step": 0.1
+          }
+        }
+      ]
+    },
+    {
+      "id": "sample.armor",
+      "title": "Armor",
+      "aliases": [],
+      "groupId": "sample.group.combat",
+      "menuPath": [],
+      "properties": [
+        {
+          "id": "defense",
+          "title": "Defense",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "int",
+          "defaultValue": 5,
+          "editor": {
+            "kind": "number",
+            "integer": true,
+            "min": 0
+          }
+        },
+        {
+          "id": "immune",
+          "title": "Immune",
+          "aliases": [],
+          "valueType": "boolean",
+          "defaultValue": false,
+          "editor": {
+            "kind": "checkbox"
+          }
+        }
+      ]
+    },
+    {
+      "id": "sample.spellbook",
+      "title": "Spellbook",
+      "aliases": [],
+      "groupId": "sample.group.combat",
+      "menuPath": [],
+      "properties": [
+        {
+          "id": "primarySkill",
+          "title": "Primary Skill",
+          "aliases": [],
+          "valueType": "number",
+          "dataTypeId": "int",
+          "defaultValue": 101,
+          "editor": {
+            "kind": "reference",
+            "integer": true
+          },
+          "reference": {
+            "kind": "table.row",
+            "target": {
+              "tableTypeId": "sample.skills",
+              "sheetId": "skills"
+            }
+          }
+        },
+        {
+          "id": "skills",
+          "title": "Skills",
+          "aliases": [],
+          "valueType": "array",
+          "defaultValue": [
+            101
+          ],
+          "item": {
+            "valueType": "number",
+            "dataTypeId": "int",
+            "defaultValue": 101,
+            "editor": {
+              "kind": "reference",
+              "integer": true
+            },
+            "reference": {
+              "kind": "table.row",
+              "target": {
+                "tableTypeId": "sample.skills",
+                "sheetId": "skills"
+              }
+            }
           }
         }
       ]

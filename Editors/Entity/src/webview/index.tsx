@@ -335,7 +335,10 @@ function EntityEditorApp(): ReactElement {
       {addOpen && entityType !== undefined && (
         <AddComponentDialog
           registry={state.catalogRegistry}
-          componentTypeIds={state.addableComponentTypeIds}
+          componentTypeIds={state.addableComponentTypeIds.filter((componentTypeId) => (
+            // Component 按 Entity 单实例：已有类型不再出现在添加菜单。
+            !state.document.components.some((component) => component.componentTypeId === componentTypeId)
+          ))}
           onClose={() => {
             setAddOpen(false);
             setAddIndex(undefined);
@@ -421,18 +424,6 @@ function ComponentCard(props: {
           <strong>{displayName}</strong>
         </div>
         <div className="component-actions">
-          <IconButton
-            className="secondary"
-            icon="copy"
-            title="复制"
-            label={`复制 ${displayName}`}
-            disabled={props.pending}
-            onClick={() => props.submit([{
-              type: "entity.duplicateComponent",
-              componentId: props.component.id,
-              newComponentId: `component_${crypto.randomUUID()}`,
-            }])}
-          />
           <ListItemActions
             dragRef={handleRef}
             dragLabel={`拖动 ${displayName} 排序`}

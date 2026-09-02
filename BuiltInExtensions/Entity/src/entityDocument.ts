@@ -150,6 +150,7 @@ export function validateEntityDocument(
     return diagnostics;
   }
   diagnostics.push(...validateFieldProperties(document.properties, entityType.properties, "properties"));
+  const seenComponentTypeIds = new Set<string>();
   document.components.forEach((component, index) => {
     const componentPath = `components[${index}]`;
     const componentType = resolveEntityComponentType(registry, component.componentTypeId);
@@ -160,6 +161,16 @@ export function validateEntityDocument(
         `Unknown Component Type '${component.componentTypeId}' is preserved.`,
       ));
       return;
+    }
+    // Component 按 Entity 单实例：同类型重复视为文档错误。
+    if (seenComponentTypeIds.has(componentType.id)) {
+      diagnostics.push(error(
+        "entity.duplicateComponentType",
+        `${componentPath}.componentTypeId`,
+        `Component Type '${componentType.id}' appears more than once; each Component Type is single-instance.`,
+      ));
+    } else {
+      seenComponentTypeIds.add(componentType.id);
     }
     if (!isEntityComponentTypeAllowed(entityType, componentType, registry)) {
       diagnostics.push(error(
@@ -411,6 +422,8 @@ function applyOperation(
       return setProperty(component.properties, componentType?.properties, operation.propertyId, operation.value, operationPath);
     }
     case "entity.duplicateComponent": {
+      // 同类型重复由批次末尾的 entity.duplicateComponentType 校验拒绝，
+      // 因此"duplicate + 同批 remove 原件"的替换工作流仍然可用。
       if (document.components.some((component) => component.id === operation.newComponentId)) {
         return operationError(operationPath, `Component instance ID '${operation.newComponentId}' already exists.`);
       }

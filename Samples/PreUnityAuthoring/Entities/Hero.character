@@ -14,15 +14,7 @@
   },
   "components": [
     {
-      "id": "movement",
-      "componentTypeId": "sample.movement",
-      "enabled": true,
-      "properties": {
-        "speed": 6.5
-      }
-    },
-    {
-      "id": "component_aab1b7c9-d994-4d50-80c6-1d260edaf30a",
+      "id": "component_0e057153-c08c-4e61-8fa6-ecf5aadb3605",
       "componentTypeId": "sample.movement",
       "enabled": true,
       "properties": {
