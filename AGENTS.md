@@ -36,6 +36,18 @@ VisualBridge 是平台实现的 monorepo。`Core/` 存放与宿主无关的 Type
 
 在 VS Code 中打开仓库根目录并按 `F5` 启动 Extension Development Host。Unity 生成的 `.csproj` 文件不得手工编辑。
 
+## Unity Editor 控制（Unity CLI）
+
+本机装有 Unity CLI（beta），配合 UnityProject 的 `com.unity.pipeline` 包（Unity 6000.3.10f1）驱动运行中的 Editor，用于 Unity 侧开发与桥接通信调试。
+
+- CLI 位于 `%LOCALAPPDATA%\Unity\bin\unity.exe`，不在 shell PATH 上，用全路径调用。
+- `unity.exe open <UnityProject 路径>` 启动 Editor；执行命令前设置 `UNITY_PROJECT_PATH`。`unity command` 列出并调用 Editor 暴露的全部命令。
+- `unity status` 在 Editor 已连接时也报无实例，属已知怪癖；实例发现用 `unity pipeline list`。
+- `unity command eval --code 'return <表达式>;'` 在活的 Editor 里执行任意 C#（必须是语句形式，取值用 `return`），可直接访问 `VisualBridge.Runtime` / `VisualBridge.Editor` 程序集。有活的 Editor 时优先用它驱动场景、GameObject、资产与运行时状态检查，不要手改 `.unity` / `.prefab` / `.asset` YAML。
+- 触发 domain reload：无脚本变更时 `unity command recompile` 返回 up_to_date、不会重载；强制全量重编译用 eval 执行 `UnityEditor.Compilation.CompilationPipeline.RequestScriptCompilation(UnityEditor.Compilation.RequestScriptCompilationOptions.CleanBuildCache)`，再轮询 `recompile_status` 至 completed。
+- domain reload 期间 pipeline 连接会短暂中断，CLI 调用失败时等待后重试即可，不要据此重启 Editor；编译结果用 `recompile_status` 与 Editor 日志（`%LOCALAPPDATA%\Unity\Editor\Editor.log`）确认。
+- 同机运行着项目方自己的 Unity 实例（如 Unity 2019 的 mltrunk）。严禁终止任何 Unity 进程，除非已核对其命令行参数确认属于本仓库 UnityProject。
+
 ## 编码风格与命名约定
 
 使用 UTF-8 与文件末尾换行。C# 缩进四空格，TypeScript/JSON 缩进两空格。C# 类型与公开成员用 `PascalCase`，局部变量与参数用 `camelCase`，既有仓库目录名保持 `PascalCase`。保持文件聚焦，C# 尽量一个公开类型一个文件。依赖方向不可破坏：Protocol → Core → VS Code/MCP 适配器；Unity 只消费生成的协议契约，不引用 TypeScript Core 代码。
