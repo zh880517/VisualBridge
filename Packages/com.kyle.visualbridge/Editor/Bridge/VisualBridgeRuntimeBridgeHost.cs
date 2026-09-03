@@ -108,7 +108,7 @@ namespace VisualBridge.Editor
                     GenerateToken(),
                     ArtifactsRoot(),
                     generation,
-                    message => UnityEngine.Debug.Log($"[runtime-bridge] {message}"));
+                    message => UnityEngine.Debug.Log(message));
                 if (shuttingDown)
                 {
                     server.Dispose();
