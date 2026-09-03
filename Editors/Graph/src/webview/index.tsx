@@ -528,7 +528,7 @@ function VisualBridgeNode({ data, selected }: NodeProps<GraphFlowNode>): React.J
   const reveal = useContext(GraphRevealContext);
   const debug = useContext(GraphDebugContext);
   if (data.flavor !== "node") {
-    return <article className="graph-node">Invalid node</article>;
+    return <article className="graph-node">无效节点</article>;
   }
   const propertyInputPortIds = new Set(
     (data.nodeType?.properties ?? []).flatMap((property) => {
@@ -669,7 +669,7 @@ function InlineNodeProperties({ data, pending }: { readonly data: GraphNodeData;
       id: propertyId,
       aliases: [],
       title: propertyId,
-      description: "该字段未在当前 Catalog Registry 中声明，按现有 JSON 值类型编辑。",
+      description: "该字段未在当前目录注册表中声明，按现有 JSON 值类型编辑。",
       valueType: typeof value === "string"
         ? "string"
         : typeof value === "number"
@@ -1103,7 +1103,7 @@ function VisualBridgeInterfaceNode({ data }: NodeProps<GraphFlowNode>): React.JS
   const pending = useContext(GraphPendingContext);
   const reveal = useContext(GraphRevealContext);
   if (data.flavor !== "interface") {
-    return <article className="graph-interface-node">Invalid interface</article>;
+    return <article className="graph-interface-node">无效接口</article>;
   }
   const [selectedPortId, setSelectedPortId] = useState<string>();
   const [draggingPortId, setDraggingPortId] = useState<string>();
@@ -1447,7 +1447,7 @@ function SelectionContextActions({
   return (
     <>
       <button type="button" disabled={copyIssue !== undefined} title={copyIssue} onClick={onCopy}>复制</button>
-      <button type="button" disabled={duplicateIssue !== undefined} title={duplicateIssue} onClick={onDuplicate}>Duplicate</button>
+      <button type="button" disabled={duplicateIssue !== undefined} title={duplicateIssue} onClick={onDuplicate}>克隆</button>
       <button type="button" disabled={deleteIssue !== undefined} title={deleteIssue} onClick={onDelete}>{deleteLabel}</button>
     </>
   );
@@ -1486,7 +1486,7 @@ function GraphEditorApp(): React.JSX.Element {
   const [pending, setPending] = useState(false);
   const [documentDirty, setDocumentDirty] = useState<boolean>();
   const [invalidDiagnostics, setInvalidDiagnostics] = useState<readonly DocumentDiagnostic[]>([]);
-  const [status, setStatus] = useState({ message: "正在加载 Graph Document…", error: false });
+  const [status, setStatus] = useState({ message: "正在加载图文档…", error: false });
   const [contextMenu, setContextMenu] = useState<GraphContextMenuState>();
   const [picker, setPicker] = useState<NodePickerState>();
   const [subgraphPickerOpen, setSubgraphPickerOpen] = useState(false);
@@ -1744,7 +1744,7 @@ function GraphEditorApp(): React.JSX.Element {
     const graph = documentRef.current?.graphs.find((candidate) => candidate.id === activeGraphIdRef.current);
     if (graph === undefined || pendingRef.current || !catalogReadyRef.current) {
       if (!catalogReadyRef.current) {
-        setStatus({ message: "Catalog 尚未就绪，不能创建或复制节点。", error: true });
+        setStatus({ message: "目录尚未就绪，不能创建或复制节点。", error: true });
       }
       return;
     }
@@ -1784,12 +1784,12 @@ function GraphEditorApp(): React.JSX.Element {
   const copySelection = useCallback((): void => {
     const payload = createClipboardPayload();
     if (payload === undefined) {
-      setStatus({ message: "请选择可复制的原子节点；Graph Type 必需节点和子图暂不进入剪贴板。", error: true });
+      setStatus({ message: "请选择可复制的原子节点；图类型必需节点和子图暂不进入剪贴板。", error: true });
       return;
     }
     const text = JSON.stringify(payload);
     if (text.length > 2_000_000) {
-      setStatus({ message: "所选节点超过 Graph 剪贴板 2 MB 限制，请减少选择后重试。", error: true });
+      setStatus({ message: "所选节点超过图剪贴板 2 MB 限制，请减少选择后重试。", error: true });
       return;
     }
     clipboardPasteIndexRef.current = 0;
@@ -1800,7 +1800,7 @@ function GraphEditorApp(): React.JSX.Element {
   const duplicateSelection = useCallback((): void => {
     const payload = createClipboardPayload();
     if (payload === undefined) {
-      setStatus({ message: "请选择可 Duplicate 的原子节点；Graph Type 必需节点和子图暂不复制。", error: true });
+      setStatus({ message: "请选择可克隆的原子节点；图类型必需节点和子图暂不复制。", error: true });
       return;
     }
     pasteClipboardPayload(payload, 40);
@@ -1891,7 +1891,7 @@ function GraphEditorApp(): React.JSX.Element {
             type: GRAPH_REVEAL_RESULT_MESSAGE_TYPE,
             requestId: typeof message.requestId === "string" ? message.requestId : "invalid",
             found: false,
-            message: "Graph 定位请求无效。",
+            message: "图定位请求无效。",
           };
           vscode.postMessage(result);
           return;
@@ -1965,7 +1965,7 @@ function GraphEditorApp(): React.JSX.Element {
         setStatus(firstDiagnostic === undefined
           ? message.catalogReady
             ? { message: "就绪", error: false }
-            : { message: "Catalog 尚未就绪，已禁用依赖 Catalog 的编辑操作。", error: true }
+            : { message: "目录尚未就绪，已禁用依赖目录的编辑操作。", error: true }
           : { message: `${firstDiagnostic.path}: ${firstDiagnostic.message}`, error: firstError !== undefined || !message.catalogReady });
         return;
       }
@@ -1981,7 +1981,7 @@ function GraphEditorApp(): React.JSX.Element {
       if (message.type === "clipboardData") {
         const payload = parseGraphClipboardPayload(message.text);
         if (payload === undefined) {
-          setStatus({ message: "剪贴板中没有有效的 VisualBridge Graph 节点数据。", error: true });
+          setStatus({ message: "剪贴板中没有有效的 VisualBridge 图节点数据。", error: true });
         } else {
           pasteClipboardPayload(payload);
         }
@@ -2030,7 +2030,7 @@ function GraphEditorApp(): React.JSX.Element {
         setFlowEdges([]);
         setPending(false);
         setInvalidDiagnostics(message.diagnostics);
-        setStatus({ message: "Graph Document 解析失败。", error: true });
+        setStatus({ message: "图文档解析失败。", error: true });
         return;
       }
       if (message.type === "operationRejected") {
@@ -2088,7 +2088,7 @@ function GraphEditorApp(): React.JSX.Element {
         type: GRAPH_REVEAL_RESULT_MESSAGE_TYPE,
         requestId: pendingRevealRequest.requestId,
         found: false,
-        message: "Graph Document 当前无效，无法定位引用目标。",
+        message: "图文档当前无效，无法定位引用目标。",
       };
       vscode.postMessage(result);
       currentRevealRequestIdRef.current = undefined;
@@ -2202,7 +2202,7 @@ function GraphEditorApp(): React.JSX.Element {
       if (currentRevealRequestIdRef.current !== activeReveal.request.requestId) {
         return;
       }
-      const message = `无法聚焦 Graph 引用目标：${String(error)}`;
+      const message = `无法聚焦图引用目标：${String(error)}`;
       const response: GraphRevealResult = {
         type: GRAPH_REVEAL_RESULT_MESSAGE_TYPE,
         requestId: activeReveal.request.requestId,
@@ -2514,7 +2514,7 @@ function GraphEditorApp(): React.JSX.Element {
         id: newId("node"),
         ...(nodeType === undefined ? {} : { nodeTypeId: nodeType.id }),
         subgraphId,
-        title: nodeType?.title ?? `Subgraph ${index}`,
+        title: nodeType?.title ?? `子图 ${index}`,
         position: position ?? nodePosition(),
         properties: nodeType === undefined ? {} : createDefaultProperties(nodeType),
         dynamicPorts: [],
@@ -2522,7 +2522,7 @@ function GraphEditorApp(): React.JSX.Element {
       subgraph: {
         id: subgraphId,
         ...(graphType === undefined ? {} : { graphTypeId: graphType.id }),
-        title: graphType?.title ?? `Subgraph ${index}`,
+        title: graphType?.title ?? `子图 ${index}`,
         properties: graphType === undefined ? {} : createDefaultGraphProperties(graphType),
         interfacePorts: [
           { id: "flowIn", title: "In", kind: "flow", direction: "input", maxConnections: 1 },
@@ -2704,7 +2704,7 @@ function GraphEditorApp(): React.JSX.Element {
     : contextSelectionPayload === undefined
       ? "当前选择中没有可复制的原子节点"
       : undefined;
-  const duplicateSelectionIssue = copySelectionIssue ?? (!catalogReady ? "Catalog 尚未就绪" : undefined);
+  const duplicateSelectionIssue = copySelectionIssue ?? (!catalogReady ? "目录尚未就绪" : undefined);
   const deletePlan = activeGraph === undefined || selected === undefined
     ? undefined
     : planDeleteSelection(activeGraph, selected, catalogRegistry);
@@ -2713,7 +2713,7 @@ function GraphEditorApp(): React.JSX.Element {
     : deletePlan === undefined
       ? "当前没有选择内容"
       : deletePlan.nodeIds.length === 0 && deletePlan.edgeIds.length === 0
-        ? "所选节点必须由当前 Graph Type 保留"
+        ? "所选节点必须由当前图类型保留"
         : undefined;
   const deleteSelectionLabel = deletePlan !== undefined && deletePlan.retainedNodeIds.length > 0
     ? `删除可删除项（保留 ${deletePlan.retainedNodeIds.length} 个必需节点）`
@@ -2721,20 +2721,20 @@ function GraphEditorApp(): React.JSX.Element {
   const addNodeIssue = pending
     ? "正在应用修改"
     : !catalogReady
-      ? "Catalog 尚未就绪"
+      ? "目录尚未就绪"
       : availableAtomicNodeTypes.length === 0
-        ? "当前 Graph Type 没有可用的节点类型"
+        ? "当前图类型没有可用的节点类型"
         : undefined;
   const addSubgraphIssue = pending
     ? "正在应用修改"
     : catalogRegistry.graphTypes.length > 0 && !catalogReady
-      ? "Catalog 尚未就绪"
+      ? "目录尚未就绪"
       : catalogRegistry.graphTypes.length > 0 && subgraphOptions.length === 0
-        ? "当前 Graph Type 没有可用的子图类型"
+        ? "当前图类型没有可用的子图类型"
         : undefined;
-  const pasteIssue = pending ? "正在应用修改" : !catalogReady ? "Catalog 尚未就绪" : undefined;
+  const pasteIssue = pending ? "正在应用修改" : !catalogReady ? "目录尚未就绪" : undefined;
   const saveState = pending
-    ? { kind: "pending", label: "修改中…", title: "正在应用 Graph 修改" }
+    ? { kind: "pending", label: "修改中…", title: "正在应用图修改" }
     : documentDirty === undefined
       ? { kind: "pending", label: "读取状态…", title: "正在读取文档保存状态" }
       : documentDirty
@@ -2745,7 +2745,7 @@ function GraphEditorApp(): React.JSX.Element {
     <GraphDataTypesContext.Provider value={catalogRegistry.dataTypes}>
       <EditorShell className="graph-app" data-vb-property-density="compact" onClick={() => setContextMenu(undefined)}>
       <EditorToolbar className="graph-toolbar">
-        <nav className="graph-breadcrumb" aria-label="Graph breadcrumb">
+        <nav className="graph-breadcrumb" aria-label="图导航面包屑">
           {path.map((item, index) => (
             <span key={item.id}>
               {index > 0 && <i>/</i>}
@@ -2864,8 +2864,8 @@ function GraphEditorApp(): React.JSX.Element {
                 <button
                   type="button"
                   className="graph-inspector-toggle secondary"
-                  aria-label={inspectorCollapsed ? "展开 Graph Inspector" : "折叠 Graph Inspector"}
-                  title={inspectorCollapsed ? "展开 Graph Inspector" : "折叠 Graph Inspector"}
+                  aria-label={inspectorCollapsed ? "展开图检查器" : "折叠图检查器"}
+                  title={inspectorCollapsed ? "展开图检查器" : "折叠图检查器"}
                   onClick={() => setInspectorCollapsed((value) => !value)}
                 >
                   {inspectorCollapsed ? "‹" : "›"}
@@ -2917,7 +2917,7 @@ function GraphEditorApp(): React.JSX.Element {
           : node?.nodeTypeId === undefined
             ? "节点没有可替换的类型"
             : !catalogReady
-              ? "Catalog 尚未就绪"
+              ? "目录尚未就绪"
               : candidates === undefined
                 ? "正在检查兼容类型"
                 : candidates.length === 0
@@ -3401,24 +3401,24 @@ function GraphInspector({
   };
   return (
     <aside className="graph-inspector" data-vb-property-density="sidebar">
-      <h2>Graph Inspector</h2>
+      <h2>图检查器</h2>
       <PropertySection title="标识">
-        <ReadonlyField label="Graph ID" value={graph.id} />
+        <ReadonlyField label="图 ID" value={graph.id} />
         {graphType !== undefined
-          ? <ReadonlyField label="Graph Type" value={`${graphType.title} · ${graphType.id}`} />
+          ? <ReadonlyField label="图类型" value={`${graphType.title} · ${graphType.id}`} />
           : graph.graphTypeId !== undefined
-            ? <ReadonlyField label="Graph Type" value={`Unknown · ${graph.graphTypeId}`} />
+            ? <ReadonlyField label="图类型" value={`未知 · ${graph.graphTypeId}`} />
             : (
               <section className="graph-assign-type">
                 <label className="graph-field">
-                  <span>Graph Type</span>
+                  <span>图类型</span>
                   <select value={selectedGraphTypeId} disabled={!catalogReady} onChange={(event) => setSelectedGraphTypeId(event.target.value)}>
                     {assignableTypes.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.catalogTitle} / {candidate.title}</option>)}
                   </select>
                 </label>
-                <button type="button" disabled={pending || !catalogReady || graph.nodes.length > 0 || selectedGraphTypeId.length === 0} onClick={assignType}>设置 Graph Type</button>
-                {!catalogReady && <p className="graph-empty">Catalog 尚未就绪，不能设置 Graph Type。</p>}
-                {graph.nodes.length > 0 && <p className="graph-empty">已有节点的旧 Graph 需要后续安全迁移，不能直接设置类型。</p>}
+                <button type="button" disabled={pending || !catalogReady || graph.nodes.length > 0 || selectedGraphTypeId.length === 0} onClick={assignType}>设置图类型</button>
+                {!catalogReady && <p className="graph-empty">目录尚未就绪，不能设置图类型。</p>}
+                {graph.nodes.length > 0 && <p className="graph-empty">已有节点的旧图需要后续安全迁移，不能直接设置类型。</p>}
               </section>
             )}
       </PropertySection>
@@ -3428,7 +3428,7 @@ function GraphInspector({
           <button type="submit" disabled={pending || title === graph.title}>应用名称修改</button>
         </form>
       </PropertySection>
-      <PropertySection title="Graph 属性">
+      <PropertySection title="图属性">
         <InlineNodeProperties data={propertyData} pending={pending} />
       </PropertySection>
     </aside>
@@ -3620,7 +3620,7 @@ function SubgraphTypePicker({
     <div className="graph-modal-backdrop" onMouseDown={onCancel}>
       <section className="graph-node-picker" role="dialog" aria-modal="true" aria-label="添加类型化子图" onMouseDown={(event) => event.stopPropagation()}>
         <header><h2>添加类型化子图</h2><button type="button" className="secondary" onClick={onCancel}>关闭</button></header>
-        <input autoFocus placeholder="搜索 Graph Type 或调用节点类型…" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <input autoFocus placeholder="搜索图类型或调用节点类型…" value={query} onChange={(event) => setQuery(event.target.value)} />
         <div className="graph-node-type-list">
           {filtered.map(({ graphType, nodeType }) => (
             <button
@@ -3659,14 +3659,14 @@ function InputField({
 
 function InvalidDocument({ diagnostics }: { readonly diagnostics: readonly DocumentDiagnostic[] }): React.JSX.Element {
   return (
-    <main className="graph-invalid"><section><h2>Graph Document 无效</h2><p>请切换到文本编辑器修复以下问题，然后重新打开。</p><ul>
+    <main className="graph-invalid"><section><h2>图文档无效</h2><p>请切换到文本编辑器修复以下问题，然后重新打开。</p><ul>
       {diagnostics.map((diagnostic, index) => <li key={`${diagnostic.code}:${diagnostic.path}:${index}`}>{diagnostic.path}: {diagnostic.message}</li>)}
     </ul></section></main>
   );
 }
 
 function LoadingDocument(): React.JSX.Element {
-  return <main className="graph-invalid"><section><h2>正在加载 Graph Document…</h2></section></main>;
+  return <main className="graph-invalid"><section><h2>正在加载图文档…</h2></section></main>;
 }
 
 function toFlowNodes(
@@ -3690,7 +3690,7 @@ function toFlowNodes(
         model: node,
         ...(nodeType === undefined ? {} : { nodeType }),
         ports: portsForNode(document, graph, node, nodeType),
-        typeTitle: nodeType?.title ?? (node.kind === "subgraph" ? "Embedded Subgraph" : `Unknown · ${node.nodeTypeId}`),
+        typeTitle: nodeType?.title ?? (node.kind === "subgraph" ? "内嵌子图" : `未知 · ${node.nodeTypeId}`),
         overriddenPropertyIds: overriddenNodeProperties(graph, node, nodeType),
         connectedInputPortIds: connectedNodeInputPorts(document, graph, node, nodeType),
         commitNode,
@@ -3714,7 +3714,7 @@ function toFlowNodes(
       data: {
         flavor: "interface",
         graphId: graph.id,
-        title: editableInterfaces ? "输入参数" : "Graph Inputs",
+        title: editableInterfaces ? "输入参数" : "图输入",
         side: "inputs",
         ports: inputs,
         interfacePortIds: graph.interfacePorts.map((port) => port.id),
@@ -3734,7 +3734,7 @@ function toFlowNodes(
       data: {
         flavor: "interface",
         graphId: graph.id,
-        title: editableInterfaces ? "输出参数" : "Graph Outputs",
+        title: editableInterfaces ? "输出参数" : "图输出",
         side: "outputs",
         ports: outputs,
         interfacePortIds: graph.interfacePorts.map((port) => port.id),

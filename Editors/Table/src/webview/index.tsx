@@ -100,7 +100,7 @@ function TableEditorApp(): ReactElement {
   const [state, setState] = useState<TableStateMessage>();
   const [invalid, setInvalid] = useState<TableInvalidMessage>();
   const [pending, setPending] = useState(false);
-  const [status, setStatus] = useState("正在加载 Table Document…");
+  const [status, setStatus] = useState("正在加载表格文档…");
   const [sheetId, setSheetId] = useState<string>();
   const [selectedRowId, setSelectedRowId] = useState<string>();
   const [query, setQuery] = useState("");
@@ -130,7 +130,7 @@ function TableEditorApp(): ReactElement {
           type: TABLE_REVEAL_RESULT_MESSAGE_TYPE,
           requestId: message.requestId,
           found,
-          ...(!found ? { message: "Table 行不存在或文档状态尚未就绪。" } : {}),
+          ...(!found ? { message: "表格行不存在或文档状态尚未就绪。" } : {}),
         });
       } else if (message.type === "tableState") {
         stateRef.current = message;
@@ -146,7 +146,7 @@ function TableEditorApp(): ReactElement {
         setInvalid(message);
         setState(undefined);
         setPending(false);
-        setStatus("Table Document 无效");
+        setStatus("表格文档无效");
       } else if (message.type === "operationRejected") {
         setPending(false);
         setStatus(message.message);
@@ -235,7 +235,7 @@ function TableEditorApp(): ReactElement {
   if (state === undefined) {
     return (
       <main className="table-loading">
-        <h1>VisualBridge Table</h1>
+        <h1>VisualBridge 表格</h1>
         <p>{status}</p>
         {invalid !== undefined && <Diagnostics diagnostics={invalid.diagnostics} />}
       </main>
@@ -274,7 +274,7 @@ function TableEditorApp(): ReactElement {
         ))}
       </nav>
       {sheet === undefined || definition === undefined
-        ? <main className="table-loading"><p>Catalog 中没有可编辑的分表定义。</p></main>
+        ? <main className="table-loading"><p>目录中没有可编辑的分表定义。</p></main>
         : (
           <SplitWorkspace className="table-workspace">
             <NavigatorPane className="record-list">

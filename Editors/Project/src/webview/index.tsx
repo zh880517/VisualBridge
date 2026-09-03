@@ -57,7 +57,7 @@ createRoot(rootElement).render(<ProjectEditorApp />);
 function ProjectEditorApp(): ReactElement {
   const [state, setState] = useState<ProjectStateMessage>();
   const [invalid, setInvalid] = useState<Extract<HostMessage, { readonly type: "projectInvalid" }>>();
-  const [status, setStatus] = useState("正在加载 Project Settings…");
+  const [status, setStatus] = useState("正在加载工程设置…");
   const [pending, setPending] = useState(false);
   const [providerDraft, setProviderDraft] = useState<ProjectProviderDefinition>();
 
@@ -80,7 +80,7 @@ function ProjectEditorApp(): ReactElement {
         setState(undefined);
         setInvalid(message);
         setPending(false);
-        setStatus("Project File 无效");
+        setStatus("工程文件无效");
       } else if (message.type === "operationRejected") {
         setPending(false);
         setStatus(message.message);
@@ -104,24 +104,24 @@ function ProjectEditorApp(): ReactElement {
   };
 
   if (state === undefined) {
-    return <main className="loading"><h1>VisualBridge Project Settings</h1><p>{status}</p><IssueList issues={invalid?.issues ?? []} /></main>;
+    return <main className="loading"><h1>VisualBridge 工程设置</h1><p>{status}</p><IssueList issues={invalid?.issues ?? []} /></main>;
   }
   const project = state.project;
   return <EditorShell className="project-app">
     <EditorToolbar className="toolbar">
-      <strong>Project Settings</strong>
+      <strong>工程设置</strong>
       <ToolbarSpacer />
       <SaveState dirty={state.isDirty} pending={pending} pendingLabel="正在修改" />
     </EditorToolbar>
     <main className="scroll">
       <section className="settings-section general">
-        <SectionTitle title="General" />
-        <LabeledInput label="Project ID" value={project.projectId} disabled={pending} onCommit={(projectId) => submit([{ type: "project.setProjectId", projectId }])} />
-        <StringList label="Document Roots" values={project.documentRoots} disabled={pending} group="document-roots" placeholder="Config" onCommit={(documentRoots) => submit([{ type: "project.setDocumentRoots", documentRoots }])} />
+        <SectionTitle title="常规" />
+        <LabeledInput label="工程 ID" value={project.projectId} disabled={pending} onCommit={(projectId) => submit([{ type: "project.setProjectId", projectId }])} />
+        <StringList label="文档根目录" values={project.documentRoots} disabled={pending} group="document-roots" placeholder="Config" onCommit={(documentRoots) => submit([{ type: "project.setDocumentRoots", documentRoots }])} />
       </section>
 
       <section className="settings-section">
-        <SectionTitle title="Document Types" count={project.documentTypes.length} onAdd={() => submit([{
+        <SectionTitle title="文档类型" count={project.documentTypes.length} onAdd={() => submit([{
           type: "project.upsertDocumentType",
           documentType: createDocumentType(project),
         }])} disabled={pending} />
@@ -140,19 +140,19 @@ function ProjectEditorApp(): ReactElement {
       </section>
 
       <section className="settings-section">
-        <SectionTitle title="Table Layout" />
+        <SectionTitle title="表格布局" />
         <label className="toggle"><input type="checkbox" checked={project.tableLayout !== undefined} disabled={pending} onChange={(event) => submit([event.currentTarget.checked
           ? { type: "project.setTableLayout", tableLayout: { nameKeyRow: 2, dataStartRow: 3 } }
           : { type: "project.clearTableLayout" }])} />启用工程级表头布局</label>
         {project.tableLayout !== undefined && <div className="grid two">
-          <NumberInput label="Name Key Row" value={project.tableLayout.nameKeyRow} disabled={pending} onCommit={(nameKeyRow) => submit([{ type: "project.setTableLayout", tableLayout: { ...project.tableLayout!, nameKeyRow } }])} />
-          <NumberInput label="Data Start Row" value={project.tableLayout.dataStartRow} disabled={pending} onCommit={(dataStartRow) => submit([{ type: "project.setTableLayout", tableLayout: { ...project.tableLayout!, dataStartRow } }])} />
+          <NumberInput label="名称键行" value={project.tableLayout.nameKeyRow} disabled={pending} onCommit={(nameKeyRow) => submit([{ type: "project.setTableLayout", tableLayout: { ...project.tableLayout!, nameKeyRow } }])} />
+          <NumberInput label="数据起始行" value={project.tableLayout.dataStartRow} disabled={pending} onCommit={(dataStartRow) => submit([{ type: "project.setTableLayout", tableLayout: { ...project.tableLayout!, dataStartRow } }])} />
         </div>}
       </section>
 
       <section className="settings-section">
         <SectionTitle
-          title="Project Providers"
+          title="工程提供器"
           count={project.providers.length + (providerDraft === undefined ? 0 : 1)}
           onAdd={() => setProviderDraft(createProvider(project))}
           disabled={pending || providerDraft !== undefined}
@@ -209,18 +209,18 @@ function DocumentTypeCard(props: {
   ]);
   return <article ref={ref} className={`settings-card${isDragging ? " dragging" : ""}${isDropTarget ? " drop-target" : ""}`}>
     <header className="card-header">
-      <button ref={handleRef} className="icon secondary drag" title="拖动排序" aria-label="拖动 Document Type"><CommonIcon name="drag" /></button>
+      <button ref={handleRef} className="icon secondary drag" title="拖动排序" aria-label="拖动文档类型"><CommonIcon name="drag" /></button>
       <strong>{props.documentType.id}</strong><span className="tag">{props.documentType.editor}</span><span className="spacer" />
-      <button className="icon danger" title="删除 Document Type" aria-label="删除 Document Type" disabled={props.disabled} onClick={() => props.submit([{ type: "project.removeDocumentType", documentTypeId: props.documentType.id }])}><CommonIcon name="delete" /></button>
+      <button className="icon danger" title="删除文档类型" aria-label="删除文档类型" disabled={props.disabled} onClick={() => props.submit([{ type: "project.removeDocumentType", documentTypeId: props.documentType.id }])}><CommonIcon name="delete" /></button>
     </header>
     <div className="card-body">
       <div className="grid two">
         <LabeledInput label="ID" value={draft.id} disabled={props.disabled} onChange={(id) => setDraft({ ...draft, id })} onCommit={(id) => commit({ ...draft, id })} />
-        <LabeledInput label="Editor" value={draft.editor} disabled={props.disabled} list="visualbridge-editors" onChange={(editor) => setDraft({ ...draft, editor })} onCommit={(editor) => commit({ ...draft, editor })} />
+        <LabeledInput label="编辑器" value={draft.editor} disabled={props.disabled} list="visualbridge-editors" onChange={(editor) => setDraft({ ...draft, editor })} onCommit={(editor) => commit({ ...draft, editor })} />
       </div>
-      <StringList label="Include" values={draft.include} disabled={props.disabled} group={`${props.documentType.id}-include`} placeholder="Config/**/*.custom" onCommit={(include) => { const next = { ...draft, include }; setDraft(next); commit(next); }} />
-      <StringList label="Exclude" values={draft.exclude} disabled={props.disabled} group={`${props.documentType.id}-exclude`} placeholder="Config/**/Generated/**" allowEmpty onCommit={(exclude) => { const next = { ...draft, exclude }; setDraft(next); commit(next); }} />
-      <StringList label="Catalogs" values={draft.catalogs} disabled={props.disabled} group={`${props.documentType.id}-catalogs`} placeholder="Catalog/Game.vbcatalog" allowEmpty onCommit={(catalogs) => { const next = { ...draft, catalogs }; setDraft(next); commit(next); }} />
+      <StringList label="包含" values={draft.include} disabled={props.disabled} group={`${props.documentType.id}-include`} placeholder="Config/**/*.custom" onCommit={(include) => { const next = { ...draft, include }; setDraft(next); commit(next); }} />
+      <StringList label="排除" values={draft.exclude} disabled={props.disabled} group={`${props.documentType.id}-exclude`} placeholder="Config/**/Generated/**" allowEmpty onCommit={(exclude) => { const next = { ...draft, exclude }; setDraft(next); commit(next); }} />
+      <StringList label="目录" values={draft.catalogs} disabled={props.disabled} group={`${props.documentType.id}-catalogs`} placeholder="Catalog/Game.vbcatalog" allowEmpty onCommit={(catalogs) => { const next = { ...draft, catalogs }; setDraft(next); commit(next); }} />
       <datalist id="visualbridge-editors"><option value="graph" /><option value="entity" /><option value="structured" /><option value="table" /></datalist>
     </div>
   </article>;
@@ -253,18 +253,18 @@ function ProviderCard(props: {
   const update = (next: ProjectProviderDefinition): void => { setDraft(next); commit(next); };
   return <article ref={ref} className={`settings-card${isDragging ? " dragging" : ""}${isDropTarget ? " drop-target" : ""}`}>
     <header className="card-header">
-      <button ref={handleRef} className="icon secondary drag" title="拖动排序" aria-label="拖动 Provider"><CommonIcon name="drag" /></button>
+      <button ref={handleRef} className="icon secondary drag" title="拖动排序" aria-label="拖动提供器"><CommonIcon name="drag" /></button>
       <strong>{props.provider.id}</strong><span className="spacer" />
-      <button className="icon danger" title="删除 Provider" aria-label="删除 Provider" disabled={props.disabled} onClick={() => props.submit([{ type: "project.removeProvider", providerId: props.provider.id }])}><CommonIcon name="delete" /></button>
+      <button className="icon danger" title="删除提供器" aria-label="删除提供器" disabled={props.disabled} onClick={() => props.submit([{ type: "project.removeProvider", providerId: props.provider.id }])}><CommonIcon name="delete" /></button>
     </header>
     <div className="card-body">
       <div className="grid two">
         <LabeledInput label="ID" value={draft.id} disabled={props.disabled} onChange={(id) => setDraft({ ...draft, id })} onCommit={(id) => commit({ ...draft, id })} />
-        <LabeledInput label="Entry (.mjs)" value={draft.entry} disabled={props.disabled} onChange={(entry) => setDraft({ ...draft, entry })} onCommit={(entry) => commit({ ...draft, entry })} />
+        <LabeledInput label="入口 (.mjs)" value={draft.entry} disabled={props.disabled} onChange={(entry) => setDraft({ ...draft, entry })} onCommit={(entry) => commit({ ...draft, entry })} />
       </div>
-      <StringList label="Arguments" values={draft.args} disabled={props.disabled} group={`${props.provider.id}-args`} placeholder="--flag" allowEmpty onCommit={(args) => update({ ...draft, args })} />
-      <StringList label="Reference Kinds" values={draft.capabilities.reference?.kinds ?? []} disabled={props.disabled} group={`${props.provider.id}-references`} placeholder="game.asset" allowEmpty onCommit={(kinds) => update({ ...draft, capabilities: withReferenceKinds(draft, kinds) })} />
-      <StringList label="Validator Document Types" values={draft.capabilities.validator?.documentTypes ?? []} disabled={props.disabled} group={`${props.provider.id}-validators`} placeholder="game.settings" allowEmpty onCommit={(documentTypes) => update({ ...draft, capabilities: withValidatorTypes(draft, documentTypes) })} />
+      <StringList label="参数" values={draft.args} disabled={props.disabled} group={`${props.provider.id}-args`} placeholder="--flag" allowEmpty onCommit={(args) => update({ ...draft, args })} />
+      <StringList label="引用类型" values={draft.capabilities.reference?.kinds ?? []} disabled={props.disabled} group={`${props.provider.id}-references`} placeholder="game.asset" allowEmpty onCommit={(kinds) => update({ ...draft, capabilities: withReferenceKinds(draft, kinds) })} />
+      <StringList label="校验器文档类型" values={draft.capabilities.validator?.documentTypes ?? []} disabled={props.disabled} group={`${props.provider.id}-validators`} placeholder="game.settings" allowEmpty onCommit={(documentTypes) => update({ ...draft, capabilities: withValidatorTypes(draft, documentTypes) })} />
     </div>
   </article>;
 }
@@ -280,18 +280,18 @@ function ProviderDraftCard(props: {
   return <article className="settings-card draft-card">
     <header className="card-header">
       <span className="draft-spacer" aria-hidden="true" />
-      <strong>New Provider</strong><span className="tag">draft</span><span className="spacer" />
-      <button className="icon secondary" title="保存 Provider" aria-label="保存 Provider" disabled={props.disabled} onClick={() => props.onSave(draft)}><CommonIcon name="check" /></button>
-      <button className="icon ghost" title="取消新增 Provider" aria-label="取消新增 Provider" disabled={props.disabled} onClick={props.onCancel}><CommonIcon name="close" /></button>
+      <strong>新建提供器</strong><span className="tag">草稿</span><span className="spacer" />
+      <button className="icon secondary" title="保存提供器" aria-label="保存提供器" disabled={props.disabled} onClick={() => props.onSave(draft)}><CommonIcon name="check" /></button>
+      <button className="icon ghost" title="取消新增提供器" aria-label="取消新增提供器" disabled={props.disabled} onClick={props.onCancel}><CommonIcon name="close" /></button>
     </header>
     <div className="card-body">
       <div className="grid two">
         <LabeledInput label="ID" value={draft.id} disabled={props.disabled} onChange={(id) => props.onChange({ ...draft, id })} onCommit={() => undefined} />
-        <LabeledInput label="Entry (.mjs)" value={draft.entry} disabled={props.disabled} onChange={(entry) => props.onChange({ ...draft, entry })} onCommit={() => undefined} />
+        <LabeledInput label="入口 (.mjs)" value={draft.entry} disabled={props.disabled} onChange={(entry) => props.onChange({ ...draft, entry })} onCommit={() => undefined} />
       </div>
-      <StringList label="Arguments" values={draft.args} disabled={props.disabled} group={`${draft.id}-draft-args`} placeholder="--flag" allowEmpty onCommit={(args) => props.onChange({ ...draft, args })} />
-      <StringList label="Reference Kinds" values={draft.capabilities.reference?.kinds ?? []} disabled={props.disabled} group={`${draft.id}-draft-references`} placeholder="game.asset" allowEmpty onCommit={(kinds) => props.onChange({ ...draft, capabilities: withReferenceKinds(draft, kinds) })} />
-      <StringList label="Validator Document Types" values={draft.capabilities.validator?.documentTypes ?? []} disabled={props.disabled} group={`${draft.id}-draft-validators`} placeholder="game.settings" allowEmpty onCommit={(documentTypes) => props.onChange({ ...draft, capabilities: withValidatorTypes(draft, documentTypes) })} />
+      <StringList label="参数" values={draft.args} disabled={props.disabled} group={`${draft.id}-draft-args`} placeholder="--flag" allowEmpty onCommit={(args) => props.onChange({ ...draft, args })} />
+      <StringList label="引用类型" values={draft.capabilities.reference?.kinds ?? []} disabled={props.disabled} group={`${draft.id}-draft-references`} placeholder="game.asset" allowEmpty onCommit={(kinds) => props.onChange({ ...draft, capabilities: withReferenceKinds(draft, kinds) })} />
+      <StringList label="校验器文档类型" values={draft.capabilities.validator?.documentTypes ?? []} disabled={props.disabled} group={`${draft.id}-draft-validators`} placeholder="game.settings" allowEmpty onCommit={(documentTypes) => props.onChange({ ...draft, capabilities: withValidatorTypes(draft, documentTypes) })} />
     </div>
   </article>;
 }
@@ -348,7 +348,7 @@ function NumberInput(props: { readonly label: string; readonly value: number; re
 }
 
 function IssueList(props: { readonly issues: readonly ProjectFileIssue[] }): ReactElement {
-  return props.issues.length === 0 ? <></> : <section className="issues"><h2>Validation</h2><ul>{props.issues.map((issue, index) => <li key={`${issue.path}:${index}`}><code>{issue.path}</code> {issue.message}</li>)}</ul></section>;
+  return props.issues.length === 0 ? <></> : <section className="issues"><h2>校验</h2><ul>{props.issues.map((issue, index) => <li key={`${issue.path}:${index}`}><code>{issue.path}</code> {issue.message}</li>)}</ul></section>;
 }
 
 function createDocumentType(project: VisualBridgeProjectDefinition): DocumentTypeDefinition {

@@ -61,7 +61,7 @@ function StructuredEditorApp(): ReactElement {
   const [state, setState] = useState<StructuredStateMessage>();
   const [invalid, setInvalid] = useState<StructuredInvalidMessage>();
   const [pending, setPending] = useState(false);
-  const [status, setStatus] = useState("正在加载 Structured Config…");
+  const [status, setStatus] = useState("正在加载结构化配置…");
 
   useEffect(() => {
     const listener = (event: MessageEvent<HostMessage>): void => {
@@ -83,7 +83,7 @@ function StructuredEditorApp(): ReactElement {
         setState(undefined);
         setInvalid(message);
         setPending(false);
-        setStatus("Structured Config 无效");
+        setStatus("结构化配置无效");
       } else if (message.type === "operationRejected") {
         setPending(false);
         setStatus(message.message);
@@ -115,7 +115,7 @@ function StructuredEditorApp(): ReactElement {
   if (state === undefined) {
     return (
       <main className="structured-loading">
-        <h1>VisualBridge Structured Config</h1>
+        <h1>VisualBridge 结构化配置</h1>
         <p>{status}</p>
         {invalid !== undefined && <Diagnostics diagnostics={invalid.diagnostics} />}
       </main>

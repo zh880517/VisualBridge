@@ -99,7 +99,7 @@ function EntityEditorApp(): ReactElement {
   const [state, setState] = useState<EntityStateMessage>();
   const [invalid, setInvalid] = useState<EntityInvalidMessage>();
   const [pending, setPending] = useState(false);
-  const [status, setStatus] = useState("正在加载 Entity Document…");
+  const [status, setStatus] = useState("正在加载实体文档…");
   const [addOpen, setAddOpen] = useState(false);
   const [addIndex, setAddIndex] = useState<number>();
   const [pendingReveal, setPendingReveal] = useState<EntityRevealRequest>();
@@ -125,7 +125,7 @@ function EntityEditorApp(): ReactElement {
             type: ENTITY_REVEAL_RESULT_MESSAGE_TYPE,
             requestId: message.requestId,
             found: false,
-            message: "Entity component reference location is invalid.",
+            message: "实体组件引用位置无效。",
           };
           vscode.postMessage(result);
           return;
@@ -136,12 +136,12 @@ function EntityEditorApp(): ReactElement {
         setState(message);
         setInvalid(undefined);
         setPending(false);
-        setStatus(message.catalogReady ? "就绪" : "Catalog 未就绪，只能查看已保存内容");
+        setStatus(message.catalogReady ? "就绪" : "目录未就绪，只能查看已保存内容");
       } else if (message.type === "entityInvalid") {
         setInvalid(message);
         setState(undefined);
         setPending(false);
-        setStatus("Entity Document 无效");
+        setStatus("实体文档无效");
       } else if (message.type === "operationRejected") {
         setPending(false);
         setStatus(message.message);
@@ -222,7 +222,7 @@ function EntityEditorApp(): ReactElement {
   if (state === undefined) {
     return (
       <main className="entity-loading">
-        <h1>VisualBridge Entity</h1>
+        <h1>VisualBridge 实体</h1>
         <p>{status}</p>
         {invalid !== undefined && <Diagnostics diagnostics={invalid.diagnostics} />}
       </main>
@@ -243,7 +243,7 @@ function EntityEditorApp(): ReactElement {
           <section className="entity-card entity-header-card">
             <div className="entity-card-heading">
               <div>
-                <span className="eyebrow">Entity</span>
+                <span className="eyebrow">实体</span>
                 <TitleEditor
                   title={state.document.title}
                   disabled={pending}
@@ -272,7 +272,7 @@ function EntityEditorApp(): ReactElement {
 
           <div className="component-section-heading">
             <div>
-              <span className="eyebrow">Components</span>
+              <span className="eyebrow">组件</span>
               <h2>{state.document.components.length} 个组件</h2>
             </div>
             <IconButton
@@ -503,7 +503,7 @@ function AddComponentDialog(props: {
           <Dialog.Popup className="add-dialog">
             <header>
               <div>
-                <span className="eyebrow">Component Catalog</span>
+                <span className="eyebrow">组件目录</span>
                 <Dialog.Title className="add-dialog-title">添加组件</Dialog.Title>
               </div>
               <Dialog.Close className="icon secondary" aria-label="关闭" title="关闭">
@@ -549,7 +549,7 @@ function TitleEditor(props: {
       className="entity-title-input"
       value={draft}
       disabled={props.disabled}
-      aria-label="Entity 标题"
+      aria-label="实体标题"
       onChange={(event) => setDraft(event.target.value)}
       onBlur={() => {
         const title = draft.trim();
@@ -581,7 +581,7 @@ function Diagnostics(props: { readonly diagnostics: readonly DocumentDiagnostic[
 }
 
 function UnknownTypeNotice(props: { readonly typeId: string }): ReactElement {
-  return <p className="unknown-type">Catalog 中不存在类型 <code>{props.typeId}</code>；原始数据会保留，但字段不可编辑。</p>;
+  return <p className="unknown-type">目录中不存在类型 <code>{props.typeId}</code>；原始数据会保留，但字段不可编辑。</p>;
 }
 
 function resolveEntityType(registry: EntityCatalogRegistry, typeId: string): RegisteredEntityTypeDefinition | undefined {

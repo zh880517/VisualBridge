@@ -151,7 +151,7 @@ export function FieldValueEditor(props: FieldValueEditorProps): ReactElement {
     const values = Array.isArray(value) ? value : [];
     const item = props.definition.item;
     if (item === undefined) {
-      return <span className="vb-field-error">缺少 List 元素定义</span>;
+      return <span className="vb-field-error">缺少列表元素定义</span>;
     }
     return <ListEditor {...props} values={values} item={item} disabled={disabled} />;
   }
