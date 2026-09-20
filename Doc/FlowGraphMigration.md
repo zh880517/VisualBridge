@@ -2,7 +2,7 @@
 
 ## 范围
 
-本文记录 ActionEditor `Packages/com.kyle.action-framework/FlowGraph` 向 VisualBridge Graph 的功能映射和实施边界。当前只开发宿主无关的文档模型、Catalog、VS Code 编辑器与 MCP 共用能力；Unity Package 的代码扫描、Catalog 导出、运行时编译和调试连接暂不实现。
+本文记录 ActionEditor `Packages/com.kyle.action-framework/FlowGraph` 向 VisualBridge Graph 的功能映射和实施边界。宿主无关的文档模型、Catalog、VS Code 编辑器与 MCP 共用能力已全部落地；Unity Package 侧也已落地 C# 元数据扫描、Graph Catalog V4 导出与离线编译，以及经 Runtime Bridge 的 Graph 执行过程观察。仍未实现的是旧 FlowGraph 资产的导入诊断与 Unity Player 产物接线。
 
 ## 旧节点定义模型
 
@@ -27,7 +27,7 @@
 
 ## VisualBridge Catalog 映射
 
-Unity Package 未来应把 C# 声明导出为 Graph Catalog V4 `.vbgraphcatalog` 文件。Catalog 是代码声明的编辑契约，而不是 Unity 序列化快照；当前只记录导出约束，不实现 Unity 代码：
+Unity Package 已实现 Graph Catalog V4 `.vbgraphcatalog` 导出器（`Packages/com.kyle.visualbridge/Editor/Graph/VisualBridgeGraphCatalogExporter.cs`，菜单 **Tools / VisualBridge / Generate Graph Catalogs**）。它读取的是 VisualBridge 自己的显式 metadata（`VisualBridgeGraphCatalog`、`VisualBridgeNodeType`、`VisualBridgeGraphType`、`VisualBridgePort`、`VisualBridgeDynamicPortGroup`、`VisualBridgeField`、`VisualBridgeGraphDataType`），**不识别** ActionEditor 的 `[FlowNodePath]`、`[FlowTag]`、`[Inputable]`、`OutputData<T>`、`[Alias]`、`[FormerlySerializedAs]`、`IFlowEntry` 或 `TSubGraphNode<,>`；迁移中的游戏工程必须改用 VisualBridge 属性重新声明。Catalog 是代码声明的编辑契约，而不是 Unity 序列化快照。下表是旧 FlowGraph 声明到 Catalog 字段的迁移对照，其右列的 C# 来源在落地实现中由对应的 VisualBridge 属性承载；旧 FlowGraph 资产的自动导入诊断仍未实现：
 
 | VisualBridge 字段 | C# 来源 |
 | --- | --- |
@@ -91,9 +91,9 @@ Catalog 属性的 `valueType: "number"` 只表示 JSON 数值和数值编辑器�
 4. 已完成连接覆盖状态、批量选择、复制粘贴与 Duplicate；持久修改继续通过 Graph Operation 批量提交。
 5. 已完成分层创建菜单、悬空连线创建、同类型选择和 MiniMap。
 6. 已完成 Graph Catalog V4 多 Catalog Registry、Graph Type 支持 Catalog 和方向连接数量规则；Graph Document 继续保持 V3。
-7. Graph 作者功能验证完成后，再在 `Packages/com.kyle.visualbridge` 中实现 C# Catalog Exporter 与旧 FlowGraph 导入诊断；此前不得加入 Unity 实现。
-8. 最后设计 Runtime Compiler、执行协议和 Debug Overlay。
+7. 已完成 `Packages/com.kyle.visualbridge` 中的 C# Graph Catalog Exporter 与离线 Compiler（Generate/Check 菜单与 batchmode 入口，见 [`UnityIntegrationManual.md`](UnityIntegrationManual.md)）。旧 FlowGraph 资产的导入诊断仍未实现。
+8. 已完成 Graph 执行观察协议与 VS Code 侧「执行调试」页面（Runtime Bridge `graphExecution`，只观察、不做断点）；游戏侧执行引擎与产物导入器归游戏侧，VisualBridge 不实现执行器，见 [`UnityGraphExecutionDebug.md`](UnityGraphExecutionDebug.md)。
 
-Unity 导出器必须只依赖 Protocol/Catalog 契约，输出确定性 JSON；VS Code、MCP 与未来 Unity 编译器继续共享同一套稳定 ID、连接和属性规则。
+Unity 导出器只依赖 Protocol/Catalog 契约并输出确定性 JSON；VS Code、MCP 与 Unity Compiler 共享同一套稳定 ID、连接和属性规则。
 
-Unity 侧后续导出约束：Graph/Node Type 都必须使用显式且 Registry 全局无歧义的稳定 ID，C# 全名只进入 `source`；每个节点写入其业务 Catalog，Catalog 导出稳定 `catalogId` 和显示根 `title`；Graph Type 导出 `supportedCatalogIds`、`portConnectionRules`，并将 `[FlowGraphTags]` 导出为范围内的 `allowedNodeSelectors`；`IFlowEntry` 导出 trait、数量约束和初始节点；`TSubGraphNode<TData,TGraph>` 导出为带 `subgraph.graphTypeIds` 的调用节点类型。不得执行 `OnCreate()` 取默认值，且新 exporter 不得覆盖更高版本 Catalog。Unity 代码、测试、导入器与运行时实现均在 Graph 作者功能完成并单独确认后开始。
+Unity 侧导出约束（下列 ActionEditor 概念需由迁移中的游戏工程改用对应的 VisualBridge 属性声明）：Graph/Node Type 都必须使用显式且 Registry 全局无歧义的稳定 ID，C# 全名只进入 `source`；每个节点写入其业务 Catalog，Catalog 导出稳定 `catalogId` 和显示根 `title`；Graph Type 导出 `supportedCatalogIds`、`portConnectionRules`，并将 `[FlowGraphTags]` 导出为范围内的 `allowedNodeSelectors`；`IFlowEntry` 导出 trait、数量约束和初始节点；`TSubGraphNode<TData,TGraph>` 导出为带 `subgraph.graphTypeIds` 的调用节点类型。不得执行 `OnCreate()` 取默认值，且新 exporter 不得覆盖更高版本 Catalog。Unity 代码与 EditMode 测试已随 Exporter/Compiler 落地；旧 FlowGraph 资产的导入器与 Unity Player 产物接线仍未实现。

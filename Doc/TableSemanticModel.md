@@ -2,15 +2,15 @@
 
 ## 1. 范围
 
-Table V1 编辑由 UTF-8 CSV 兼容文本文件或 `.xlsx` 工作簿承载的受约束游戏数据表。编辑器、校验与当前 MCP V2 适配器共享同一套语义模型和同一个 Table Operation API；未来的 Unity 编译器也必须消费同一模型。它们不为 CSV 和 Excel 实现各自独立的业务规则。
+Table V1 编辑由 UTF-8 CSV 兼容文本文件或 `.xlsx` 工作簿承载的受约束游戏数据表。编辑器、校验与当前 MCP V2 适配器共享同一套语义模型和同一个 Table Operation API；Unity 侧的离线 Table Compiler 也必须消费同一套有效逻辑行与编码规则。它们不为 CSV 和 Excel 实现各自独立的业务规则。
 
-当前实现包含 Table Catalog V1、CSV 与 XLSX 编解码器、原子 Table Operation 批处理、面向记录的 VS Code 表格编辑器、项目级文件关联、分区逻辑表、固定语义 fixtures，以及用于语义查询/搜索/校验/编辑的 stdio MCP 适配器。它不新增 Unity 代码。Unity Catalog 导出、Authoring 导入、运行时编译与调试仍是未来工作。
+当前实现包含 Table Catalog V1、CSV 与 XLSX 编解码器、原子 Table Operation 批处理、面向记录的 VS Code 表格编辑器、项目级文件关联、分区逻辑表、固定语义 fixtures，以及用于语义查询/搜索/校验/编辑的 stdio MCP 适配器。Unity Package 是 Table Catalog 的**纯消费方**：它严格校验 `.vbtablecatalog`，并把 CSV family 离线编译到 `Library/VisualBridge/Compiled`（菜单 **Tools / VisualBridge / Generate Table Compiled Data**、**Check Table Compiled Data**）；XLSX 载体编译不在 V1 范围，编译器以 `table.xlsxUnsupported` 拒绝。`.vbtablecatalog` 由 VS Code 侧创作并提交，Unity 侧没有 Table Catalog Exporter，也没有 Authoring 导入器；接入与门槛见 [`UnityIntegrationManual.md`](UnityIntegrationManual.md)。
 
 每个 Table Catalog 都使用共享的顶层 `source` 契约来声明未知、最新或过期的外部定义。Host 计算其只读内容 Hash；见 [`ProjectCatalogManagement.md`](ProjectCatalogManagement.md)。
 
 ## 2. C# 拥有数据定义
 
-未来的 C# 导出器是以下内容的权威来源：
+游戏运行时使用的普通 C# 结构是以下内容的权威来源。V1 不提供 Table Catalog Exporter：`.vbtablecatalog` 由 VS Code 侧据此创作并提交，Unity 侧只做严格校验与编译。Catalog 必须声明：
 
 - 稳定的 Table Type、Sheet 和 Column ID 及别名；
 - 普通运行时 `class` / `struct` 源类型名；
@@ -20,7 +20,7 @@ Table V1 编辑由 UTF-8 CSV 兼容文本文件或 `.xlsx` 工作簿承载的受
 - 标量、JSON 与基于分隔符的单元格编码；
 - 逻辑 Sheet 与分区规则。
 
-导出结果是一个 `.vbtablecatalog` JSON 文件。Authoring 数据不依赖 `ScriptableObject`、Unity 子资产或仅编辑器可用的包装类型。未来的导出器只能检视游戏使用的普通 C# 类型；它不得执行玩法初始化方法来获取默认值。
+Catalog 载体是一个 `.vbtablecatalog` JSON 文件。Authoring 数据不依赖 `ScriptableObject`、Unity 子资产或仅编辑器可用的包装类型。若后续为 Table 增加 C# 导出器，它只能检视游戏使用的普通 C# 类型，且不得执行玩法初始化方法来获取默认值——这与 Structured、Entity、Graph 三域 Exporter 已落地的约束一致。
 
 表格列复用全项目共享的 Core Field 模型和共享 Form Editor。因此数值、布尔、文本、颜色、下拉选择、List 和递归嵌套的普通结构在 Entity、Structured、Table 和 Graph 编辑器中行为一致。
 
@@ -131,7 +131,7 @@ Catalog ID、Table Type ID、Sheet ID 和 Column ID 是持久身份。显示标�
 - `keepFirst`：保留有效逻辑行流中的第一行并发出警告；
 - `keepLast`：保留有效逻辑行流中的最后一行并发出警告。
 
-去重不会删除或改写源行。编解码器保留每一个物理行，而 `resolveEffectiveTableRows` 向未来的编译器和查询服务提供按策略解析后的逻辑视图。物理顺序是确定性的：XLSX 使用工作簿内工作表顺序；CSV 家族使用按字典序排序的路径。
+去重不会删除或改写源行。编解码器保留每一个物理行，而 `resolveEffectiveTableRows` 向 MCP 查询与 Webview 提供按策略解析后的逻辑视图；Unity 侧 Table Compiler 以同一 `error` / `keepFirst` / `keepLast` 策略独立实现该解析。物理顺序是确定性的：XLSX 使用工作簿内工作表顺序；CSV 家族使用按字典序排序的路径。
 
 对 CSV 而言，当相邻文件具有相同物理扩展名、解析到同一 Project 和 Document Type 且匹配命名模板时，会在被打开文件所在目录发现分区。编辑器把它们作为一个带分区标签页的逻辑文档打开。Operation 批处理作用于合并后的语义文档；保存时在写入任何被改动的成员之前检查每个成员的 base hash。发生冲突时会拒绝保存，而不是覆盖外部编辑。
 
@@ -228,9 +228,9 @@ Table 生命周期使用共享的 [`DocumentLifecycle.md`](DocumentLifecycle.md)
 
 Lifecycle 预览/应用要求每个相关的 Table Custom Editor 都处于干净状态；打开但已保存的编辑器是允许的。物理工作簿/家族 manifest 和工作区 Reference 索引因此必须共享同一磁盘基线。外部的 Excel、资源管理器或脚本写入会通过成员 hash 与 manifest/缺失检查被发现；协作式 Project 锁并不阻止它们。
 
-## 11. MCP 与延期的 Unity 工作
+## 11. MCP 与 Unity 侧边界
 
-本阶段没有实现任何 Unity Table Exporter、导入器、运行时、`ScriptableObject` 层或 Debug 功能。未来的 Unity 集成必须从普通游戏结构导出 Table Catalog JSON，并消费与本文档所述相同的有效逻辑行和编码。
+Unity 侧已落地的是 Table Catalog 严格校验与 CSV family 的离线编译，二者都必须继续消费与本文档相同的有效逻辑行与编码规则。Unity 侧没有 Table Catalog Exporter、Authoring 导入器、`ScriptableObject` 层，也没有 Table 专属的运行时或调试功能；XLSX 载体编译不在 V1 范围。若后续增加 C# 导出器，其输出必须是与手工创作等价的 `.vbtablecatalog` JSON，不得成为第二套语义来源。
 
 stdio MCP V2 适配器使用与其他文档类型相同的统一工具：`visualbridge_catalog` 读取/搜索 Table Type、Sheet 和 Column 定义；`visualbridge_document` 读取/搜索/校验语义表格；`visualbridge_apply_operations` 使用读取返回的 `baseHash` 应用一个非空的 TableOperation 批处理。表格读取使用 `selector.sheetId`；搜索使用 `selector.sheetDefinitionId` 和 `selector.effectiveOnly`。它返回带类型的单元格，而不是原始 CSV 行或工作簿对象。Search Cursor 绑定规范查询、selector、物理来源 Manifest Hash 和相关 Catalog Hash；任一来源或 Catalog 在页间变化都返回 `cursor.snapshotChanged`，不能在新表上继续旧分页位置。
 

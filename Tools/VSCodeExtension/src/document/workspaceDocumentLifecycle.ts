@@ -720,19 +720,19 @@ export class WorkspaceDocumentLifecycle {
       ...project.definition.documentTypes.flatMap((documentType) => documentType.catalogs)
         .map((path) => projectUri(project, path).toString()),
     ]);
-    // 报错时列出具体未保存的文件，避免使用者不知道要保存哪个编辑器。
+    // 报错时列出全部具体未保存的文件，避免使用者不知道要保存哪个编辑器。
     const dirtyPaths: string[] = [];
-    const dirtyText = vscode.workspace.textDocuments.find((document) => {
-      if (!document.isDirty) return false;
+    for (const document of vscode.workspace.textDocuments) {
+      if (!document.isDirty) {
+        continue;
+      }
       if (metadataUris.has(document.uri.toString())
         || this.projects.resolveDocument(document.uri)?.project.markerUri.toString() === project.markerUri.toString()) {
         dirtyPaths.push(vscode.workspace.asRelativePath(document.uri));
-        return true;
       }
-      return false;
-    });
+    }
     const dirtyTables = this.tableEditors.hasDirtyProject(project);
-    if (dirtyText !== undefined || dirtyTables) {
+    if (dirtyPaths.length > 0 || dirtyTables) {
       const details = [
         dirtyPaths.length > 0 ? `Unsaved editors: ${dirtyPaths.join(", ")}.` : "",
         dirtyTables ? "Unsaved Table editors are open." : "",

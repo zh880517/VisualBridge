@@ -31,10 +31,14 @@ const EXPECTED_COMMANDS = [
   "visualbridge.documentBrowser.validateAll",
   "visualbridge.catalogBrowser.open",
   "visualbridge.catalogBrowser.refresh",
+  "visualbridge.manageUnsavedDocuments",
   "visualbridge.openDocument",
   "visualbridge.openProjectSettings",
   "visualbridge.refreshProjects",
   "visualbridge.safeDeleteElement",
+  "visualbridge.unsavedDocuments.discardAll",
+  "visualbridge.unsavedDocuments.refresh",
+  "visualbridge.unsavedDocuments.saveAll",
   "visualbridge.revealReference",
 ];
 
@@ -141,6 +145,12 @@ exports.run = async function run() {
     EXPECTED_COMMANDS.forEach((command) => {
       assert.ok(commands.has(command), `Command '${command}' was not registered.`);
     });
+    // 反向断言：manifest 新增公开命令而忘记同步 EXPECTED_COMMANDS 时必须失败，
+    // 否则上面的正向断言会随数组老化而静默失去覆盖面。
+    const unasserted = (extension.packageJSON.contributes.commands ?? [])
+      .map((entry) => entry.command)
+      .filter((command) => !EXPECTED_COMMANDS.includes(command));
+    assert.deepEqual(unasserted, [], "Manifest contributes commands that EXPECTED_COMMANDS does not assert.");
   });
 
   await test("incrementally rebuilds one semantic document and matches a full scan", async () => {

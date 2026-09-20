@@ -2,7 +2,7 @@
 
 ## 范围
 
-本文定义已落地的 Graph Document V3 与 Graph Catalog V4 的 Authoring 契约。内容涵盖稳定身份、多 Catalog 登记、Graph Type、流程与数据连接、带类型的内嵌子图、Catalog 驱动的校验，以及安全的节点类型替换。Runtime 执行、Unity 编译与调试不在当前实现范围内。
+本文定义已落地的 Graph Document V3 与 Graph Catalog V4 的 Authoring 契约。内容涵盖稳定身份、多 Catalog 登记、Graph Type、流程与数据连接、带类型的内嵌子图、Catalog 驱动的校验，以及安全的节点类型替换。本文不涉及执行语义：游戏侧 Graph 执行引擎与 Unity Player 产物接线不在本仓库范围内。Unity 侧的 Graph Catalog 导出与离线编译、以及 VS Code 侧经 Runtime Bridge 的 Graph 执行过程观察（只观察、不做断点）已另行落地，见 [`UnityIntegrationManual.md`](UnityIntegrationManual.md) 与 [`UnityGraphExecutionDebug.md`](UnityGraphExecutionDebug.md)。
 
 ## 稳定身份
 
@@ -86,7 +86,7 @@ Catalog 的 Data Type 保留运行时区别。C# `System.Int32` 与 `System.Sing
 
 VS Code 与当前 MCP V2 适配器使用相同的解析器、注册表、Operation、校验器与序列化器。Catalog 文件是文本契约；当编辑必须在没有 Unity 的环境下可用时，应当将其提交入库。当前解析器只接受 Graph Catalog V4；V1-V3 以及旧有的属性级 `required` 方言会被拒绝，而不是被静默升级。这个开发基线有意移除不兼容的遗留解释，而不是同时维护两套字段模型。
 
-Catalog 序列化是确定性的：无序的类型集合和身份别名会排序，defaults 中 JSON object 的键会规范化，输出以换行符结尾。端口、动态组和属性数组保留声明顺序，因为该顺序控制编辑器布局。这让未来的 Unity 导出器能够重新生成相同的文件而不产生噪声 diff，同时保留 C# 字段与分支顺序。
+Catalog 序列化是确定性的：无序的类型集合和身份别名会排序，defaults 中 JSON object 的键会规范化，输出以换行符结尾。端口、动态组和属性数组保留声明顺序，因为该顺序控制编辑器布局。这让 Unity Graph Catalog Exporter 能够重新生成相同的文件而不产生噪声 diff，同时保留 C# 字段与分支顺序。
 
 ## Graph Type 与实例约束
 

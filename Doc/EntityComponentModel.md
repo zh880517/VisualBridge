@@ -4,7 +4,7 @@
 
 本文定义 VisualBridge 当前落地的 Entity / Component JSON 模型、共享字段约束和 VS Code 编辑行为。它参考了 ActionEditor EasyConfig Entity 编辑器的组织方式，但不迁移其 `ScriptableObject`、子资源、包装类或导出按钮。
 
-当前实现只负责离线 Authoring JSON、Catalog、语义校验、确定性 Operation 和 VS Code 可视化编辑。Unity Catalog Exporter、Importer、Runtime、Debug 和任何 `ScriptableObject` 兼容层都不在本阶段范围内。
+当前实现负责离线 Authoring JSON、Catalog、语义校验、确定性 Operation 和 VS Code 可视化编辑。Unity Package 已能从 Profile 显式登记、带 metadata 的普通 C# 类型确定性导出 Entity Catalog V1，并在 Editor 中离线编译 Entity 文档（菜单 **Tools / VisualBridge / Generate Entity Catalogs**、**Generate Entity Compiled Data**、**Check Entity Compiled Data**，见 [`UnityIntegrationManual.md`](UnityIntegrationManual.md)）。Authoring 导入器、Unity Player 产物接线和任何 `ScriptableObject` 兼容层仍不在范围内。
 
 ## 数据所有权
 
@@ -12,10 +12,10 @@
 
 ```text
 游戏运行时 C# 结构
-  -> 后续 Unity Catalog Exporter 生成描述
+  -> Unity Catalog Exporter 生成描述
   -> Entity Catalog
   -> VS Code / MCP 编辑 Entity Document
-  -> 后续 Importer / Compiler 生成运行时所需数据
+  -> Unity Editor Compiler 生成运行时所需数据
 ```
 
 Authoring Document 不保存 Unity 对象实例、子资源关系、Inspector 展开状态或临时菜单状态。Catalog 中可保留 `source.providerId` 和 `source.typeName` 便于追踪来源，但 C# 类型名不承担持久身份。
@@ -343,16 +343,16 @@ Entity 不定义专用顶层 Tool。`visualbridge_catalog` 读取或搜索 Compo
 
 Webview 只发送 Operation，不直接读写文件。Extension Host 使用 `WorkspaceEdit` 修改当前文本 Document，因此正常 VS Code Save、Undo 和 Redo 仍然有效。编辑器没有 Export 按钮；Authoring JSON 本身就是需要保存和提交的源文件。
 
-## 后续 Unity 约束
+## Unity 侧约束
 
-后续实现 Unity Catalog Exporter 时必须遵守：
+Unity Catalog Exporter 与 Compiler 已按以下约束实现（`Packages/com.kyle.visualbridge/Editor/Entity/`），后续修改必须继续遵守：
 
 - 只扫描游戏运行时真正使用的普通 class / struct 和显式元数据。
 - 不要求类型继承 `ScriptableObject`，不生成用于编辑的 `ScriptableObject` 包装资产或子资源。
 - 为 Entity Type、Component Group、Component Type 和每个递归字段输出显式稳定 ID 与 alias；C# 全名只写入 `source`。
 - 将 C# `int`、`float`、颜色、List 和普通自定义结构递归映射为共享字段模型，不能在 Entity 模块复制一套字段规则。
 - 确定性生成 Catalog，不通过执行业务初始化方法或临时 Unity 对象猜测默认值。
-- Importer / Compiler 的产物是派生数据，不能反向成为权威编辑源。
-- Unity Runtime、Debug 和导入编译协议在正式设计后单独实现；当前代码不预留半成品运行路径。
+- Compiler 的产物是派生数据，不能反向成为权威编辑源。
+- Unity 侧不提供 Authoring 导入器；Runtime Bridge 只承担本机只读检查（实例发现、文档快照、Source 映射与 Graph 执行观察），不承载 Entity 编辑语义，见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 17、18 章。
 
 固定语义样例位于 `TestData/EntitySemanticProject`。它使用项目自定义 `.herojson` 后缀，并覆盖多 Catalog Registry、稳定 ID / alias、跨 Catalog Group 引用、Entity Component 引用、数值、颜色、递归对象、List、组件限制、启用状态、Operation 原子性和确定性序列化。

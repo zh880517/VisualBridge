@@ -4,7 +4,7 @@
 
 Project Refactoring 在整个 Authoring Project 范围内修改一个语义身份及其引用。它不是文本查找替换，也不按文件扩展名猜测文档类型。Core 根据 Reference Provider 已解析出的目标位置建立确定性影响计划，各 Document Type 使用既有 Catalog、Parser、Operation、Validator 和 Serializer 生成修改，VS Code Host 只负责交互、并发检查与多载体提交。
 
-当前落地 `document`、`entity.component`、`graph.element` 和 `table.row` 四类目标重命名，并同步修改 Graph、Entity、Structured 和 Table 中所有唯一解析到同一完整 Location 的 Reference Occurrence。Unity Catalog Exporter、Importer、Runtime 和 Debug 不在本阶段范围内。
+当前落地 `document`、`entity.component`、`graph.element` 和 `table.row` 四类目标重命名，并同步修改 Graph、Entity、Structured 和 Table 中所有唯一解析到同一完整 Location 的 Reference Occurrence。重命名只改写 Authoring 源文件，不传播到 Unity 侧派生产物：重构后需重新运行 Unity 的 Catalog Generate 与 Compile Generate，否则 Check 会按输入 Hash 报 drift（见 [`UnityIntegrationManual.md`](UnityIntegrationManual.md)）。
 
 ## 2. 身份与匹配规则
 

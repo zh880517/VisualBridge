@@ -2,7 +2,7 @@
 
 本包是 VisualBridge 的 VS Code Host Adapter。扩展只在本地工作区发现并验证 `VisualBridge.project.vbjson` 后建立 Project 功能；Graph、Entity、Structured 和 Table 的 Parser、Catalog、Operation、Validator、Reference 与 Serializer 来自共享 Core/Built-in 包，不在 Extension Host 中复制领域规则。
 
-当前 VSIX 是私有 `UNLICENSED` 产物，不通过 Marketplace 分发。Unity 侧的 Structured Catalog Exporter/Importer/Compiler、最小 Editor Bridge 与 Runtime Bridge 服务器已在 Unity Package 中实现；本扩展宿主承载 Editor Bridge 服务器（本机 NDJSON，open/reveal），并通过 Runtime Bridge 协议枚举/连接 Runtime 实例（快照、租约、Source 映射）。Debug 面为 `visualbridge-runtime` DAP 只检查适配器（attach 型：单伪线程、文档快照变量树与漂移信息；不支持断点/单步/求值——真实执行运行时出现前不冻结这些能力）。
+当前 VSIX 是私有 `UNLICENSED` 产物，不通过 Marketplace 分发。Unity 侧的离线领域链（Structured/Entity/Graph Catalog 生成，Structured/Entity/Graph/Table 编译产物生成与检查）、最小 Editor Bridge 与 Runtime Bridge 服务器已在 Unity Package 中实现；本扩展宿主承载 Editor Bridge 服务器（本机 NDJSON，open/reveal），并通过 Runtime Bridge 协议枚举/连接 Runtime 实例（快照、租约、Source 映射、Graph 执行观察）。Debug 面为 `visualbridge-runtime` DAP 只检查适配器（attach 型：单伪线程、文档快照变量树与漂移信息），能力声明如实为空：不支持断点/单步/求值——这是 VB-UX-11 冻结的设计边界，项目方已明确不做断点，Graph 执行过程只观察不中断；执行实例的实时跟踪与时间轴回放在 Graph 编辑器页内完成，不经 DAP。
 
 ## 安装与首次使用
 
@@ -74,8 +74,9 @@ Manifest 的默认 `visualbridge.documentEditor` selector 包含 `.vbgraph`、`.
 | `visualbridge.documents` | Documents | 按 Project / Document Type 显示叶子文件、Problems/References 计数和 Lifecycle 入口。 |
 | `visualbridge.catalogs` | Catalogs | 只读 Registry、类型、alias、Hash、stale 状态和诊断。 |
 | `visualbridge.documentDetails` | Problems / References | 显示 Documents 当前选中文件的中文 Problems 和合并后的 Outgoing/Incoming References。 |
+| `visualbridge.unsavedDocuments` | Unsaved Documents | 常驻列出已编辑未保存的 VisualBridge 文档：Project Registry 匹配的语义文档、Project 标记与 Catalog 元数据，以及 Table 自定义编辑器；标题实时显示未保存数量，标题栏提供全部保存、放弃全部改动（模态确认）和刷新，点击条目按类型显式路由到对应 Custom Editor。 |
 
-三个 View 都位于 `visualbridge` Activity Bar container；详情 View 可独立折叠，点击文件行后的 Problems/References 图标会重新展开并聚焦对应分组。
+四个 View 都位于 `visualbridge` Activity Bar container；详情 View 可独立折叠，点击文件行后的 Problems/References 图标会重新展开并聚焦对应分组。
 
 ### Custom Editor
 
@@ -88,7 +89,7 @@ Manifest 的默认 `visualbridge.documentEditor` selector 包含 `.vbgraph`、`.
 
 ## 当前编辑能力
 
-- Graph V3 / Graph Catalog V4：React Flow 受控画布、Graph Type、数量与连接限制、typed subgraph、动态端口、公开接口、节点安全替换、内联字段、多选、Copy/Paste/Duplicate、MiniMap、Reference 定位与外部修改冲突提示。
+- Graph V3 / Graph Catalog V4：React Flow 受控画布、Graph Type、数量与连接限制、typed subgraph、动态端口、公开接口、节点安全替换、内联字段、多选、Copy/Paste/Duplicate、MiniMap、Reference 定位与外部修改冲突提示；连接 Runtime 后可在执行调试页面选择执行实例、实时高亮当前执行节点与数据边取值，并按事件或帧回放执行时间轴。
 - Entity V1 / Entity Catalog V1：根字段、有序 Component 卡片、搜索添加、启用、拖动、复制、Safe Delete、共享递归 Form/Reference 和外部修改冲突提示。
 - Structured Config V1：Project 唯一类型绑定、完整递归字段、Reference、确定性 JSON、Undo/Redo 和外部修改冲突提示。
 - Table V1 / Table Catalog V1：CSV family、XLSX、稳定记录列表虚拟化、搜索、共享 Form、行操作、Reference、完整 physical manifest Hash 和阶段化保存。
@@ -127,7 +128,7 @@ npm run build
 npm run test:vscode:host
 ```
 
-Runner 使用官方 `@vscode/test-electron` 和固定 VS Code `1.105.1`，把 `TestData` 复制到唯一临时工作区，并隔离 User Data/Extensions。它验证自动激活、Project 发现、22 个 manifest 命令、默认 Graph 和项目自定义 Entity/Structured/Table 路由、Project Settings、Catalog/Document Browser、Trusted/Restricted Provider、隐藏 Webview 重新握手、定位请求、Lifecycle、Refactor 和 Table 多 panel，不修改跟踪样例或用户 VS Code 配置。失败默认保留临时目录并输出路径；`VISUALBRIDGE_CLEAN_FAILED_TEST=1` 可要求失败后清理。
+Runner 使用官方 `@vscode/test-electron` 和固定 VS Code `1.105.1`，把 `TestData` 复制到唯一临时工作区，并隔离 User Data/Extensions。它验证自动激活、Project 发现、manifest 全部 29 条公开命令与运行时注册的 `visualbridge.revealReference`、默认 Graph 和项目自定义 Entity/Structured/Table 路由、Project Settings、Catalog/Document Browser、Trusted/Restricted Provider 与 Provider 校验缓存、语义索引增量刷新与取消、隐藏 Webview 重新握手、定位请求、Lifecycle、Refactor、Table 多 panel、CSV family 原子保存与回滚、XLSX 无关状态保留、Editor Bridge 发现记录与握手/open/reveal、Runtime 只检查调试会话（实例枚举、租约、快照变量树与漂移）、Graph 执行调试链路（实例枚举、订阅、事件驱动高亮、退订）以及与 Schema/Unity 校验器共享的 parity fixture，不修改跟踪样例或用户 VS Code 配置。失败默认保留临时目录并输出路径；`VISUALBRIDGE_CLEAN_FAILED_TEST=1` 可要求失败后清理。
 
 打包后的 VSIX 单独验证：
 

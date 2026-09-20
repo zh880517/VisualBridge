@@ -26,7 +26,7 @@
 | Project Provider V2 | [`ProjectProvider.md`](ProjectProvider.md) | Trust/allowlist、JSON-RPC、分页、取消与隔离 | [`IntegrationGuide.md`](IntegrationGuide.md) | Project Provider Schema、Provider section in Project Schema | Core/Node Host/MCP/Trusted+Restricted Host tests |
 | Project Settings / Catalog Browser | [`ProjectCatalogManagement.md`](ProjectCatalogManagement.md) | settings operation、Catalog source state | [`AuthoringUserGuide.md`](AuthoringUserGuide.md) | Project/Catalog Schemas、VS Code manifest | Project Settings/Catalog Browser Host tests |
 | VS Code Host | [`VSCodeHost.md`](VSCodeHost.md) | 激活/路由、ready+epoch、Undo/Redo、Table save | [`GettingStarted.md`](GettingStarted.md)、[`AuthoringUserGuide.md`](AuthoringUserGuide.md) | Extension manifest commands/editors/views/jsonValidation | Unit、Trusted/Restricted Extension Host、packaged VSIX activation |
-| MCP V2 | [`VisualBridgeMcp.md`](VisualBridgeMcp.md) | stdio、Adapter、baseHash / preview apply | [`IntegrationGuide.md`](IntegrationGuide.md) | MCP Tool Schema + live `tools/list` | [`stdio.test.mjs`](../Tools/VisualBridgeMcp/test/stdio.test.mjs) 真实 stdio suite、7 tool live contract check |
+| MCP V2 | [`VisualBridgeMcp.md`](VisualBridgeMcp.md) | stdio、Adapter、baseHash / preview apply | [`IntegrationGuide.md`](IntegrationGuide.md) | MCP Tool Schema + live `tools/list` | [`stdio.test.mjs`](../Tools/VisualBridgeMcp/test/stdio.test.mjs) 真实 stdio suite、8 tool live contract check |
 | 增量索引与大工程性能 | [`WorkspaceIndexPerformance.md`](WorkspaceIndexPerformance.md)、[`LargeProjectValidation.md`](LargeProjectValidation.md) | 增量失效、取消、虚拟化 | [`AuthoringUserGuide.md`](AuthoringUserGuide.md) | Cursor / dependency contracts | LargeCorpus、incremental Host、Table DOM tests |
 | 发布、依赖与样例 | [`ReleaseQuality.md`](ReleaseQuality.md) | clean install、CI、VSIX activation | [`GettingStarted.md`](GettingStarted.md)、[样例说明](../Samples/PreUnityAuthoring/README.md) | package manifests、Schema index | dependency audit、sample、build/package/CLI、docs gate |
 
@@ -42,7 +42,7 @@
 - 将 VS Code 生产 Command ID、Custom Editor、View、activation 和 JSON validation 与 extension manifest / runtime 对照；
 - 将八个 MCP Tool 与正式 Schema、contract manifest 和 live `tools/list` 对照。
 
-完整发布还必须执行 `npm run check`、`npm test`、`npm run build`、`npm run package:vscode`、打包 VSIX 的真实 CLI 激活、依赖审计和 `git diff --check`。文档检查不能替代产品测试，产品测试也不能替代文档检查。
+完整发布还必须执行 `npm run check`、`npm test`、`npm run build`、`npm run package:vscode`、`npm run test:vscode:host` 的隔离 Extension Host 自动化、打包 VSIX 的真实 CLI 激活、依赖审计和 `git diff --check`。两个依赖本机 Unity Editor 的端到端门槛（`npm run test:bridge-e2e`、`npm run test:runtime-e2e`）由 [`ReleaseQuality.md`](ReleaseQuality.md) 单独登记，既不进入干净复现序列也不进入 Windows CI。文档检查不能替代产品测试，产品测试也不能替代文档检查。
 
 ## 4. 维护规则
 

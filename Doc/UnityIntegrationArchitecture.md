@@ -112,12 +112,13 @@ Unity Package 源只有 `Packages/com.kyle.visualbridge/` 一份，`UnityProject
 
 UPM package ID 固定为 `com.kyle.visualbridge`。`kyle` 只属于 Package publisher 标识，不进入 C# namespace 或 assembly 名；C# surface 统一以 `VisualBridge` 为前缀并跟随模块名，例如 `VisualBridge.Runtime`、`VisualBridge.Editor` 和 `VisualBridge.Protocol.Generated`。
 
-- **Runtime metadata marker**：`VisualBridge.Runtime` 是 player-visible、`noEngineReferences: true` 的纯 Attribute/enum metadata surface，供游戏程序集声明 Catalog、Config 与 Field；它没有行为、Unity API、loader、执行或 Player integration，程序集名称不表示 Runtime 功能。
+- **Runtime metadata marker**：`Runtime/Metadata/` 是 player-visible、`noEngineReferences: true` 的 Attribute/enum metadata surface，供游戏程序集声明 Catalog、Config 与 Field；它没有 Unity API，也不执行玩法初始化方法。
+- **Runtime Bridge**：`Runtime/Bridge/` 承载本机回环的 Runtime Bridge 服务器、发现记录、严格校验器、编译产物只读存储与 Graph 执行采集门面（第 17、18、19 章）。它同样 `noEngineReferences: true`、`references: []`、全平台可见，只预编译引用 `Newtonsoft.Json.dll`；产物根路径由调用方解析（Editor Play 模式传 `Library/VisualBridge/Compiled`，Player 传 `<StreamingAssets>/VisualBridge/Compiled`），因此程序集本身不含 Unity API 也不含路径策略。
 - **Generated contracts**：C# wire/data bags 位于 Editor assembly，只承载同源协议数据形状与 Schema hash，不引用 VS Code、Node 或 Webview，也不充当严格语义 validator。
-- **Editor Integration**：Integration Profile、C# 元数据读取、Catalog Export、Structured Import/Compile、诊断以及后续最小 Editor Bridge；只在 Unity Editor 中加载。
-- **Editor Tests**：针对 contract、Profile、Exporter、Compiler 和后续 Bridge 状态机的 EditMode 验证。
+- **Editor Integration**：Integration Profile、C# 元数据读取、Structured / Entity / Graph 三域 Catalog Export、Structured / Entity / Table / Graph 四域离线 Compile、诊断、最小 Editor Bridge 客户端与 Runtime Bridge 的 Play 模式宿主；只在 Unity Editor 中加载。
+- **Editor Tests**：针对 contract、Profile、Exporter、Compiler、Editor Bridge 与 Runtime Bridge 状态机的 EditMode 验证。
 
-当前不创建 Runtime 功能。即使 metadata marker 对 Player assembly 可见，或生成 Contracts 能被普通 C# 编译，也不表示已经提供 Player、Runtime loader 或游戏运行时 API。
+`VisualBridge.Runtime` 已不只是 metadata marker：它按 §13.7 决策 B 升级为可进 Player 构建的运行时库，承担 Runtime Bridge 与编译产物只读加载。仍不提供的是 Unity Player 构建的产物接线（StreamingAssets 拷贝等，登记为遗留项）、远程/设备连接，以及断点式调试。
 
 Package 不加载 VS Code 扩展源码或 TypeScript Core。Authoring Host 也不加载 Unity 程序集。两侧对同一输入得出一致结论，依靠冻结 Schema、生成 contract、共享固定样例和跨实现 parity 测试，而不是进程内共享实现。
 
@@ -503,7 +504,7 @@ Graph 编译镜像既有 Compiler 生命周期，由 `VisualBridgeGraphCompiler`
 - 普通 C# `class` / `struct` 与显式 metadata 是 Catalog 来源；C# 全名不是稳定身份。
 - Exporter 不执行业务初始化方法获取默认值。
 - Compiler 不修改 Authoring Project/File/Document，失败不破坏上次有效派生物。
-- `VisualBridge.Runtime` 只允许 player-visible、无 Unity API/无行为的 metadata marker；当前不建立 Runtime 功能、Unity Adapter public API 或 `ScriptableObject` Authoring 工作流。
+- `VisualBridge.Runtime` 是 player-visible、无 Unity API 的程序集；它最初只允许无行为的 metadata marker，后按 §13.7 决策 B 升级为可进 Player 构建的运行时加载库并承载 Runtime Bridge（见 §5）。始终不建立的是 Unity Adapter public API（§13.3 决策 B）与 `ScriptableObject` Authoring 工作流。
 - dotnet 只是快速编译；真实 Unity batchmode import、EditMode 和垂直切片执行是独立发布门槛。
 - Runtime 实例发现采用「实例自写临时目录注册记录 + 心跳/pid 双信号陈旧判定 + 磁盘持久 generation + 显式选择」模型（第 17 章，VB-UX-08 实测冻结）；mid-play domain reload 的监听失效窗口由编辑器侧兜底处理。
 
@@ -543,7 +544,7 @@ Structured offline slice 已关闭：
 - **禁 Domain Reload 场景**：statics 跨 Play 周期存活且 `RuntimeInitializeOnLoadMethod` 仍每次执行（实测 Run B）——实现必须带 static 守卫防双重初始化，且每次 init 重置生命周期标志（否则心跳/accept 线程立即退出、记录泄漏——实测直接复现）。
 - **generation 必须持久在磁盘记录中**，不能只存 static（mid-play reload 清空 statics；跨会话恢复靠磁盘，同 Editor Bridge 的 server generation 模式）。
 - **Player 实例**：进程启动约 1 秒内注册；干净退出（`Application.quitting`）回收并删记录；强杀由 pid 死 + 心跳冻结双信号检测（实测 `taskkill /F` 后 mtime 冻结于死亡时刻）。Windows x64 Player 构建实测 97.5 MB / 36.7 秒（空场景），注册、TCP 监听、心跳与定时退出在 `-batchmode -nographics` 下全部正常。
-- **多实例**：Play 与 Player 实例并发注册实测并存（instanceId/kind/端口互不冲突，心跳独立），VS Code 侧枚举后显式选择，沿用 Editor Bridge 的「无全局当前实例」原则。
+- **多实例**：Play 与 Player 实例并发注册实测并存（instanceId/kind/端口互不冲突，心跳独立），VS Code 侧枚举后由调用方显式指定 `instanceId`（不设全局「当前实例」、不弹选择 UI），沿用 Editor Bridge 的「无全局当前实例」原则。
 
 ### 17.3 威胁模型（本机信任边界）
 
@@ -585,9 +586,9 @@ Editor Bridge Schema 字节冻结不改。共享核落地为：Runtime Bridge Sc
 
 ### 18.4 实现边界
 
-- Unity 侧：`VisualBridge.Runtime` 按第 13.7 节决策 B 升级——asmdef 增加 Newtonsoft 预编译引用，新增 `VisualBridgeRuntimeArtifactStore`（Play 模式读 `Library/VisualBridge/Compiled`，Player 回退 `StreamingAssets/VisualBridge/Compiled`）与 `VisualBridgeRuntimeBridgeServer`（监听/注册记录/心跳，遵循第 17 章生命周期语义）；`VisualBridge.Editor` 以 `[InitializeOnLoad]` 兜底 mid-play reload 窗口。调试语义（断点/调用栈）不进入本版本——属 VB-UX-10。
-- VS Code 侧：`RuntimeBridgeService` 枚举 `visualbridge-runtime` 发现目录、显式选择实例、连接与订阅（含租约控制与 Source 映射查询）；本任务不提供 UI（DAP 适配器与 UI 属后续任务），以测试命令暴露状态供自动化。
-- 三方 parity fixture：`visualbridge-runtime-bridge-cases.json`（36 例）由 AJV（generate.mjs）、Unity 严格校验器（EditMode）与扩展宿主测试共同消费。
+- Unity 侧：`VisualBridge.Runtime` 按第 13.7 节决策 B 升级——asmdef 增加 Newtonsoft 预编译引用，新增 `VisualBridgeRuntimeArtifactStore`（产物根由调用方解析：Editor Play 宿主固定传 `Library/VisualBridge/Compiled`，Player 约定为 `StreamingAssets/VisualBridge/Compiled`，但 Player 侧接线尚未落地）与 `VisualBridgeRuntimeBridgeServer`（监听/注册记录/心跳，遵循第 17 章生命周期语义）；`VisualBridge.Editor` 以 `[InitializeOnLoad]` 兜底 mid-play reload 窗口。调试语义（断点/调用栈）不进入本版本——属 VB-UX-10。
+- VS Code 侧：`RuntimeBridgeService` 枚举 `visualbridge-runtime` 发现目录、按调用方给定的 `instanceId` 连接与订阅（含租约控制与 Source 映射查询）；本任务不提供 UI（DAP 适配器与 UI 属后续任务），以测试命令暴露状态供自动化。
+- 三方 parity fixture：`visualbridge-runtime-bridge-cases.json` 由 AJV（generate.mjs）、Unity 严格校验器（EditMode）与扩展宿主测试共同消费；用例数随协议增量扩展（VB-UX-10 为 36 例，VB-UX-13 起为 56 例），以 fixture 文件为准。
 
 ### 18.5 VS Code DAP 检查适配器（VB-UX-11，2026-08-31）
 
@@ -628,7 +629,7 @@ DAP 适配器以**只检查会话**形态落地（范围裁定与 18.3 一致—
 
 ### 19.5 VS Code 页面交互
 
-- **调试入口在 Graph 编辑器页内**：工具栏「执行调试」按钮 → 拉取当前打开图的活跃实例列表（debugKey、运行状态、当前节点、frameIndex）→ 选择实例 attach 并订阅。入口只服务当前打开的图。
+- **调试入口在 Graph 编辑器页内**：工具栏「执行调试」按钮打开面板，面板内的「刷新」按钮拉取当前打开图的活跃实例列表（debugKey、运行状态、当前节点、frameIndex）→ 选择实例 attach 并订阅。入口只服务当前打开的图。落地实现不自动拉取：打开面板时的再水化消息（`graphExecutionDebugState`）只恢复订阅态、事件记录与停止标记，不含实例列表与运行时连接态，因此未点「刷新」前面板恒显示「未发现运行时实例」，不能据此判断 Unity 是否在 Play 模式。
 - **实时态**：当前执行节点持续高亮（描边/呼吸），刚经过的边短暂流光，数据边旁显示最近值（值变化事件驱动）；时间轴默认跟随最新。
 - **回放态**：扩展宿主留存本会话完整事件记录（内存，不落盘）；拖动时间轴或按步进（事件级/帧级）暂停实时进入回放，可「回到实时」；实例停止时自动停在记录末尾，可从实例列表切换新实例。
 - **断开语义**：关闭页面或点击停止调试即退订，Unity 侧采集随之停止；记录随会话丢弃。

@@ -133,11 +133,11 @@ sequenceDiagram
 }
 ```
 
-- `unknown`：当前没有可信的外部来源 Hash；这是 Unity 未接入阶段允许的明确状态。
+- `unknown`：当前没有可信的外部来源 Hash；这是没有导出器托管的 Catalog（例如由 VS Code 侧创作提交的 `.vbtablecatalog`）允许的明确状态。
 - `current`：Catalog 内容来自 `sourceHash` 指定的来源快照。
 - `stale`：Catalog 仍来自 `sourceHash`，但外部系统已报告不同的 `currentSourceHash`。两个 Hash 相同会被 Parser 拒绝。
 
-当前 Unity Structured Exporter 负责计算并更新其受管 Catalog 的来源状态；VS Code 与 MCP 不扫描或解释 C# 来自行推测 Hash。后续 Bridge 也不得改变这项 ownership。Catalog 类型内部已有的 `source.providerId`/`typeName` 是类型导航元数据，与顶层 Catalog 来源快照不是同一概念。
+当前 Unity 侧的 Structured、Entity 与 Graph 三个 Catalog Exporter 负责计算并更新各自受管 Catalog 的来源状态（三者复用同一 internal 共享实现）；VS Code 与 MCP 不扫描或解释 C# 来自行推测 Hash。Table 没有 Unity 导出器，其 `.vbtablecatalog` 由 VS Code 侧创作提交，来源状态保持 `unknown`。Editor Bridge 与 Runtime Bridge 都不得改变这项 ownership。Catalog 类型内部已有的 `source.providerId`/`typeName` 是类型导航元数据，与顶层 Catalog 来源快照不是同一概念。
 
 ## 6. Catalog Browser
 
@@ -177,4 +177,4 @@ flowchart LR
 
 ## 8. 自动化验证
 
-Core 测试覆盖 Catalog 来源联合类型、Hash 规则、安全 glob、Project Operation 严格负载、原子性、重命名关联更新与确定性序列化。真实 Extension Host 测试覆盖 Project Settings Custom Editor 激活、陈旧 Hash 拒绝、分屏并发串行化、当前及未来 glob 歧义拒绝、Structured/Table 类型绑定、目录链接越界拒绝、WorkspaceEdit/Undo，以及 Catalog Browser 的过期状态、内容 Hash、类型查询和只读字节不变。VS Code CLI 门禁安装最终 VSIX，并显式检查 Project Editor 的 JS/CSS 和 Catalog Source Schema 均存在。当前阶段没有 Unity 测试。
+Core 测试覆盖 Catalog 来源联合类型、Hash 规则、安全 glob、Project Operation 严格负载、原子性、重命名关联更新与确定性序列化。真实 Extension Host 测试覆盖 Project Settings Custom Editor 激活、陈旧 Hash 拒绝、分屏并发串行化、当前及未来 glob 歧义拒绝、Structured/Table 类型绑定、目录链接越界拒绝、WorkspaceEdit/Undo，以及 Catalog Browser 的过期状态、内容 Hash、类型查询和只读字节不变。VS Code CLI 门禁安装最终 VSIX，并显式检查 Project Editor 的 JS/CSS 和 Catalog Source Schema 均存在。Catalog 来源状态的 Unity 侧计算由 EditMode 测试与 batchmode Generate/Check 覆盖，命令见 [`UnityIntegrationManual.md`](UnityIntegrationManual.md) 第 10 节。

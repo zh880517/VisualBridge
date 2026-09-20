@@ -2,9 +2,9 @@
 
 ## 1. 文档定位
 
-本文是 VisualBridge 在 Unity 正式接入前的 Workspace Document Index、不可变语义快照、Reference/Provider 缓存、稳定分页和 Table 大列表渲染的正式契约，同时提供面向使用者的刷新与故障处理说明。
+本文是 VisualBridge 的 Workspace Document Index、不可变语义快照、Reference/Provider 缓存、稳定分页和 Table 大列表渲染的正式契约，同时提供面向使用者的刷新与故障处理说明。
 
-本文只覆盖 Authoring Project、VS Code Host、MCP 与宿主无关语义包。Unity Catalog Exporter、Importer、Runtime 和 Debug 不在本阶段实现。
+本文只覆盖 Authoring Project、VS Code Host、MCP 与宿主无关语义包。Unity 侧的 Catalog Export、离线 Compile、Editor Bridge 与 Runtime Bridge 不在本文范围内，见 [`UnityIntegrationManual.md`](UnityIntegrationManual.md)。
 
 ## 2. 目标与不变量
 

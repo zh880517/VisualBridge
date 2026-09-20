@@ -117,3 +117,4 @@ InitTestScene*.unity*
 
 # ZCode session state (auto-saved plans, session artifacts)
 .zcode/
+/.tmpfiles

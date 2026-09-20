@@ -4,7 +4,7 @@
 
 本文面向把现有游戏配置工程接入 VisualBridge 的开发者，说明本地 Authoring 能力：Project、任意扩展名 Document Type、外部 Catalog、共享字段、Project Provider V2、stdio MCP、并发保护、日志与故障恢复。
 
-Authoring 源文件是唯一权威数据。当前 Unity Package 已能从 Profile 显式登记的普通 C# class / struct 导出 Structured Catalog V1，并在 Editor 中离线校验、物化与编译 Structured Document；它不引入 `ScriptableObject`。Editor Bridge、Runtime、Debug、DAP、Player、WebSocket 和独立产品 CLI 尚未实现，Unity Profile 与 batch 接入见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md)。
+Authoring 源文件是唯一权威数据。当前 Unity Package 已能从 Profile 显式登记的普通 C# class / struct 确定性导出 Structured、Entity 与 Graph 三域 Catalog，并在 Editor 中离线校验、物化与编译 Structured、Entity、Table（CSV family）与 Graph 四域文档；它不引入 `ScriptableObject`。最小 Editor Bridge（Unity 侧请求 VS Code 打开/定位文档）与本机 Runtime 检查链路（Runtime 实例发现、Runtime Bridge 协议、`visualbridge-runtime` DAP 只读检查适配器、MCP `visualbridge_runtime` 工具）均已落地，两条通道都不跨网络边界（TCP 端点只绑定 `127.0.0.1`）。仍为未来工作的是 Unity Player 产物接线、远程/设备连接（WebSocket 等跨网络传输）和独立产品 CLI。Unity Profile、batch 入口与 Runtime 接入见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 与 [`UnityIntegrationManual.md`](UnityIntegrationManual.md)。
 
 可运行的最小工程位于 [`Samples/PreUnityAuthoring`](../Samples/PreUnityAuthoring/README.md)。接入新工程时应先复制其组织方式，再替换稳定 ID、Catalog 和业务文件，不要根据文件扩展名反推领域语义。
 

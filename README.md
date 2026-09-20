@@ -2,7 +2,7 @@
 
 VisualBridge 是一个基于 VS Code 的游戏语义内容创作平台。当前版本提供 Graph、Entity、Structured Config、Table 四类 Authoring 文档的可视化编辑，共享 Catalog、Form、Reference、Project Transaction 和 MCP 语义，并以文本源文件或受约束的 CSV/XLSX 载体作为权威数据。
 
-仓库现已落地首个 Unity Structured offline、Editor-only 垂直切片与第二个领域切片的 Entity Catalog Export：`Packages/com.kyle.visualbridge` 提供显式 C# metadata、固定 Profile、Structured 与 Entity Catalog Generate/Check，以及从 Authoring Project（Structured、Entity、Table/CSV 与 Graph 文档）到 `Library/VisualBridge/Compiled` 确定性派生产物的 Generate/Check。它不依赖 VS Code 或 Bridge 在线运行。最小 Unity Editor Bridge V1 亦已落地：Unity Editor 可以通过本机 NDJSON 协议请求 VS Code 打开或定位 Authoring Document（open/reveal），协议契约见 `Protocol/Schema/visualbridge-editor-bridge.schema.json`，边界见 [Unity Editor 接入架构](Doc/UnityIntegrationArchitecture.md)。当前仍未实现 Runtime loader/行为、Debug、DAP、Player、设备发现或远程网络通信；Package 中名为 `VisualBridge.Runtime` 的程序集只是 player-visible、无 Unity API/无行为的纯 metadata marker surface，不是 Runtime 功能。
+仓库现已落地四个领域的 Unity offline 集成：`Packages/com.kyle.visualbridge` 提供显式 C# metadata、固定 Profile、Structured/Entity/Graph 三域 Catalog Generate/Check，以及从 Authoring Project（Structured、Entity、Table/CSV 与 Graph 文档）到 `Library/VisualBridge/Compiled` 确定性派生产物的 Generate/Check；离线编译链路不依赖 VS Code 或 Bridge 在线运行。Table 是纯消费域：`.vbtablecatalog` 由 VS Code 侧创作提交，Unity 只编译 CSV family 文档，XLSX 载体编译不在 V1 范围。最小 Unity Editor Bridge V1 亦已落地：Unity Editor 可以通过本机 NDJSON 协议请求 VS Code 打开或定位 Authoring Document（open/reveal），协议契约见 `Protocol/Schema/visualbridge-editor-bridge.schema.json`。Runtime Bridge 同样已落地：Play 模式下由 Editor 侧宿主（`VisualBridge.Editor`，Editor-only 程序集）拉起 `VisualBridge.Runtime` 的 Runtime Bridge 服务器，仅监听本机回环，提供发现记录与心跳、token 首条消息握手、编译产物快照（getSnapshot）、产物变更事件（artifactsChanged）、单控制者租约与文档级 Source 映射（getDocumentSources，供 VS Code / MCP 侧比对工作区字节检测漂移），以及 Graph 执行观察（实例枚举、订阅、浅快照），协议契约见 `Protocol/Schema/visualbridge-runtime-bridge.schema.json`。VS Code 侧配套 `visualbridge-runtime` DAP 只检查适配器：attach 型，以单伪线程展示文档快照变量树与漂移信息，不支持断点、单步与求值。`VisualBridge.Runtime` 程序集因此现在既包含 metadata attribute，也包含无 Unity API 依赖（`noEngineReferences`）的 Runtime Bridge、Graph 执行采集与编译产物加载实现，仍可进入 Player 构建。仍未实现：独立 Player 构建的产物接线（StreamingAssets 拷贝等，已登记为遗留项）、远程/设备连接（阶段 C，项目方明确推迟）、WebSocket 传输、断点/调用栈/表达式求值（按「不以占位 Schema 伪装成已完成能力」原则未进入协议）、独立产品 CLI 与 Table XLSX 载体编译。边界与冻结决策见 [Unity Editor 接入架构](Doc/UnityIntegrationArchitecture.md) 与 [Unity 领域与 Runtime 任务清单](Doc/UnityDomainAndRuntimeRoadmap.md)。
 
 本项目是私有项目，所有 npm 包和 VSIX 均标记为 `UNLICENSED`。仓库内容不是公开分发许可证的授权。
 
@@ -13,8 +13,10 @@ VisualBridge 是一个基于 VS Code 的游戏语义内容创作平台。当前�
 - 使用共享 Authoring UI、Form Field、Reference Picker、Document Browser、Project Settings 和只读 Catalog Browser；Webview 跟随 VS Code 亮色、暗色和高对比度主题运行时更新。
 - 预览并执行 Document Copy、Path Rename、Move、Safe Delete，以及项目级稳定引用重构。
 - 通过 Project 锁、SHA-256 前置条件、阶段化写入、journal 和条件回滚保护 VS Code 与 MCP 的并发修改。
-- 通过七个稳定的 stdio MCP V2 工具读取、校验和修改同一套 Authoring 数据。
-- 在 Unity `6000.3.10f1` 中按 `ProjectSettings/VisualBridgeIntegration.json` 显式登记普通 C# Structured 类型，确定性导出 Catalog，并离线编译 Structured Document；首期 Profile V1 只关联 Unity Project 内的一个 Authoring Project。
+- 通过八个稳定的 stdio MCP V2 工具读取、校验和修改同一套 Authoring 数据；其中 `visualbridge_runtime` 是只读的 Runtime 检查入口（实例枚举、快照与文档 Source 漂移）。
+- 在 Unity `6000.3.10f1` 中按 `ProjectSettings/VisualBridgeIntegration.json` 显式登记普通 C# 类型，通过 **Tools / VisualBridge / Generate Structured Catalogs**、**Generate Entity Catalogs**、**Generate Graph Catalogs** 菜单或 `VisualBridge*CatalogBatch.Generate/.Check` batchmode 入口确定性导出三域 Catalog；首期 Profile V1 只关联 Unity Project 内的一个 Authoring Project。
+- 将 Structured、Entity、Table（CSV family）与 Graph 四类文档离线编译到 `Library/VisualBridge/Compiled`：四域均提供 Generate/Check 编译菜单与 `VisualBridge*CompilerBatch.Generate/.Check` batchmode 入口（退出码 `0`/`1`/`2`），失败不破坏上次有效产物；Table 为纯消费方，`.vbtablecatalog` 由 VS Code 侧创作，XLSX 载体编译不在 V1 范围。
+- Unity Editor 可以通过 Editor Bridge（**Tools / VisualBridge / Editor Bridge / Open in VS Code…**）请求 VS Code 打开或定位 Authoring Document；进入 Play 模式后，Runtime Bridge（**Tools / VisualBridge / Runtime Bridge / Start in Play Mode**、**Status**）提供本机实例发现、编译产物快照、产物变更事件、单控制者租约与 Source 映射（漂移由 VS Code / MCP 侧对照工作区字节计算），以及 Graph 执行观察。VS Code 侧配套 `visualbridge-runtime` DAP 只检查会话与 Graph 编辑器「执行调试」页面（实例选择、实时高亮与时间轴回放）；执行事件需由游戏侧引擎经采集门面主动上报，VisualBridge 不实现执行器，接入方式见 [Unity Graph 执行过程调试接入指南](Doc/UnityGraphExecutionDebug.md)。
 
 ## 快速开始
 
@@ -40,6 +42,12 @@ npm run test:vscode:cli
 code --install-extension .\Tools\VSCodeExtension\artifacts\visualbridge.vsix --force
 ```
 
+也可以一步完成打包并安装到本地 VS Code（依赖 `code` CLI 在 PATH 中，可用 `CODE_CLI` 环境变量指定其它可执行文件）：
+
+```powershell
+npm run install:vscode
+```
+
 打开维护中的完整样例：
 
 ```powershell
@@ -52,6 +60,7 @@ VS Code 在工作区发现名为 `VisualBridge.project.vbjson` 的文件时自�
 
 - [安装与快速开始](Doc/GettingStarted.md)：构建、VSIX 安装、隔离验证、样例、Project 发现和任意扩展名路由。
 - [Authoring 使用手册](Doc/AuthoringUserGuide.md)：四类编辑器、Document Browser、Lifecycle、Reference/Refactor、Project Settings、Catalog Browser 和冲突恢复。
+- [Unity 接入手册](Doc/UnityIntegrationManual.md)：兼容矩阵、Integration Profile、Catalog Export 与四领域 Compile 的菜单/batch 入口、Runtime Bridge、Editor Bridge 与验证门槛命令。
 - [正式文档目录](Doc/README.md)：架构、协议、MCP、Provider、事务、性能和发布设计。
 - [VS Code Extension](Tools/VSCodeExtension/README.md)：扩展清单、公开命令、View ID、Custom Editor viewType 和开发验证。
 - [Pre-Unity Authoring Sample](Samples/PreUnityAuthoring/README.md)：覆盖四类文档和可选 Project Provider V2 的维护样例。
@@ -72,7 +81,7 @@ npm run test:vscode:cli
 git diff --check
 ```
 
-Unity 开发宿主固定为 `UnityProject/ProjectSettings/ProjectVersion.txt` 记录的 `6000.3.10f1`。以下 PowerShell 命令分别执行刷新/编译、Structured/Entity Catalog Generate/Check、Structured Compile Generate/Check 与 EditMode tests；日志和结果写入临时目录，不进入产品 diff：
+Unity 开发宿主固定为 `UnityProject/ProjectSettings/ProjectVersion.txt` 记录的 `6000.3.10f1`。以下 PowerShell 命令分别执行刷新/编译、Structured/Entity/Graph Catalog Generate/Check、Structured/Entity/Table/Graph Compile Generate/Check 与 EditMode tests；日志和结果写入临时目录，不进入产品 diff：
 
 ```powershell
 $unityEditor = 'C:\Program Files\Unity 6000.3.10f1\Editor\Unity.exe'
@@ -103,6 +112,7 @@ Editor Bridge 的端到端验证在真实 Unity Editor（非 batchmode）与隔�
 ```powershell
 npm run test:bridge-e2e
 
-npm run test:runtime-e2e```
+npm run test:runtime-e2e
+```
 
-该命令同时启动两个进程（Unity 编辑器需已安装在本机，可用 `VISUALBRIDGE_UNITY_EDITOR` 覆盖路径），完成后双方各自退出并校验结果。完整边界见 [Unity Editor 接入架构](Doc/UnityIntegrationArchitecture.md)、[Unity Editor 接入任务清单](Doc/UnityIntegrationRoadmap.md) 与 [Release Quality](Doc/ReleaseQuality.md)。
+两条命令各自同时启动两个进程（Unity 编辑器需已安装在本机，可用 `VISUALBRIDGE_UNITY_EDITOR` 覆盖路径），完成后双方各自退出并校验结果。完整边界见 [Unity Editor 接入架构](Doc/UnityIntegrationArchitecture.md)、[Unity Editor 接入任务清单](Doc/UnityIntegrationRoadmap.md) 与 [Release Quality](Doc/ReleaseQuality.md)。

@@ -4,7 +4,7 @@
 
 本清单定义 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 的实施顺序。它从已经完成的 VB-PU-01 至 VB-PU-08 Authoring 基线开始，以一个 Structured、offline、Editor-only 垂直切片验证 C# contract generation、UPM Package、Catalog Export 和 Unity Import/Compile；之后才进入最小 Editor Bridge。
 
-本路线图不实现 Runtime、Debug、DAP、Player、远程连接、设备发现、Graph/Entity/Table Unity 编译或 `ScriptableObject` Authoring 包装层。Editor Bridge 不是 Structured offline slice 的前置条件，也不能承载 Export/Compile。上述后续方向已在 [`UnityDomainAndRuntimeRoadmap.md`](UnityDomainAndRuntimeRoadmap.md) 中完成下一大阶段规划（全部任务 `pending`，前置条件为本路线图 VB-UI-07 关闭）；`ScriptableObject` Authoring 包装层在该清单中被明确记录为旧设计残留，新体系不采用。
+本路线图不实现 Runtime、Debug、DAP、Player、远程连接、设备发现、Graph/Entity/Table Unity 编译或 `ScriptableObject` Authoring 包装层。Editor Bridge 不是 Structured offline slice 的前置条件，也不能承载 Export/Compile。上述后续方向已在 [`UnityDomainAndRuntimeRoadmap.md`](UnityDomainAndRuntimeRoadmap.md) 中完成下一大阶段规划（规划时全部任务 `pending`，前置条件为本路线图 VB-UI-07 关闭；该清单其后已执行——阶段 A、B、D 全部关闭，阶段 C 经项目方决策明确推迟）；`ScriptableObject` Authoring 包装层在该清单中被明确记录为旧设计残留，新体系不采用。
 
 当前进度：VB-UI-01 至 VB-UI-07 全部完成。VB-UI-06 最小 Editor Bridge 已于 2026-08-31 完成：spike 与威胁模型冻结了传输/discovery/认证设计，正式消息 Schema 进入 Protocol 并生成 TS/C# 契约，Unity 侧客户端与 VS Code 扩展宿主服务器实现并通过全部自动化门槛，真实 Unity Editor 与隔离 Extension Host 完成 open/reveal E2E。VB-UI-07 发布门槛、文档与基线已于 2026-08-31 关闭：Package README、Unity 接入手册、完整 compatibility matrix、空缓存 clean-checkout 复现与分发基线全部落地（见第 3 章验证记录）。下一大阶段（Entity/Table/Graph 离线编译、本机 Runtime 接入、远程/设备连接）见 [`UnityDomainAndRuntimeRoadmap.md`](UnityDomainAndRuntimeRoadmap.md)。这里的 `complete` 只代表各任务冻结范围，不表示 Runtime、Debug、DAP、Player 或其他三个领域已实现。
 

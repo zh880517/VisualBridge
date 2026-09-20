@@ -2,7 +2,7 @@
 
 ## 1. 使用前提
 
-本手册说明 Unity 接入前版本的人工编辑闭环。开始前应已按 [安装与快速开始](GettingStarted.md) 安装 VSIX，并打开一个包含有效 `VisualBridge.project.vbjson`、Document Type 和 Catalog 的本地工作区。仓库维护样例位于 [`Samples/PreUnityAuthoring`](../Samples/PreUnityAuthoring/README.md)。
+本手册说明本地 Authoring 的人工编辑闭环；其中只有 §4 的 Graph 执行调试需要 Unity 编辑器处于 **Play 模式**，前置条件在该节列出。§11 提到的受管 Structured Catalog 重新生成只需要 Unity 编辑器的菜单或 batch 入口，不需要 Play 模式。开始前应已按 [安装与快速开始](GettingStarted.md) 安装 VSIX，并打开一个包含有效 `VisualBridge.project.vbjson`、Document Type 和 Catalog 的本地工作区。仓库维护样例位于 [`Samples/PreUnityAuthoring`](../Samples/PreUnityAuthoring/README.md)。
 
 Graph、Entity 和 Structured Config 是文本 Document，通过 `WorkspaceEdit` 参与 VS Code Undo/Redo 与普通保存；Table 使用 Custom Document 和正式 Codec 读写 CSV family 或整个 XLSX Workbook。Webview 只是权威源文件的视图，所有持久修改都必须先转换为领域 Operation、完整校验，再由宿主持久化。
 
@@ -30,6 +30,24 @@ flowchart LR
 - 文本编辑器使用普通 **Save**、**Undo** 和 **Redo**。不要同时在 Text Editor、其他 VS Code 窗口或外部工具中修改同一文件。
 - Table 编辑器使用 VS Code Custom Editor 的 Save/Undo/Redo。CSV family 的多个物理分表和 XLSX 的整个 Workbook 是一个逻辑保存单元。
 - Lifecycle 和 Reference Refactor 会跨物理来源提交；执行前必须保存或还原当前 Project 中所有未保存的 VisualBridge 文本和 Table 编辑器。Lifecycle 允许 Table 保持已打开且干净。普通 Documents / Reference 入口发起的 Reference Refactor 要求关闭该 Project 的全部 Table 编辑器；只有直接从当前干净的目标 Table 编辑器发起行 Key Rename 时，才允许该目标 Table 保持打开，其他 Table 编辑器仍须关闭。
+
+### 未保存文档视图
+
+Activity Bar 的 **VisualBridge / Unsaved Documents** 常驻列出工作区内全部已编辑但尚未保存的 VisualBridge 内容，视图标题实时显示条数。它是满足上一条“保存或还原”前置约束的操作入口：判定范围与 Lifecycle 的干净闸门同口径（按工作区内全部 Project 汇总），并覆盖 Reference Refactor 的脏编辑器闸门——后者只检查领域文档与 Table 编辑器，不含 Project 元数据与 Catalog，因此视图比 Refactor 闸门更宽。视图列出三类条目：
+
+- Project Registry 能解析到 Document Type 的已置脏文本文档，条目说明中显示所属 Project 与 Document Type；
+- Project 元数据与 Catalog 文件（`VisualBridge.project.vbjson` 以及 Document Type 声明的 Catalog）；
+- 已置脏的 Table 自定义编辑器（CSV family 与 XLSX）。
+
+点击条目直接进入对应的 VisualBridge 编辑器：语义文档走可选文档编辑器并按 Project Registry 路由到已注册稳定 ID 的领域会话（未注册 ID 仍是通用只读 Shell），Table 走表格编辑器，`VisualBridge.project.vbjson` 进入 Project Settings，Catalog 以文本打开。该路由由视图显式指定 Custom Editor，不依赖扩展名关联，因此项目自定义后缀与 `.csv` / `.xlsx` 同样落到领域编辑器；需要以纯文本查看 Table 载体时另用 **Open With...**（三种打开入口见 [安装与快速开始](GettingStarted.md) 第 6 节）。没有条目时视图显示“没有未保存的 VisualBridge 文档”。视图标题栏提供三个按钮：
+
+- **Save All Unsaved Documents**：逐个保存文本编辑器和 Table 自定义编辑器，完成后提示已保存数量。
+- **Discard All Unsaved Changes**：先弹出模态确认，选择“放弃改动”后丢弃全部尚未保存的编辑内容并以磁盘字节重建基线（文本走 VS Code 原生 Revert，Table 走 Custom Editor 的 Revert），完成后提示已放弃数量。
+- **Refresh Unsaved Documents**：手动刷新。文本编辑、保存、打开/关闭文档、Project 变化和 Table 编辑器状态变化都会自动触发刷新。
+
+也可以从命令面板运行 **VisualBridge: Show Unsaved Documents** 聚焦该视图；元素 Safe Delete 因 `lifecycle.workspaceDirty` 被拒绝时，警告弹窗中的“管理未保存的文档”按钮会直接打开它。
+
+该视图只反映“未保存”，不反映“已打开但干净”的 Table 编辑器。Reference Refactor 要求关闭 Project 内全部 Table 编辑器时，仍须按上一条与 §10 第 4 步手动关闭。视图行为与四棵 Tree View 的完整定义见 [VS Code Host](VSCodeHost.md)。
 
 ### 外部修改冲突
 
@@ -69,8 +87,31 @@ Table 不提供静默覆盖。任一 CSV 分表或 XLSX Workbook 自打开后被
 6. 右键节点选择安全替换。只有不会丢失属性或连线的候选可提交；单连接端口的受控替换会在同一 Operation 批次中先移除旧边再添加新边。
 7. 多选普通原子节点后可 Copy、Paste 或 Duplicate；只复制两端都在选择集内的边，并为粘贴内容生成新 ID。当前 clipboard 不包含受 Graph Type 最小实例数约束的 singleton node 或 embedded subgraph。
 8. 删除节点、接口或动态端口走 Safe Delete；存在外部入站引用、Reference coverage 不完整或 Graph Type 数量约束不满足时会拒绝。
+9. 需要整理画布时使用顶部工具栏的 **自动布局**：在 Webview 内从左到右做确定性分层布局，连向输入接口的节点落在首列，连向输出接口的节点抬升到下游闭包之外的边界列，完全无边的节点收进末尾独立列，坐标吸附 10px 网格。布局使用 React Flow 渲染后的节点实测尺寸，因此高节点不会重叠，同一输入总产生同一结果。位置本已正确的节点不产生 Operation，全部一致时只提示“当前图已处于自动布局位置。”；提交落地后画布缩放适配全图。
+
+自动布局只改位置、不改语义：结果作为一批 `graph.moveNode` Operation 经单个 `WorkspaceEdit` 提交，即一次 Undo/Redo 单元。输出接口节点仍由画布按最大横坐标自动跟随；固定在画布左侧的输入接口桩不参与排版，布局主区会让出它的实测宽度。它是纯编辑器能力，没有对应的语义 Operation，也不暴露给 MCP（宿主侧拿不到渲染后的实测尺寸）。
 
 Reference 字段的选择按钮调用共享 Reference Picker，跳转按钮定位目标。`graph.element` 跳转会进入所属 Graph、选择并居中节点，并临时高亮接口或动态端口。Graph Type 一经分配不能在当前版本任意迁移。详细语义见 [Graph Semantic Model](GraphSemanticModel.md) 和 [VS Code Graph Editor](VSCodeGraphEditor.md)。
+
+### 执行调试
+
+顶部工具栏的 **执行调试** 按钮在 Graph 编辑器页内打开调试面板，用于观察当前这张图在游戏运行时的执行过程。它只观察、不干预：**不提供断点、单步或表达式求值**，因为 `VisualBridge.Runtime` 是数据运行时而不是执行引擎，节点调度与求值都发生在游戏侧引擎。
+
+前置条件：
+
+- Unity 编辑器处于 Play 模式。进入 Play 模式时 Runtime Bridge 服务自动启动，退出时停止并删除发现记录；**Tools / VisualBridge / Runtime Bridge / Status** 可查看当前状态。面板顶部的运行时状态只在点击 **刷新** 之后才回填，刚打开面板时恒为“未发现运行时实例”，不能据此判断 Unity 是否在运行；刷新后仍显示该文案，才说明确实没有发现 Runtime Bridge 实例。与之相对，列表区的“当前图暂无执行实例”说的是这张图还没有执行实例。
+- 游戏侧引擎已按 [Unity Graph 执行过程调试接入指南](UnityGraphExecutionDebug.md) 接好采集门面 `VisualBridgeGraphExecutionCapture` 并上报执行事件。
+- 游戏侧上报的节点参数必须是 VisualBridge 文档的**稳定节点 ID**（由游戏侧导入器从图编译产物带入运行时 UID 表）。使用节点列表下标等重排后会漂移的临时 ID 时，页面无法点亮对应节点。
+
+使用步骤：
+
+1. 点击 **执行调试** 打开面板，再点击 **刷新** 拉取执行实例列表。列表按当前打开文档的 `documentId` 过滤，只服务这一张图；每行显示 `debugKey`（游戏侧执行者标识，例如角色）、运行状态、当前节点和帧号。
+2. 对处于 `running` 状态的实例点击 **跟踪** 订阅。一次只跟踪一个执行实例，事件按实例分流，不会聚合混显。
+3. 实时态下画布持续高亮当前执行节点，刚经过的边短暂流光，数据边旁显示最近一次值变化的结果；时间轴默认跟随最新事件。
+4. 拖动时间轴或使用 **上一帧 / 上一事件 / 下一事件 / 下一帧** 进入回放态，按事件级或帧级步进（同帧事件保持原始到达顺序）；**回到实时** 恢复跟随。事件记录由扩展宿主在本会话内存中留存，不落盘。
+5. 实例停止时面板标记“实例已停止”，时间轴停在记录末尾，并可直接从列表切换到新实例。点击 **停止调试** 或关闭 Graph 编辑器页面即退订，Unity 侧采集随之停止，记录随会话丢弃。
+
+执行观察是观察者语义，不占用 Runtime 的单控制者租约，因此可以与 `visualbridge-runtime` 检查会话和 MCP 的 `visualbridge_runtime` 工具并行使用，互不影响。设计语义冻结在 [Unity Editor 接入架构](UnityIntegrationArchitecture.md) 第 19 章（§19.5 为页面交互），Runtime Bridge 的发现、能力与租约见 [Unity 接入手册](UnityIntegrationManual.md)，页内交互与自动布局的编辑器边界见 [VS Code Graph Editor](VSCodeGraphEditor.md)。
 
 ## 5. Entity V1
 

@@ -13,7 +13,7 @@
 - 平台仓库的现状和游戏工程的建议目录结构。
 - 分阶段开发路径。
 
-本文不约束具体游戏项目。当前已实现的 JSON Schema、协议、编辑器和 Host 行为以 `Protocol/Schema`、源码及对应正式文档为准；Unity Bridge、Runtime、Debug 等尚未落地的边界继续在实施阶段单独设计，不能用本文的概念图臆造字段。
+本文不约束具体游戏项目。当前已实现的 JSON Schema、协议、编辑器和 Host 行为以 `Protocol/Schema`、源码及对应正式文档为准；Editor Bridge 与 Runtime Bridge 的字段以 `visualbridge-editor-bridge.schema.json` 与 `visualbridge-runtime-bridge.schema.json` 为权威，本文的概念图不得被用来臆造字段。仍待设计的边界（Unity Player 产物接线、远程/设备连接）继续在各自实施阶段单独冻结。
 
 ## 产品定位
 
@@ -28,7 +28,7 @@
 - 表格型配置。
 - 跨文档和游戏数据引用。
 - 批量查找、校验、重构和格式迁移。
-- 节点、状态和流程级调试（未来 Unity/Debug 阶段）。
+- 节点与流程级的执行过程观察（只观察、不做断点；断点式调试不迁移）。
 - AI 读取、生成和修改游戏内容。
 
 继续保留在 Unity 的工作：
@@ -51,8 +51,8 @@
 - C#、游戏配置或外部数据能够生成编辑器所需的 Catalog 和引用描述。
 - 项目业务扩展不需要修改基础插件。
 - VS Code 和 MCP 使用同一套核心编辑与校验能力。
-- 未来 Unity Editor 和 Player 接入时使用同一份经过独立设计的上层调试契约。
-- 未来多个 VS Code 窗口、AI Agent 和 Unity 实例接入时能够明确路由和协调。
+- Unity Editor 已通过独立设计的上层检查契约接入（Editor Bridge + Runtime Bridge）；Player 接入时继续沿用同一契约，不另建第二套语义。
+- 多个 VS Code 窗口、AI Agent 和 Unity 实例接入时能够明确路由和协调：不使用全局“当前 Unity”，实例按发现记录显式选择，写入受单控制者租约约束。
 - 平台先通过少量垂直切片验证，再逐步扩展文档类型。
 
 ### 非目标
@@ -62,7 +62,7 @@
 - 当前 Authoring 基线不提供任意业务代码的安全沙箱。
 - 当前 Authoring 基线不替代 Unity 的场景和资源编辑器。
 - 当前 Authoring 基线不建立中心化云服务。
-- 本文不重复各领域正式文档已经冻结的字段，也不预先冻结尚未实现的 Unity/Debug 格式和兼容策略。
+- 本文不重复各领域正式文档已经冻结的字段。Editor Bridge 与 Runtime Bridge 的消息、发现记录与错误码已由各自 Schema 和 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 冻结；仍待设计的远程/设备传输与 Player 产物接线不在本文预先冻结。
 
 ## 核心原则
 
@@ -99,7 +99,7 @@ Catalog 可以由 Unity C#、外部配置或项目扩展生成。Document 不复
 
 ### 平台机制与业务语义分离
 
-当前基础插件提供工程发现、文档编辑、Catalog、引用、诊断、事务和 MCP Authoring 机制。技能、道具、战斗节点、任务规则等业务语义由 Catalog 和已授权 Project Provider 提供；Unity 通信和调试机制尚未实现。
+当前基础插件提供工程发现、文档编辑、Catalog、引用、诊断、事务和 MCP Authoring 机制。技能、道具、战斗节点、任务规则等业务语义由 Catalog 和已授权 Project Provider 提供；与 Unity 的通信由本机回环的 Editor Bridge（Unity 请求 VS Code 打开/定位文档）与 Runtime Bridge（实例发现、文档快照、Source 映射、Graph 执行观察）承担，调试语义限于只读检查，不做断点。
 
 ### 声明优先，代码扩展兜底
 
@@ -125,8 +125,9 @@ flowchart TB
     NodeHost["Tools/NodeHost\nProject Transaction"]
     VSCode["Tools/VSCodeExtension\nhuman authoring"]
     MCP["Tools/VisualBridgeMcp\nAI authoring"]
-    UnityOffline["Unity Package\nStructured offline export / compile"]
-    Future["Future Editor Bridge\nRuntime / Debug / Player"]
+    UnityOffline["Unity Package\nStructured / Entity / Graph / Table offline export and compile"]
+    Bridge["Editor Bridge / Runtime Bridge\nloopback discovery, snapshot, lease, graph execution"]
+    Future["Future Player build wiring\nremote / device connection"]
 
     Sources --> Core
     Catalogs --> Core
@@ -143,10 +144,13 @@ flowchart TB
     NodeHost --> Sources
     Catalogs --> UnityOffline
     Sources --> UnityOffline
-    UnityOffline -. future connection .-> Future
+    VSCode --> Bridge
+    MCP --> Bridge
+    UnityOffline --> Bridge
+    Bridge -. future connection .-> Future
 ```
 
-当前实线部分已经在单仓库中落地。Unity Package 已消费同源生成的 C# wire/data bags，并通过 strict `JObject` validator 完成 Profile、Project、Structured Catalog/Document 的离线 Export/Compile；虚线仍表示尚未实现的 Editor Bridge、Runtime、Debug、DAP 与 Player 边界。
+当前实线部分已经在单仓库中落地。Unity Package 已消费同源生成的 C# wire/data bags，并通过 strict `JObject` validator 完成 Profile、Project、Structured / Entity / Graph 三域 Catalog Export 与 Structured / Entity / Graph / Table 四域离线 Compile；Editor Bridge（Unity 请求 VS Code 打开/定位文档）与本机 Runtime Bridge（实例发现、文档快照、调试租约、Source 映射、Graph 执行观察）也已落地，两条通道都不跨网络边界（Runtime Bridge 只监听 `127.0.0.1`，Editor Bridge 的 TCP 端点同样只绑定 `127.0.0.1`、并以 Windows 命名管道为回退）。虚线仍表示尚未实现的边界：Unity Player 构建的产物接线与远程/设备连接（含 WebSocket）。各项冻结决策与实施记录见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 与 [`UnityDomainAndRuntimeRoadmap.md`](UnityDomainAndRuntimeRoadmap.md)。
 
 ## Authoring Project
 
@@ -186,7 +190,7 @@ AuthoringRoot/
 - `Logic`、`Entities`、`Config` 和 `Tables`：示例中的 Authoring 源目录；实际名称和后缀完全由 `documentRoots` 与 `include` / `exclude` 决定。
 - `Providers`：可选的已构建 Project Provider V2 `.mjs` 入口；只有 Project 声明且宿主授权后运行。
 
-维护中的通用 Authoring 结构见 [`Samples/PreUnityAuthoring`](../Samples/PreUnityAuthoring/README.md)；Unity 固定样例位于 `UnityProject/VisualBridgeAuthoring`。当前 Structured Compiler 只在 `UnityProject/Library/VisualBridge/Compiled` 创建可删除派生数据，不创建 `.visualbridge/generated`、`.visualbridge/cache` 或 `Library/VisualBridge/Discovery`；Bridge discovery 位置仍未设计。
+维护中的通用 Authoring 结构见 [`Samples/PreUnityAuthoring`](../Samples/PreUnityAuthoring/README.md)；Unity 固定样例位于 `UnityProject/VisualBridgeAuthoring`。四域 Compiler 只在 `UnityProject/Library/VisualBridge/Compiled` 创建可删除派生数据，不创建 `.visualbridge/generated`、`.visualbridge/cache` 或 `Library/VisualBridge/Discovery`。Bridge discovery 记录不写入 Authoring Project，而是各自写入系统临时目录：Editor Bridge 用 `visualbridge-bridge/<windowId>.json`（VS Code 侧按窗口发布），Runtime Bridge 用 `visualbridge-runtime/*.json`（Unity 实例自写）。
 
 ### VisualBridge Project File 职责
 
@@ -255,7 +259,7 @@ DocumentType
 └─ Lifecycle Adapter / Stable ID Remap / Delete Closure
 ```
 
-当前 Unity Structured Exporter/Compiler 不属于 VS Code Document Type Adapter 注册契约；它们依据冻结的 Profile、Project、Catalog/Document 与显式 C# metadata 独立运行。Debug Mapping 仍未设计。
+当前 Unity Exporter/Compiler 不属于 VS Code Document Type Adapter 注册契约；它们依据冻结的 Profile、Project、Catalog/Document 与显式 C# metadata 独立运行。Unity 侧也不提供 Authoring 到 Unity 资产的 Debug Mapping 注册面：Runtime Bridge 的文档级 Source 映射（`getDocumentSources` 返回 `sourcePath` 与 `sourceSha256`）是唯一落地的映射契约，漂移由 VS Code / MCP 侧对照工作区字节计算。
 
 当前平台支持：
 
@@ -484,10 +488,10 @@ Unity 实例发现/连接和 Debug Adapter/DAP 属于后续 Unity/Debug 阶段�
 
 ### 插件生命周期
 
-- 基础插件是一个 N 合一 VS Code 扩展，当前内部功能模块包括 Document Browser、Graph、Entity、Table/Excel、Structured Config、Project Settings 和 Catalog Browser；Debug 与 Unity Connection 尚未实现。
+- 基础插件是一个 N 合一 VS Code 扩展，当前内部功能模块包括 Document Browser、Graph、Entity、Table/Excel、Structured Config、Project Settings、Catalog Browser、Unsaved Documents、Editor Bridge Server、Runtime Bridge 客户端与 `visualbridge-runtime` 只读检查调试适配器；断点式 Debug 不实现。
 - 插件实例按 VS Code Extension Host/窗口创建。
 - 一个插件实例只有一个 Project Registry、Workspace Index、Reference Service 和 Provider Service。
-- 一个窗口可以持有多个 ProjectContext；未来 UnityConnection 的数量和所有权尚未设计。
+- 一个窗口可以持有多个 ProjectContext；Unity 连接不设全局“当前实例”：Editor Bridge 按窗口发布发现记录并由 Unity 侧显式选择目标窗口，Runtime Bridge 实例由调用方显式指定 `instanceId`，写入受单控制者租约约束。
 - 每个打开文档创建独立 EditorSession/WebviewPanel。
 - 关闭 Webview 不终止其他文档或 Project 服务。
 - 不使用全局 `currentProject`、`currentUnity` 或 `currentDocument`。
@@ -551,7 +555,7 @@ Custom Editor resolver 只负责建立 DocumentSession、设置 HTML 与注册�
 
 多编辑器场景中的定位请求只归属一个面板，并以逻辑文档级 generation 保证“最新请求获胜”；新请求必须取消同一文档所有面板和文档队列中的旧请求。承载当前 generation 的面板在确认前关闭时，请求必须立即交给同一文档的其他已就绪面板，或回到文档级等待队列；任一面板 ACK 释放 mailbox 后还要重试等待中的接管。
 
-## Unity 集成与后续 Bridge 边界
+## Unity 集成与 Bridge 边界
 
 ### 定位
 
@@ -563,13 +567,13 @@ Custom Editor resolver 只负责建立 DocumentSession、设置 HTML 与注册�
 - Editor Compiler 严格读取 Project、Catalog 与 Document，按 `documentRoots`/`include`/`exclude` 和 Document Type ID 唯一路由，在 `Library/VisualBridge/Compiled` 生成可重建 artifact、source mapping 与 managed manifest；
 - 菜单、Unity batchmode Generate/Check 与 EditMode tests 复用同一 Export/Compile 服务，VS Code 和 Bridge 均不是前置。
 
-Graph Catalog V4、Entity 与 Table 的 Unity Export/Compile 仍未实现。后续 Graph Exporter 必须把稳定 `catalogId`/显示根 `title`、Graph/Node Type 的显式全局无歧义 ID、节点 Catalog 归属、Graph 用途、`supportedCatalogIds`、`portConnectionRules`、允许节点 selector、实例数量约束、初始节点以及 typed subgraph 目标类型写入确定性 Catalog；C# 全名只作为 `source` 追踪信息，不能充当持久身份。后续 Entity Catalog Exporter 只扫描正式项目中使用的普通 class / struct，不引入 `ScriptableObject` 包装层，并将数值、颜色、List 和普通自定义结构递归映射到全项目共享字段模型。
+Graph Catalog V4 与 Entity Catalog V1 的 Unity Export、以及 Structured / Entity / Table / Graph 四域的离线 Compile 均已落地。Graph Exporter 把稳定 `catalogId`/显示根 `title`、Graph/Node Type 的显式全局无歧义 ID、节点 Catalog 归属、Graph 用途、`supportedCatalogIds`、`portConnectionRules`、允许节点 selector、实例数量约束、初始节点以及 typed subgraph 目标类型写入确定性 Catalog；C# 全名只作为 `source` 追踪信息，不能充当持久身份。Entity Catalog Exporter 只扫描正式项目中使用的普通 class / struct，不引入 `ScriptableObject` 包装层，并将数值、颜色、List 和普通自定义结构递归映射到全项目共享字段模型。Table 是纯消费方：`.vbtablecatalog` 由 VS Code 侧创作并提交，Unity 侧只校验并编译 CSV family（XLSX 载体编译不在 V1 范围）。
 
-是否采用 Unity Adapter 注册 Catalog Generator、Importer、Compiler 或 Debug Mapping 仍待真实 Unity 垂直切片决定；当前 Authoring 协议只冻结 Catalog/Document 输入输出和稳定身份约束，不冻结 Unity 内部注册 API。
+已冻结的决策是**不建立公开 Unity Adapter API**（不注册 Catalog Generator、Importer、Compiler 或 Debug Mapping），维持 per-domain batch 服务加 internal 共享层；Authoring 协议只冻结 Catalog/Document 输入输出和稳定身份约束，不冻结 Unity 内部注册 API。决策依据与重开条件见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) §13.3。
 
 ### 编译边界
 
-VisualBridge Authoring Host 不直接加载 Unity 程序集，Unity Package 也不加载 VS Code 插件代码。当前双方冻结并落地的离线交接面是 Profile、Catalog、Authoring Document、Schema 与稳定 ID；Editor Bridge 通信协议仍未设计。
+VisualBridge Authoring Host 不直接加载 Unity 程序集，Unity Package 也不加载 VS Code 插件代码。双方冻结并落地的交接面有两条：离线交接面（Profile、Catalog、Authoring Document、Schema 与稳定 ID），以及本机回环 Bridge 交接面（Editor Bridge 与 Runtime Bridge 的消息 Schema、发现记录、token 认证与调试租约）。跨网络传输与 Player 产物接线仍未冻结。
 
 ```text
 Current Authoring Host
@@ -581,8 +585,11 @@ Current Unity Package
 Frozen offline handoff today
   -> Profile / Catalog / Document / Schema / stable IDs
 
+Frozen loopback bridge handoff today
+  -> Editor Bridge / Runtime Bridge message schema, discovery record, token, lease
+
 Not frozen today
-  -> Editor Bridge discovery / transport / runtime / debug protocol
+  -> remote / device transport, Player build artifact wiring
 ```
 
 ## Extension System
@@ -690,35 +697,39 @@ MCP 提供少量稳定的项目级能力：
 - 预览并执行 Document 创建、复制、移动和安全删除。
 - 只读检查本机 Unity Runtime 实例（发现记录、运行时快照、Source 映射与漂移）。
 
-后续 Unity/Debug 阶段可以在独立协议冻结后增加 Runtime Attach、断点、执行控制、调用栈和变量；当前 `Tools/VisualBridgeMcp` 已通过 `visualbridge_runtime` 提供只读 Runtime 检查，其余执行语义仍不是 Unity 接入前路线图的完成条件。
+断点、执行控制、调用栈与变量求值经项目方裁定**不进入协议**（只观察、不做断点）；Graph 执行过程观察已按第 19 章冻结并落地。当前 `Tools/VisualBridgeMcp` 通过 `visualbridge_runtime` 提供只读 Runtime 检查，其余执行语义归游戏侧执行引擎，不是本仓库的完成条件。
 
 不为每个节点或属性操作创建大量顶层 Tool。领域差异通过 Document Operation Schema 表达。
 
 当前统一 V2 工具面固定为 `visualbridge_project`、`visualbridge_catalog`、`visualbridge_document`、`visualbridge_apply_operations`、`visualbridge_document_lifecycle`、`visualbridge_references`、`visualbridge_refactor_reference` 和只读检查本机 Unity Runtime 实例的 `visualbridge_runtime`（消费 Runtime Bridge 契约，每次调用独立连接并在断开时释放调试租约）。Graph、Entity、Structured 与 Table 共用同一 Project selector 和 Adapter 路由。写入必须携带读取时得到的 SHA-256 `baseHash`；所有 MCP 写入共用 Project Transaction 锁、阶段化临时来源、持久化复验与可恢复事务日志。冲突、无效事务和不确定故障使用不同的结构化状态，冲突不会自动重试或覆盖。外部非 VisualBridge 写入不参与协作锁，因此提交仍会在替换前和替换后检查 Hash；若恢复时发现未知外部字节，会保留这些字节并升级为 Tool Error。
 
-## 后续 Unity 连接与 Debug 设计入口
+## Unity 连接与 Debug 边界
 
-当前仓库没有 Unity 实例发现、连接、Runtime Attach、Debug Session、DAP 或 MCP Debug Tool；本节只记录进入后续设计时必须回答的问题，不定义路径、字段、传输或状态机。
+本机回环的 Unity 连接与只读检查已落地并冻结：Editor Bridge（Unity 请求 VS Code 打开/定位文档）与 Runtime Bridge（实例发现、文档快照、Source 映射、调试租约、Graph 执行观察）。字段、错误码与状态机以 `Protocol/Schema/visualbridge-editor-bridge.schema.json`、`visualbridge-runtime-bridge.schema.json` 与 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 12、17、18、19 章为权威，本文不重复定义。
 
-### 实例发现与通信待决项
+### 实例发现与通信：已冻结的答复
 
-- Project、Unity Editor 与 Player 实例如何建立可信关联，以及发现信息保存在哪里；
-- 本机与远程场景分别使用何种传输、认证、配对、版本协商和重连策略；
-- Domain Reload、进程重启和多窗口/多 AI Client 下如何区分实例代际与陈旧消息；
-- 多 Project、多 Runtime 的路由是否需要显式会话选择，以及如何避免全局“当前 Unity”；
-- 安全边界、端点暴露、凭据生命周期、审计和错误恢复如何验证。
+- 发现记录不写入 Authoring Project，而是写入系统临时目录：Editor Bridge 为 `visualbridge-bridge/<windowId>.json`（VS Code 侧按窗口发布并心跳），Runtime Bridge 为 `visualbridge-runtime/*.json`（Unity 实例自写）。
+- 本机传输只监听 `127.0.0.1`，消息为 NDJSON 行分帧，首条消息完成 token 握手，并以 `formatVersion` / `coreVersion` 显式协商。
+- Domain Reload、进程重启与陈旧消息由磁盘持久 generation 加心跳/pid 双信号陈旧判定处理，陈旧记录绝不连接。
+- 不设全局“当前 Unity”：Editor Bridge 要求显式选择目标窗口（多窗口匹配报 `bridge.windowAmbiguous`），Runtime 实例由调用方显式指定 `instanceId`。
+- 两侧各使用封闭的错误码枚举（wire 层 `bridge.*` 与 `runtime.*`），写入受单控制者租约约束。
 
-Project Discovery File、Loopback/network WebSocket 只是可能的技术选项，不是本架构基线的已定协议。选型必须由单独设计、威胁模型和真实 Unity 垂直切片验证后，才能进入 Protocol Schema。
+### 仍待决项
 
-### Debug 待决项
+- 远程与设备连接（阶段 C，项目方 2026-08-31 明确推迟）：跨网络传输、配对、凭据生命周期、审计与端点暴露策略。
+- Unity Player 构建的产物接线（StreamingAssets 等）。
+- Project Discovery File、Loopback/network WebSocket 仍只是可能的技术选项，不是本架构基线的已定协议；进入 Protocol Schema 前必须由单独设计与威胁模型验证。
 
-- Source Document 元素如何与特定运行版本和 Runtime Instance 建立稳定、可校验的映射；
-- VS Code DAP、AI/MCP 与 Unity Bridge 是否共享调试服务，以及各自的权限和生命周期；
-- 多客户端读写权限采用单控制者、租约或其他模型时，如何处理抢占、断线和恢复；
-- 断点、调用栈、变量、事件等待、分页和 Trace 需要哪些最小消息与上限；
-- Source/Catalog 漂移如何显示并阻止把新 Authoring 身份错误映射到旧 Runtime。
+### Debug 边界：已冻结的答复
 
-无论后续选择什么方案，会话状态都不能写回 Authoring 源文档，文件名、数组索引或对象地址也不能在没有正式身份契约时被当作稳定跨进程标识。具体 ID、Hash、sequence、cursor、Controller/Observer 和重新加载流程均尚未冻结。
+- Source Document 与 Runtime Instance 的映射由 `getDocumentSources` 承担，返回 `documentTypeId`、`documentId`、`sourcePath` 与 `sourceSha256`；漂移由 VS Code / MCP 侧对照工作区当前字节计算，结果为 `true` / `false` / `unknown`。
+- VS Code DAP、AI/MCP 与 Unity Bridge 共享同一 Runtime Bridge 契约与观察者语义：DAP 侧是只读检查适配器（单伪线程、文档快照变量树与漂移信息），MCP 侧每次调用独立连接并在断开时释放调试租约。
+- 多客户端权限采用单控制者租约；`getSnapshot` 与 Graph 执行观察不受租约约束。
+- 断点、调用栈、变量求值与执行控制经项目方裁定不进入协议：能力声明如实为空，不伪造执行状态。
+- 执行过程可视化：游戏侧执行引擎经采集门面上报事件，按“满 64 条或 100ms”冲刷，VS Code Graph 页面提供实时跟踪与时间轴回放。
+
+无论后续选择什么方案，会话状态都不能写回 Authoring 源文档，文件名、数组索引或对象地址也不能在没有正式身份契约时被当作稳定跨进程标识。
 
 ## 平台仓库结构
 
@@ -743,6 +754,7 @@ VisualBridge/
 │  ├─ Edit/
 │  ├─ Extension/
 │  ├─ Form/
+│  ├─ Ordering/
 │  ├─ Project/
 │  ├─ Provider/
 │  └─ Reference/
@@ -870,7 +882,7 @@ Provider 运行构建后的 `.mjs`，使用 Host 当前 Node 可执行文件；�
 
 ### Unity Domain Reload
 
-Domain Reload 会使未来 Unity 连接和运行时身份失效，因此后续协议必须显式处理断开、实例代际与状态重建；具体重连、退避和重新握手策略尚未冻结。
+Domain Reload 会使 Unity 连接和运行时身份失效。Runtime Bridge 已按此设计：磁盘持久 generation 加心跳/pid 双信号陈旧判定识别代际，mid-play domain reload 的监听失效窗口由 Editor 侧 Play 模式宿主兜底重建，陈旧记录绝不连接。远程/设备场景的重连、退避和重新握手策略仍未冻结（阶段 C 已推迟）。
 
 ### 大型工程性能
 
@@ -917,11 +929,11 @@ Graph V3、Graph Catalog V4、Entity/Structured/Table V1、Project V1、Project 
 
 - Protocol、C# 生成物、Unity Package 与 Compiler/Bridge 的完整发布兼容矩阵；当前生成闭包、Schema Hash 与 Package `0.1.0` 基线已由 Protocol gate 固定。
 - 新类型的稳定 ID 生成、alias 迁移与旧数据导入策略；当前内置类型的稳定 ID/alias 规则保持由各领域文档定义。
-- Structured Config 已完成首个 Unity offline Import/Compile；其当前派生产物仍是 Editor 内部格式。Table 以及 Graph/Entity 进入 Unity 后的跨语言冻结仍待各自垂直切片，当前 JSON/CSV/XLSX Authoring 格式保持有效。
-- 未来 Unity/DAP 协议的错误码、诊断位置和生成契约；当前 Provider JSON-RPC V2、MCP V2 Operation 与错误信封已经固定。
+- Structured、Entity、Graph 与 Table 四域的 Unity offline Export/Compile 均已完成；派生产物仍是 Editor 内部格式（版本化但不公开），当前 JSON/CSV/XLSX Authoring 格式保持有效。
+- 跨网络（远程/设备）传输的错误码、诊断位置与生成契约；当前 Provider JSON-RPC V2、MCP V2 Operation、Editor Bridge 与 Runtime Bridge 的错误信封已经固定。
 - 可选 Provider SDK 的发布形态；当前 Provider 直接面向 [`ProjectProvider.md`](ProjectProvider.md) 与 JSON Schema，入口/Node/依赖策略已经固定。
 - 面向项目自定义 Webview 的公开 UI SDK、组件模型、隔离和热重载方式；内置编辑器私有共享 UI 已由 [`AuthoringEditorUi.md`](AuthoringEditorUi.md) 固定。
-- Unity Catalog Generator、Importer 和 Compiler API。
+- 公开 Unity Adapter 注册 API（Catalog Generator、Importer、Compiler、Debug Mapping）：已裁定不建立（决策 B，维持 per-domain batch 服务加 internal 共享层），重开条件见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) §13.3。
 - WebSocket 消息、认证、配对和安全策略。
 - 多客户端控制、断线恢复和调试事件缓存策略。
 - Player 设备发现方式。

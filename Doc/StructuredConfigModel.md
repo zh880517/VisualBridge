@@ -4,7 +4,7 @@
 
 Structured Config 用于编辑一个普通 C# class 或 struct 对应的单根配置对象。它替代以 `ScriptableObject` 作为配置编辑载体的工作流，但不要求游戏运行时类型继承框架基类，也不把 Unity 序列化结构写入 Authoring 文件。
 
-V1 已落地严格的 Catalog/Registry、Project 类型绑定、共享字段校验、`structured.setField` 原子操作、VS Code 编辑器和 stdio MCP。Unity Package 现已从 Profile 显式登记的普通 C# class / struct 确定性导出同一 Catalog V1，并以只读 Authoring consumer 生成 Editor 派生物与 source mapping。当前仍不实现 Editor Bridge、Runtime、Debug、Player 或 `ScriptableObject` 兼容。
+V1 已落地严格的 Catalog/Registry、Project 类型绑定、共享字段校验、`structured.setField` 原子操作、VS Code 编辑器和 stdio MCP。Unity Package 现已从 Profile 显式登记的普通 C# class / struct 确定性导出同一 Catalog V1，并以只读 Authoring consumer 生成 Editor 派生物与 source mapping。最小 Editor Bridge（Unity 请求 VS Code 打开/定位文档）与本机 Runtime 检查链路（Runtime Bridge 协议、`visualbridge-runtime` DAP 只读检查适配器、MCP `visualbridge_runtime` 工具）也已落地；Unity Player 产物接线与任何 `ScriptableObject` 兼容层仍不实现。
 
 Structured Catalog 顶层使用全平台 Catalog `source` 契约声明来源未知、当前或过期状态；Host 计算只读内容 Hash，完整规则见 [`ProjectCatalogManagement.md`](ProjectCatalogManagement.md)。
 

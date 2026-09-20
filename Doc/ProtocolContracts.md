@@ -2,9 +2,9 @@
 
 ## 1. 定位与范围
 
-本文冻结公开 Authoring 协议、首个 Unity Structured offline slice 使用的 Integration Profile 契约，以及最小 Editor Bridge V1 的本机消息与 discovery 契约。`Protocol/Schema` 中的 16 份 JSON Schema 是跨进程、跨语言传输结构的单一事实来源；`Protocol/contract-manifest.json` 是版本、C# 生成闭包、Hash 域、游标上限、状态和错误码的机器可检查登记表。
+本文冻结公开 Authoring 协议、Unity 四领域 offline Export/Compile 使用的 Integration Profile 契约、最小 Editor Bridge V1 的本机消息与 discovery 契约，以及 Runtime Bridge V1 的本机发现记录、消息与调试租约契约。`Protocol/Schema` 中的 16 份 JSON Schema 是跨进程、跨语言传输结构的单一事实来源；`Protocol/contract-manifest.json` 是版本、C# 生成闭包、Hash 域、游标上限、状态和错误码的机器可检查登记表。
 
-当前冻结范围包括：通用 primitive、Project/Catalog/Document、Graph/Entity/Structured/Table Operation、Reference、Reference Refactor、Document Lifecycle、Project Transaction 的公开输入/结果、Project Provider V2、八个 MCP Tool 的输入/输出、Unity Integration Profile V1、Editor Bridge V1 的 hello/welcome 握手、open/reveal 请求、response/error 消息与 per-window discovery 记录，以及 Runtime Bridge V1 的本机发现记录与消息契约。Unity Compiler 派生产物和 mapping/manifest 当前是 Editor 内部格式，不是公开跨语言 Schema；WebSocket 不在本协议中，断点/调用栈等 Debug 执行语义仍未冻结。Editor Bridge 不复用 stdio MCP Tool envelope，其传输选型与信任边界见 [UnityIntegrationArchitecture.md](UnityIntegrationArchitecture.md) 第 12 章。
+当前冻结范围包括：通用 primitive、Project/Catalog/Document、Graph/Entity/Structured/Table Operation、Reference、Reference Refactor、Document Lifecycle、Project Transaction 的公开输入/结果、Project Provider V2、八个 MCP Tool 的输入/输出、Unity Integration Profile V1、Editor Bridge V1 的 hello/welcome 握手、open/reveal 请求、response/error 消息与 per-window discovery 记录，以及 Runtime Bridge V1 的本机发现记录与消息契约。Unity Compiler 派生产物和 mapping/manifest 当前是 Editor 内部格式，不是公开跨语言 Schema；WebSocket 不在本协议中，断点/调用栈/变量求值等执行级 Debug 语义经项目方裁定不进入协议（只观察、不做断点），重开条件见 [UnityIntegrationArchitecture.md](UnityIntegrationArchitecture.md) §18.3。Editor Bridge 不复用 stdio MCP Tool envelope，其传输选型与信任边界见 [UnityIntegrationArchitecture.md](UnityIntegrationArchitecture.md) 第 12 章。
 
 Project Transaction 的 journal 与 lock 文件是 Node Host 私有的持久恢复格式，不是公开跨语言消息。它们仍登记版本并接受实现一致性检查，恢复语义见 [ProjectTransaction.md](ProjectTransaction.md)。当前 C# contract 与 TypeScript contract 由同一 Schema/manifest 确定性生成；Unity 的 Profile、Project、Catalog 和 Document 消费者先读取 `JObject` 并执行严格语义 validator，不能把生成 DTO 当成 validator。
 

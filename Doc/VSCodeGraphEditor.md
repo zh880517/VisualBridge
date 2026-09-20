@@ -1,6 +1,6 @@
 # VisualBridge Graph V3
 
-Graph Document V3 与 Graph Catalog V4 为语义编辑器带来了多 Catalog 注册、Catalog 定义的 Graph Type、实例约束、初始 Node、类型化内嵌 subgraph 以及以 Catalog 为根的 Node 菜单。Unity、运行时编译与调试通信尚未接入。
+Graph Document V3 与 Graph Catalog V4 为语义编辑器带来了多 Catalog 注册、Catalog 定义的 Graph Type、实例约束、初始 Node、类型化内嵌 subgraph 以及以 Catalog 为根的 Node 菜单。Unity 侧已能从显式 metadata 的普通 C# 类型导出 Graph Catalog V4，并把 Graph 文档离线编译到 `Library/VisualBridge/Compiled`（菜单 **Tools / VisualBridge / Generate Graph Catalogs**、**Generate Graph Compiled Data**、**Check Graph Compiled Data**）；本编辑器工具栏的 **执行调试** 按钮经 Runtime Bridge 跟踪游戏侧 Graph 执行实例，详见 [`UnityIntegrationManual.md`](UnityIntegrationManual.md) 与 [`UnityGraphExecutionDebug.md`](UnityGraphExecutionDebug.md)。游戏侧执行引擎本身、Unity Player 产物接线与断点式调试不在本仓库范围内。
 
 ## Project 声明
 
@@ -112,7 +112,7 @@ Catalog 路径相对于该标记文件解析。宿主将它们加载进同一个
 }
 ```
 
-`valueType` 描述 JSON 标量形态和编辑器控件，因此整数字段和浮点字段都使用 `valueType: "number"`。运行时语义归属于 `dataTypeId`：C# 数值契约使用互不相同的稳定 ID，例如 `int` 和 `float`，绝不共用一个 `number` Data Type。未来的 Unity exporter 会把 `System.Int32` 映射为 `int`，把 `System.Single` 映射为 `float`。目标 Data Type 可以显式列出可接受的来源类型；本示例让 `float` 接受 `int`，以建模 C# 的加宽转换，同时保持 `float` 到 `int` 无效。`acceptsAnySource: true` 是一个单向输入规则：`stringFromAny` 字段仍为其回退编辑器声明 `valueType: "string"`，但与其匹配的数据输入接受所有来源 Data Type。普通 `string` 字段保持严格，实际运行时转换由 Node 完成，而不是由 VisualBridge 插入一个转换 Node。
+`valueType` 描述 JSON 标量形态和编辑器控件，因此整数字段和浮点字段都使用 `valueType: "number"`。运行时语义归属于 `dataTypeId`：C# 数值契约使用互不相同的稳定 ID，例如 `int` 和 `float`，绝不共用一个 `number` Data Type。Unity Graph Catalog Exporter 已按此规则把 `System.Int32` 映射为 `int`、把 `System.Single` 映射为 `float`。目标 Data Type 可以显式列出可接受的来源类型；本示例让 `float` 接受 `int`，以建模 C# 的加宽转换，同时保持 `float` 到 `int` 无效。`acceptsAnySource: true` 是一个单向输入规则：`stringFromAny` 字段仍为其回退编辑器声明 `valueType: "string"`，但与其匹配的数据输入接受所有来源 Data Type。普通 `string` 字段保持严格，实际运行时转换由 Node 完成，而不是由 VisualBridge 插入一个转换 Node。
 
 ## List 字段
 
@@ -160,7 +160,7 @@ Catalog 路径相对于该标记文件解析。宿主将它们加载进同一个
 - 对选中的原子 Node 以及两端端点均被选中的 Edge 一起执行复制、粘贴和创建副本。粘贴出的实例获得全新的 Node ID 与 Edge ID。Graph Type 最小实例约束要求的单例 Node 和内嵌 subgraph 有意排除在 V1 剪贴板载荷之外。
 - 右键点击原子 Node 或类型化 subgraph Node，可以全选同一规范类型的所有 Node、替换其类型、复制、创建副本或删除。右键点击 Edge 或选区可使用适用的选区操作。只提供同 kind、无损且保持 Graph Type 约束的替换候选；不可用的操作仍以禁用状态显示，并带有原因提示。
 - 右键点击空白画布区域可执行 Graph 级的添加 Node、添加 subgraph 和粘贴操作。新增的 Node 与 subgraph 使用点击的画布位置。持久化编辑操作位于上下文菜单而非顶部工具栏。上下文菜单使用不透明的编辑器部件表面，使 Graph 与菜单文字在视觉上保持分离。
-- 顶部工具栏提供手动"自动布局"按钮：在 Webview 内按连线方向做确定性分层布局（连向输入接口的 Node 落在首列，连向输出接口的 Node 抬升到边界列，完全无边的 Node 收进末尾独立列，坐标吸附 10px 网格），布局计算使用 React Flow 渲染后的节点实测尺寸，因此高节点不会重叠。结果作为一批 `graph.moveNode` Operation 经单个 `WorkspaceEdit` 提交（即一次 Undo/Redo 单元），完成后画布缩放适配全图；接口 Node 仍由画布按最大横坐标自动跟随。自动布局是纯编辑器能力，不作为语义 Operation 或 MCP 能力暴露（宿主侧无法获得渲染尺寸）。
+- 顶部工具栏提供手动"自动布局"按钮：在 Webview 内按连线方向做确定性分层布局（连向输入接口的 Node 天然落在首列，连向输出接口的 Node 抬升到边界列，完全无边的 Node 收进末尾独立列，坐标吸附 10px 网格），布局计算使用 React Flow 渲染后的节点实测尺寸，因此高节点不会重叠；布局主区还会为固定在画布左侧的输入接口桩让出其实测宽度。结果作为一批 `graph.moveNode` Operation 经单个 `WorkspaceEdit` 提交（即一次 Undo/Redo 单元），完成后画布缩放适配全图。若全部位置已经一致则不提交任何 Operation，只提示"当前图已处于自动布局位置。"。两个接口桩都不可拖动：**输出**接口 Node 由画布按节点最大横坐标自动跟随，固定在 `x: -100` 的**输入**接口桩不参与排版。自动布局是纯编辑器能力，不作为语义 Operation 或 MCP 能力暴露（宿主侧无法获得渲染尺寸）。
 - 在顶部工具栏显示 VS Code 文本文档的已保存/未保存状态。Graph Operation 通过 `WorkspaceEdit` 将文档置为脏；常规的 VS Code 保存会在宿主观察到保存事件后清除该指示器。
 - 使用 MiniMap 进行大型 Graph 的导航。视口、选区、打开的菜单和剪贴板状态始终保持为瞬态编辑器状态。
 - 通过共享的 Reference Service 解析 `graph.element` Reference，再使用完整的 Location 范围进入所属 Graph。Graph 目标会缩放适配完整画布；Node 与 Dynamic Port 目标会选中并居中所属 Node；Interface Port 目标会居中匹配的输入/输出接口 Node。确切元素会获得临时的焦点环高亮。请求 ID 确认机制保证面板未打开、被隐藏或正在重建其 Webview 时导航仍然可靠，而陈旧的 Graph/Node/Port 范围会被拒绝而不是靠猜测。

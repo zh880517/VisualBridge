@@ -2,7 +2,7 @@
 
 ## 1. 文档定位
 
-本手册面向在 Unity 工程中使用 VisualBridge 的开发者，覆盖环境要求、Integration Profile 配置、Structured Catalog Export、Structured Compile、日志、冲突恢复与 Editor Bridge 使用。设计与冻结决策以 [Unity Editor 接入架构](UnityIntegrationArchitecture.md)为准；任务顺序与验证门槛见 [Unity Editor 接入任务清单](UnityIntegrationRoadmap.md)。当前已落地范围为 Structured、offline、Editor-only 切片与最小 Editor Bridge。
+本手册面向在 Unity 工程中使用 VisualBridge 的开发者，覆盖环境要求、Integration Profile 配置、四领域（Structured / Entity / Graph / Table）的 Catalog Export 与 Compile（Table 仅 Compile）、Runtime Bridge（Play 模式状态与事件）、日志、冲突恢复与 Editor Bridge 使用。设计与冻结决策以 [Unity Editor 接入架构](UnityIntegrationArchitecture.md)为准；Editor 切片的任务顺序与验证门槛见 [Unity Editor 接入任务清单](UnityIntegrationRoadmap.md)，领域扩展与 Runtime 接入的任务进度见 [Unity 领域扩展与 Runtime 接入任务清单](UnityDomainAndRuntimeRoadmap.md)。当前已落地范围为四领域 offline Catalog Export/Compile、Editor Bridge（open/reveal）与本机 Runtime Bridge（Play 模式产物快照、变更事件、调试租约、Source 映射与 Graph 执行观察）。
 
 ## 2. 系统要求与兼容矩阵
 
@@ -10,13 +10,14 @@
 | --- | --- | --- |
 | Node.js | `22.22.1` | 由 `.nvmrc`、`engines.node` 与 `packageManager` 声明；`.npmrc` 开启 `engine-strict`。 |
 | npm | `10.9.4` | 与 Node 版本一起锁定。 |
-| VS Code | `1.105.1` | 扩展 `engines.vscode` 与测试宿主 `@vscode/test-electron` 固定。 |
+| VS Code | `^1.105.1` | 扩展 `engines.vscode` 声明的是最低版本而非固定值；测试宿主 `@vscode/test-electron` 默认下载 `1.105.1`（可用 `VISUALBRIDGE_VSCODE_TEST_VERSION` 覆盖）。 |
 | VisualBridge VSIX | `0.1.0` | 身份 `kyl.visualbridge`，私有 `UNLICENSED`，不经 Marketplace 分发。 |
 | Unity Editor | `6000.3.10f1` | 由 `UnityProject/ProjectSettings/ProjectVersion.txt` 固定；Package 声明 `unity: 6000.3`。 |
 | `com.kyle.visualbridge` | `0.1.0` | Unity 集成包；依赖 `com.unity.nuget.newtonsoft-json` `3.2.2`。 |
-| Protocol 契约 | `manifestVersion 1` | `protocolContracts 1`、`graphDocument 3`、`graphCatalog 4`、`entityDocument/Catalog 1`、`structuredDocument/Catalog 1`、`tableCatalog 1`、`unityIntegrationProfile 1`、`editorBridge 1`、`documentLifecyclePlan 1`。 |
+| Protocol 契约 | `manifestVersion 1` | `protocolContracts 1`、`graphDocument 3`、`graphCatalog 4`、`entityDocument/Catalog 1`、`structuredDocument/Catalog 1`、`tableCatalog 1`、`unityIntegrationProfile 1`、`editorBridge 1`、`runtimeBridge 1`、`documentLifecyclePlan 1`。 |
 | Editor Bridge 协议 | `protocolVersion 1` | 能力集固定 `open` / `reveal`；Schema 为 `visualbridge-editor-bridge.schema.json`。 |
-| Structured Compiler | V1 | 输出根固定 `Library/VisualBridge/Compiled`，内部 Editor 格式。 |
+| Runtime Bridge 协议 | `protocolVersion 1`、`coreVersion 1` | 能力集 `snapshot` / `events` / `lease` / `sources` / `graphExecution`；实例 kind 为 `editor-play`（协议另保留 `player`，尚无 Player 宿主）；Schema 为 `visualbridge-runtime-bridge.schema.json`。 |
+| 领域 Compiler（Structured / Entity / Table / Graph） | V1 | 输出根固定 `Library/VisualBridge/Compiled`（四个编译器共同校验，不符报 `compile.outputRootMismatch`），内部 Editor 格式；四域 manifest `manifest.json` / `manifest.entity.json` / `manifest.table.json` / `manifest.graph.json` 共存。 |
 
 升级约束：改变 Node、VS Code、Unity Editor 或 Newtonsoft 版本，或声明更低最低版本前，必须重新执行[完整验证门槛](#10-验证门槛命令)；Protocol 版本变更属于公开契约变更，须先更新 Schema/manifest 并重新生成 TypeScript/C# 契约。C# 契约只从 Schema 生成，Unity 侧消费生成产物，不引用 TypeScript Core。
 
@@ -37,7 +38,7 @@ code --install-extension .\Tools\VSCodeExtension\artifacts\visualbridge.vsix --f
 
 ## 4. Integration Profile 配置
 
-Profile 固定为 `ProjectSettings/VisualBridgeIntegration.json`，V1 结构如下（示例为开发宿主实际配置）：
+Profile 固定为 `ProjectSettings/VisualBridgeIntegration.json`，V1 结构如下（示例取开发宿主实际配置中的 Structured export unit；该宿主另声明 `sample.unity.entity`（输出 `.vbentitycatalog`）与 `sample.unity.graph`（输出 `.vbgraphcatalog`）两个 export unit，字段形状相同）：
 
 ```text
 {
@@ -59,13 +60,17 @@ Profile 固定为 `ProjectSettings/VisualBridgeIntegration.json`，V1 结构如�
 
 - `formatVersion` 必须为 `1`（`profile.unsupportedVersion`）。
 - V1 只关联一个 Unity Project 内的 Authoring Project；路径从 Unity Project root 解析，拒绝绝对路径、冒号、反斜杠、空/`.`/`..` segment 与盘符别名（`profile.invalidPath`），解析后离开 project root 报 `profile.pathOutsideProject`，祖先段 symlink/reparse-point 报 `profile.symlinkForbidden`。
-- `catalogExports[].output` 必须以 `.vbstructuredcatalog` 或 `.vbentitycatalog` 结尾，扩展名决定导出路由（Structured / Entity Exporter）；catalogId、输出路径与物理同一文件均不得重复（`profile.duplicateCatalogId` / `profile.duplicateOutput` / `profile.duplicatePhysicalOutput`）。
+- `catalogExports[].output` 必须以 `.vbstructuredcatalog`、`.vbentitycatalog` 或 `.vbgraphcatalog` 结尾，否则报 `profile.invalidCatalogOutput`；扩展名决定导出路由（Structured / Entity / Graph Exporter）；catalogId、输出路径与物理同一文件均不得重复（`profile.duplicateCatalogId` / `profile.duplicateOutput` / `profile.duplicatePhysicalOutput`）。
 - `compileOutputRoot` 在 Compiler V1 必须恰为 `Library/VisualBridge/Compiled`（`compile.outputRootMismatch`）。
 - JSON 必须严格 UTF-8，不允许注释、尾随内容或重复键（`profile.invalidJson`）。
 
 修改 Profile 后无需额外注册：Export/Compile 每次从 Profile 显式解析，不使用进程级缓存或全局状态。
 
-## 5. Structured Catalog Export
+## 5. 领域 Catalog Export 与 Compile
+
+四个领域共用第 4 节的 Integration Profile、同一编译输出根与同一套退出码语义（`0` 成功、`1` 执行失败、`2` 表示 Check 发现 drift）；其中 Structured / Entity / Graph 各有 Catalog Export 与 Compile，Table 是纯消费方，只有 Compile 没有 Exporter。Runtime Bridge 见第 6 节，Editor Bridge 见第 7 节。
+
+### 5.1 Structured Catalog Export
 
 C# 类型通过 `VisualBridge.Runtime` 的 attribute 显式标注（`VisualBridgeStructuredCatalog`、`VisualBridgeStructuredConfig`、`VisualBridgeField`，完整字段见 [Package README](../Packages/com.kyle.visualbridge/README.md)）。导出入口：
 
@@ -80,62 +85,7 @@ C# 类型通过 `VisualBridge.Runtime` 的 attribute 显式标注（`VisualBridg
 
 Catalog 提交进版本库后由 VS Code 侧作为来源消费；Exporter 是 Catalog 的唯一生成方，禁止手工编辑。
 
-## 5.1 Entity Catalog Export
-
-Entity 领域的 Catalog 导出与 Structured 共用 Profile 与验证门槛，按输出扩展名路由到 `VisualBridgeEntityCatalogExporter`：
-
-- metadata：assembly 级 `VisualBridgeEntityCatalog(catalogId, title)` 与 `VisualBridgeEntityComponentGroup(catalogId, id, title)`；类型级 `VisualBridgeEntityType(catalogId, id, title, AllowedComponentGroupIds)` 与 `VisualBridgeEntityComponent(catalogId, id, title, groupId, MenuPath)`；字段沿用共享的 `VisualBridgeField`。
-- 入口：菜单 **Tools / VisualBridge / Generate Entity Catalogs**；batchmode `VisualBridge.Editor.VisualBridgeEntityCatalogBatch.Generate` / `.Check`（退出码 `0`/`1`/`2` 同 Structured）。
-- 语义：Generate 确定性输出 `{componentGroups, entityTypes, componentTypes}` 的 Entity Catalog V1（`.vbentitycatalog`）；三类身份（id+aliases）单 catalog 内唯一、跨 catalog 全局唯一；`groupId` 与 `allowedComponentGroupIds` 必须引用同 catalog 声明的组；entity catalog 输出必须被 Authoring Project 中 `editor == "entity"` 的 DocumentType 声明（`profile.catalogNotDeclared`）。
-
-## 5.2 Entity Compile
-
-`.vbentity` 文档由 `VisualBridgeEntityCompiler` 编译到同一输出根：
-
-- 入口：菜单 **Tools / VisualBridge / Generate Entity Compiled Data**、**Check Entity Compiled Data**；batchmode `VisualBridge.Editor.VisualBridgeEntityCompilerBatch.Generate` / `.Check`（退出码 `0`/`1`/`2`）。
-- 前置：Entity Catalog Check 必须无 drift（`compile.catalogDrift`），否则先重跑 Catalog Generate 并提交。
-- 语义：文档按 entity DocumentType 唯一路由；`entityTypeId`/`componentTypeId` 必须在声明的 Catalog 中唯一解析，组件组必须在 entityType 的 `allowedComponentGroupIds` 白名单内（空白名单即全不允许）；缺失字段以 Catalog 默认值物化进产物；产物布局与 Structured 相同（`documents/`、`mappings/`），但使用独立的 `manifest.entity.json`，两套编译互不接管对方托管集。失败不破坏上次有效产物；stale 产物在 Generate 时清理、Check 时计为 drift。
-
-## 5.2 Graph Catalog Export
-
-Graph 领域的 Catalog 导出按 `.vbgraphcatalog` 扩展名路由到 `VisualBridgeGraphCatalogExporter`，输出 Graph Catalog V4（不接受旧版本）：
-
-- metadata：assembly 级 `VisualBridgeGraphCatalog(catalogId, title)` 与 `VisualBridgeGraphDataType(id, title)`（可选 Color/Accepts）；类型级 `VisualBridgeGraphType`（Usage/SupportedCatalogIds/PortConnectionInput/Output/AllowedNodeTypeIds/Tags/Traits/AllowSubgraphs/AllowedSubgraphTypeIds）、`VisualBridgeNodeType`（category/MenuPath/Tags/Traits/SubgraphGraphTypeIds）与 graphType 类上的 `VisualBridgeGraphNodeConstraint`/`VisualBridgeGraphInitialNode`；字段级 `VisualBridgePort`（flow/data 端口，data 端口 DataTypeId 由 CLR 类型推导）与 `VisualBridgeDynamicPortGroup`（List<T> 动态端口组，list/element 模式）。
-- 入口：菜单 **Tools / VisualBridge / Generate Graph Catalogs**；batchmode `VisualBridge.Editor.VisualBridgeGraphCatalogBatch.Generate` / `.Check`。
-- 语义：graphType/nodeType/dataType 身份全局无歧义；C# 全名只进 `source.typeName`；typed subgraph 节点禁止 flow 端口；端口与字段分离（同字段双声明报错）；三方 parity fixture（AJV / Unity 校验器 / 扩展宿主）锁定契约。
-
-## 5.3 Table Compile（CSV family）
-
-Table 是纯消费方：Unity 侧没有 Table Exporter，catalog（`.vbtablecatalog`）由 VS Code 侧创作并提交；Unity 只编译 CSV family 文档（`.xlsx` 以 `table.xlsxUnsupported` 拒绝——OOXML 解析不在 V1 依赖边界内）：
-
-- 入口：菜单 **Tools / VisualBridge / Generate Table Compiled Data**、**Check Table Compiled Data**；batchmode `VisualBridge.Editor.VisualBridgeTableCompilerBatch.Generate` / `.Check`（退出码 `0`/`1`/`2`）。
-- 前置：Project File 需声明 `tableLayout {nameKeyRow, dataStartRow}`（缺失报 `compile.tableLayoutMissing`）；table documentType 的 id 必须在其声明 catalog 中唯一解析到 tableType。
-- 语义：nameKey 列映射、cell encoding（scalar/json/delimited）、key column 与 rowId（`{sheetDefinitionId}:{物理名}:key-{值}`）、跨分区有效行去重（error/keepFirst/keepLast）全部复刻 VS Code 权威语义；产物按 documentType 聚合为 `documents/{projectId}/{documentTypeId}/{tableTypeId}.vbcompiled.json` + mapping + `manifest.table.json`。
-- 注意：Project File 任何变更都会改变 `projectSha256`，三个编译器（Structured/Entity/Table）都会按输入 Hash 报 drift，需统一重新 Generate。
-
-## 5.4 Graph Compile
-
-`.vbflow` 等 graph 文档由 `VisualBridgeGraphCompiler` 编译：
-
-- 入口：菜单 **Tools / VisualBridge / Generate Graph Compiled Data**、**Check Graph Compiled Data**；batchmode `VisualBridge.Editor.VisualBridgeGraphCompilerBatch.Generate` / `.Check`（退出码 `0`/`1`/`2`）。
-- 前置：Graph Catalog Check 无 drift（`compile.catalogDrift`）。
-- 语义：文档按 graph DocumentType 唯一路由（不要求 documentType.id 对应 graphType——root 图的 `graphTypeId` 自行解析校验）；VS Code 侧的全部 error 级文档校验在编译器为 fail-closed（身份唯一、边方向/kind/dataType/连接上限、节点允许性、subgraph 白名单与调用类型匹配、实例约束、动态端口、接口端口），warning 级类型别名静默 canonical 化进产物；缺失节点/图属性物化 Catalog 默认值（mapping 记 `origin: metadataDefault`）。
-- 产物：`documents/{projectId}/{documentTypeId}/{documentId}.vbcompiled.json`（保留节点 position 与 subgraphId，节点/边按 id 排序）+ mapping + `manifest.graph.json`，与其他三域 manifest 共存。
-
-## 5.5 Runtime Bridge（Play 模式状态/事件）
-
-进入 Play 模式后，`VisualBridge.Runtime` 的 Runtime Bridge 服务器自动启动（发现层遵循架构文档第 17 章）：
-
-- 发现：`<临时目录>/visualbridge-runtime/<instanceId>.json`（instanceId 为 `editor-<pid>`，心跳每秒 touch mtime；陈旧判定 = 心跳 >5 秒或 pid 死）。VS Code 侧 `RuntimeBridgeService` 枚举并显式选择实例。
-- 协议：NDJSON 行分帧、token 首条消息认证、`coreVersion 1` 共享核（与 Editor Bridge 同构但独立版本化）；消息集 hello/welcome/getSnapshot 响应/artifactsChanged 事件/连接级 error（`runtime.*`）。
-- 能力：`snapshot`（读取 `Library/VisualBridge/Compiled` 编译产物，可按 documentTypeIds 过滤）、`events`（产物目录变化推送）、`lease`/`sources`（调试语义：单控制者租约 + 文档级 Source 映射，见下）。Player 构建回退 `StreamingAssets/VisualBridge/Compiled`（接线属后续任务）。
-- 调试语义（VB-UX-10）：`acquireLease`/`releaseLease` 管理单控制者租约（绑定连接、断开自动释放、他人持有时 `runtime.leaseDenied`）；`getDocumentSources`（需持租约）返回每个运行中文档的 Authoring 源路径与 SHA-256（structured/entity/graph 取产物 `inputs.document`，table 取其 sourceMapping 的 `sources[]`）；VS Code 侧对照工作区当前文档字节检测漂移——漂移必须显式呈现，防止把新 Authoring 身份映射到旧 Runtime 数据。断点/调用栈消息按「不以占位 Schema 伪装成已完成能力」原则未进入协议，待真实执行运行时出现再冻结。
-- 菜单：**Tools / VisualBridge/Runtime Bridge/Start in Play Mode**、**Status**。E2E：`npm run test:runtime-e2e`（batchmode Play + 隔离 Extension Host，覆盖发现/快照/事件全链路）。
-- DAP 检查会话：VS Code 调试 UI 以 `visualbridge-runtime` 类型 attach 到 Runtime 实例（attach 时持调试租约），变量树展示运行时快照与 `__sourcePath`/`__sourceDrifted`；断点不受支持（只检查会话，见架构文档 §18.3/18.5）。
-- MCP 检查工具：stdio MCP Server 暴露只读的 `visualbridge_runtime` 工具（`listInstances` / `getSnapshot` / `getDocumentSources`），漂移由 MCP 侧对照工作区 Authoring 字节计算；每次调用独立连接、断开即释放租约，与 DAP 检查会话并存（并发时后来者得到 `runtime.leaseDenied`）。
-- Graph 执行观察（阶段 D，VB-UX-13/14）：服务端通告 `graphExecution` 能力；游戏侧引擎经 [`UnityGraphExecutionDebug.md`](UnityGraphExecutionDebug.md) 的采集门面上报执行事件，客户端可订阅单个执行实例接收 `graphExecution` 批量事件（观察者语义，不占租约）；Graph 编辑器页内「执行调试」入口提供实例选择、实时高亮/边流光/数据边值显示与时间轴回放（事件级/帧级步进）。
-
-## 6. Structured Compile
+### 5.2 Structured Compile
 
 输入是 Authoring Project（Project File + Structured 文档）+ 已提交 Catalog + Integration Profile。入口：
 
@@ -156,6 +106,61 @@ mappings/<projectId>/<documentTypeId>/<documentId>.vbsource.json
 - `compile.catalogDrift` 表示 Catalog 与程序集快照不一致，先重跑 Catalog Generate；`compile.inputChanged` 表示编译期间输入变化，直接重跑即可；`compile.outputCollision` / `compile.documentOutsideRoot` 属于配置错误，检查 Profile 与 Project File。
 - Compiler 不修改 Authoring Project/File/Document；所有写操作只发生在编译输出根内。
 
+### 5.3 Entity Catalog Export
+
+Entity 领域的 Catalog 导出与 Structured 共用 Profile 与验证门槛，按输出扩展名路由到 `VisualBridgeEntityCatalogExporter`：
+
+- metadata：assembly 级 `VisualBridgeEntityCatalog(catalogId, title)` 与 `VisualBridgeEntityComponentGroup(catalogId, id, title)`；类型级 `VisualBridgeEntityType(catalogId, id, title, AllowedComponentGroupIds)` 与 `VisualBridgeEntityComponent(catalogId, id, title, groupId, MenuPath)`；字段沿用共享的 `VisualBridgeField`。
+- 入口：菜单 **Tools / VisualBridge / Generate Entity Catalogs**；batchmode `VisualBridge.Editor.VisualBridgeEntityCatalogBatch.Generate` / `.Check`（退出码 `0`/`1`/`2` 同 Structured）。
+- 语义：Generate 确定性输出 `{componentGroups, entityTypes, componentTypes}` 的 Entity Catalog V1（`.vbentitycatalog`）；三类身份（id+aliases）单 catalog 内唯一、跨 catalog 全局唯一；`groupId` 与 `allowedComponentGroupIds` 必须引用同 catalog 声明的组；entity catalog 输出必须被 Authoring Project 中 `editor == "entity"` 的 DocumentType 声明（`profile.catalogNotDeclared`）。
+
+### 5.4 Entity Compile
+
+`.vbentity` 文档由 `VisualBridgeEntityCompiler` 编译到同一输出根：
+
+- 入口：菜单 **Tools / VisualBridge / Generate Entity Compiled Data**、**Check Entity Compiled Data**；batchmode `VisualBridge.Editor.VisualBridgeEntityCompilerBatch.Generate` / `.Check`（退出码 `0`/`1`/`2`）。
+- 前置：Entity Catalog Check 必须无 drift（`compile.catalogDrift`），否则先重跑 Catalog Generate 并提交。
+- 语义：文档按 entity DocumentType 唯一路由；`entityTypeId`/`componentTypeId` 必须在声明的 Catalog 中唯一解析，组件组必须在 entityType 的 `allowedComponentGroupIds` 白名单内（空白名单即全不允许）；缺失字段以 Catalog 默认值物化进产物；产物布局与 Structured 相同（`documents/`、`mappings/`），但使用独立的 `manifest.entity.json`，两套编译互不接管对方托管集。失败不破坏上次有效产物；stale 产物在 Generate 时清理、Check 时计为 drift。
+
+### 5.5 Graph Catalog Export
+
+Graph 领域的 Catalog 导出按 `.vbgraphcatalog` 扩展名路由到 `VisualBridgeGraphCatalogExporter`，输出 Graph Catalog V4（不接受旧版本）：
+
+- metadata：assembly 级 `VisualBridgeGraphCatalog(catalogId, title)` 与 `VisualBridgeGraphDataType(id, title)`（可选 Color/Accepts）；类型级 `VisualBridgeGraphType`（Usage/SupportedCatalogIds/PortConnectionInput/Output/AllowedNodeTypeIds/Tags/Traits/AllowSubgraphs/AllowedSubgraphTypeIds）、`VisualBridgeNodeType`（category/MenuPath/Tags/Traits/SubgraphGraphTypeIds）与 graphType 类上的 `VisualBridgeGraphNodeConstraint`/`VisualBridgeGraphInitialNode`；字段级 `VisualBridgePort`（flow/data 端口，data 端口 DataTypeId 由 CLR 类型推导）与 `VisualBridgeDynamicPortGroup`（List<T> 动态端口组，list/element 模式）。
+- 入口：菜单 **Tools / VisualBridge / Generate Graph Catalogs**；batchmode `VisualBridge.Editor.VisualBridgeGraphCatalogBatch.Generate` / `.Check`。
+- 语义：graphType/nodeType/dataType 身份全局无歧义；C# 全名只进 `source.typeName`；typed subgraph 节点禁止 flow 端口；端口与字段分离（同字段双声明报错）；三方 parity fixture（AJV / Unity 校验器 / 扩展宿主）锁定契约。
+
+### 5.6 Graph Compile
+
+`.vbflow` 等 graph 文档由 `VisualBridgeGraphCompiler` 编译：
+
+- 入口：菜单 **Tools / VisualBridge / Generate Graph Compiled Data**、**Check Graph Compiled Data**；batchmode `VisualBridge.Editor.VisualBridgeGraphCompilerBatch.Generate` / `.Check`（退出码 `0`/`1`/`2`）。
+- 前置：Graph Catalog Check 无 drift（`compile.catalogDrift`）。
+- 语义：文档按 graph DocumentType 唯一路由（不要求 documentType.id 对应 graphType——root 图的 `graphTypeId` 自行解析校验）；VS Code 侧的全部 error 级文档校验在编译器为 fail-closed（身份唯一、边方向/kind/dataType/连接上限、节点允许性、subgraph 白名单与调用类型匹配、实例约束、动态端口、接口端口），warning 级类型别名静默 canonical 化进产物；缺失节点/图属性物化 Catalog 默认值（mapping 记 `origin: metadataDefault`）。
+- 产物：`documents/{projectId}/{documentTypeId}/{documentId}.vbcompiled.json`（保留节点 position 与 subgraphId，节点/边按 id 排序）+ mapping + `manifest.graph.json`，与其他三域 manifest 共存。
+
+### 5.7 Table Compile（CSV family）
+
+Table 是纯消费方：Unity 侧没有 Table Exporter，catalog（`.vbtablecatalog`）由 VS Code 侧创作并提交；Unity 只编译 CSV family 文档（`.xlsx` 以 `table.xlsxUnsupported` 拒绝——OOXML 解析不在 V1 依赖边界内）：
+
+- 入口：菜单 **Tools / VisualBridge / Generate Table Compiled Data**、**Check Table Compiled Data**；batchmode `VisualBridge.Editor.VisualBridgeTableCompilerBatch.Generate` / `.Check`（退出码 `0`/`1`/`2`）。
+- 前置：Project File 需声明 `tableLayout {nameKeyRow, dataStartRow}`（缺失报 `compile.tableLayoutMissing`）；table documentType 的 id 必须在其声明 catalog 中唯一解析到 tableType。
+- 语义：nameKey 列映射、cell encoding（scalar/json/delimited）、key column 与 rowId（`{sheetDefinitionId}:{物理名}:key-{值}`）、跨分区有效行去重（error/keepFirst/keepLast）全部复刻 VS Code 权威语义；产物按 documentType 聚合为 `documents/{projectId}/{documentTypeId}/{tableTypeId}.vbcompiled.json` + mapping + `manifest.table.json`。
+- 注意：Project File 任何变更都会改变 `projectSha256`，四个编译器（Structured/Entity/Graph/Table）都会按输入 Hash 报 drift，需统一重新 Generate。
+
+## 6. Runtime Bridge（Play 模式状态/事件）
+
+进入 Play 模式后，Editor 侧的 Play 模式宿主（`VisualBridge.Editor`，Editor-only 程序集）自动拉起 `VisualBridge.Runtime` 的 Runtime Bridge 服务器，仅监听本机回环（发现层遵循架构文档第 17 章）：
+
+- 发现：`<临时目录>/visualbridge-runtime/<instanceId>.json`（instanceId 为 `editor-<pid>`，kind 为 `editor-play`；心跳每秒 touch 记录 mtime，陈旧判定 = 心跳 >5 秒或 pid 已死，VS Code 侧分别标记 `runtime.staleRecord` / `runtime.deadPid`）。同一 instanceId 复用磁盘记录时 `generation` 递增并优先重绑旧端口（占用则回退随机端口）；mid-play domain reload 后由 `[InitializeOnLoad]` 宿主兜底重启。VS Code 侧 `RuntimeBridgeService` 枚举发现记录；连接目标由调用方显式指定 `instanceId`，不设全局「当前实例」，也不弹实例选择 UI（Graph 执行调试页在需要时自动连接首个非陈旧实例）。
+- 协议：NDJSON 行分帧、仅回环 TCP（127.0.0.1）、token 首条消息认证、`protocolVersion 1` + `coreVersion 1` 共享核（与 Editor Bridge 同构但独立版本化）；消息集为 hello/welcome、request/response 配对（`getSnapshot`、`acquireLease`/`releaseLease`、`getDocumentSources`、`getGraphExecutionInstances`/`subscribeGraphExecution`/`unsubscribeGraphExecution`/`getGraphExecutionSnapshot`）、event（`artifactsChanged`、`graphExecution`）与连接级 error（`runtime.*`）；未知 action 是请求级错误（回 `runtime.unknownRequest`，连接保持）。
+- 能力：`snapshot`（读取 `Library/VisualBridge/Compiled` 下四域 manifest 登记的编译产物，可按 documentTypeIds 过滤）、`events`（客户端在 hello 的 `capabilities` 中声明即订阅；服务端每 1 秒轮询产物 digest——覆盖四域 manifest 与 documents 树——变化时推送 `artifactsChanged`）、`lease`/`sources`（调试语义：单控制者租约 + 文档级 Source 映射，见下）、`graphExecution`（Graph 执行观察，见末条）。产物根由调用方解析：Editor Play 宿主固定为 `<project>/Library/VisualBridge/Compiled`；Player 约定回退 `StreamingAssets/VisualBridge/Compiled`，但 Player 侧产物接线尚未落地（见第 11 节）。
+- 调试语义（VB-UX-10）：`acquireLease`/`releaseLease` 管理单控制者租约（绑定连接、断开自动释放、他人持有时 `runtime.leaseDenied`）；`getDocumentSources`（需持租约）返回每个运行中文档的 Authoring 源路径与 SHA-256（structured/entity/graph 取产物 `inputs.document`，table 取其 sourceMapping 的 `sources[]`）；VS Code 侧对照工作区当前文档字节检测漂移——漂移必须显式呈现，防止把新 Authoring 身份映射到旧 Runtime 数据。断点/调用栈/变量求值消息按「不以占位 Schema 伪装成已完成能力」原则未进入协议：Graph 执行引擎出现后只冻结了执行**观察**语义（架构文档第 19 章），项目方明确不做断点，重开条件见架构文档 §18.3。
+- 菜单：**Tools / VisualBridge / Runtime Bridge / Start in Play Mode**（服务器实际由进入 Play 模式自动启动，未处于 Play 模式时该菜单只弹出提示）、**Status**（打印 instanceId / kind / port / generation / 记录路径 / 产物根）。E2E：`npm run test:runtime-e2e`（batchmode 托管 Play + 隔离 Extension Host，覆盖发现与连接、产物快照、租约与 Source 映射漂移、`artifactsChanged` 事件、DAP 检查会话与 Graph 执行调试）。
+- DAP 检查会话：VS Code 调试 UI 以 `visualbridge-runtime` 类型 attach 到 Runtime 实例（attach 时获取调试租约、断开时释放），会话为单伪线程，变量树展示运行时文档快照与 `__sourcePath`/`__sourceDrifted`；不支持断点/单步/求值，`setBreakpoints` 一律回 `verified: false`（只检查会话，见架构文档 §18.3/18.5）。
+- MCP 检查工具：stdio MCP Server 暴露只读的 `visualbridge_runtime` 工具（`listInstances` / `getSnapshot` / `getDocumentSources`），漂移由 MCP 侧对照工作区 Authoring 字节计算；每次调用独立连接、断开即释放租约，与 DAP 检查会话并存（并发时后来者得到 `runtime.leaseDenied`）。
+- Graph 执行观察（阶段 D，VB-UX-13~16）：服务端通告 `graphExecution` 能力；游戏侧引擎经 [`UnityGraphExecutionDebug.md`](UnityGraphExecutionDebug.md) 描述的采集门面 `VisualBridgeGraphExecutionCapture` 上报执行事件（执行实例 ID 形如 `exec-<n>`；实例生命周期追踪在服务端运行期间常开，节点级高频事件仅在存在订阅者时进缓冲，服务端执行泵按「满 64 条或 100ms」冲刷为 `graphExecution` 批量事件）。客户端订阅单个执行实例即可接收（观察者语义，不占租约；`getSnapshot` 与 Graph 执行观察都不受租约约束）；Graph 编辑器页内「执行调试」入口提供实例选择、实时高亮/边流光/数据边值显示与时间轴回放（事件级/帧级步进）。
+
 ## 7. Editor Bridge 使用（open/reveal）
 
 前置条件：VS Code 打开包含 Authoring Project 的工作区并安装 VSIX；扩展激活后 Bridge 服务器自动启动（本机双端点：命名管道 + 回环 TCP，每秒心跳写发现记录）。
@@ -169,7 +174,7 @@ Unity 侧操作：
 
 重试与错误：`OpenDocumentWithRetry` / `RevealReferenceWithRetry` 内置重新发现与重连退避（1 秒起、指数翻倍、上限 30 秒），适用于 VS Code 窗口仍在启动的场景。典型错误码：`bridge.invalidToken`（token 不符，重新发现）、`bridge.staleGeneration`（服务端重启过，重新 Connect）、`bridge.documentUnresolved` / `bridge.documentAmbiguous`（路径或引用无唯一解析）、`bridge.protocolVersionMismatch` / `bridge.capabilityMissing`（版本或能力不匹配，升级对端）。
 
-边界：Bridge 只发送 open/reveal 请求；不写 Authoring/Catalog、不触发 Export/Compile，也不包含任何 Runtime、Debug 或 Player 消息。端到端验证命令为 `npm run test:bridge-e2e`（同时拉起真实 Unity Editor 与隔离 Extension Host）。
+边界：Editor Bridge 只发送 open/reveal 请求；不写 Authoring/Catalog、不触发 Export/Compile，也不包含任何 Runtime、Debug 或 Player 消息——Play 模式的快照/事件/调试语义走第 6 节的 Runtime Bridge，两者是独立通道（各自 Schema 与发现目录）。端到端验证命令为 `npm run test:bridge-e2e`（同时拉起真实 Unity Editor 与隔离 Extension Host）。
 
 ## 8. 日志与诊断
 
@@ -185,10 +190,13 @@ Unity 侧操作：
 | 编译失败 | 退出码 `1`，日志含 `compile.*` | 上次有效产物未被破坏；修复原因后重跑 Generate。 |
 | Catalog drift | Catalog Check 退出码 `2` | C# metadata 已变更，重跑 Catalog Generate 并提交新 Catalog。 |
 | Authoring 文档外部修改 | VS Code 编辑器提示外部修改冲突 | 按 [Authoring 使用手册](AuthoringUserGuide.md)的冲突恢复流程处理；Unity 侧下次编译自动读取新内容。 |
-| Bridge 记录陈旧 | 窗口列表为空或报 stale | VS Code 窗口仍在则等待下一次心跳；已关闭则重新打开工作区。 |
+| Editor Bridge 记录陈旧 | 窗口列表为空或报 stale | VS Code 窗口仍在则等待下一次心跳；已关闭则重新打开工作区。 |
+| Runtime Bridge 记录陈旧 | 实例列表为空或标记 `runtime.staleRecord` / `runtime.deadPid` | Unity 仍在 Play 模式则等待下一次心跳（每秒 touch）；已退出 Play 模式则记录应已被删除，重新进入 Play 模式即可。 |
 | 编译产物损坏 | 任意 `compile.*` | 删除 `Library/VisualBridge/Compiled` 整目录后重跑 Generate（产物为纯派生数据）。 |
 
 ## 10. 验证门槛命令
+
+以下 PowerShell 命令逐条执行刷新/导入、Structured/Entity/Graph 的 Catalog Generate 与 Check、Structured/Entity/Table/Graph 的 Compile Generate 与 Check，以及 EditMode tests（与仓库 README 的 Unity 门槛命令一致）；日志与测试结果写入临时目录，不进入产品 diff：
 
 ```powershell
 $unityEditor = 'C:\Program Files\Unity 6000.3.10f1\Editor\Unity.exe'
@@ -197,16 +205,31 @@ $unityProject = (Resolve-Path .\UnityProject).Path
 & $unityEditor -batchmode -nographics -quit -projectPath $unityProject -logFile "$env:TEMP\visualbridge-refresh.log"
 & $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeStructuredCatalogBatch.Generate -logFile "$env:TEMP\visualbridge-catalog-generate.log"
 & $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeStructuredCatalogBatch.Check -logFile "$env:TEMP\visualbridge-catalog-check.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeEntityCatalogBatch.Generate -logFile "$env:TEMP\visualbridge-entity-catalog-generate.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeEntityCatalogBatch.Check -logFile "$env:TEMP\visualbridge-entity-catalog-check.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeGraphCatalogBatch.Generate -logFile "$env:TEMP\visualbridge-graph-catalog-generate.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeGraphCatalogBatch.Check -logFile "$env:TEMP\visualbridge-graph-catalog-check.log"
 & $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeStructuredCompilerBatch.Generate -logFile "$env:TEMP\visualbridge-compile-generate.log"
 & $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeStructuredCompilerBatch.Check -logFile "$env:TEMP\visualbridge-compile-check.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeEntityCompilerBatch.Generate -logFile "$env:TEMP\visualbridge-entity-compile-generate.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeEntityCompilerBatch.Check -logFile "$env:TEMP\visualbridge-entity-compile-check.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeTableCompilerBatch.Generate -logFile "$env:TEMP\visualbridge-table-compile-generate.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeTableCompilerBatch.Check -logFile "$env:TEMP\visualbridge-table-compile-check.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeGraphCompilerBatch.Generate -logFile "$env:TEMP\visualbridge-graph-compile-generate.log"
+& $unityEditor -batchmode -nographics -quit -projectPath $unityProject -executeMethod VisualBridge.Editor.VisualBridgeGraphCompilerBatch.Check -logFile "$env:TEMP\visualbridge-graph-compile-check.log"
 & $unityEditor -batchmode -nographics -runTests -testPlatform EditMode -projectPath $unityProject -testResults "$env:TEMP\visualbridge-editmode.xml" -logFile "$env:TEMP\visualbridge-editmode.log"
 ```
 
-Node 侧配套门槛：`npm run check`、`npm test`、`npm run build`、`npm run package:vscode`、`npm run test:vscode:host`、`npm run test:vscode:cli`、`npm run check:docs`、`npm run test:bridge-e2e`，以及 `dotnet build .\UnityProject\Assembly-CSharp-Editor.csproj` 快速编译检查。完整矩阵与发布边界见 [Release Quality](ReleaseQuality.md)。
+Catalog 与 Compiler batch 统一返回 `0` 表示成功、`1` 表示执行失败、`2` 表示 Check 发现 drift；退出码之外还必须审计日志与 EditMode XML（见第 8 节）。
+
+Node 侧配套门槛：`npm run check`、`npm test`、`npm run build`、`npm run package:vscode`、`npm run test:vscode:host`、`npm run test:vscode:cli`、`npm run check:docs`、`npm run test:bridge-e2e`、`npm run test:runtime-e2e`，以及 `dotnet build .\UnityProject\Assembly-CSharp-Editor.csproj` 快速编译检查。完整矩阵与发布边界见 [Release Quality](ReleaseQuality.md)。
 
 ## 11. 已知限制
 
-- Unity 侧仅 Structured 领域；Graph/Entity/Table 的 Export/Compile 与 Runtime/Debug/Player 接入按 [Unity 领域扩展与 Runtime 接入任务清单](UnityDomainAndRuntimeRoadmap.md)推进。
-- Bridge 为 V1 最小范围（open/reveal），多窗口必须显式选择。
-- `VisualBridge.Runtime` 只是 metadata marker，不提供运行时加载能力。
+- 四领域的 offline Catalog Export/Compile（第 5 节）、Editor Bridge（第 7 节）与本机 Runtime Bridge（第 6 节：Play 模式快照、产物事件、调试租约、Source 映射与 Graph 执行观察）均已落地；进度与冻结决策见 [Unity 领域扩展与 Runtime 接入任务清单](UnityDomainAndRuntimeRoadmap.md)（阶段 A/B/D 关闭，阶段 C 远程与设备连接由项目方推迟）。
+- 独立 Player 构建尚未接线：`StreamingAssets/VisualBridge/Compiled` 目前只是 `VisualBridgeRuntimeArtifactStore` 约定的 Player 产物根，实际路径由调用方解析，而唯一的宿主（Editor Play）固定解析 `<project>/Library/VisualBridge/Compiled`；协议保留的 `player` 实例 kind 尚无对应宿主实现。
+- `VisualBridge.Runtime` 已不只是 metadata marker：除 `Runtime/Metadata/` 的 attribute 外，`Runtime/Bridge/` 提供编译产物直读（`VisualBridgeRuntimeArtifactStore` 按四域 manifest 枚举并加载 `*.vbcompiled.json` 与 `.vbsource.json`）、Runtime Bridge 服务端/发现/严格校验器与 Graph 执行采集门面。程序集仍不依赖任何 Unity API（`noEngineReferences: true`、`references: []`，仅预编译引用 `Newtonsoft.Json.dll`），可进 Player 构建。其运行时加载能力的边界是：快照数据为未类型化 JSON，包内没有游戏侧类型化数据绑定或公开 Adapter API（VB-UX-03 决策：不建立公开 Unity Adapter API），产物格式仍是内部格式（`formatVersion`/`kind` 版本化，但未按公开跨语言契约冻结）。
+- 调试面只有「检查」语义：Runtime 协议刻意不含断点/调用栈/变量求值消息——`VisualBridge.Runtime` 自身是数据运行时（只加载编译产物快照），游戏侧 Graph 执行引擎也只暴露观察缝，且项目方明确不做断点；VS Code 的 `visualbridge-runtime` 会话因此是 attach 型只读检查，Graph 执行观察是事件回放而非断点式调试（重开条件见架构文档 §18.3）。
+- Editor Bridge 为 V1 最小范围（open/reveal），多窗口必须显式选择、绝不静默挑选；它与 Runtime Bridge 是两条独立通道（不同 Schema、不同发现目录），限制互不推导。
+- Table 的 XLSX 载体编译不在 V1 范围（`.xlsx` 以 `table.xlsxUnsupported` 拒绝，OOXML 解析不在依赖边界内）。
 - 本仓库验证环境若使用非声明 Node 版本（如 25.x），`npm ci` 会因 `engine-strict` 失败；正式 CI 必须使用 22.22.1。

@@ -155,4 +155,4 @@ Graph、Entity、Structured、Table 的读取与校验结果会附加共享 Refe
 
 ## 7. 自动化基线
 
-`npm test` 覆盖 Field Definition 解析、嵌套 occurrence、四个内置 Provider 的稳定排序与完整定位、严格类型解析、缺失与歧义诊断、自定义 Project Provider V2 的协议/候选边界、超过 200 条的完整分页、错查询/损坏 Cursor/Snapshot 与进程代变化拒绝、Entity / Graph 身份传播、Entity / Graph Editor 定位计划、Table 有效行候选和定位。真实 stdio MCP 测试覆盖 Project Provider 的默认禁用与显式授权、Graph Element 预览、Entity Component 提交、错误 `baseHash`、Project 锁与中断恢复；真实 Extension Host 分别验证 Trusted 与 Restricted Workspace。测试不包含 Unity。
+`npm test` 覆盖 Field Definition 解析、嵌套 occurrence、四个内置 Provider 的稳定排序与完整定位、严格类型解析、缺失与歧义诊断、自定义 Project Provider V2 的协议/候选边界、超过 200 条的完整分页、错查询/损坏 Cursor/Snapshot 与进程代变化拒绝、Entity / Graph 身份传播、Entity / Graph Editor 定位计划、Table 有效行候选和定位。真实 stdio MCP 测试覆盖 Project Provider 的默认禁用与显式授权、Graph Element 预览、Entity Component 提交、错误 `baseHash`、Project 锁与中断恢复；真实 Extension Host 分别验证 Trusted 与 Restricted Workspace。上述套件都不涉及 Unity；Reference 解析与 Refactor 影响计划都只在 Authoring 侧实现，Unity 侧只能通过 Editor Bridge 请求 VS Code 定位某个 Reference，不参与解析或改写。重命名后需重新运行 Unity 的 Catalog/Compile Generate（见 [`ProjectRefactoring.md`](ProjectRefactoring.md)）。

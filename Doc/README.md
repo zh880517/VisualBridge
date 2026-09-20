@@ -7,16 +7,16 @@
 - [安装与快速开始](GettingStarted.md)：固定工具链、VSIX 构建、隔离安装验证、样例、Project 发现、激活和任意扩展名路由。
 - [Authoring 使用手册](AuthoringUserGuide.md)：Graph、Entity、Structured、Table、Document Browser、Lifecycle、Reference/Refactor、Project Settings、Catalog Browser、冲突恢复和 Restricted Mode。
 - [项目接入与运维手册](IntegrationGuide.md)：Catalog、Document Type、任意扩展名、Provider、MCP、锁与 Hash、日志、授权和故障恢复。
-- [VS Code Extension README](../Tools/VSCodeExtension/README.md)：22 个生产 Command ID、4 个 Custom Editor viewType、2 个 View ID、安装和 Host 自动化。
-- [Unity 接入手册](UnityIntegrationManual.md)：环境与兼容矩阵、Integration Profile 配置、Catalog Export、Structured Compile、日志、冲突恢复和 Editor Bridge 使用。
-- [Unity Package README](../Packages/com.kyle.visualbridge/README.md)：`com.kyle.visualbridge` 的程序集边界、metadata 标注、菜单/batch 入口和边界说明。
+- [VS Code Extension README](../Tools/VSCodeExtension/README.md)：29 个生产 Command ID、4 个 Custom Editor viewType、4 个 View ID、安装和 Host 自动化。
+- [Unity 接入手册](UnityIntegrationManual.md)：环境与兼容矩阵、Integration Profile 配置、三领域 Catalog Export、四领域 Compile、Runtime Bridge、日志、冲突恢复和 Editor Bridge 使用。
+- [Unity Package README](../Packages/com.kyle.visualbridge/README.md)：`com.kyle.visualbridge` 的程序集边界、metadata 标注、Catalog Export 与四领域 Compile、Editor Bridge 与 Runtime Bridge、菜单/batch 入口和边界说明。
 - [Pre-Unity Authoring Sample](../Samples/PreUnityAuthoring/README.md)：四类 Authoring 文档、四类 Catalog 和可选 Provider V2 的维护样例。
 
 ## 总体架构与共享平台
 
 - [VisualBridge 架构设计](VisualBridgeArchitecture.md)：平台定位、模块边界、数据所有权、Authoring/Unity 分工和长期演进边界。
-- [Unity Editor 接入架构](UnityIntegrationArchitecture.md)：已落地的 Structured offline Editor-only 切片、C# wire/data bags、UPM Package、固定 Profile、Catalog Export、派生编译、信任边界和后续最小 Editor Bridge。
-- [VS Code Host](VSCodeHost.md)：激活、Project Registry、Custom Editor 路由、Webview epoch、保存/冲突、诊断和 Trust。
+- [Unity Editor 接入架构](UnityIntegrationArchitecture.md)：UPM Package 与 C# wire/data bags、固定 Profile、Structured offline 切片与四领域扩展边界、Catalog Export、派生编译、信任边界、Editor Bridge，以及 Runtime 实例发现、Runtime Bridge 协议与 Graph 执行过程可视化的冻结设计与落地记录（阶段 A/B/D 已关闭）。
+- [VS Code Host](VSCodeHost.md)：激活、Project Registry、Custom Editor 路由、Webview epoch、保存/冲突、诊断、Trust，以及 Bridge 与调试注册的激活期接线。
 - [Form Field Editor](FormFieldEditor.md)：跨 Graph、Entity、Structured、Table 的共享字段语义、React 控件、Reference Bridge 和提交边界。
 - [Authoring 编辑器共享 UI](AuthoringEditorUi.md)：内置 Webview 的主题 Token、公共 Shell/布局/图标、属性密度、Graph 与属性面板视觉边界。
 - [Project Settings 与 Catalog Browser](ProjectCatalogManagement.md)：Project File、文件归属、Project Operation、Catalog 来源 Hash/过期状态和只读 Browser。
@@ -30,7 +30,7 @@
 - [Entity / Component 编辑模型](EntityComponentModel.md)：Entity V1、Component、共享字段、项目自定义后缀和 VS Code/MCP 契约。
 - [Structured Config V1](StructuredConfigModel.md)：Project 唯一类型绑定、共享字段、确定性 JSON 和 VS Code/MCP 原子编辑。
 - [Table Semantic Model V1](TableSemanticModel.md)：Table Catalog、CSV/XLSX Codec、分表、去重、保存、回滚和表格能力限制。
-- [ActionEditor FlowGraph 迁移设计](FlowGraphMigration.md)：旧节点声明到 Graph Catalog V4 的功能对照和未来 Unity 导出约束。
+- [ActionEditor FlowGraph 迁移设计](FlowGraphMigration.md)：旧节点声明到 Graph Catalog V4 的功能对照、Unity 导出约束与迁移边界。
 
 ## Reference、Lifecycle 与事务
 
@@ -47,7 +47,7 @@
 
 ## 验证、发布与路线图
 
-- [Release Quality](ReleaseQuality.md)：Node/npm/依赖锁定、Windows CI、真实 VSIX 激活、空缓存复现、私有分发边界和正式样例。
+- [Release Quality](ReleaseQuality.md)：Node/npm/依赖锁定、Windows CI、真实 VSIX 激活、空缓存复现、依赖本机 Unity Editor 的两个端到端门槛、私有分发边界和正式样例。
 - [大工程确定性验证与性能报告](LargeProjectValidation.md)：确定性语料生成、correctness/benchmark profile 和报告解释。
 - [Unity 接入前文档完整性矩阵](DocumentationCompleteness.md)：功能、设计、流程图、使用手册、Schema/Manifest 和自动验证的最终审计入口。
 - [Unity 接入前开发任务清单](PreUnityDevelopmentRoadmap.md)：PU 任务状态、强制验证门槛和 Unity 正式接入条件。

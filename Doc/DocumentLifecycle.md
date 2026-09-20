@@ -2,7 +2,7 @@
 
 ## 1. Status and scope
 
-本文是 PU-03 已交付的正式 Document Lifecycle V1 契约。VS Code、Document Browser 与 MCP 共同复用 Core `DocumentLifecycleService`、四领域 Lifecycle Adapter、Project-wide identity index、Reference Service 和 Node Host Project Transaction；MCP 提供七工具中的 `visualbridge_document_lifecycle`，并以真实 stdio、Extension Host 和事务恢复测试固定相同行为。Project Registry、Document Adapter、Project Refactoring 与 Workspace Document Index 是本契约复用的基础。
+本文是 PU-03 已交付的正式 Document Lifecycle V1 契约。VS Code、Document Browser 与 MCP 共同复用 Core `DocumentLifecycleService`、四领域 Lifecycle Adapter、Project-wide identity index、Reference Service 和 Node Host Project Transaction；MCP 提供八个工具中的 `visualbridge_document_lifecycle`，并以真实 stdio、Extension Host 和事务恢复测试固定相同行为。Project Registry、Document Adapter、Project Refactoring 与 Workspace Document Index 是本契约复用的基础。
 
 V1 Lifecycle 只处理同一 Authoring Project、同一 Project Document Type 内的：
 

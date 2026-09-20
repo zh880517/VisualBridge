@@ -187,4 +187,4 @@ MCP 使用步骤：
 
 固定自动化覆盖 Project 声明、协议 Parser/Schema、能力越权、参数无 Shell 解释、超时/取消、崩溃/退避、非法 JSON/结果、stderr、候选与诊断越界、源文件新增/覆盖、外部修改优先级、VS Code Trusted/Restricted Host，以及 MCP 默认禁用、显式 allowlist、自定义 Reference/Validator 和直接写入拒绝。
 
-当前不实现 Unity Catalog Exporter、Importer、Runtime、Debug、DAP、Provider Operation、自定义 Webview Module 加载或独立 VisualBridge CLI。这些能力不能借 Provider V2 绕过现有 Core Parser、Operation、Lifecycle、Project Transaction 和 `baseHash` 规则。
+Provider V2 不承载 Unity Catalog Exporter、Importer、Runtime Bridge、Debug/DAP、Provider Operation、自定义 Webview Module 加载或独立 VisualBridge CLI。这些能力也不能借 Provider V2 绕过现有 Core Parser、Operation、Lifecycle、Project Transaction 和 `baseHash` 规则。

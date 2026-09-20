@@ -2,7 +2,7 @@
 
 ## 1. 适用范围
 
-本手册面向第一次安装 VisualBridge VSIX 并打开 Authoring Project 的使用者。当前版本只支持本地文件系统工作区；VS Code Virtual Workspace 不受支持。本手册聚焦 VSIX，因此仍从已提交 Catalog 和 Authoring 源文件开始；仓库同时提供 Unity Structured Catalog Exporter 与 offline Compiler，命令与 Profile 接入见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md)。Editor Bridge、Runtime、Debug、DAP 和 Player 尚未实现。
+本手册面向第一次安装 VisualBridge VSIX 并打开 Authoring Project 的使用者。当前版本只支持本地文件系统工作区；VS Code Virtual Workspace 不受支持。本手册聚焦 VSIX，因此仍从已提交 Catalog 和 Authoring 源文件开始；仓库同时提供 Unity 侧的 offline Catalog Export（Structured、Entity、Graph）、offline Compiler（Structured、Entity、Table/CSV、Graph）、Editor Bridge 与 Runtime Bridge 本机接入，以及 VS Code 侧的 Graph「执行调试」页面和 `visualbridge-runtime` Debug 适配器（attach 型，只做检查，不支持断点、单步与求值）。环境、Profile 与命令见 [`UnityIntegrationManual.md`](UnityIntegrationManual.md)，边界与冻结决策见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md)，游戏侧执行观察接入见 [`UnityGraphExecutionDebug.md`](UnityGraphExecutionDebug.md)。独立 Unity Player 构建、远程与设备连接尚未实现。
 
 VisualBridge 是私有 `UNLICENSED` 工具，没有 Marketplace 安装入口。VSIX 必须由仓库构建或从受信任的内部构建产物取得。
 
@@ -47,7 +47,15 @@ flowchart TD
 code --install-extension .\Tools\VSCodeExtension\artifacts\visualbridge.vsix --force
 ```
 
-重新安装同版本时保留 `--force`。安装成功只证明扩展包存在；只有打开包含有效 `VisualBridge.project.vbjson` 的工作区后，Project 功能才会激活。
+重新安装同版本时保留 `--force`。也可以从仓库根目录一步完成重新打包并安装到当前用户配置：
+
+```powershell
+npm run install:vscode
+```
+
+该脚本先执行 `npm run package:vscode` 重新生成 VSIX，再由 `Tools/VSCodeExtension/scripts/install-local.mjs` 以 `code --install-extension <VSIX> --force` 安装。它要求 `code` CLI 位于 `PATH`；若本机 VS Code 可执行文件不在 `PATH` 上，用 `CODE_CLI` 环境变量指向它。
+
+安装成功只证明扩展包存在；只有打开包含有效 `VisualBridge.project.vbjson` 的工作区后，Project 功能才会激活。
 
 ## 4. 打开维护样例
 
@@ -68,7 +76,7 @@ code .\Samples\PreUnityAuthoring
 
 确认以下状态：
 
-1. Activity Bar 出现 **VisualBridge** 容器，内含 **Documents** 和 **Catalogs** 两个视图。
+1. Activity Bar 出现 **VisualBridge** 容器，内含 **Documents**、**Catalogs**、**Problems / References** 和 **Unsaved Documents** 四个视图。
 2. 状态栏显示当前发现的 VisualBridge Project 数量。
 3. **Documents** 按 Project 和 Document Type 列出四类样例。
 4. **Catalogs** 显示四类 Registry、类型、alias、来源状态和内容 Hash。
@@ -139,5 +147,6 @@ Project Settings 通过结构化 Operation 修改已经存在的 Project File，
 - **Output / VisualBridge**：Project 刷新、Provider stderr/结构化生命周期、Lifecycle/Refactor/Transaction 结果。
 - **VisualBridge / Documents**：执行 **Validate All Documents**，查看错误、警告、引用和物理 Table 来源。
 - **VisualBridge / Catalogs**：检查 Registry、alias、`contentHash` 与 `unknown/current/stale` 来源状态。
+- **VisualBridge / Unsaved Documents**：常驻列出全部已编辑未保存的 VisualBridge 文档（语义文档、Project File 与 Catalog 元数据、Table 编辑器），标题栏可一次性保存或放弃全部改动。
 
 Provider 的声明、Trust、MCP allowlist 和故障处理见 [Project Provider V2](ProjectProvider.md)。四类编辑器与安全修改步骤继续阅读 [Authoring 使用手册](AuthoringUserGuide.md)。

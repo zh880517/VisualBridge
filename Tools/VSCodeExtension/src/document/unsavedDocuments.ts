@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { ProjectRegistry } from "../project/projectRegistry";
-import type { TableEditorProvider } from "../editor/tableEditorProvider";
+import { OPTIONAL_EDITOR_VIEW_TYPE } from "../editor/documentEditorProvider";
+import { TABLE_EDITOR_VIEW_TYPE, type TableEditorProvider } from "../editor/tableEditorProvider";
 
 /** 一个未保存的 VisualBridge 编辑单元（文本文档、项目元数据/Catalog 或 Table 自定义编辑器）。 */
 interface UnsavedEntry {
@@ -8,6 +9,22 @@ interface UnsavedEntry {
   readonly kind: "document" | "metadata" | "table";
   readonly label: string;
   readonly description: string;
+}
+
+/**
+ * 未保存条目的打开目标，与其余打开入口一样显式指定 Custom Editor。裸
+ * `vscode.open` 走 default 解析：项目自定义后缀的语义文档会退回普通文本页，
+ * Table 会另开一份原始文本，在那里保存反而成为 Table 编辑器的外部修改而被拒。
+ * `metadata` 保持 default，让 Project 标记进入 Project Settings、Catalog 进入文本编辑器。
+ */
+function unsavedEntryViewType(kind: UnsavedEntry["kind"]): string {
+  if (kind === "table") {
+    return TABLE_EDITOR_VIEW_TYPE;
+  }
+  if (kind === "document") {
+    return OPTIONAL_EDITOR_VIEW_TYPE;
+  }
+  return "default";
 }
 
 export function collectUnsavedVisualBridgeDocuments(
@@ -160,9 +177,9 @@ export class UnsavedDocumentsTree implements vscode.TreeDataProvider<UnsavedTree
       iconPath: new vscode.ThemeIcon(entry.kind === "table" ? "table" : "file"),
       collapsibleState: vscode.TreeItemCollapsibleState.None,
       command: {
-        command: "vscode.open",
+        command: "vscode.openWith",
         title: "打开文档",
-        arguments: [entry.uri],
+        arguments: [entry.uri, unsavedEntryViewType(entry.kind)],
       },
     }));
   }

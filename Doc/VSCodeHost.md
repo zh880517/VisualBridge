@@ -2,13 +2,13 @@
 
 ## 文档定位
 
-本文记录 `Tools/VSCodeExtension` 当前已落地的宿主行为：激活、Project Registry、Custom Editor 路由、Webview 生命周期、保存/冲突、诊断和 Workspace Trust。领域格式与 Operation 仍由 Core 和 Built-in Extensions 拥有；本 Host 只把它们接入 VS Code API。
+本文记录 `Tools/VSCodeExtension` 当前已落地的宿主行为：激活、Project Registry、Custom Editor 路由、Webview 生命周期、保存/冲突、诊断、Workspace Trust，以及 Editor Bridge Server、Runtime Bridge 客户端与 `visualbridge-runtime` 调试注册在激活期的接线（协议语义与接入步骤由 Unity 侧文档承载）。领域格式与 Operation 仍由 Core 和 Built-in Extensions 拥有；本 Host 只把它们接入 VS Code API。
 
 共享字段控件见 [`FormFieldEditor.md`](FormFieldEditor.md)，多文件写入与恢复见 [`ProjectTransaction.md`](ProjectTransaction.md)。
 
 ## 激活与公开入口
 
-扩展在工作区包含 `VisualBridge.project.vbjson` 时激活。激活过程创建 Project Registry、Project Provider Service、Workspace Document Index、Reference Service、Reference Refactor、Document Lifecycle、三个文本文档编辑会话族、Table CustomDocument Provider、Project Settings Provider，以及 Documents、Catalogs、Problems / References 三棵 Tree View。服务、provider、watcher、diagnostic collection 和命令都进入扩展订阅统一释放。
+扩展在工作区包含 `VisualBridge.project.vbjson` 时激活。激活过程创建 Project Registry、Project Provider Service、Workspace Document Index、Reference Service、Reference Refactor、Document Lifecycle、三个文本文档编辑会话族、Table CustomDocument Provider、Project Settings Provider，以及 Documents、Catalogs、Problems / References、Unsaved Documents 四棵 Tree View；随后启动供 Unity Editor 连接的本地 Editor Bridge Server（Windows 命名管道与 loopback TCP，按窗口发布带 token 的发现记录并心跳，用 Project Registry 与文档索引应答 open/reveal 请求），创建连接 Runtime 实例的 Runtime Bridge 客户端服务，并为 manifest 的 `visualbridge-runtime` attach 型调试注册 configuration provider 与 inline 适配器工厂（只检查会话：单伪线程、文档快照变量树与漂移信息，不支持断点/单步/求值）。Runtime 实例发现、Runtime Bridge 协议与 Graph 执行过程可视化的冻结设计见 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md)，Editor Bridge / Runtime Bridge 的接入与验证步骤见 [`UnityIntegrationManual.md`](UnityIntegrationManual.md)；本文只记录它们在宿主激活期的接线。服务、provider、watcher、diagnostic collection、Bridge 服务端、调试注册和命令都进入扩展订阅统一释放。
 
 manifest 当前公开 4 个 Custom Editor view type：
 
@@ -21,7 +21,7 @@ manifest 当前公开 4 个 Custom Editor view type：
 
 `visualbridge.documentEditor` 与 `.option` 由同一个 Provider 接受，再由 Project Registry 的可扩展稳定 `documentTypes[].editor` ID 路由：已注册的 `graph`、`entity`、`structured` 进入领域会话，未注册 ID 进入显示 Project/Type/Adapter/路径和当前源码的通用只读 Document Shell。Shell 不建立领域编辑、语义索引、Reference 或 Lifecycle。Table 独立使用 CustomDocument，因为一个逻辑文档可能拥有多个 CSV 物理源或一个二进制 workbook。所有 view 都允许同一文档打开多个编辑器实例，并设置 `retainContextWhenHidden: false`。
 
-四棵 Tree View 是 `visualbridge.documents`、`visualbridge.catalogs`、`visualbridge.documentDetails` 和 `visualbridge.unsavedDocuments`；Unsaved Documents 常驻列出全部已编辑未保存的 VisualBridge 文档（语义文档、Project 元数据/Catalog、Table 编辑器），标题实时显示未保存数量，点击条目打开文档，标题栏提供全部保存与放弃所有改动按钮，并随文本编辑、保存、打开/关闭与 Table 编辑器状态自动刷新。Documents 中的文件是叶子节点，文件名后直接显示 Problems 与 References 图标和数量；选择文件会让同层级、可折叠的 `visualbridge.documentDetails` 显示该文件的两组扁平详情。文件行的两个内联图标可展开并聚焦对应分组，Problems 使用中文说明，问题项右键可复制中文详情。manifest 贡献 29 条用户命令：Project 刷新/打开、Project Settings、四类文档创建、通用创建、元素安全删除、未保存文档管理（聚焦 Unsaved Documents 视图，另含该视图的刷新、全部保存、放弃所有改动三个按钮命令；Lifecycle 的 `lifecycle.workspaceDirty` 报错也可直接打开）；Document Browser 的刷新、搜索、全量校验、打开、创建、复制、重命名路径、移动、安全删除、显示 Problems、显示 References、复制问题详情、揭示引用和重命名引用目标；Catalog Browser 的刷新与打开。内部测试命令不计入这 26 条公开命令。
+四棵 Tree View 是 `visualbridge.documents`、`visualbridge.catalogs`、`visualbridge.documentDetails` 和 `visualbridge.unsavedDocuments`；Unsaved Documents 常驻列出全部已编辑未保存的 VisualBridge 文档（语义文档、Project 元数据/Catalog、Table 编辑器），标题实时显示未保存数量，点击条目按类型显式路由到 Custom Editor（语义文档走可选文档编辑器并按 Registry 进入领域会话或只读 Shell，Table 走表格编辑器，Project 标记与 Catalog 走 default 解析），标题栏提供全部保存与放弃所有改动按钮，并随文本编辑、保存、打开/关闭与 Table 编辑器状态自动刷新。Documents 中的文件是叶子节点，文件名后直接显示 Problems 与 References 图标和数量；选择文件会让同层级、可折叠的 `visualbridge.documentDetails` 显示该文件的两组扁平详情。文件行的两个内联图标可展开并聚焦对应分组，Problems 使用中文说明，问题项右键可复制中文详情。manifest 贡献 29 条用户命令：Project 刷新/打开、Project Settings、四类文档创建、通用创建、元素安全删除、未保存文档管理（聚焦 Unsaved Documents 视图，另含该视图的刷新、全部保存、放弃所有改动三个按钮命令；Lifecycle 的 `lifecycle.workspaceDirty` 报错也可直接打开）；Document Browser 的刷新、搜索、全量校验、打开、创建、复制、重命名路径、移动、安全删除、显示 Problems、显示 References、复制问题详情、揭示引用和重命名引用目标；Catalog Browser 的刷新与打开。`visualbridge.test.*` 内部测试命令只在非 Production Extension Host 注册，不计入这 29 条公开命令；另有引用跳转命令 `visualbridge.revealReference` 由扩展激活代码在运行时注册、不进入 manifest，也不出现在命令面板，只供工作区引用服务、Document Browser 与 Editor Bridge Server 的跳转流程内部调用。
 
 ## Project Registry 与编辑器路由
 
