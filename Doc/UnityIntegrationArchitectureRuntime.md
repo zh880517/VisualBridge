@@ -240,7 +240,7 @@ DAP 适配器以**只检查会话**形态落地（范围裁定与 18.3 一致—
 
 - 传输层只认识信封（`DebugMessageHeader`）与消息体，不认识业务接口。消息类型为 `debug`（单向事件）、`debugResult`（查询结果）、`debugInstance`（实例显示名与关键词）。
 - 默认成帧器 `NdjsonFramer`：一条消息一行 UTF-8 JSON，以 `\n` 结尾；读取时接受 `\r\n` 与空行。单行上限 `1_048_576` 字节，超限丢弃并计数（读取侧按协议错误处理）。信封字段为 `type`、`seq`、`category`、`instance`、`interface`、`version`、`method`、可选的 `frame`、`args`；`debugResult` 额外携带 `requestId`。
-- `args` 只写 `name` 与 `value`，不写 `tag`；接收侧先按 tag 查找，线格式无 tag 时按位置回退。
+- `args` 只写 `name` 与 `value`，不写 `tag`；请求参数按**参数下标**读取（NDJSON 不写 tag），`TryGetArg<T>(int)` 的整数参数是下标，不是 tag。
 - `seq` 在入队锁内分配，随入队顺序单调递增。有界队列容量 16384，溢出丢弃最旧并累加 `droppedQueue`；写线程按「满 64 条或距上次冲刷 100 ms」批量写出；`Detach` 先最多等待写线程 100 ms，再以 100 ms 预算冲刷剩余消息；连接断开时清空队列、不补发。
 - 传输接口为 `IDebugTransport`（`IsConnected`、`ConnectionChanged`、`Send`、`SendBatch`、`Dispose`）；门面通过 `Attach` / `Detach` / `StartTransport` / `StopTransport` 管理，`SetFramer` 可替换成帧器。
 - **阶段 T 未接入**：当前没有 TCP 监听、端口、发现记录、握手、ack 窗口或入站解码；`Attach` 的实际传输实现、以及把入站消息还原为 `VisualBridgeDebugRequest` 后调用 `OnRequest` 都属于阶段 T。因此现阶段 `isConnected` 恒为 `false`。
