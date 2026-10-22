@@ -48,6 +48,13 @@ namespace VisualBridge.Debug
                 int newline = buffer.Slice(offset).IndexOf((byte)'\n');
                 if (newline < 0)
                 {
+                    // 无换行的半包已超上限：立即按协议错误断开，避免上层无限累积。
+                    if (buffer.Length - offset > MaxLineBytes)
+                    {
+                        throw new VisualBridgeDebugProtocolException(
+                            $"调试消息超过 {MaxLineBytes} 字节上限：{buffer.Length - offset}。");
+                    }
+
                     // 没有完整行：不消费半包，已跳过的空白行计入 consumed。
                     consumed = offset;
                     return false;
@@ -414,12 +421,14 @@ namespace VisualBridge.Debug
                 case JTokenType.String:
                 {
                     string text = (string)token;
-                    if (long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out long int64))
+                    if (long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out long int64)
+                        && int64.ToString(CultureInfo.InvariantCulture) == text)
                     {
                         return new DebugArgValue(name, tag, DebugValueKind.Int64, int64);
                     }
 
-                    if (ulong.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out ulong uint64))
+                    if (ulong.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out ulong uint64)
+                        && uint64.ToString(CultureInfo.InvariantCulture) == text)
                     {
                         return new DebugArgValue(name, tag, DebugValueKind.UInt64, uint64);
                     }

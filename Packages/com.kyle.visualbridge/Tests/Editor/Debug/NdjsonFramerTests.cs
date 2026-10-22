@@ -319,6 +319,37 @@ namespace VisualBridge.Editor.Tests
         }
 
         [Test]
+        public void TryParseRejectsOversizePartialLine()
+        {
+            var buffer = new byte[NdjsonFramer.MaxLineBytes + 1];
+            for (int i = 0; i < buffer.Length; i++)
+            {
+                buffer[i] = (byte)'a';
+            }
+
+            Assert.Throws<VisualBridgeDebugProtocolException>(() =>
+            {
+                _framer.TryParse(buffer, out _, out _, out _);
+            });
+        }
+
+        [TestCase("00123")]
+        [TestCase(" 42")]
+        [TestCase("+7")]
+        [TestCase("-0")]
+        public void NonCanonicalNumericStringsStayStrings(string text)
+        {
+            byte[] frame = FrameOneArg(DebugValueKind.String, text);
+
+            Assert.That(
+                _framer.TryParse(frame, out _, out _, out IDebugMessageBody body),
+                Is.True);
+            DebugArgValue arg = ((DebugArgsBody)body).Args[0];
+            Assert.That(arg.Kind, Is.EqualTo(DebugValueKind.String));
+            Assert.That(arg.Value, Is.EqualTo(text));
+        }
+
+        [Test]
         public void TryParseRejectsOversizeLine()
         {
             var buffer = new byte[NdjsonFramer.MaxLineBytes + 2];
