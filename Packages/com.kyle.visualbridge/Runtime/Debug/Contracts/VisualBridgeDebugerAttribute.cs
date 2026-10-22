@@ -19,7 +19,7 @@ namespace VisualBridge.Debug
         /// <summary>接口类别，已去除首尾空白。</summary>
         public string Category { get; }
 
-        /// <summary>生成物目录；为 null 时使用默认目录。</summary>
+        /// <summary>生成物目录；必填，缺失时生成失败（VBDBG012）。</summary>
         public string GeneratedDirectory { get; set; }
 
         /// <summary>接口版本。</summary>

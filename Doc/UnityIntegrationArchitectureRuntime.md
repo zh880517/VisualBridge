@@ -214,7 +214,7 @@ DAP 适配器以**只检查会话**形态落地（范围裁定与 18.3 一致—
 - 菜单 `Tools/VisualBridge/Debug/Generate Debug Contracts`。
 - batch `VisualBridge.Editor.VisualBridgeDebugContractBatch.Generate` / `.Check`；`Check` 逐字节比较磁盘产物，发现漂移以退出码 `1` 结束，成功为 `0`。
 - 扫描通过 `TypeCache.GetTypesWithAttribute<VisualBridgeDebugerAttribute>()`，跳过名称以 `.Tests` / `.Test` 结尾的程序集。
-- 样例接口与生成物位于 `Packages/com.kyle.visualbridge/Tests/Editor/Debug/Fixtures/` 与 `Tests/Editor/Debug/Generated/`。
+- 样例接口与生成物位于 `Packages/com.kyle.visualbridge/Tests/Editor/Debug/Fixtures/` 与 `Packages/com.kyle.visualbridge/Tests/Editor/Debug/Generated/`。
 
 ### 20.5 查询方向
 
@@ -225,7 +225,7 @@ DAP 适配器以**只检查会话**形态落地（范围裁定与 18.3 一致—
   → 按接口全名查找处理器（由 <X>QueryDebuger.Register 安装）
   → 生成分发器校验参数并调用业务实现
   → 业务实现调用 <X>QueryDebuger.Send<Method>Result(<instance>, requestId, payload)
-  → Start(requestId) → PushParam → End → debugResult
+  → Start(category, version, interface, method, instance, requestId) → PushParam → End → debugResult
 ```
 
 - `Register(implementation)` 以接口 FullName 注册处理器；重复注册以最后一次为准并输出警告；`Unregister()` 移除。
@@ -238,7 +238,7 @@ DAP 适配器以**只检查会话**形态落地（范围裁定与 18.3 一致—
 - 传输层只认识信封（`DebugMessageHeader`）与消息体，不认识业务接口。消息类型为 `debug`（单向事件）、`debugResult`（查询结果）、`debugInstance`（实例显示名与关键词）。
 - 默认成帧器 `NdjsonFramer`：一条消息一行 UTF-8 JSON，以 `\n` 结尾；读取时接受 `\r\n` 与空行。单行上限 `1_048_576` 字节，超限丢弃并计数（读取侧按协议错误处理）。信封字段为 `type`、`seq`、`category`、`instance`、`interface`、`version`、`method`、可选的 `frame`、`args`；`debugResult` 额外携带 `requestId`。
 - `args` 只写 `name` 与 `value`，不写 `tag`；接收侧先按 tag 查找，线格式无 tag 时按位置回退。
-- `seq` 在入队锁内分配，随入队顺序单调递增。有界队列容量 16384，溢出丢弃最旧并累加 `droppedQueue`；写线程按「满 64 条或距上次冲刷 100 ms」批量写出；`Detach` 最多等待 100 ms 冲刷剩余消息；连接断开时清空队列、不补发。
+- `seq` 在入队锁内分配，随入队顺序单调递增。有界队列容量 16384，溢出丢弃最旧并累加 `droppedQueue`；写线程按「满 64 条或距上次冲刷 100 ms」批量写出；`Detach` 先最多等待写线程 100 ms，再以 100 ms 预算冲刷剩余消息；连接断开时清空队列、不补发。
 - 传输接口为 `IDebugTransport`（`IsConnected`、`ConnectionChanged`、`Send`、`SendBatch`、`Dispose`）；门面通过 `Attach` / `Detach` / `StartTransport` / `StopTransport` 管理，`SetFramer` 可替换成帧器。
 - **阶段 T 未接入**：当前没有 TCP 监听、端口、发现记录、握手、ack 窗口或入站解码；`Attach` 的实际传输实现、以及把入站消息还原为 `VisualBridgeDebugRequest` 后调用 `OnRequest` 都属于阶段 T。因此现阶段 `isConnected` 恒为 `false`。
 - 本通道的 wire Schema 尚未进入 `Protocol/`；在阶段 T 冻结前，`NdjsonFramer` 与 `DebugMessageHeader` 是唯一实现。

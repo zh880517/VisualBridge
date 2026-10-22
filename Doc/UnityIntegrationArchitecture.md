@@ -15,7 +15,7 @@
 
 - [C# 契约与离线 Catalog/Compile](UnityIntegrationArchitectureContracts.md)：首期范围、冻结交接面、Package 边界、C# contract、Profile、Field 映射、三域 Catalog Export、四域 Compile 与领域扩展记录。
 - [Editor Bridge 与冻结决策](UnityIntegrationArchitectureEditorBridge.md)：Editor Bridge spike/冻结设计、Unity Adapter API 决策、命令与验证层级、已冻结与待关闭决策。
-- [Runtime Bridge 与 Graph 执行观察](UnityIntegrationArchitectureRuntime.md)：Runtime 产物形态、实例发现、Runtime Bridge 协议、DAP 检查适配器与 Graph 执行过程可视化。
+- [Runtime Bridge 与 Graph 执行观察](UnityIntegrationArchitectureRuntime.md)：Runtime 产物形态、实例发现、Runtime Bridge 协议、DAP 检查适配器、Graph 执行过程可视化与接口式调试通道。
 
 ## 原章节锚点索引
 

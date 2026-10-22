@@ -4,14 +4,14 @@
 
 协议正在从 `graphExecution` 字符串事件批量上报迁移到接口式调试通道（`VisualBridge.Debug` + 生成契约）。迁移分阶段：
 
-- **阶段 U（已完成）**：Unity 侧契约特性、`VisualBridgeDebug` 运行时门面、`NdjsonFramer` 成帧、代码生成器与启动策略。阶段 U 不包含 VS Code 消费（阶段 C）与两端连接/传输（阶段 T）。
-- **阶段 C / T（未实现）**：VS Code 数据消费与传输接入。当前 `VisualBridgeDebug.StartTransport()` 只挂载 `NullDebugTransport`，`isConnected` 恒为 `false`；插桩代码可以先行落地，但不会发出数据。
-- **旧路径（本文 §1–§6）**：`VisualBridgeGraphExecutionCapture`、`graphExecution` 消息、`getGraphExecutionInstances` / `subscribeGraphExecution` / `getGraphExecutionSnapshot` 仍可用，但标注为**待移除**；阶段 T 完成后连同 VS Code 旧消费路径一并删除，本文 §1–§6 届时移除。
+- **阶段 U（已完成）**：Unity 侧契约特性、`VisualBridgeDebug` 运行时门面、`NdjsonFramer` 成帧、代码生成器与启动策略。阶段 U 不包含 VS Code 对新通道的消费（阶段 C，消费侧；区别于远程连接的阶段 C）与两端连接/传输（阶段 T）。
+- **阶段 C / T（未实现）**：VS Code 对新通道的消费与传输接入。当前 `VisualBridgeDebug.StartTransport()` 只挂载 `NullDebugTransport`，`isConnected` 恒为 `false`；插桩代码可以先行落地，但不会发出数据。
+- **旧路径（本文 §1–§6）**：`VisualBridgeGraphExecutionCapture`、`graphExecution` 消息、`getGraphExecutionInstances` / `subscribeGraphExecution` / `unsubscribeGraphExecution` / `getGraphExecutionSnapshot` 仍可用，但标注为**待移除**；阶段 T 完成后连同 VS Code 旧消费路径一并删除，本文 §1–§6 届时移除。
 - **新接入**：使用 §7 的 `IGraphDebuger` / `IGraphQueryDebuger` 与生成的静态门面；不要再新增旧采集门面的调用。
 
 ## 1. 文档定位
 
-本文是**游戏侧引擎**接入 VisualBridge Graph 执行观察链路的操作指南：如何把引擎的图执行事件转发到 VisualBridge 采集门面，以及稳定 ID 映射规则。设计语义（范围裁决、事件模型、订阅与权限）冻结在 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 19 章；协议契约见 [`ProtocolContracts.md`](ProtocolContracts.md) 的 `visualbridge-runtime-bridge` 条目。VS Code 侧页面交互已实现（Graph 编辑器「执行调试」入口：实例选择、实时高亮/边流光/值显示与时间轴回放），其交互语义见同章 §19.5。
+本文是**游戏侧引擎**接入 VisualBridge Graph 执行观察链路的操作指南：如何把引擎的图执行事件转发到 VisualBridge 采集门面，以及稳定 ID 映射规则。设计语义（范围裁决、事件模型、订阅与权限）冻结在 [`UnityIntegrationArchitecture.md`](UnityIntegrationArchitecture.md) 第 19 章；协议契约见 [`ProtocolContracts.md`](ProtocolContracts.md) 的 `visualbridge-runtime-bridge` 条目。VS Code 侧旧路径的页面交互已实现（Graph 编辑器「执行调试」入口：实例选择、实时高亮/边流光/值显示与时间轴回放），其交互语义见同章 §19.5；新接口通道的 VS Code 消费仍属阶段 C，尚未实现。
 
 链路全景（旧路径）：游戏引擎执行图 → 引擎 debug provider 适配器转发 → `VisualBridgeGraphExecutionCapture` 采集门面（分配执行实例 ID、维护实例注册表、按订阅缓冲事件）→ Runtime Bridge 协议（`graphExecution` 批量事件）→ VS Code Graph 页面实时跟踪与回放。**只观察、不做断点**；执行引擎归游戏侧，VisualBridge 不实现节点调度或求值。接口式调试通道（§7）是迁移目标，上文描述的是当前仍在承载数据的旧路径。
 
@@ -148,7 +148,7 @@ public interface IGraphDebuger
 
 ### 7.2 插桩
 
-生成器为上面的接口产出静态门面 `GraphDebuger`（接口名去掉前缀 `I`），方法签名与接口一致，另有一个实例元数据方法：
+生成器为上面的接口产出静态门面 `GraphDebuger`（命名规则见 [`§20.4`](UnityIntegrationArchitectureRuntime.md#204-契约与代码生成)：接口名去掉前导 `I` 与后缀 `Debuger` 得到 stem，门面类名为 stem + `Debuger`），方法签名与接口一致，另有一个实例元数据方法：
 
 ```csharp
 GraphDebuger.DescribeInstance(string uid, string label, params string[] keywords);
@@ -250,7 +250,7 @@ GraphQueryDebuger.Unregister();
 - batch：`VisualBridge.Editor.VisualBridgeDebugContractBatch.Generate` / `.Check`；`Check` 逐字节比较磁盘产物，漂移时退出码为 `1`，成功为 `0`。
 - 生成物：事件门面与实现，或查询门面与分发器，外加每个目录一份 `debug-contracts.json`（接口 id、category、version、kind、实例/帧参数、方法参数与 tag、枚举成员）。
 - 目录已位于既有 asmdef 内时直接写入；接口位于 asmdef 程序集且目录没有 asmdef 时，生成器补一个引用接口程序集与 `VisualBridge.Debug` 的 asmdef；预定义程序集不写 asmdef；既有 asmdef 内容不符时拒绝覆盖。
-- 样例接口与生成物：`Packages/com.kyle.visualbridge/Tests/Editor/Debug/Fixtures/GraphDebugContracts.cs` 与 `Tests/Editor/Debug/Generated/`。
+- 样例接口与生成物：`Packages/com.kyle.visualbridge/Tests/Editor/Debug/Fixtures/GraphDebugContracts.cs` 与 `Packages/com.kyle.visualbridge/Tests/Editor/Debug/Generated/`。
 
 ### 7.5 新旧的对应关系
 
