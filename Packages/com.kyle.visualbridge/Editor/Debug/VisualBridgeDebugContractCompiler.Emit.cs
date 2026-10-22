@@ -172,7 +172,7 @@ namespace VisualBridge.Editor
                         "public static void Send"
                         + method.Name
                         + "Result("
-                        + SendDeclarations(model, method, instance)
+                        + SendDeclarations(instance)
                         + ")");
                     WriteGuard(writer);
                     writer.Line();
@@ -182,27 +182,7 @@ namespace VisualBridge.Editor
                         method,
                         instance == null ? "\"\"" : instance.Name,
                         "requestId");
-                    int resultTag = 0;
-                    foreach (DebugParamModel parameter in method.ResultParameters)
-                    {
-                        if (instance != null
-                            && string.Equals(parameter.Name, instance.Name, StringComparison.Ordinal))
-                        {
-                            continue;
-                        }
-
-                        writer.Line(
-                            Runtime
-                            + ".PushParam("
-                            + Quote(parameter.Name)
-                            + ", "
-                            + resultTag
-                            + ", "
-                            + parameter.WireArgument
-                            + ");");
-                        resultTag++;
-                    }
-
+                    writer.Line(Runtime + ".PushParam(\"payload\", 0, payload);");
                     writer.Line(Runtime + ".End();");
                     writer.Close("}");
                 }
@@ -400,7 +380,8 @@ namespace VisualBridge.Editor
                                + instanceArgument
                                + ", "
                                + (requestIdArgument ?? "null");
-            DebugParamModel frame = FindFrameParameter(model, method);
+            // 查询结果消息不携带帧号：即使声明了 FrameParameter，Start 也只传 requestId。
+            DebugParamModel frame = model.IsQuery ? null : FindFrameParameter(model, method);
             if (frame != null)
             {
                 arguments += ", " + frame.Name;
@@ -436,10 +417,7 @@ namespace VisualBridge.Editor
                 : method.FindParameter(model.FrameParameter);
         }
 
-        private static string SendDeclarations(
-            DebugContractModel model,
-            DebugMethodModel method,
-            DebugParamModel instance)
+        private static string SendDeclarations(DebugParamModel instance)
         {
             var declarations = new List<string>();
             if (instance != null)
@@ -448,17 +426,7 @@ namespace VisualBridge.Editor
             }
 
             declarations.Add("string requestId");
-            foreach (DebugParamModel parameter in method.ResultParameters)
-            {
-                if (instance != null
-                    && string.Equals(parameter.Name, instance.Name, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                declarations.Add(parameter.DeclaredTypeName + " " + parameter.Name);
-            }
-
+            declarations.Add("string payload");
             return string.Join(", ", declarations);
         }
 

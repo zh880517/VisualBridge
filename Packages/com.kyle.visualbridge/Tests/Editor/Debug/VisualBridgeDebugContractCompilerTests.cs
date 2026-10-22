@@ -58,6 +58,26 @@ namespace VisualBridge.Editor.Tests.DebugFixtures
         void FindNode(string uid, string requestId, string nodeId);
     }
 
+    [VisualBridgeDebuger(
+        "graph",
+        Kind = VisualBridgeDebugerKind.Query,
+        GeneratedDirectory = "Assets/Generated/QueryFrame",
+        InstanceParameter = "uid",
+        FrameParameter = "frame")]
+    public interface ISampleFramedQueryDebuger
+    {
+        void GetSnapshot(string uid, string requestId, int frame);
+    }
+
+    [VisualBridgeDebuger(
+        "graph",
+        Kind = VisualBridgeDebugerKind.Query,
+        GeneratedDirectory = "Assets/Generated/QueryPlain")]
+    public interface ISamplePlainQueryDebuger
+    {
+        void Ping(string requestId);
+    }
+
     [VisualBridgeDebuger("bad", GeneratedDirectory = "Assets/Generated/Bad")]
     public interface IUnsupportedTypeDebuger
     {
@@ -152,6 +172,88 @@ namespace VisualBridge.Editor.Tests.DebugFixtures
 
     [VisualBridgeDebuger("bad", GeneratedDirectory = "Assets/Generated/Other")]
     public interface ConflictedDebuger
+    {
+        void Run();
+    }
+
+    [VisualBridgeDebuger("bad", GeneratedDirectory = "Assets/Generated/Bad")]
+    public interface IKeywordParameterDebuger
+    {
+        void Run(string @event);
+    }
+
+    [VisualBridgeDebuger(
+        "bad",
+        GeneratedDirectory = "Assets/Generated/Bad",
+        InstanceParameter = "label")]
+    public interface IReservedLabelInstanceDebuger
+    {
+        void Run(string label);
+    }
+
+    [VisualBridgeDebuger(
+        "bad",
+        GeneratedDirectory = "Assets/Generated/Bad",
+        InstanceParameter = "keywords")]
+    public interface IReservedKeywordsInstanceDebuger
+    {
+        void Run(string keywords);
+    }
+
+    [VisualBridgeDebuger(
+        "bad",
+        Kind = VisualBridgeDebugerKind.Query,
+        GeneratedDirectory = "Assets/Generated/Bad",
+        InstanceParameter = "requestId")]
+    public interface IReservedRequestIdQueryDebuger
+    {
+        void Run(string requestId);
+    }
+
+    [VisualBridgeDebuger("bad", GeneratedDirectory = "Assets/Generated/Bad")]
+    public interface IBaseDebuger
+    {
+        void Base();
+    }
+
+    [VisualBridgeDebuger("bad", GeneratedDirectory = "Assets/Generated/Bad")]
+    public interface IInheritedDebuger : IBaseDebuger
+    {
+        void Run();
+    }
+
+    [VisualBridgeDebuger("bad", GeneratedDirectory = "Assets/Generated/Bad")]
+    public interface IPropertyDebuger
+    {
+        string Name { get; }
+    }
+
+    [VisualBridgeDebuger("bad", GeneratedDirectory = "Assets/Generated/Bad")]
+    public interface IIndexerDebuger
+    {
+        string this[int index] { get; }
+    }
+
+    [VisualBridgeDebuger("bad", GeneratedDirectory = "Assets/Generated/Bad")]
+    public interface IEventDebuger
+    {
+        event Action Changed;
+    }
+
+    [VisualBridgeDebuger("bad/name", GeneratedDirectory = "Assets/Generated/Bad")]
+    public interface IInvalidCategorySlashDebuger
+    {
+        void Run();
+    }
+
+    [VisualBridgeDebuger("..", GeneratedDirectory = "Assets/Generated/Bad")]
+    public interface IInvalidCategoryDotDotDebuger
+    {
+        void Run();
+    }
+
+    [VisualBridgeDebuger("bad", GeneratedDirectory = "Assets/Generated/../Outside")]
+    public interface IParentTraversalDirectoryDebuger
     {
         void Run();
     }
@@ -321,15 +423,85 @@ namespace VisualBridge.Editor.Tests
             Assert.That(content, Does.Contain("public static void Unregister()"));
             Assert.That(
                 content,
-                Does.Contain("public static void SendGetSnapshotResult(string uid, string requestId)"));
+                Does.Contain("public static void SendGetSnapshotResult(string uid, string requestId, string payload)"));
             Assert.That(
                 content,
                 Does.Contain(
-                    "public static void SendFindNodeResult(string uid, string requestId, string nodeId)"));
+                    "public static void SendFindNodeResult(string uid, string requestId, string payload)"));
+            Assert.That(content, Does.Not.Contain("SendFindNodeResult(string uid, string requestId, string nodeId)"));
             Assert.That(
                 content,
                 Does.Contain(
                     "private static void Dispatch(global::VisualBridge.Debug.VisualBridgeDebugRequest request)"));
+        }
+
+        [Test]
+        public void QueryResultSenderEmitsFixedBody()
+        {
+            string content = GetContent(
+                VisualBridgeDebugContractCompiler.Build(new[] { typeof(ISampleGraphQueryDebuger) }),
+                "SampleGraphQueryDebuger.g.cs");
+
+            Assert.That(
+                content,
+                Does.Contain(
+                    "public static void SendGetSnapshotResult(string uid, string requestId, string payload)\n"
+                    + "        {\n"
+                    + "            if (!global::VisualBridge.Debug.VisualBridgeDebug.isDebugBuild\n"
+                    + "                || !global::VisualBridge.Debug.VisualBridgeDebug.isConnected)\n"
+                    + "            {\n"
+                    + "                return;\n"
+                    + "            }\n"
+                    + "\n"
+                    + "            global::VisualBridge.Debug.VisualBridgeDebug.Start(\n"
+                    + "                \"graph\", 1, \"" + FixtureNamespace
+                    + ".ISampleGraphQueryDebuger\", \"GetSnapshot\", uid, requestId);\n"
+                    + "            global::VisualBridge.Debug.VisualBridgeDebug.PushParam(\"payload\", 0, payload);\n"
+                    + "            global::VisualBridge.Debug.VisualBridgeDebug.End();\n"
+                    + "        }"));
+        }
+
+        [Test]
+        public void QueryResultSenderWithoutInstanceTakesRequestIdAndPayload()
+        {
+            string content = GetContent(
+                VisualBridgeDebugContractCompiler.Build(new[] { typeof(ISamplePlainQueryDebuger) }),
+                "SamplePlainQueryDebuger.g.cs");
+
+            Assert.That(
+                content,
+                Does.Contain("public static void SendPingResult(string requestId, string payload)"));
+            Assert.That(
+                content,
+                Does.Contain(
+                    "\"graph\", 1, \"" + FixtureNamespace
+                    + ".ISamplePlainQueryDebuger\", \"Ping\", \"\", requestId);"));
+            Assert.That(content, Does.Contain("PushParam(\"payload\", 0, payload);"));
+        }
+
+        [Test]
+        public void QueryWithFrameParameterOmitsFrameFromResult()
+        {
+            string content = GetContent(
+                VisualBridgeDebugContractCompiler.Build(new[] { typeof(ISampleFramedQueryDebuger) }),
+                "SampleFramedQueryDebuger.g.cs");
+
+            Assert.That(
+                content,
+                Does.Contain("public static void SendGetSnapshotResult(string uid, string requestId, string payload)"));
+            Assert.That(
+                content,
+                Does.Contain(
+                    "\"graph\", 1, \"" + FixtureNamespace
+                    + ".ISampleFramedQueryDebuger\", \"GetSnapshot\", uid, requestId);"));
+            Assert.That(content, Does.Not.Contain("uid, requestId, frame"));
+            Assert.That(content, Does.Not.Contain(", frame);"));
+
+            string dispatcher = GetContent(
+                VisualBridgeDebugContractCompiler.Build(new[] { typeof(ISampleFramedQueryDebuger) }),
+                "VisualBridgeGeneratedSampleFramedQueryDebugerDispatcher.g.cs");
+            Assert.That(dispatcher, Does.Contain("request.TryGetArg(2, out int frame)"));
+            Assert.That(dispatcher, Does.Contain("implementation.GetSnapshot(uid, requestId, frame);"));
         }
 
         [Test]
@@ -506,6 +678,76 @@ namespace VisualBridge.Editor.Tests
         public void ValidateReportsInterfaceWithoutAttribute()
         {
             AssertDiagnostic("VBDBG015", typeof(IPlainDebuger));
+        }
+
+        [Test]
+        public void ValidateReportsInheritedInterface()
+        {
+            AssertDiagnostic("VBDBG016", typeof(IInheritedDebuger));
+        }
+
+        [Test]
+        public void ValidateReportsPropertyMember()
+        {
+            AssertDiagnostic("VBDBG017", typeof(IPropertyDebuger));
+        }
+
+        [Test]
+        public void ValidateReportsIndexerMember()
+        {
+            AssertDiagnostic("VBDBG017", typeof(IIndexerDebuger));
+        }
+
+        [Test]
+        public void ValidateReportsEventMember()
+        {
+            AssertDiagnostic("VBDBG017", typeof(IEventDebuger));
+        }
+
+        [Test]
+        public void ValidateReportsKeywordParameterName()
+        {
+            AssertDiagnostic("VBDBG018", typeof(IKeywordParameterDebuger));
+        }
+
+        [Test]
+        public void ValidateReportsReservedInstanceParameter()
+        {
+            AssertDiagnostic("VBDBG018", typeof(IReservedLabelInstanceDebuger));
+            AssertDiagnostic("VBDBG018", typeof(IReservedKeywordsInstanceDebuger));
+        }
+
+        [Test]
+        public void ValidateReportsQueryInstanceNamedRequestId()
+        {
+            AssertDiagnostic("VBDBG018", typeof(IReservedRequestIdQueryDebuger));
+        }
+
+        [Test]
+        public void ValidateReportsInvalidCategory()
+        {
+            AssertDiagnostic("VBDBG019", typeof(IInvalidCategorySlashDebuger));
+            AssertDiagnostic("VBDBG019", typeof(IInvalidCategoryDotDotDebuger));
+        }
+
+        [Test]
+        public void ValidateReportsParentTraversalGeneratedDirectory()
+        {
+            AssertDiagnostic("VBDBG011", typeof(IParentTraversalDirectoryDebuger));
+        }
+
+        [Test]
+        public void BuildFailsWithoutProducingFilesForInvalidContracts()
+        {
+            Assert.Throws<InvalidOperationException>(
+                () => VisualBridgeDebugContractCompiler.Build(new[] { typeof(IPropertyDebuger) }));
+            Assert.Throws<InvalidOperationException>(
+                () => VisualBridgeDebugContractCompiler.Build(new[] { typeof(IInheritedDebuger) }));
+
+            var errors = VisualBridgeDebugContractCompiler.Validate(
+                new[] { typeof(IPropertyDebuger), typeof(IInheritedDebuger) });
+            Assert.That(errors, Has.Some.StartsWith("VBDBG016"));
+            Assert.That(errors, Has.Some.StartsWith("VBDBG017"));
         }
 
         [Test]

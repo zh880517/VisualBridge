@@ -103,15 +103,6 @@ namespace VisualBridge.Editor
             ReturnType = method.ReturnType;
             IsGeneric = method.IsGenericMethodDefinition
                 || (method.IsGenericMethod && method.GetGenericArguments().Length != 0);
-            RequestIdIndex = -1;
-            for (int i = 0; i < parameters.Count; i++)
-            {
-                if (string.Equals(parameters[i].Name, "requestId", StringComparison.Ordinal))
-                {
-                    RequestIdIndex = i;
-                    break;
-                }
-            }
         }
 
         internal MethodInfo Method { get; }
@@ -129,23 +120,6 @@ namespace VisualBridge.Editor
         public bool ReturnsVoid
         {
             get { return ReturnType == typeof(void); }
-        }
-
-        /// <summary>首个名为 requestId 的参数下标；-1 表示没有。</summary>
-        public int RequestIdIndex { get; }
-
-        /// <summary>查询结果参数：位于 requestId 之后的声明参数。</summary>
-        public IReadOnlyList<DebugParamModel> ResultParameters
-        {
-            get
-            {
-                if (RequestIdIndex < 0)
-                {
-                    return Array.Empty<DebugParamModel>();
-                }
-
-                return Parameters.Skip(RequestIdIndex + 1).ToArray();
-            }
         }
 
         public DebugParamModel FindParameter(string name)
@@ -311,6 +285,48 @@ namespace VisualBridge.Editor
         internal const string DiagnosticInstanceParameter = "VBDBG013";
         internal const string DiagnosticFrameParameter = "VBDBG014";
         internal const string DiagnosticNotDebugInterface = "VBDBG015";
+        internal const string DiagnosticInheritedInterface = "VBDBG016";
+        internal const string DiagnosticNonMethodMember = "VBDBG017";
+        internal const string DiagnosticReservedName = "VBDBG018";
+        internal const string DiagnosticInvalidCategory = "VBDBG019";
+
+        private static readonly HashSet<string> s_csharpKeywords = new HashSet<string>(
+            new[]
+            {
+                "abstract", "as", "base", "bool", "break", "byte", "case", "catch", "char",
+                "checked", "class", "const", "continue", "decimal", "default", "delegate", "do",
+                "double", "else", "enum", "event", "explicit", "extern", "false", "finally",
+                "fixed", "float", "for", "foreach", "goto", "if", "implicit", "in", "int",
+                "interface", "internal", "is", "lock", "long", "namespace", "new", "null",
+                "object", "operator", "out", "override", "params", "private", "protected",
+                "public", "readonly", "ref", "return", "sbyte", "sealed", "short", "sizeof",
+                "stackalloc", "static", "string", "struct", "switch", "this", "throw", "true",
+                "try", "typeof", "uint", "ulong", "unchecked", "unsafe", "ushort", "using",
+                "virtual", "void", "volatile", "while",
+            },
+            StringComparer.Ordinal);
+
+        internal static bool IsCSharpKeyword(string value)
+        {
+            return !string.IsNullOrEmpty(value) && s_csharpKeywords.Contains(value);
+        }
+
+        private static readonly char[] s_invalidCategoryCharacters =
+        {
+            '/', '\\', ':', '*', '?', '"', '<', '>', '|',
+        };
+
+        internal static bool IsValidCategory(string category)
+        {
+            if (string.IsNullOrEmpty(category)
+                || string.Equals(category, ".", StringComparison.Ordinal)
+                || string.Equals(category, "..", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return category.IndexOfAny(s_invalidCategoryCharacters) < 0;
+        }
 
         private static readonly HashSet<string> s_predefinedAssemblies = new HashSet<string>(
             new[]

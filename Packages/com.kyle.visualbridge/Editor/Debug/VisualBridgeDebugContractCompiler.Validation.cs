@@ -60,6 +60,32 @@ namespace VisualBridge.Editor
                     local.Add(Diagnostic(DiagnosticNonPublic, subject, "Interface must be public."));
                 }
 
+                if (type.GetInterfaces().Length != 0)
+                {
+                    local.Add(Diagnostic(
+                        DiagnosticInheritedInterface,
+                        subject,
+                        "Interface inheritance is not supported; declare all members on the debug interface."));
+                }
+
+                if (type.GetProperties(s_methodFlags).Length != 0
+                    || type.GetEvents(s_methodFlags).Length != 0)
+                {
+                    local.Add(Diagnostic(
+                        DiagnosticNonMethodMember,
+                        subject,
+                        "Properties, indexers and events are not supported; use methods only."));
+                }
+
+                if (!IsValidCategory(attribute.Category))
+                {
+                    local.Add(Diagnostic(
+                        DiagnosticInvalidCategory,
+                        subject,
+                        "Category '" + attribute.Category
+                        + "' is not a valid file name segment."));
+                }
+
                 string directory = NormalizeGeneratedDirectory(attribute.GeneratedDirectory);
                 if (directory == null)
                 {
@@ -186,6 +212,7 @@ namespace VisualBridge.Editor
             List<string> errors)
         {
             var result = new List<DebugParamModel>();
+            var names = new HashSet<string>(StringComparer.Ordinal);
             ParameterInfo[] parameters = method.GetParameters();
             int previousTag = -1;
             for (int i = 0; i < parameters.Length; i++)
@@ -193,6 +220,22 @@ namespace VisualBridge.Editor
                 ParameterInfo parameter = parameters[i];
                 string name = parameter.Name ?? "<arg" + i + ">";
                 string paramSubject = methodSubject + "/" + name;
+
+                if (IsCSharpKeyword(name))
+                {
+                    errors.Add(Diagnostic(
+                        DiagnosticReservedName,
+                        paramSubject,
+                        "Parameter name '" + name + "' is a C# keyword."));
+                }
+
+                if (!names.Add(name))
+                {
+                    errors.Add(Diagnostic(
+                        DiagnosticReservedName,
+                        paramSubject,
+                        "Duplicate parameter name '" + name + "'."));
+                }
 
                 var tagAttribute = (VisualBridgeDebugTagAttribute)Attribute.GetCustomAttribute(
                     parameter,
@@ -266,6 +309,27 @@ namespace VisualBridge.Editor
             if (name == null)
             {
                 return;
+            }
+
+            if (string.Equals(name, "label", StringComparison.Ordinal)
+                || string.Equals(name, "keywords", StringComparison.Ordinal))
+            {
+                errors.Add(Diagnostic(
+                    DiagnosticReservedName,
+                    subject + "/" + name,
+                    "InstanceParameter name '" + name
+                    + "' is reserved by the generated DescribeInstance method."));
+            }
+
+            if (attribute.Kind == VisualBridgeDebugerKind.Query
+                && (string.Equals(name, "requestId", StringComparison.Ordinal)
+                    || string.Equals(name, "payload", StringComparison.Ordinal)))
+            {
+                errors.Add(Diagnostic(
+                    DiagnosticReservedName,
+                    subject + "/" + name,
+                    "InstanceParameter name '" + name
+                    + "' is reserved by the generated query result sender signature."));
             }
 
             bool found = false;
