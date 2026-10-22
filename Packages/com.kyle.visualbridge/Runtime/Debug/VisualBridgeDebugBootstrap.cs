@@ -5,8 +5,6 @@ namespace VisualBridge.Debug
     /// <summary>调试通道生命周期入口：启动策略与退出清理。</summary>
     internal static class VisualBridgeDebugBootstrap
     {
-        private static bool s_quittingSubscribed;
-
         /// <summary>纯启动策略；Editor 永不自动启动。</summary>
         internal static bool ShouldAutoStart(
             VisualBridgeConnectType connectType,
@@ -25,10 +23,13 @@ namespace VisualBridge.Debug
             }
         }
 
+#if UNITY_EDITOR || VISUALBRIDGE_RUNTIME_BRIDGE
+        private static bool s_quittingSubscribed;
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         private static void Initialize()
         {
-            // 宏关闭时 isDebugBuild 为 const false，整个引导直接退出。
+            // 编译期已由宏隔离；此处再按构建开关做一次运行期防御。
             bool debugEnabled = VisualBridgeDebug.isDebugBuild;
             if (!debugEnabled)
             {
@@ -57,5 +58,6 @@ namespace VisualBridge.Debug
         {
             VisualBridgeDebug.StopTransport();
         }
+#endif
     }
 }
