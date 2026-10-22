@@ -239,8 +239,8 @@ GraphQueryDebuger.Unregister();
 ```
 
 - 结果签名固定为 `Send<Method>Result(<instance>, string requestId, string payload)`；`payload` 只支持字符串，结构化数据由调用方编码，单条消息受 NDJSON 的 1 MiB 行上限约束。
-- 结果消息携带客户端提供的 `requestId`，**不带帧号**；即使接口声明了 `FrameParameter` 也不适用于查询结果。
-- 生成分发器按 tag（线格式无 tag 时按位置）取参并做类型转换。参数不合法回 `invalidArgument`；接口未注册回 `unregistered`；处理器抛异常回 `handlerError` 并累加 `VisualBridgeDebug.Counters.handlerErrors`。
+- 结果消息携带客户端提供的 `requestId`；生成的结果方法不传帧号（`frame = -1`），即使接口声明了 `FrameParameter` 也不适用于查询结果。
+- 生成分发器按下标取参（NDJSON 不写 tag；生成代码调用 `request.TryGetArg(<参数下标>, out ...)`）并做类型转换。参数不合法回 `invalidArgument`；接口未注册回 `unregistered`；处理器抛异常回 `handlerError` 并累加 `VisualBridgeDebug.Counters.handlerErrors`。
 - 同一接口重复 `Register` 以最后一次为准并输出警告；超时与重试由客户端负责，Unity 侧不重试。
 - 与旧路径一样，查询只读取运行时状态，不写回 Authoring 数据。
 
@@ -251,6 +251,8 @@ GraphQueryDebuger.Unregister();
 - 生成物：事件门面与实现，或查询门面与分发器，外加每个目录一份 `debug-contracts.json`（接口 id、category、version、kind、实例/帧参数、方法参数与 tag、枚举成员）。
 - 目录已位于既有 asmdef 内时直接写入；接口位于 asmdef 程序集且目录没有 asmdef 时，生成器补一个引用接口程序集与 `VisualBridge.Debug` 的 asmdef；预定义程序集不写 asmdef；既有 asmdef 内容不符时拒绝覆盖。
 - 样例接口与生成物：`Packages/com.kyle.visualbridge/Tests/Editor/Debug/Fixtures/GraphDebugContracts.cs` 与 `Packages/com.kyle.visualbridge/Tests/Editor/Debug/Generated/`。
+- **`Check` 的覆盖边界**：发现逻辑跳过程序集名以 `.Tests` / `.Test` 结尾的程序集；本仓库唯一的契约样例位于 `VisualBridge.Editor.Tests`，因此 `Check` 在本仓库发现 0 个接口并恒成功。样例生成物的门禁是 `Packages/com.kyle.visualbridge/Tests/Editor/Debug/VisualBridgeDebugGeneratedContractTests.cs`，不是 `Check`；`Check` 只用于校验游戏工程里非测试程序集中的接口。
+- **生成目录的 asmdef 前提**：若 `GeneratedDirectory` 位于一个既有 asmdef 下，该 asmdef 必须显式引用 `VisualBridge.Debug`（`autoReferenced` 只对预定义程序集生效）；查询接口生成的门面使用 `UnityEngine.Debug.LogWarning`，因此所在 asmdef 必须 `noEngineReferences: false`。生成器目前不会自动校验这两点（已知限制）。
 
 ### 7.5 新旧的对应关系
 

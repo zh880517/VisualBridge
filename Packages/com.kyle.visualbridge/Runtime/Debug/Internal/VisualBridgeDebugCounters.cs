@@ -14,7 +14,7 @@ namespace VisualBridge.Debug
         /// <summary>单条成帧超过上限而丢弃的消息数。</summary>
         public long oversize;
 
-        /// <summary>不在构建状态或未连接时被忽略的参数/结束调用数。</summary>
+        /// <summary>已连接但当前没有正在构建的消息时，被忽略的参数/结束调用数。</summary>
         public long filtered;
 
         /// <summary>请求处理器抛出的异常数。</summary>

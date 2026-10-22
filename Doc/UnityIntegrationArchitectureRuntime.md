@@ -215,6 +215,8 @@ DAP 适配器以**只检查会话**形态落地（范围裁定与 18.3 一致—
 - batch `VisualBridge.Editor.VisualBridgeDebugContractBatch.Generate` / `.Check`；`Check` 逐字节比较磁盘产物，发现漂移以退出码 `1` 结束，成功为 `0`。
 - 扫描通过 `TypeCache.GetTypesWithAttribute<VisualBridgeDebugerAttribute>()`，跳过名称以 `.Tests` / `.Test` 结尾的程序集。
 - 样例接口与生成物位于 `Packages/com.kyle.visualbridge/Tests/Editor/Debug/Fixtures/` 与 `Packages/com.kyle.visualbridge/Tests/Editor/Debug/Generated/`。
+- **`Check` 的覆盖边界**：由于上述跳过规则，本仓库唯一的契约样例位于 `VisualBridge.Editor.Tests`，因此 `Check` 在本仓库发现 0 个接口并恒成功。样例生成物的门禁是 `Packages/com.kyle.visualbridge/Tests/Editor/Debug/VisualBridgeDebugGeneratedContractTests.cs`，不是 `Check`；`Check` 只用于校验游戏工程里非测试程序集中的接口。
+- **生成目录的 asmdef 前提**：若 `GeneratedDirectory` 位于一个既有 asmdef 下，该 asmdef 必须显式引用 `VisualBridge.Debug`（`autoReferenced` 只对预定义程序集生效）；查询接口生成的门面使用 `UnityEngine.Debug.LogWarning`，因此所在 asmdef 必须 `noEngineReferences: false`。生成器目前不会自动校验这两点（已知限制）。
 
 ### 20.5 查询方向
 
@@ -225,12 +227,13 @@ DAP 适配器以**只检查会话**形态落地（范围裁定与 18.3 一致—
   → 按接口全名查找处理器（由 <X>QueryDebuger.Register 安装）
   → 生成分发器校验参数并调用业务实现
   → 业务实现调用 <X>QueryDebuger.Send<Method>Result(<instance>, requestId, payload)
-  → Start(category, version, interface, method, instance, requestId) → PushParam → End → debugResult
+  → Start(category, version, interface, method, instance, requestId, frame) → PushParam → End → debugResult
 ```
 
+- 运行时签名：`Start(string category, int version, string iface, string method, string instance = "", string requestId = null, long frame = -1)`；`frame` 缺省 `-1` 表示无帧号。
 - `Register(implementation)` 以接口 FullName 注册处理器；重复注册以最后一次为准并输出警告；`Unregister()` 移除。
-- 生成分发器按 tag 取参（线格式不带 tag 时按位置回退），并做基础类型/enum 转换。参数不合法时回 `invalidArgument`；接口未注册时回 `unregistered`；处理器抛异常时回 `handlerError` 并累加 `handlerErrors`。
-- 结果签名固定为 `Send<Method>Result(<instance>, string requestId, string payload)`：`payload` 只支持字符串，由业务实现自行序列化；结果消息携带 `requestId`，**不带帧号**（即使接口声明了 `FrameParameter`）。
+- 生成分发器按下标取参（NDJSON 不写 tag；生成代码调用 `request.TryGetArg(<参数下标>, out ...)`），并做基础类型/enum 转换。参数不合法时回 `invalidArgument`；接口未注册时回 `unregistered`；处理器抛异常时回 `handlerError` 并累加 `handlerErrors`。
+- 结果签名固定为 `Send<Method>Result(<instance>, string requestId, string payload)`：`payload` 只支持字符串，由业务实现自行序列化；结果消息携带 `requestId`，生成的结果方法不传帧号（`frame = -1`），即使接口声明了 `FrameParameter` 也不适用于查询结果。
 - `requestId` 由客户端生成、Unity 侧原样带回；超时与重试由客户端负责，Unity 侧不重试。
 
 ### 20.6 成帧与传输接缝
