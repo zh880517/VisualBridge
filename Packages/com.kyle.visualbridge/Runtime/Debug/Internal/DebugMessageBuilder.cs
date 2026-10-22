@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 
+#if UNITY_EDITOR || VISUALBRIDGE_RUNTIME_BRIDGE
 namespace VisualBridge.Debug
 {
     /// <summary>线程本地的单条消息构建器。</summary>
@@ -82,3 +83,4 @@ namespace VisualBridge.Debug
         }
     }
 }
+#endif

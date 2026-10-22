@@ -50,7 +50,7 @@ namespace VisualBridge.Debug
 
         /// <summary>
         /// 按 tag 取参数并按目标类型转换。
-        /// 线上格式不携带 tag，精确匹配失败时回退到同名下标。
+        /// 线格式不带 tag 时按位置取参（tag 作为下标），参数名/位置由生成代码保证。
         /// </summary>
         public bool TryGetArg<T>(int tag, out T value)
         {
@@ -77,7 +77,10 @@ namespace VisualBridge.Debug
             return TryConvert(arg.Value, out value);
         }
 
-        /// <summary>按 tag 取解析后的原始值；找不到返回 null。</summary>
+        /// <summary>
+        /// 按 tag 取解析后的原始值；找不到返回 null。
+        /// 线格式不带 tag 时按位置取参（tag 作为下标），参数名/位置由生成代码保证。
+        /// </summary>
         public object GetArg(int tag)
         {
             DebugArgValue arg;
@@ -96,7 +99,7 @@ namespace VisualBridge.Debug
                 }
             }
 
-            // 线上格式不携带 tag（解析后均为 0），按位置回退。
+            // 线格式不带 tag（解析后均为 0），按位置取参；参数名/位置由生成代码保证。
             if (tag >= 0 && tag < args.Count)
             {
                 arg = args[tag];

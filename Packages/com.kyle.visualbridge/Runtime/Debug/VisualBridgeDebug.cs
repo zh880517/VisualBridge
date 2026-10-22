@@ -29,7 +29,7 @@ namespace VisualBridge.Debug
 
         private static volatile IDebugFramer s_framer = s_defaultFramer;
         private static volatile bool s_isConnected;
-        private static volatile bool s_writeFailed;
+        private static int s_writerEpoch;
         private static IDebugTransport s_transport;
         private static Action<bool> s_connectionHandler;
 
@@ -88,6 +88,7 @@ namespace VisualBridge.Debug
         {
             if (!s_isConnected)
             {
+                // 未连接时直接短路：这是零开销路径，不计 malformed。
                 return;
             }
 
@@ -188,6 +189,7 @@ namespace VisualBridge.Debug
         {
             if (!s_isConnected)
             {
+                // 未连接时直接短路：这是零开销路径，不计 filtered。
                 return;
             }
 
@@ -276,20 +278,18 @@ namespace VisualBridge.Debug
                 if (ReferenceEquals(s_transport, transport))
                 {
                     // 同一传输重新 Attach：写线程异常后可借此恢复。
-                    s_writeFailed = false;
                     s_isConnected = transport.IsConnected;
-                    s_queue.StartWriter(SendBatchCore, HandleWriteError);
+                    StartWriterLocked(transport);
                     return;
                 }
 
                 DetachCore();
 
                 s_transport = transport;
-                s_writeFailed = false;
                 s_connectionHandler = connected => HandleConnectionChanged(transport);
                 transport.ConnectionChanged += s_connectionHandler;
                 s_isConnected = transport.IsConnected;
-                s_queue.StartWriter(SendBatchCore, HandleWriteError);
+                StartWriterLocked(transport);
             }
         }
 
@@ -316,6 +316,7 @@ namespace VisualBridge.Debug
         {
             if (!s_isConnected)
             {
+                // 未连接时直接短路：这是零开销路径，不计 filtered。
                 return null;
             }
 
@@ -407,9 +408,22 @@ namespace VisualBridge.Debug
             return result.ToArray();
         }
 
-        private static void SendBatchCore(IReadOnlyList<byte[]> payloads)
+        /// <summary>为指定传输启动写线程；发送与错误回调都绑定该传输与本次代际。</summary>
+        private static void StartWriterLocked(IDebugTransport transport)
         {
-            IDebugTransport transport = s_transport;
+            int epoch = s_writerEpoch + 1;
+            if (!s_queue.StartWriter(
+                    payloads => SendBatchCore(transport, payloads),
+                    () => HandleWriteError(transport, epoch)))
+            {
+                return;
+            }
+
+            s_writerEpoch = epoch;
+        }
+
+        private static void SendBatchCore(IDebugTransport transport, IReadOnlyList<byte[]> payloads)
+        {
             if (transport != null)
             {
                 transport.SendBatch(payloads);
@@ -428,25 +442,35 @@ namespace VisualBridge.Debug
                 bool connected = source.IsConnected;
                 if (!connected)
                 {
-                    s_writeFailed = false;
                     s_queue.Clear();
+                    s_isConnected = false;
+                    return;
                 }
 
-                s_isConnected = connected && !s_writeFailed;
+                // 重连（包括写失败后的重连）必须确保写线程仍存在，否则将永远无法发送。
+                StartWriterLocked(source);
+                s_isConnected = true;
             }
         }
 
-        private static void HandleWriteError()
+        private static void HandleWriteError(IDebugTransport transport, int epoch)
         {
-            s_writeFailed = true;
-            s_isConnected = false;
+            lock (s_transportGate)
+            {
+                // 旧代际的错误回调不得改变新连接的状态。
+                if (!ReferenceEquals(s_transport, transport) || epoch != s_writerEpoch)
+                {
+                    return;
+                }
+
+                s_isConnected = false;
+            }
         }
 
         private static void DetachCore()
         {
             IDebugTransport transport = s_transport;
             s_isConnected = false;
-            s_writeFailed = false;
 
             Action<bool> handler = s_connectionHandler;
             s_connectionHandler = null;

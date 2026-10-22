@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 
+#if UNITY_EDITOR || VISUALBRIDGE_RUNTIME_BRIDGE
 namespace VisualBridge.Debug
 {
     /// <summary>有界发送队列与后台写线程。</summary>
@@ -20,10 +21,8 @@ namespace VisualBridge.Debug
         private readonly VisualBridgeDebugCounters _counters;
 
         private long _seq;
-        private Thread _writer;
-        private bool _running;
-        private Action<IReadOnlyList<byte[]>> _sendBatch;
-        private Action _onError;
+        private int _generation;
+        private WriterState _writerState;
 
         public VisualBridgeDebugQueue(VisualBridgeDebugCounters counters, int capacity = DefaultCapacity)
         {
@@ -65,78 +64,63 @@ namespace VisualBridge.Debug
             }
         }
 
-        /// <summary>启动写线程；重复调用无副作用。</summary>
-        public void StartWriter(Action<IReadOnlyList<byte[]>> sendBatch, Action onError)
+        /// <summary>启动写线程；已有写线程时不重复启动并返回 false。</summary>
+        public bool StartWriter(Action<IReadOnlyList<byte[]>> sendBatch, Action onError)
         {
             lock (_gate)
             {
-                if (_writer != null)
+                if (_writerState != null)
                 {
-                    return;
+                    return false;
                 }
 
-                _sendBatch = sendBatch;
-                _onError = onError;
-                _running = true;
-                _writer = new Thread(WriterLoop)
+                // 每次启动都开启新代际，写线程、回调与清理动作全部绑定该代际。
+                _generation++;
+                var state = new WriterState(_generation, sendBatch, onError);
+                var thread = new Thread(() => WriterLoop(state))
                 {
                     IsBackground = true,
                     Name = "VisualBridge.Debug.Writer",
                 };
-                _writer.Start();
+                state.Thread = thread;
+                _writerState = state;
+                thread.Start();
+                return true;
             }
         }
 
-        /// <summary>停止写线程：最多刷新一批，随后清空队列。</summary>
+        /// <summary>
+        /// 停止写线程并在超时预算内尽量冲刷队列。
+        /// 先递增代际：即使旧写线程仍阻塞在 SendBatch 中，其后续清理与回调也会被忽略。
+        /// </summary>
         public void StopWriter(int flushTimeoutMs)
         {
-            Thread writer;
+            WriterState state;
             lock (_gate)
             {
-                writer = _writer;
-                if (writer == null)
+                state = _writerState;
+                if (state != null)
                 {
-                    _items.Clear();
-                    return;
+                    _generation++;
+                    state.Running = false;
+                    _writerState = null;
+                    Monitor.PulseAll(_gate);
                 }
-
-                _running = false;
-                Monitor.PulseAll(_gate);
             }
 
-            if (writer != Thread.CurrentThread)
+            if (state == null)
             {
-                writer.Join(flushTimeoutMs);
+                DropRemaining();
+                return;
             }
 
-            // 写线程可能尚未被调度：由调用线程补发一批，保证 Detach 的冲刷语义。
-            var flush = new List<byte[]>(BatchSize);
-            Action<IReadOnlyList<byte[]>> sendBatch;
-            lock (_gate)
+            if (state.Thread != null && state.Thread != Thread.CurrentThread)
             {
-                sendBatch = _sendBatch;
-                while (_items.Count > 0 && flush.Count < BatchSize)
-                {
-                    flush.Add(_items.Dequeue());
-                }
-
-                _items.Clear();
-                _writer = null;
-                _sendBatch = null;
-                _onError = null;
+                // Join 超时只表示线程尚未退出，不能据此假装它已经结束。
+                state.Thread.Join(flushTimeoutMs);
             }
 
-            if (flush.Count > 0 && sendBatch != null)
-            {
-                try
-                {
-                    sendBatch(flush);
-                }
-                catch
-                {
-                    // 冲刷失败按丢弃处理。
-                }
-            }
+            FlushRemaining(state, flushTimeoutMs);
         }
 
         /// <summary>丢弃队列中的全部负载，不补发。</summary>
@@ -148,7 +132,89 @@ namespace VisualBridge.Debug
             }
         }
 
-        private void WriterLoop()
+        /// <summary>在超时预算内循环冲刷至队列为空，超时或发送失败的部分计入 droppedQueue。</summary>
+        private void FlushRemaining(WriterState state, int timeoutMs)
+        {
+            List<byte[]> pending;
+            lock (_gate)
+            {
+                pending = TakeAllLocked();
+            }
+
+            if (pending == null)
+            {
+                return;
+            }
+
+            Action<IReadOnlyList<byte[]>> sendBatch = state.SendBatch;
+            if (sendBatch == null)
+            {
+                Interlocked.Add(ref _counters.droppedQueue, pending.Count);
+                return;
+            }
+
+            long deadline = NowMs() + Math.Max(0, timeoutMs);
+            var batch = new List<byte[]>(BatchSize);
+            int index = 0;
+            while (index < pending.Count)
+            {
+                batch.Clear();
+                while (batch.Count < BatchSize && index < pending.Count)
+                {
+                    batch.Add(pending[index++]);
+                }
+
+                try
+                {
+                    sendBatch(batch);
+                }
+                catch
+                {
+                    // 本批及其后的负载都无法发送，按丢弃计数。
+                    break;
+                }
+
+                if (index < pending.Count && NowMs() >= deadline)
+                {
+                    break;
+                }
+            }
+
+            int remaining = pending.Count - index;
+            if (remaining > 0)
+            {
+                Interlocked.Add(ref _counters.droppedQueue, remaining);
+            }
+        }
+
+        /// <summary>取出全部剩余负载；为空返回 null。</summary>
+        private List<byte[]> TakeAllLocked()
+        {
+            if (_items.Count == 0)
+            {
+                return null;
+            }
+
+            var pending = new List<byte[]>(_items);
+            _items.Clear();
+            return pending;
+        }
+
+        private void DropRemaining()
+        {
+            List<byte[]> pending;
+            lock (_gate)
+            {
+                pending = TakeAllLocked();
+            }
+
+            if (pending != null)
+            {
+                Interlocked.Add(ref _counters.droppedQueue, pending.Count);
+            }
+        }
+
+        private void WriterLoop(WriterState state)
         {
             var batch = new List<byte[]>(BatchSize);
             while (true)
@@ -156,32 +222,31 @@ namespace VisualBridge.Debug
                 bool stopping;
                 lock (_gate)
                 {
-                    // 已被 StopWriter 解绑的旧线程直接退出，避免与新写线程并存。
-                    if (!ReferenceEquals(_writer, Thread.CurrentThread))
+                    // 代际不匹配说明该线程已过期，绝不能触碰队列或新代际状态。
+                    if (!ReferenceEquals(_writerState, state))
                     {
                         return;
                     }
 
-                    while (_running && _items.Count == 0)
+                    while (state.Running && _items.Count == 0)
                     {
                         Monitor.Wait(_gate, FlushIntervalMs);
+                        if (!ReferenceEquals(_writerState, state))
+                        {
+                            return;
+                        }
                     }
 
-                    if (!ReferenceEquals(_writer, Thread.CurrentThread))
+                    if (!state.Running && _items.Count == 0)
                     {
                         return;
                     }
 
-                    if (!_running && _items.Count == 0)
-                    {
-                        return;
-                    }
-
-                    if (_running && _items.Count < BatchSize)
+                    if (state.Running && _items.Count < BatchSize)
                     {
                         // 等待最多 100 ms 以凑批；凑满 64 条立即冲刷。
                         long deadline = NowMs() + FlushIntervalMs;
-                        while (_running && _items.Count < BatchSize)
+                        while (state.Running && _items.Count < BatchSize)
                         {
                             long remaining = deadline - NowMs();
                             if (remaining <= 0)
@@ -190,6 +255,10 @@ namespace VisualBridge.Debug
                             }
 
                             Monitor.Wait(_gate, (int)remaining);
+                            if (!ReferenceEquals(_writerState, state))
+                            {
+                                return;
+                            }
                         }
                     }
 
@@ -198,14 +267,14 @@ namespace VisualBridge.Debug
                         batch.Add(_items.Dequeue());
                     }
 
-                    stopping = !_running;
+                    stopping = !state.Running;
                 }
 
                 if (batch.Count > 0)
                 {
                     try
                     {
-                        Action<IReadOnlyList<byte[]>> sendBatch = _sendBatch;
+                        Action<IReadOnlyList<byte[]>> sendBatch = state.SendBatch;
                         if (sendBatch != null)
                         {
                             sendBatch(batch);
@@ -214,7 +283,7 @@ namespace VisualBridge.Debug
                     catch
                     {
                         batch.Clear();
-                        FailWriter();
+                        FailWriter(state);
                         return;
                     }
                 }
@@ -228,26 +297,41 @@ namespace VisualBridge.Debug
             }
         }
 
-        private void FailWriter()
+        private void FailWriter(WriterState state)
         {
+            Action onError;
             lock (_gate)
             {
-                _items.Clear();
-                _running = false;
-                _writer = null;
+                // 旧代际的失败不得清空新连接的队列，也不得停止新写线程。
+                if (!ReferenceEquals(_writerState, state))
+                {
+                    return;
+                }
+
+                _generation++;
+                state.Running = false;
+                _writerState = null;
+                List<byte[]> pending = TakeAllLocked();
+                if (pending != null)
+                {
+                    Interlocked.Add(ref _counters.droppedQueue, pending.Count);
+                }
+
+                onError = state.OnError;
             }
 
-            Action onError = _onError;
-            if (onError != null)
+            if (onError == null)
             {
-                try
-                {
-                    onError();
-                }
-                catch
-                {
-                    // 错误回调不得击穿写线程。
-                }
+                return;
+            }
+
+            try
+            {
+                onError();
+            }
+            catch
+            {
+                // 错误回调不得击穿写线程。
             }
         }
 
@@ -255,5 +339,28 @@ namespace VisualBridge.Debug
         {
             return (long)(Stopwatch.GetTimestamp() * (1000.0 / Stopwatch.Frequency));
         }
+
+        /// <summary>一次写线程启动对应的代际状态。</summary>
+        private sealed class WriterState
+        {
+            public WriterState(int generation, Action<IReadOnlyList<byte[]>> sendBatch, Action onError)
+            {
+                Generation = generation;
+                SendBatch = sendBatch;
+                OnError = onError;
+                Running = true;
+            }
+
+            public int Generation { get; }
+
+            public Action<IReadOnlyList<byte[]>> SendBatch { get; }
+
+            public Action OnError { get; }
+
+            public Thread Thread { get; set; }
+
+            public bool Running { get; set; }
+        }
     }
 }
+#endif

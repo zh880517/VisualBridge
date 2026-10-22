@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 
+#if UNITY_EDITOR || VISUALBRIDGE_RUNTIME_BRIDGE
 namespace VisualBridge.Debug
 {
     /// <summary>按接口全名登记请求处理器。</summary>
@@ -40,3 +41,4 @@ namespace VisualBridge.Debug
         }
     }
 }
+#endif

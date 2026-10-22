@@ -31,6 +31,9 @@ namespace VisualBridge.Editor.Tests
 
             public bool Disposed { get; private set; }
 
+            /// <summary>为 true 时 SendBatch 抛异常，用于模拟写失败。</summary>
+            public volatile bool ThrowOnBatch;
+
             public int SentCount
             {
                 get
@@ -71,6 +74,11 @@ namespace VisualBridge.Editor.Tests
 
             public void SendBatch(IReadOnlyList<byte[]> payloads)
             {
+                if (ThrowOnBatch)
+                {
+                    throw new InvalidOperationException("模拟写失败");
+                }
+
                 lock (_gate)
                 {
                     for (int i = 0; i < payloads.Count; i++)
@@ -623,6 +631,99 @@ namespace VisualBridge.Editor.Tests
         }
 
         [Test]
+        public void DetachFlushesMoreThanOneBatch()
+        {
+            var transport = new FakeTransport();
+            VisualBridgeDebug.Attach(transport);
+
+            for (int i = 0; i < 130; i++)
+            {
+                VisualBridgeDebug.Start("graph", 1, TestInterface, "NodeStart");
+                VisualBridgeDebug.PushParam("i", 0, i);
+                VisualBridgeDebug.End();
+            }
+
+            VisualBridgeDebug.Detach();
+
+            Assert.That(transport.SentCount, Is.EqualTo(130));
+            Assert.That(VisualBridgeDebug.Counters.droppedQueue, Is.EqualTo(0));
+        }
+
+        [Test]
+        public void WriteFailureThenReconnectResumesSending()
+        {
+            var transport = new FakeTransport();
+            VisualBridgeDebug.Attach(transport);
+
+            transport.ThrowOnBatch = true;
+            VisualBridgeDebug.Start("graph", 1, TestInterface, "BeforeFailure");
+            VisualBridgeDebug.PushParam("x", 0, 1);
+            VisualBridgeDebug.End();
+
+            WaitUntil(() => !VisualBridgeDebug.isConnected);
+            transport.ThrowOnBatch = false;
+
+            transport.SetConnected(false);
+            Assert.That(VisualBridgeDebug.isConnected, Is.False);
+            transport.SetConnected(true);
+            Assert.That(VisualBridgeDebug.isConnected, Is.True);
+
+            VisualBridgeDebug.Start("graph", 1, TestInterface, "AfterReconnect");
+            VisualBridgeDebug.PushParam("y", 0, 2);
+            VisualBridgeDebug.End();
+
+            WaitFor(transport, 1);
+            IReadOnlyList<DebugArgValue> args;
+            DebugMessageHeader header = ParseSingle(transport.Snapshot()[0], out args);
+
+            Assert.That(header.Method, Is.EqualTo("AfterReconnect"));
+            Assert.That(args[0].Value, Is.EqualTo(2));
+        }
+
+        [Test]
+        public void OldWriterFailureDoesNotAffectNewConnection()
+        {
+            var counters = new VisualBridgeDebugCounters();
+            var queue = new VisualBridgeDebugQueue(counters, 32);
+            var second = new FakeTransport();
+            int errors = 0;
+
+            using (var entered = new ManualResetEventSlim(false))
+            using (var release = new ManualResetEventSlim(false))
+            {
+                queue.StartWriter(
+                    batch =>
+                    {
+                        entered.Set();
+                        release.Wait(5000);
+                        throw new InvalidOperationException("旧代际写失败");
+                    },
+                    () => Interlocked.Increment(ref errors));
+
+                queue.Enqueue(seq => new[] { (byte)1 });
+                Assert.That(entered.Wait(3000), Is.True);
+
+                // 旧写线程阻塞在 SendBatch 中，StopWriter 只能超时返回。
+                queue.StopWriter(50);
+
+                queue.StartWriter(batch => second.SendBatch(batch), () => Interlocked.Increment(ref errors));
+                queue.Enqueue(seq => new[] { (byte)2 });
+                WaitFor(second, 1);
+
+                // 旧代际随后失败：不得清空新队列、停止新写线程或触发错误回调。
+                release.Set();
+                Thread.Sleep(200);
+
+                Assert.That(errors, Is.EqualTo(0));
+                Assert.That(second.SentCount, Is.EqualTo(1));
+
+                queue.Enqueue(seq => new[] { (byte)3 });
+                WaitFor(second, 2);
+                Assert.That(second.Snapshot()[1][0], Is.EqualTo((byte)3));
+            }
+        }
+
+        [Test]
         public void DisconnectClearsPendingMessages()
         {
             var transport = new FakeTransport();
@@ -690,6 +791,20 @@ namespace VisualBridge.Editor.Tests
             Assert.That(consumed, Is.EqualTo(payload.Length));
             args = ((DebugArgsBody)body).Args;
             return header;
+        }
+
+        private static void WaitUntil(Func<bool> condition)
+        {
+            const int stepMs = 10;
+            const int timeoutMs = 3000;
+            int waited = 0;
+            while (!condition() && waited < timeoutMs)
+            {
+                Thread.Sleep(stepMs);
+                waited += stepMs;
+            }
+
+            Assert.That(condition(), Is.True);
         }
 
         private static void WaitFor(FakeTransport transport, int count)
