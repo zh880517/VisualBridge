@@ -7,13 +7,13 @@ namespace VisualBridge.Editor.Tests.DebugFixtures
 
         public static void DescribeInstance(string uid, string label, params string[] keywords)
         {
-            global::VisualBridge.Debug.VisualBridgeDebug.DescribeInstance("graph", uid, label, keywords);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.DescribeInstance("graph", uid, label, keywords);
         }
 
         public static void ExecutionStarted(string uid, string graphName, string documentId, string debugKey)
         {
-            if (!global::VisualBridge.Debug.VisualBridgeDebug.isDebugBuild
-                || !global::VisualBridge.Debug.VisualBridgeDebug.isConnected)
+            if (!global::VisualBridge.Diagnostics.VisualBridgeDebug.isDebugBuild
+                || !global::VisualBridge.Diagnostics.VisualBridgeDebug.isConnected)
             {
                 return;
             }
@@ -23,8 +23,8 @@ namespace VisualBridge.Editor.Tests.DebugFixtures
 
         public static void NodeStart(string uid, string nodeId, int frameIndex)
         {
-            if (!global::VisualBridge.Debug.VisualBridgeDebug.isDebugBuild
-                || !global::VisualBridge.Debug.VisualBridgeDebug.isConnected)
+            if (!global::VisualBridge.Diagnostics.VisualBridgeDebug.isDebugBuild
+                || !global::VisualBridge.Diagnostics.VisualBridgeDebug.isConnected)
             {
                 return;
             }
@@ -34,8 +34,8 @@ namespace VisualBridge.Editor.Tests.DebugFixtures
 
         public static void NodeOutput(string uid, string nodeId, int outputIndex, int frameIndex)
         {
-            if (!global::VisualBridge.Debug.VisualBridgeDebug.isDebugBuild
-                || !global::VisualBridge.Debug.VisualBridgeDebug.isConnected)
+            if (!global::VisualBridge.Diagnostics.VisualBridgeDebug.isDebugBuild
+                || !global::VisualBridge.Diagnostics.VisualBridgeDebug.isConnected)
             {
                 return;
             }
@@ -45,8 +45,8 @@ namespace VisualBridge.Editor.Tests.DebugFixtures
 
         public static void DataNode(string uid, string nodeId, int frameIndex)
         {
-            if (!global::VisualBridge.Debug.VisualBridgeDebug.isDebugBuild
-                || !global::VisualBridge.Debug.VisualBridgeDebug.isConnected)
+            if (!global::VisualBridge.Diagnostics.VisualBridgeDebug.isDebugBuild
+                || !global::VisualBridge.Diagnostics.VisualBridgeDebug.isConnected)
             {
                 return;
             }
@@ -56,8 +56,8 @@ namespace VisualBridge.Editor.Tests.DebugFixtures
 
         public static void EdgeValueChanged(string uid, string nodeId, int outputIndex, string value, int frameIndex)
         {
-            if (!global::VisualBridge.Debug.VisualBridgeDebug.isDebugBuild
-                || !global::VisualBridge.Debug.VisualBridgeDebug.isConnected)
+            if (!global::VisualBridge.Diagnostics.VisualBridgeDebug.isDebugBuild
+                || !global::VisualBridge.Diagnostics.VisualBridgeDebug.isConnected)
             {
                 return;
             }
@@ -67,8 +67,8 @@ namespace VisualBridge.Editor.Tests.DebugFixtures
 
         public static void ExecutionStopped(string uid)
         {
-            if (!global::VisualBridge.Debug.VisualBridgeDebug.isDebugBuild
-                || !global::VisualBridge.Debug.VisualBridgeDebug.isConnected)
+            if (!global::VisualBridge.Diagnostics.VisualBridgeDebug.isDebugBuild
+                || !global::VisualBridge.Diagnostics.VisualBridgeDebug.isConnected)
             {
                 return;
             }

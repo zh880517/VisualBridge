@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>调试通道运行时门面；生成代码只调用这里。</summary>
     public static class VisualBridgeDebug

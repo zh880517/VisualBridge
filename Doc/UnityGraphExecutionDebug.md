@@ -116,7 +116,7 @@ public sealed class VisualBridgeFlowDebuger : FlowRuntimeDebuger
 ### 7.1 声明事件接口
 
 ```csharp
-using VisualBridge.Debug;
+using VisualBridge.Diagnostics;
 
 [VisualBridgeDebuger(
     "graph",

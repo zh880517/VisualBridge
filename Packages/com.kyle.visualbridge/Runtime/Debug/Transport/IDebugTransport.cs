@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>调试消息传输；只接收已成帧的负载。</summary>
     public interface IDebugTransport

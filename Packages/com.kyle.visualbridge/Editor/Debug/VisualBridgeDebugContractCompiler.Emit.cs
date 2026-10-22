@@ -9,8 +9,8 @@ namespace VisualBridge.Editor
 {
     public static partial class VisualBridgeDebugContractCompiler
     {
-        private const string Runtime = "global::VisualBridge.Debug.VisualBridgeDebug";
-        private const string RequestType = "global::VisualBridge.Debug.VisualBridgeDebugRequest";
+        private const string Runtime = "global::VisualBridge.Diagnostics.VisualBridgeDebug";
+        private const string RequestType = "global::VisualBridge.Diagnostics.VisualBridgeDebugRequest";
 
         internal static IReadOnlyList<VisualBridgeDebugGeneratedFile> EmitFiles(
             IReadOnlyList<DebugContractModel> models)

@@ -1,6 +1,6 @@
 using System.Threading;
 
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>调试运行时计数器；字段只增不减，测试可调用 Reset。</summary>
     public sealed class VisualBridgeDebugCounters

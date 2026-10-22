@@ -1,6 +1,6 @@
 using System;
 
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>调试协议错误。</summary>
     public sealed class VisualBridgeDebugProtocolException : Exception

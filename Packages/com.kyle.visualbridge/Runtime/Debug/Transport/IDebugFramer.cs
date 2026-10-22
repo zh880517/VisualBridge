@@ -1,6 +1,6 @@
 using System;
 
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>调试消息成帧器。</summary>
     public interface IDebugFramer

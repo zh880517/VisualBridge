@@ -4,7 +4,7 @@ using System.IO;
 using System.Linq;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
-using VisualBridge.Debug;
+using VisualBridge.Diagnostics;
 using VisualBridge.Editor.Tests.DebugFixtures;
 
 namespace VisualBridge.Editor.Tests.DebugFixtures
@@ -318,10 +318,10 @@ namespace VisualBridge.Editor.Tests
                 Does.Contain("public static void NodeStart(string uid, string nodeId, int frameIndex)"));
             Assert.That(
                 content,
-                Does.Contain("if (!global::VisualBridge.Debug.VisualBridgeDebug.isDebugBuild"));
+                Does.Contain("if (!global::VisualBridge.Diagnostics.VisualBridgeDebug.isDebugBuild"));
             Assert.That(
                 content,
-                Does.Contain("    || !global::VisualBridge.Debug.VisualBridgeDebug.isConnected)"));
+                Does.Contain("    || !global::VisualBridge.Diagnostics.VisualBridgeDebug.isConnected)"));
             Assert.That(
                 content,
                 Does.Contain(
@@ -345,19 +345,19 @@ namespace VisualBridge.Editor.Tests
             Assert.That(
                 content,
                 Does.Contain(
-                    "global::VisualBridge.Debug.VisualBridgeDebug.PushParam(\"uid\", 0, uid);"));
+                    "global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam(\"uid\", 0, uid);"));
             Assert.That(
                 content,
                 Does.Contain(
-                    "global::VisualBridge.Debug.VisualBridgeDebug.PushParam(\"nodeId\", 10, nodeId);"));
+                    "global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam(\"nodeId\", 10, nodeId);"));
             Assert.That(
                 content,
                 Does.Contain(
-                    "global::VisualBridge.Debug.VisualBridgeDebug.PushParam(\"outputIndex\", 11, outputIndex);"));
+                    "global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam(\"outputIndex\", 11, outputIndex);"));
             Assert.That(
                 content,
                 Does.Contain(
-                    "global::VisualBridge.Debug.VisualBridgeDebug.PushParam(\"frameIndex\", 13, frameIndex);"));
+                    "global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam(\"frameIndex\", 13, frameIndex);"));
         }
 
         [Test]
@@ -432,7 +432,7 @@ namespace VisualBridge.Editor.Tests
             Assert.That(
                 content,
                 Does.Contain(
-                    "private static void Dispatch(global::VisualBridge.Debug.VisualBridgeDebugRequest request)"));
+                    "private static void Dispatch(global::VisualBridge.Diagnostics.VisualBridgeDebugRequest request)"));
         }
 
         [Test]
@@ -447,17 +447,17 @@ namespace VisualBridge.Editor.Tests
                 Does.Contain(
                     "public static void SendGetSnapshotResult(string uid, string requestId, string payload)\n"
                     + "        {\n"
-                    + "            if (!global::VisualBridge.Debug.VisualBridgeDebug.isDebugBuild\n"
-                    + "                || !global::VisualBridge.Debug.VisualBridgeDebug.isConnected)\n"
+                    + "            if (!global::VisualBridge.Diagnostics.VisualBridgeDebug.isDebugBuild\n"
+                    + "                || !global::VisualBridge.Diagnostics.VisualBridgeDebug.isConnected)\n"
                     + "            {\n"
                     + "                return;\n"
                     + "            }\n"
                     + "\n"
-                    + "            global::VisualBridge.Debug.VisualBridgeDebug.Start(\n"
+                    + "            global::VisualBridge.Diagnostics.VisualBridgeDebug.Start(\n"
                     + "                \"graph\", 1, \"" + FixtureNamespace
                     + ".ISampleGraphQueryDebuger\", \"GetSnapshot\", uid, requestId);\n"
-                    + "            global::VisualBridge.Debug.VisualBridgeDebug.PushParam(\"payload\", 0, payload);\n"
-                    + "            global::VisualBridge.Debug.VisualBridgeDebug.End();\n"
+                    + "            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam(\"payload\", 0, payload);\n"
+                    + "            global::VisualBridge.Diagnostics.VisualBridgeDebug.End();\n"
                     + "        }"));
         }
 
@@ -517,7 +517,7 @@ namespace VisualBridge.Editor.Tests
             Assert.That(
                 content,
                 Does.Contain(
-                    "global::VisualBridge.Debug.VisualBridgeDebug.OnRequestArgumentError(request);"));
+                    "global::VisualBridge.Diagnostics.VisualBridgeDebug.OnRequestArgumentError(request);"));
         }
 
         [Test]

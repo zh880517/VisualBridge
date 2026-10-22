@@ -1,6 +1,6 @@
 using System;
 using NUnit.Framework;
-using VisualBridge.Debug;
+using VisualBridge.Diagnostics;
 
 namespace VisualBridge.Editor.Tests
 {

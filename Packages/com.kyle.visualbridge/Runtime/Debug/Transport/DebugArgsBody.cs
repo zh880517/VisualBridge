@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>带参数列表的调试消息体。</summary>
     public sealed class DebugArgsBody : IDebugMessageBody

@@ -1,6 +1,6 @@
 {
   "name": "VisualBridge.Debug",
-  "rootNamespace": "VisualBridge.Debug",
+  "rootNamespace": "VisualBridge.Diagnostics",
   "references": [],
   "includePlatforms": [],
   "excludePlatforms": [],

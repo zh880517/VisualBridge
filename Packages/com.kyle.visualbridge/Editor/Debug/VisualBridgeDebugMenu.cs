@@ -1,6 +1,6 @@
 using UnityEditor;
 using UnityEngine;
-using VisualBridge.Debug;
+using VisualBridge.Diagnostics;
 
 namespace VisualBridge.Editor
 {

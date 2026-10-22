@@ -1,4 +1,4 @@
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>调试参数值类型。</summary>
     public enum DebugValueKind : byte

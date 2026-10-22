@@ -1,4 +1,4 @@
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>单个调试参数。</summary>
     public readonly struct DebugArgValue

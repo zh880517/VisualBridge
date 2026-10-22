@@ -8,7 +8,7 @@ namespace VisualBridge.Editor.Tests.DebugFixtures
 
         public static void DescribeInstance(string uid, string label, params string[] keywords)
         {
-            global::VisualBridge.Debug.VisualBridgeDebug.DescribeInstance("graph", uid, label, keywords);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.DescribeInstance("graph", uid, label, keywords);
         }
 
         public static void Register(IGraphQueryDebuger implementation)
@@ -26,7 +26,7 @@ namespace VisualBridge.Editor.Tests.DebugFixtures
                 }
 
                 s_impl = implementation;
-                global::VisualBridge.Debug.VisualBridgeDebug.RegisterRequestHandler("VisualBridge.Editor.Tests.DebugFixtures.IGraphQueryDebuger", Dispatch);
+                global::VisualBridge.Diagnostics.VisualBridgeDebug.RegisterRequestHandler("VisualBridge.Editor.Tests.DebugFixtures.IGraphQueryDebuger", Dispatch);
             }
         }
 
@@ -35,25 +35,25 @@ namespace VisualBridge.Editor.Tests.DebugFixtures
             lock (s_gate)
             {
                 s_impl = null;
-                global::VisualBridge.Debug.VisualBridgeDebug.UnregisterRequestHandler("VisualBridge.Editor.Tests.DebugFixtures.IGraphQueryDebuger");
+                global::VisualBridge.Diagnostics.VisualBridgeDebug.UnregisterRequestHandler("VisualBridge.Editor.Tests.DebugFixtures.IGraphQueryDebuger");
             }
         }
 
         public static void SendGetSnapshotResult(string uid, string requestId, string payload)
         {
-            if (!global::VisualBridge.Debug.VisualBridgeDebug.isDebugBuild
-                || !global::VisualBridge.Debug.VisualBridgeDebug.isConnected)
+            if (!global::VisualBridge.Diagnostics.VisualBridgeDebug.isDebugBuild
+                || !global::VisualBridge.Diagnostics.VisualBridgeDebug.isConnected)
             {
                 return;
             }
 
-            global::VisualBridge.Debug.VisualBridgeDebug.Start(
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.Start(
                 "graph", 1, "VisualBridge.Editor.Tests.DebugFixtures.IGraphQueryDebuger", "GetSnapshot", uid, requestId);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("payload", 0, payload);
-            global::VisualBridge.Debug.VisualBridgeDebug.End();
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("payload", 0, payload);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.End();
         }
 
-        private static void Dispatch(global::VisualBridge.Debug.VisualBridgeDebugRequest request)
+        private static void Dispatch(global::VisualBridge.Diagnostics.VisualBridgeDebugRequest request)
         {
             IGraphQueryDebuger implementation;
             lock (s_gate)

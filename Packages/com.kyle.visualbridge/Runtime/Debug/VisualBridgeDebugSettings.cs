@@ -1,4 +1,4 @@
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>调试通道的全局设置。</summary>
     public static class VisualBridgeDebugSettings

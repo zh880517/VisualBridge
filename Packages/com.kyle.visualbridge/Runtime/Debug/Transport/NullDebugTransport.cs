@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>始终断开的空传输，用于未启用调试通道的构建。</summary>
     public sealed class NullDebugTransport : IDebugTransport

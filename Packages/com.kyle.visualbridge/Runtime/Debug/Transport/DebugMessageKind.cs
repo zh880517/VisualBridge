@@ -1,4 +1,4 @@
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>调试消息类型。</summary>
     public enum DebugMessageKind : byte

@@ -3,7 +3,7 @@ namespace VisualBridge.Editor.Tests.DebugFixtures
 {
     internal static class VisualBridgeGeneratedGraphQueryDebugerDispatcher
     {
-        internal static void Dispatch(global::VisualBridge.Debug.VisualBridgeDebugRequest request, global::VisualBridge.Editor.Tests.DebugFixtures.IGraphQueryDebuger implementation)
+        internal static void Dispatch(global::VisualBridge.Diagnostics.VisualBridgeDebugRequest request, global::VisualBridge.Editor.Tests.DebugFixtures.IGraphQueryDebuger implementation)
         {
             switch (request.Method)
             {
@@ -12,7 +12,7 @@ namespace VisualBridge.Editor.Tests.DebugFixtures
                     if (!request.TryGetArg(0, out string uid)
                         || !request.TryGetArg(1, out string requestId))
                     {
-                        global::VisualBridge.Debug.VisualBridgeDebug.OnRequestArgumentError(request);
+                        global::VisualBridge.Diagnostics.VisualBridgeDebug.OnRequestArgumentError(request);
                         return;
                     }
 

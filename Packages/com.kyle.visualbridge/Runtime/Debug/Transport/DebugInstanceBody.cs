@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>调试实例元数据消息体。</summary>
     public sealed class DebugInstanceBody : IDebugMessageBody

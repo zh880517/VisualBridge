@@ -1,6 +1,6 @@
 using System;
 
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>标记调试契约接口。</summary>
     [AttributeUsage(AttributeTargets.Interface, AllowMultiple = false)]

@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Threading;
 using NUnit.Framework;
-using VisualBridge.Debug;
+using VisualBridge.Diagnostics;
 
 namespace VisualBridge.Editor.Tests
 {

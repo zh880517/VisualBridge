@@ -1,6 +1,6 @@
 using System;
 
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>标记调试契约参数的标签。</summary>
     [AttributeUsage(AttributeTargets.Parameter, AllowMultiple = false)]

@@ -157,7 +157,7 @@ DAP 适配器以**只检查会话**形态落地（范围裁定与 18.3 一致—
 
 - 生成的事件与查询结果门面只在 `isDebugBuild && isConnected` 为真时继续调用；否则直接返回，不构造消息、不入队。生成门面中的 `DescribeInstance` 由运行时门面按 `isConnected` 短路。
 - `VisualBridgeDebug` 不认识任何具体模块、接口或参数类型；生成代码负责把接口调用翻译成 `Start` / `PushParam` / `End`。
-- 程序集 `VisualBridge.Debug`（`Packages/com.kyle.visualbridge/Runtime/Debug/`，rootNamespace `VisualBridge.Debug`）自包含：不引用 `VisualBridge.Runtime`，也不引用编辑器程序集；`autoReferenced: true`，业务程序集无需显式引用即可使用特性与门面。它预编译引用 `Newtonsoft.Json.dll`，并允许 UnityEngine API（`ConnectType` 判定与 `RuntimeInitializeOnLoadMethod` 引导）。
+- 程序集 `VisualBridge.Debug`（`Packages/com.kyle.visualbridge/Runtime/Debug/`，rootNamespace `VisualBridge.Diagnostics`）自包含：不引用 `VisualBridge.Runtime`，也不引用编辑器程序集；`autoReferenced: true`，业务程序集无需显式引用即可使用特性与门面。它预编译引用 `Newtonsoft.Json.dll`，并允许 UnityEngine API（`ConnectType` 判定与 `RuntimeInitializeOnLoadMethod` 引导）。
 - `VisualBridge.Editor` 引用 `VisualBridge.Debug`，承载代码生成器、菜单与 batch 入口。生成物写入接口声明的目录（`Assets/` 或 `Packages/` 下），不进入包运行时程序集。
 - 宏关闭时程序集仍然存在（不使用 `defineConstraints`），公开 API 退化为空方法；因此插桩代码在任何构建下都能编译。
 

@@ -6,7 +6,7 @@ using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>NDJSON 成帧器：一条消息一行 UTF-8 JSON。</summary>
     public sealed class NdjsonFramer : IDebugFramer

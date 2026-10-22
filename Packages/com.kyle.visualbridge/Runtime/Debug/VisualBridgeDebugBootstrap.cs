@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>调试通道生命周期入口：启动策略与退出清理。</summary>
     internal static class VisualBridgeDebugBootstrap

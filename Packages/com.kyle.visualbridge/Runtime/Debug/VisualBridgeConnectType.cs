@@ -1,4 +1,4 @@
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>调试通道允许连接的运行环境。</summary>
     public enum VisualBridgeConnectType

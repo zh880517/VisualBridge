@@ -1,4 +1,4 @@
-using VisualBridge.Debug;
+using VisualBridge.Diagnostics;
 
 namespace VisualBridge.Editor.Tests.DebugFixtures
 {

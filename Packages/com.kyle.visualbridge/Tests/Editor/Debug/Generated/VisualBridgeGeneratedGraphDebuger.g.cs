@@ -6,64 +6,64 @@ namespace VisualBridge.Editor.Tests.DebugFixtures
 
         public void ExecutionStarted(string uid, string graphName, string documentId, string debugKey)
         {
-            global::VisualBridge.Debug.VisualBridgeDebug.Start(
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.Start(
                 "graph", 1, "VisualBridge.Editor.Tests.DebugFixtures.IGraphDebuger", "ExecutionStarted", uid, null);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("uid", 0, uid);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("graphName", 1, graphName);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("documentId", 2, documentId);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("debugKey", 3, debugKey);
-            global::VisualBridge.Debug.VisualBridgeDebug.End();
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("uid", 0, uid);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("graphName", 1, graphName);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("documentId", 2, documentId);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("debugKey", 3, debugKey);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.End();
         }
 
         public void NodeStart(string uid, string nodeId, int frameIndex)
         {
-            global::VisualBridge.Debug.VisualBridgeDebug.Start(
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.Start(
                 "graph", 1, "VisualBridge.Editor.Tests.DebugFixtures.IGraphDebuger", "NodeStart", uid, null, frameIndex);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("uid", 0, uid);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("nodeId", 1, nodeId);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("frameIndex", 2, frameIndex);
-            global::VisualBridge.Debug.VisualBridgeDebug.End();
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("uid", 0, uid);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("nodeId", 1, nodeId);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("frameIndex", 2, frameIndex);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.End();
         }
 
         public void NodeOutput(string uid, string nodeId, int outputIndex, int frameIndex)
         {
-            global::VisualBridge.Debug.VisualBridgeDebug.Start(
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.Start(
                 "graph", 1, "VisualBridge.Editor.Tests.DebugFixtures.IGraphDebuger", "NodeOutput", uid, null, frameIndex);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("uid", 0, uid);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("nodeId", 1, nodeId);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("outputIndex", 2, outputIndex);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("frameIndex", 3, frameIndex);
-            global::VisualBridge.Debug.VisualBridgeDebug.End();
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("uid", 0, uid);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("nodeId", 1, nodeId);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("outputIndex", 2, outputIndex);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("frameIndex", 3, frameIndex);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.End();
         }
 
         public void DataNode(string uid, string nodeId, int frameIndex)
         {
-            global::VisualBridge.Debug.VisualBridgeDebug.Start(
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.Start(
                 "graph", 1, "VisualBridge.Editor.Tests.DebugFixtures.IGraphDebuger", "DataNode", uid, null, frameIndex);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("uid", 0, uid);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("nodeId", 1, nodeId);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("frameIndex", 2, frameIndex);
-            global::VisualBridge.Debug.VisualBridgeDebug.End();
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("uid", 0, uid);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("nodeId", 1, nodeId);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("frameIndex", 2, frameIndex);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.End();
         }
 
         public void EdgeValueChanged(string uid, string nodeId, int outputIndex, string value, int frameIndex)
         {
-            global::VisualBridge.Debug.VisualBridgeDebug.Start(
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.Start(
                 "graph", 1, "VisualBridge.Editor.Tests.DebugFixtures.IGraphDebuger", "EdgeValueChanged", uid, null, frameIndex);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("uid", 0, uid);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("nodeId", 10, nodeId);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("outputIndex", 11, outputIndex);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("value", 12, value);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("frameIndex", 13, frameIndex);
-            global::VisualBridge.Debug.VisualBridgeDebug.End();
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("uid", 0, uid);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("nodeId", 10, nodeId);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("outputIndex", 11, outputIndex);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("value", 12, value);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("frameIndex", 13, frameIndex);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.End();
         }
 
         public void ExecutionStopped(string uid)
         {
-            global::VisualBridge.Debug.VisualBridgeDebug.Start(
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.Start(
                 "graph", 1, "VisualBridge.Editor.Tests.DebugFixtures.IGraphDebuger", "ExecutionStopped", uid, null);
-            global::VisualBridge.Debug.VisualBridgeDebug.PushParam("uid", 0, uid);
-            global::VisualBridge.Debug.VisualBridgeDebug.End();
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("uid", 0, uid);
+            global::VisualBridge.Diagnostics.VisualBridgeDebug.End();
         }
     }
 }

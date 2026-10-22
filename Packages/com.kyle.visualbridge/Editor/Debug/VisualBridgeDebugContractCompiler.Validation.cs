@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using VisualBridge.Debug;
+using VisualBridge.Diagnostics;
 
 namespace VisualBridge.Editor
 {

@@ -4,7 +4,7 @@ using System.Diagnostics;
 using System.Threading;
 
 #if UNITY_EDITOR || VISUALBRIDGE_RUNTIME_BRIDGE
-namespace VisualBridge.Debug
+namespace VisualBridge.Diagnostics
 {
     /// <summary>有界发送队列与后台写线程。</summary>
     internal sealed class VisualBridgeDebugQueue
