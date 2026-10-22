@@ -32,6 +32,7 @@ namespace VisualBridge.Debug
         private static int s_writerEpoch;
         private static IDebugTransport s_transport;
         private static Action<bool> s_connectionHandler;
+        private static VisualBridgeConnectType s_connectType = DetectConnectType();
 
         /// <summary>仅在已连接且有可用传输时为 true。</summary>
         public static bool isConnected
@@ -39,20 +40,10 @@ namespace VisualBridge.Debug
             get { return s_isConnected; }
         }
 
-        /// <summary>当前运行环境。</summary>
+        /// <summary>当前运行环境；引导前按环境实时判定，引导后返回缓存值。</summary>
         public static VisualBridgeConnectType ConnectType
         {
-            get
-            {
-                if (UnityEngine.Application.isEditor)
-                {
-                    return UnityEngine.Application.isPlaying
-                        ? VisualBridgeConnectType.EditorPlayer
-                        : VisualBridgeConnectType.Editor;
-                }
-
-                return VisualBridgeConnectType.Player;
-            }
+            get { return s_connectType; }
         }
 
         /// <summary>上报实例显示名与筛选关键词；空实例忽略。</summary>
@@ -302,14 +293,57 @@ namespace VisualBridge.Debug
             }
         }
 
-        /// <summary>由传输宿主在手动启动时调用；本任务未接入。</summary>
+        /// <summary>按启动策略开始传输；Editor 下不启动，可重复调用。</summary>
         public static void StartTransport()
         {
+            if (s_connectType == VisualBridgeConnectType.Editor)
+            {
+                return;
+            }
+
+            lock (s_transportGate)
+            {
+                if (s_transport != null)
+                {
+                    // 已 Attach（含已连接）：保持幂等。
+                    return;
+                }
+
+                // 阶段 T 未接入真实传输：用空传输占位，isConnected 仍为 false。
+                Attach(new NullDebugTransport());
+            }
+
+            UnityEngine.Debug.Log("[visualbridge] debug transport not available");
         }
 
-        /// <summary>由传输宿主在手动停止时调用；本任务未接入。</summary>
+        /// <summary>停止传输并释放资源；可重复调用。</summary>
         public static void StopTransport()
         {
+            Detach();
+        }
+
+        /// <summary>按当前环境重新计算 ConnectType；仅供引导层调用。</summary>
+        internal static void RefreshConnectType()
+        {
+            s_connectType = DetectConnectType();
+        }
+
+        /// <summary>测试入口：直接指定 ConnectType。</summary>
+        internal static void SetConnectTypeForTests(VisualBridgeConnectType type)
+        {
+            s_connectType = type;
+        }
+
+        private static VisualBridgeConnectType DetectConnectType()
+        {
+            if (UnityEngine.Application.isEditor)
+            {
+                return UnityEngine.Application.isPlaying
+                    ? VisualBridgeConnectType.EditorPlayer
+                    : VisualBridgeConnectType.Editor;
+            }
+
+            return VisualBridgeConnectType.Player;
         }
 
         private static DebugMessageBuilder CurrentBuilderForPush()
@@ -605,6 +639,16 @@ namespace VisualBridge.Debug
         }
 
         public static void StopTransport()
+        {
+        }
+
+        /// <summary>宏关闭时无缓存状态，空实现。</summary>
+        internal static void RefreshConnectType()
+        {
+        }
+
+        /// <summary>宏关闭时无缓存状态，空实现。</summary>
+        internal static void SetConnectTypeForTests(VisualBridgeConnectType type)
         {
         }
 #endif
