@@ -7,15 +7,33 @@ import {
   compareUtf16CodeUnits,
   createReferenceValueRenamePlan,
   documentIndexKey,
-  referenceLocationKey,
   referenceValuesEqual,
   type IndexedDocument,
   type IndexedDocumentReference,
-  type ReferenceDefinition,
-  type ReferenceLocation,
   type ReferenceOccurrence,
   type ReferenceValueRenamePlan,
 } from "@visualbridge/core";
+import {
+  checkTableKeyRename,
+  findCrossProjectBlocker,
+  firstWorkspaceBlocker,
+  hasSourceChanges,
+  isCrossProjectReferenceRefactor,
+  isSupportedRenameKind,
+  isTableRowTargetKind,
+  noChangeRenameFailure,
+  selectTargetCandidate,
+  uniqueIndexedDocuments,
+  unsupportedRenameKindMessage,
+  type RefactorBlocker,
+  type WorkspaceReferenceTargetRenameRequest,
+  type WorkspaceReferenceTargetRenameResult,
+} from "./workspaceReferenceRefactorPlan";
+
+export type {
+  WorkspaceReferenceTargetRenameRequest,
+  WorkspaceReferenceTargetRenameResult,
+} from "./workspaceReferenceRefactorPlan";
 import {
   applyEntityOperations,
   collectEntityReferences,
@@ -73,37 +91,6 @@ interface TableSourceSnapshot {
   readonly sheetIds: readonly string[];
 }
 
-export interface WorkspaceReferenceTargetRenameRequest {
-  readonly projectId: string;
-  readonly definition: ReferenceDefinition;
-  readonly location: ReferenceLocation;
-  readonly oldValue: string | number;
-  readonly newValue: string | number;
-  readonly confirm: boolean;
-}
-
-export type WorkspaceReferenceTargetRenameResult =
-  | {
-      readonly success: true;
-      readonly fileCount: number;
-      readonly referenceCount: number;
-      readonly maintenance?: {
-        readonly code: "refactor.committedRefreshFailed";
-        readonly message: string;
-        readonly failures: readonly {
-          readonly phase: "tableEditor" | "documentIndex";
-          readonly message: string;
-        }[];
-      };
-    }
-  | {
-      readonly success: false;
-      readonly code: string;
-      readonly message: string;
-    };
-
-const SUPPORTED_RENAME_KINDS = new Set(["document", "entity.component", "graph.element", "table.row"]);
-
 export class WorkspaceReferenceRefactor {
   private committedRefreshFailureForTest: {
     readonly phase: "tableEditor" | "documentIndex";
@@ -130,7 +117,7 @@ export class WorkspaceReferenceRefactor {
       void vscode.window.showWarningMessage("Only a uniquely resolved reference target can be renamed.");
       return;
     }
-    if (target.location.projectId !== project.definition.projectId) {
+    if (isCrossProjectReferenceRefactor(project.definition.projectId, target.location.projectId)) {
       void vscode.window.showWarningMessage("Cross-project reference refactors are not supported.");
       return;
     }
@@ -143,10 +130,8 @@ export class WorkspaceReferenceRefactor {
       void vscode.window.showWarningMessage(planned.message);
       return;
     }
-    if (!SUPPORTED_RENAME_KINDS.has(planned.plan.kind)) {
-      void vscode.window.showWarningMessage(
-        `Reference Provider '${planned.plan.kind}' does not expose a rename adapter.`,
-      );
+    if (!isSupportedRenameKind(planned.plan.kind)) {
+      void vscode.window.showWarningMessage(unsupportedRenameKindMessage(planned.plan.kind));
       return;
     }
     const result = await this.applyPlan(project, planned.plan, { confirm: true });
@@ -171,13 +156,9 @@ export class WorkspaceReferenceRefactor {
       return blocked("refactor.targetUnavailable", "The reference target Project is not open.");
     }
     const resolution = await this.references.resolve(project, request.definition, request.oldValue);
-    const locationKey = referenceLocationKey(request.location);
-    const target = resolution.candidates.find((candidate) => (
-      candidate.location !== undefined && referenceLocationKey(candidate.location) === locationKey
-    ));
-    if (resolution.status !== "resolved" || resolution.candidates.length !== 1 || target?.location === undefined) {
-      return blocked("refactor.targetChanged", "The edited stable identity no longer resolves uniquely to this target.");
-    }
+    const selection = selectTargetCandidate(request.location, resolution);
+    if (!selection.ok) return blocked(selection.blocker.code, selection.blocker.message);
+    const target = selection.candidate;
     const planned = createReferenceValueRenamePlan(this.documents.documents, {
       occurrence: {
         definition: request.definition,
@@ -187,7 +168,7 @@ export class WorkspaceReferenceRefactor {
       resolution: { status: "resolved", candidates: [target] },
     }, request.newValue);
     if (!planned.success) return blocked(`refactor.${planned.reason}`, planned.message);
-    if (planned.plan.kind !== "table.row") {
+    if (!isTableRowTargetKind(planned.plan.kind)) {
       return blocked("refactor.unsupportedTarget", "Table key editing can only rename a table.row target.");
     }
     const result = await this.applyPlan(project, planned.plan, {
@@ -232,19 +213,21 @@ export class WorkspaceReferenceRefactor {
     if (targetDocument === undefined) {
       return blocked("refactor.targetUnavailable", "The resolved target is no longer an indexed document.");
     }
-    const affected = uniqueDocuments([
+    const affected = uniqueIndexedDocuments([
       targetDocument,
       ...plan.changes.flatMap((change) => {
         const document = this.documents.documents.find((candidate) => documentIndexKey(candidate) === documentIndexKey(change));
         return document === undefined ? [] : [document];
       }),
     ]);
-    if (affected.some((document) => document.projectId !== project.definition.projectId)) {
-      return blocked("refactor.crossProject", "Cross-project reference refactors are not supported.");
-    }
+    const crossProject = findCrossProjectBlocker(
+      project.definition.projectId,
+      affected.map((document) => document.projectId),
+    );
+    if (crossProject !== undefined) return blocked(crossProject.code, crossProject.message);
     const allowedTarget = options.allowOpenTableTarget ? targetDocument : undefined;
     const openConflict = this.findOpenConflict(affected, project, allowedTarget);
-    if (openConflict !== undefined) return blocked("refactor.workspaceDirty", openConflict);
+    if (openConflict !== undefined) return blocked(openConflict.code, openConflict.message);
 
     let prepared: readonly PreparedWrite[];
     try {
@@ -262,13 +245,16 @@ export class WorkspaceReferenceRefactor {
       this.output.appendLine(`[refactor] Preview failed: ${formatError(errorValue)}`);
       return blocked("refactor.previewFailed", `Refactor preview failed: ${formatError(errorValue)}`);
     }
-    const writes = prepared.filter((write) => !bytesEqual(write.before, write.after));
-    if (writes.length === 0) return blocked("refactor.noChanges", "The rename did not produce any source changes.");
+    const writes = prepared.filter((write) => hasSourceChanges(write.before, write.after));
+    if (writes.length === 0) {
+      const noChange = noChangeRenameFailure();
+      return blocked(noChange.code, noChange.message);
+    }
     if (options.confirm && !await previewPlan(plan, writes)) {
       return blocked("refactor.cancelled", "The reference refactor was cancelled.");
     }
     const lateOpenConflict = this.findOpenConflict(affected, project, allowedTarget);
-    if (lateOpenConflict !== undefined) return blocked("refactor.workspaceDirty", lateOpenConflict);
+    if (lateOpenConflict !== undefined) return blocked(lateOpenConflict.code, lateOpenConflict.message);
 
     try {
       await commitWrites(project, writes, prepared);
@@ -486,7 +472,7 @@ export class WorkspaceReferenceRefactor {
     oldValue: string | number,
     targetPlan: ReferenceValueRenamePlan | undefined,
   ): Promise<readonly PreparedWrite[]> {
-    if (targetPlan !== undefined && targetPlan.kind !== "table.row") {
+    if (targetPlan !== undefined && !isTableRowTargetKind(targetPlan.kind)) {
       throw new Error(`Reference target '${targetPlan.kind}' cannot be stored in a Table document.`);
     }
     const documentType = project.definition.documentTypes.find((candidate) => candidate.id === indexed.documentTypeId)!;
@@ -540,9 +526,7 @@ export class WorkspaceReferenceRefactor {
       if (sheet === undefined || row === undefined || keyColumnId === undefined) {
         throw new Error("The target Table row or key column no longer exists.");
       }
-      if (!referenceValuesEqual(row.cells[keyColumnId] as string | number, targetPlan.oldValue)) {
-        throw new Error("The target Table key changed after the refactor preview was created.");
-      }
+      const currentValue = row.cells[keyColumnId];
       const duplicate = next.sheets.some((candidateSheet) => (
         candidateSheet.definitionId === sheet.definitionId
         && candidateSheet.rows.some((candidateRow) => (
@@ -551,7 +535,14 @@ export class WorkspaceReferenceRefactor {
           && referenceValuesEqual(candidateRow.cells[keyColumnId] as string | number, targetPlan.newValue)
         ))
       ));
-      if (duplicate) throw new Error(`Table key '${String(targetPlan.newValue)}' already exists in a physical row.`);
+      const keyCheck = checkTableKeyRename({
+        keyColumnId,
+        currentValue,
+        oldValue: targetPlan.oldValue,
+        newValue: targetPlan.newValue,
+        duplicateExists: duplicate,
+      });
+      if (!keyCheck.ok) throw new Error(keyCheck.message);
       const changed = applyTableOperations(next, [{
         type: "table.setCell",
         sheetId: sheet.id,
@@ -588,7 +579,8 @@ export class WorkspaceReferenceRefactor {
     documents: readonly IndexedDocument[],
     project: ProjectContext,
     allowedOpenTableTarget?: IndexedDocument,
-  ): string | undefined {
+  ): RefactorBlocker | undefined {
+    const dirtyTextEditorPaths: string[] = [];
     for (const text of vscode.workspace.textDocuments) {
       if (!text.isDirty) {
         continue;
@@ -596,22 +588,19 @@ export class WorkspaceReferenceRefactor {
       const match = this.projects.resolveDocument(text.uri);
       if (match?.project.markerUri.toString() === project.markerUri.toString()
         && ["graph", "entity", "structured", "table"].includes(match.documentType.editor)) {
-        return `Save or revert '${match.relativePath}' before running a project refactor.`;
+        dirtyTextEditorPaths.push(match.relativePath);
       }
-    }
-    if (this.tables.hasDirtyProject(project)) {
-      return "Save or revert every dirty Table editor in this VisualBridge Project before running a project refactor.";
     }
     const allowedUris = new Set((allowedOpenTableTarget?.sourcePaths ?? []).map(
       (path) => sourceUri(project, path).toString(),
     ));
-    if (this.tables.openProjectSourceUris(project).some((uri) => !allowedUris.has(uri.toString()))) {
-      return "Close all Table editors in this VisualBridge Project before running a project refactor.";
-    }
-    if (documents.length === 0) {
-      return "The refactor no longer has any indexed documents to update.";
-    }
-    return undefined;
+    return firstWorkspaceBlocker({
+      dirtyTextEditorPaths,
+      dirtyTableEditor: this.tables.hasDirtyProject(project),
+      openTableSourceUris: this.tables.openProjectSourceUris(project).map((uri) => uri.toString()),
+      allowedOpenTableSourceUris: allowedUris,
+      affectedDocumentCount: documents.length,
+    });
   }
 
   private findProject(projectId: string): ProjectContext | undefined {
@@ -705,11 +694,6 @@ async function commitWrites(
   ));
 }
 
-function uniqueDocuments(documents: readonly IndexedDocument[]): readonly IndexedDocument[] {
-  return [...new Map(documents.map((document) => [documentIndexKey(document), document])).values()]
-    .sort((left, right) => compareUtf16CodeUnits(documentIndexKey(left), documentIndexKey(right)));
-}
-
 function sourceUri(project: ProjectContext, path: string): vscode.Uri {
   return vscode.Uri.joinPath(project.rootUri, ...path.split("/"));
 }
@@ -742,10 +726,6 @@ function encodeUtf8(value: string): Uint8Array {
 
 function isXlsx(bytes: Uint8Array): boolean {
   return bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
-}
-
-function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
-  return Buffer.from(left).equals(Buffer.from(right));
 }
 
 function hashBytes(value: Uint8Array): string {

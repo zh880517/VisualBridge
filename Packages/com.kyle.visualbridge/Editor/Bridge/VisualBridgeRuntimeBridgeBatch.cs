@@ -7,6 +7,7 @@ using System.Text;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
+using VisualBridge.Runtime;
 
 namespace VisualBridge.Editor
 {
@@ -432,21 +433,22 @@ namespace VisualBridge.Editor
         private static string ReadLine(NetworkStream stream)
         {
             var buffer = new byte[8192];
-            var text = new StringBuilder();
+            var reader = new VisualBridgeUtf8LineReader();
             while (true)
             {
+                if (reader.TryReadLine(out var line))
+                {
+                    return line;
+                }
+
                 var read = stream.Read(buffer, 0, buffer.Length);
                 if (read == 0)
                 {
+                    reader.DiscardPending();
                     throw new IOException("connection closed by the server.");
                 }
 
-                text.Append(Encoding.UTF8.GetString(buffer, 0, read));
-                var newline = text.ToString().IndexOf('\n');
-                if (newline >= 0)
-                {
-                    return text.ToString(0, newline);
-                }
+                reader.Append(buffer, 0, read);
             }
         }
     }

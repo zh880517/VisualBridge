@@ -1,8 +1,7 @@
 import type { HTMLAttributes, ReactElement } from "react";
+import { appendClassName } from "./uiLogic";
 
-function classes(base: string, extra: string | undefined): string {
-  return extra === undefined ? base : `${base} ${extra}`;
-}
+const classes = appendClassName;
 
 export function SplitWorkspace(props: HTMLAttributes<HTMLElement>): ReactElement {
   return <main {...props} className={classes("vb-split-workspace", props.className)} />;

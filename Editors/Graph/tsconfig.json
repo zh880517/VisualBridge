@@ -1,9 +1,6 @@
 {
-  "extends": "../../tsconfig.base.json",
+  "extends": "../../tsconfig.editor.base.json",
   "compilerOptions": {
-    "jsx": "react-jsx",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
     "lib": [
       "ES2022",
       "DOM",
@@ -11,7 +8,8 @@
     ],
     "rootDir": ".",
     "outDir": "dist",
-    "composite": true
+    "composite": true,
+    "noEmit": false
   },
   "include": [
     "index.ts",

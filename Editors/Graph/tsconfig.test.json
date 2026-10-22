@@ -1,17 +1,8 @@
 {
-  "extends": "./tsconfig.json",
+  "extends": "../../tsconfig.editor.test.base.json",
   "compilerOptions": {
-    "composite": false,
-    "declaration": false,
-    "jsx": "react-jsx",
-    "module": "Node16",
-    "moduleResolution": "Node16",
     "outDir": ".test-dist",
-    "rootDir": ".",
-    "sourceMap": false,
-    "types": [
-      "node"
-    ]
+    "rootDir": "."
   },
   "include": [
     "src/graphReveal.ts",

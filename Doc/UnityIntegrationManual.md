@@ -2,7 +2,7 @@
 
 ## 1. 文档定位
 
-本手册面向在 Unity 工程中使用 VisualBridge 的开发者，覆盖环境要求、Integration Profile 配置、四领域（Structured / Entity / Graph / Table）的 Catalog Export 与 Compile（Table 仅 Compile）、Runtime Bridge（Play 模式状态与事件）、日志、冲突恢复与 Editor Bridge 使用。设计与冻结决策以 [Unity Editor 接入架构](UnityIntegrationArchitecture.md)为准；Editor 切片的任务顺序与验证门槛见 [Unity Editor 接入任务清单](UnityIntegrationRoadmap.md)，领域扩展与 Runtime 接入的任务进度见 [Unity 领域扩展与 Runtime 接入任务清单](UnityDomainAndRuntimeRoadmap.md)。当前已落地范围为四领域 offline Catalog Export/Compile、Editor Bridge（open/reveal）与本机 Runtime Bridge（Play 模式产物快照、变更事件、调试租约、Source 映射与 Graph 执行观察）。
+本手册面向在 Unity 工程中使用 VisualBridge 的开发者，覆盖环境要求、Integration Profile 配置、四领域（Structured / Entity / Graph / Table）的 Catalog Export 与 Compile（Table 仅 Compile）、Runtime Bridge（Play 模式状态与事件）、日志、冲突恢复与 Editor Bridge 使用。设计与冻结决策以 [Unity Editor 接入架构](UnityIntegrationArchitecture.md) 为准；Editor 切片的历史任务顺序与验证门槛见已归档的 [Unity Editor 接入任务清单](Archive/UnityIntegrationRoadmap.md)，领域扩展与 Runtime 接入的历史任务进度见已归档的 [Unity 领域扩展与 Runtime 接入任务清单](Archive/UnityDomainAndRuntimeRoadmap.md)；当前未实现能力见 [Backlog](Backlog.md)。当前已落地范围为四领域 offline Catalog Export/Compile、Editor Bridge（open/reveal）与本机 Runtime Bridge（Play 模式产物快照、变更事件、调试租约、Source 映射与 Graph 执行观察）。
 
 ## 2. 系统要求与兼容矩阵
 
@@ -226,7 +226,7 @@ Node 侧配套门槛：`npm run check`、`npm test`、`npm run build`、`npm run
 
 ## 11. 已知限制
 
-- 四领域的 offline Catalog Export/Compile（第 5 节）、Editor Bridge（第 7 节）与本机 Runtime Bridge（第 6 节：Play 模式快照、产物事件、调试租约、Source 映射与 Graph 执行观察）均已落地；进度与冻结决策见 [Unity 领域扩展与 Runtime 接入任务清单](UnityDomainAndRuntimeRoadmap.md)（阶段 A/B/D 关闭，阶段 C 远程与设备连接由项目方推迟）。
+- 四领域的 offline Catalog Export/Compile（第 5 节）、Editor Bridge（第 7 节）与本机 Runtime Bridge（第 6 节：Play 模式快照、产物事件、调试租约、Source 映射与 Graph 执行观察）均已落地；历史进度与冻结决策见已归档的 [Unity 领域扩展与 Runtime 接入任务清单](Archive/UnityDomainAndRuntimeRoadmap.md)（阶段 A/B/D 关闭，阶段 C 远程与设备连接由项目方推迟），当前未实现能力见 [Backlog](Backlog.md)。
 - 独立 Player 构建尚未接线：`StreamingAssets/VisualBridge/Compiled` 目前只是 `VisualBridgeRuntimeArtifactStore` 约定的 Player 产物根，实际路径由调用方解析，而唯一的宿主（Editor Play）固定解析 `<project>/Library/VisualBridge/Compiled`；协议保留的 `player` 实例 kind 尚无对应宿主实现。
 - `VisualBridge.Runtime` 已不只是 metadata marker：除 `Runtime/Metadata/` 的 attribute 外，`Runtime/Bridge/` 提供编译产物直读（`VisualBridgeRuntimeArtifactStore` 按四域 manifest 枚举并加载 `*.vbcompiled.json` 与 `.vbsource.json`）、Runtime Bridge 服务端/发现/严格校验器与 Graph 执行采集门面。程序集仍不依赖任何 Unity API（`noEngineReferences: true`、`references: []`，仅预编译引用 `Newtonsoft.Json.dll`），可进 Player 构建。其运行时加载能力的边界是：快照数据为未类型化 JSON，包内没有游戏侧类型化数据绑定或公开 Adapter API（VB-UX-03 决策：不建立公开 Unity Adapter API），产物格式仍是内部格式（`formatVersion`/`kind` 版本化，但未按公开跨语言契约冻结）。
 - 调试面只有「检查」语义：Runtime 协议刻意不含断点/调用栈/变量求值消息——`VisualBridge.Runtime` 自身是数据运行时（只加载编译产物快照），游戏侧 Graph 执行引擎也只暴露观察缝，且项目方明确不做断点；VS Code 的 `visualbridge-runtime` 会话因此是 attach 型只读检查，Graph 执行观察是事件回放而非断点式调试（重开条件见架构文档 §18.3）。

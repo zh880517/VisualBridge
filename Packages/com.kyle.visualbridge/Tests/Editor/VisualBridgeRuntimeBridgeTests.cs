@@ -930,6 +930,86 @@ namespace VisualBridge.Editor.Tests
             }
         }
 
+        [Test]
+        public void Utf8LineReaderPreservesMultibyteCharactersSplitAcrossChunks()
+        {
+            var line = "{\"type\":\"response\",\"requestId\":\"req-1\",\"detail\":\"中文内容\"}";
+            var bytes = Encoding.UTF8.GetBytes(line + "\n");
+            var chineseStart = IndexOfBytes(bytes, Encoding.UTF8.GetBytes("中"));
+            Assert.That(chineseStart, Is.GreaterThan(0));
+            var split = chineseStart + 1; // 落在三字节字符中间
+
+            var reader = new VisualBridge.Runtime.VisualBridgeUtf8LineReader();
+            reader.Append(bytes, 0, split);
+            Assert.That(reader.TryReadLine(out _), Is.False, "半行不应提前解码。");
+            Assert.That(reader.BufferedByteCount, Is.EqualTo(split));
+
+            reader.Append(bytes, split, bytes.Length - split);
+            Assert.That(reader.TryReadLine(out var decoded), Is.True);
+            Assert.That(decoded, Is.EqualTo(line));
+            Assert.That(decoded.Contains("�"), Is.False, "跨块解码不得产生替换字符。");
+            Assert.That(decoded, Does.Contain("中文内容"));
+            Assert.That(reader.TryReadLine(out _), Is.False);
+        }
+
+        [Test]
+        public void Utf8LineReaderDropsIncompleteTrailingBytesOnDiscard()
+        {
+            var reader = new VisualBridge.Runtime.VisualBridgeUtf8LineReader();
+            var partial = Encoding.UTF8.GetBytes("{\"detail\":\"中");
+            reader.Append(partial, 0, partial.Length);
+            Assert.That(reader.TryReadLine(out _), Is.False);
+
+            // 连接关闭/读取失败：剩余半行被显式丢弃，不会静默拼进后续数据。
+            reader.DiscardPending();
+            Assert.That(reader.BufferedByteCount, Is.Zero);
+            Assert.That(reader.TryReadLine(out _), Is.False);
+
+            var complete = Encoding.UTF8.GetBytes("{\"detail\":\"完成\"}\n");
+            reader.Append(complete, 0, complete.Length);
+            Assert.That(reader.TryReadLine(out var line), Is.True);
+            Assert.That(line, Is.EqualTo("{\"detail\":\"完成\"}"));
+            Assert.That(line.Contains("�"), Is.False);
+        }
+
+        [Test]
+        public void Utf8LineReaderReturnsMultipleCompleteLinesFromOneChunk()
+        {
+            var reader = new VisualBridge.Runtime.VisualBridgeUtf8LineReader();
+            var bytes = Encoding.UTF8.GetBytes("第一行\n第二行\n");
+            reader.Append(bytes, 0, bytes.Length);
+            Assert.That(reader.TryReadLine(out var first), Is.True);
+            Assert.That(first, Is.EqualTo("第一行"));
+            Assert.That(reader.TryReadLine(out var second), Is.True);
+            Assert.That(second, Is.EqualTo("第二行"));
+            Assert.That(reader.TryReadLine(out _), Is.False);
+        }
+
+        private static int IndexOfBytes(byte[] haystack, byte[] needle)
+        {
+            for (var index = 0; index <= haystack.Length - needle.Length; index++)
+            {
+                var matched = true;
+                for (var offset = 0; offset < needle.Length; offset++)
+                {
+                    if (haystack[index + offset] == needle[offset])
+                    {
+                        continue;
+                    }
+
+                    matched = false;
+                    break;
+                }
+
+                if (matched)
+                {
+                    return index;
+                }
+            }
+
+            return -1;
+        }
+
         private static VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer StartServer(
             string artifactsRoot, string instanceId, int generation = 1)
         {
@@ -1127,7 +1207,8 @@ namespace VisualBridge.Editor.Tests
         {
             private readonly TcpClient client;
             private readonly NetworkStream stream;
-            private readonly StringBuilder lineBuffer = new StringBuilder();
+            private readonly VisualBridge.Runtime.VisualBridgeUtf8LineReader lineReader =
+                new VisualBridge.Runtime.VisualBridgeUtf8LineReader();
             private readonly byte[] readBuffer = new byte[8192];
 
             private RuntimeBridgeTestClient(TcpClient client, NetworkStream stream)
@@ -1211,12 +1292,8 @@ namespace VisualBridge.Editor.Tests
             {
                 while (true)
                 {
-                    var buffered = lineBuffer.ToString();
-                    var newline = buffered.IndexOf('\n');
-                    if (newline >= 0)
+                    if (lineReader.TryReadLine(out var line))
                     {
-                        var line = lineBuffer.ToString(0, newline);
-                        lineBuffer.Remove(0, newline + 1);
                         if (line.Trim().Length > 0)
                         {
                             return line;
@@ -1231,7 +1308,7 @@ namespace VisualBridge.Editor.Tests
                         throw new IOException("connection closed by the server.");
                     }
 
-                    lineBuffer.Append(Encoding.UTF8.GetString(readBuffer, 0, read));
+                    lineReader.Append(readBuffer, 0, read);
                 }
             }
 

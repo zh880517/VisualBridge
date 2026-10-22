@@ -40,9 +40,11 @@
   "scripts": {
     "build": "npm run build --workspace @visualbridge/core && npm run build --workspace @visualbridge/node-host && npm run build --workspace @visualbridge/entity && npm run build --workspace @visualbridge/graph && npm run build --workspace @visualbridge/structured && npm run build --workspace @visualbridge/table && npm run build --workspace @visualbridge/editor-ui && npm run build --workspace @visualbridge/form-editor && npm run build --workspace @visualbridge/entity-editor && npm run build --workspace @visualbridge/graph-editor && npm run build --workspace @visualbridge/project-editor && npm run build --workspace @visualbridge/structured-editor && npm run build --workspace @visualbridge/table-editor && npm run build --workspace @visualbridge/large-corpus && npm run build --workspace @visualbridge/sample-validation && npm run build --workspace visualbridge && npm run build --workspace @visualbridge/mcp",
     "check": "npm run check:dependencies && npm run check:protocol && npm run check --workspace @visualbridge/core && npm run check --workspace @visualbridge/node-host && npm run check --workspace @visualbridge/entity && npm run check --workspace @visualbridge/graph && npm run check --workspace @visualbridge/structured && npm run check --workspace @visualbridge/table && npm run check --workspace @visualbridge/editor-ui && npm run check --workspace @visualbridge/form-editor && npm run check --workspace @visualbridge/entity-editor && npm run check --workspace @visualbridge/graph-editor && npm run check --workspace @visualbridge/project-editor && npm run check --workspace @visualbridge/structured-editor && npm run check --workspace @visualbridge/table-editor && npm run check --workspace @visualbridge/large-corpus && npm run check --workspace @visualbridge/sample-validation && npm run check --workspace visualbridge && npm run check --workspace @visualbridge/mcp",
-    "test": "npm run test --workspace @visualbridge/core && npm run test --workspace @visualbridge/node-host && npm run test --workspace @visualbridge/entity && npm run test --workspace @visualbridge/entity-editor && npm run test --workspace @visualbridge/graph && npm run test --workspace @visualbridge/form-editor && npm run test --workspace @visualbridge/graph-editor && npm run test --workspace @visualbridge/structured && npm run test --workspace @visualbridge/table && npm run test --workspace @visualbridge/table-editor && npm run test --workspace @visualbridge/mcp && npm run test:protocol && npm run test:unit --workspace visualbridge && npm run test:host --workspace visualbridge && npm run test --workspace @visualbridge/large-corpus && npm run test --workspace @visualbridge/sample-validation",
+    "test": "npm run test --workspace @visualbridge/core && npm run test --workspace @visualbridge/node-host && npm run test --workspace @visualbridge/entity && npm run test --workspace @visualbridge/editor-ui && npm run test --workspace @visualbridge/entity-editor && npm run test --workspace @visualbridge/graph && npm run test --workspace @visualbridge/form-editor && npm run test --workspace @visualbridge/graph-editor && npm run test --workspace @visualbridge/project-editor && npm run test --workspace @visualbridge/structured && npm run test --workspace @visualbridge/structured-editor && npm run test --workspace @visualbridge/table && npm run test --workspace @visualbridge/table-editor && npm run test --workspace @visualbridge/mcp && npm run test:protocol && npm run test:unit --workspace visualbridge && npm run test:host --workspace visualbridge && npm run test --workspace @visualbridge/large-corpus && npm run test --workspace @visualbridge/sample-validation",
+    "test:node": "npm run test --workspace @visualbridge/core && npm run test --workspace @visualbridge/node-host && npm run test --workspace @visualbridge/entity && npm run test --workspace @visualbridge/editor-ui && npm run test --workspace @visualbridge/entity-editor && npm run test --workspace @visualbridge/graph && npm run test --workspace @visualbridge/form-editor && npm run test --workspace @visualbridge/graph-editor && npm run test --workspace @visualbridge/project-editor && npm run test --workspace @visualbridge/structured && npm run test --workspace @visualbridge/structured-editor && npm run test --workspace @visualbridge/table && npm run test --workspace @visualbridge/table-editor && npm run test --workspace @visualbridge/mcp && npm run test:protocol && npm run test:unit --workspace visualbridge && npm run test --workspace @visualbridge/large-corpus && npm run test --workspace @visualbridge/sample-validation",
+    "test:coverage": "node Tools/Coverage/run-coverage.mjs",
     "check:dependencies": "node Tools/DependencyPolicy/check-dependencies.mjs",
-    "check:docs": "npm run test:samples && npm run check --workspace @visualbridge/documentation && npm run check:mcp --workspace @visualbridge/protocol-contract",
+    "check:docs": "npm run test:samples && npm run build --workspace @visualbridge/mcp && npm run check --workspace @visualbridge/documentation && npm run check:mcp --workspace @visualbridge/protocol-contract",
     "audit:dependencies": "npm audit --audit-level=moderate",
     "generate:protocol": "npm run generate --workspace @visualbridge/protocol-contract",
     "check:protocol": "npm run check --workspace @visualbridge/protocol-contract",
@@ -59,9 +61,22 @@
     "test:runtime-e2e": "npm run build --workspace visualbridge && node ./Tools/VSCodeExtension/test/runRuntimeE2E.mjs"
   },
   "devDependencies": {
-    "@types/node": "22.20.1"
+    "@types/node": "22.20.1",
+    "typescript": "7.0.2"
   },
   "overrides": {
+    "minimatch@3": {
+      "brace-expansion": "1.1.21"
+    },
+    "minimatch@5": {
+      "brace-expansion": "2.1.7"
+    },
+    "minimatch@10": {
+      "brace-expansion": "5.0.12"
+    },
+    "fast-uri": "3.1.9",
+    "source-map-js": "1.2.2",
+    "undici": "7.30.1",
     "uuid": "11.1.1"
   }
 }

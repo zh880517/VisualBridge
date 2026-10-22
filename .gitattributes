@@ -4,3 +4,30 @@ Protocol/Generated/*.json text eol=lf
 Protocol/Generated/*.d.ts text eol=lf
 Protocol/Generated/*.cs text eol=lf
 Packages/com.kyle.visualbridge/Editor/Generated/*.cs text eol=lf
+
+# Normalize all text files to LF in the working tree and the index.
+* text=auto eol=lf
+*.cs text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.ps1 text eol=lf
+*.sh text eol=lf
+*.gitkeep text eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.xlsx binary
+*.vsix binary
+*.dll binary
+*.zip binary

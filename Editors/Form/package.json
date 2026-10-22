@@ -21,6 +21,7 @@
     "@visualbridge/core": "*",
     "@visualbridge/editor-ui": "*",
     "react": "19.2.8",
+    "react-dom": "19.2.8",
     "react-colorful": "5.8.0"
   },
   "devDependencies": {

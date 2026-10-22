@@ -4,7 +4,7 @@
 
 VisualBridge 是平台实现的 monorepo。`Core/` 存放与宿主无关的 TypeScript 领域逻辑，不得引用 VS Code、Webview DOM 或 Unity API。`Protocol/` 负责 Schema、消息与生成的跨语言契约。可复用的 Webview UI 放在 `Editors/`（跨领域共享层是 `Editors/Ui` 与 `Editors/Form`，其余按领域分包），内置文档类型在 `BuiltInExtensions/`。宿主集成位于 `Tools/VSCodeExtension/` 与 `Tools/VisualBridgeMcp/`，两者共用的 Project Transaction 实现在 `Tools/NodeHost/`。其余工具 workspace 各司一门门禁：`Tools/ProtocolContract/`（契约生成与一致性检查）、`Tools/Documentation/`（`check:docs` 文档门禁）、`Tools/SampleValidation/`（样例语义验证）、`Tools/LargeCorpus/`（确定性大工程语料与基准）；`Tools/DependencyPolicy/` 不是 workspace，只承载 `check:dependencies` 的策略脚本。固定 fixtures 在 `TestData/`，维护样例工程在 `Samples/PreUnityAuthoring/`。Unity Package 源码在 `Packages/com.kyle.visualbridge/`，分 `Runtime/`（`Metadata/` 的 attribute 与 `Bridge/` 的 Runtime Bridge、编译产物只读加载、Graph 执行采集门面，`noEngineReferences`、可进 Player 构建）与 `Editor/`（Profile、三域 Catalog Exporter、四域 Compiler、Editor Bridge 客户端、Runtime Bridge 的 Play 模式宿主与 batch 入口）；`UnityProject/` 只是它的开发宿主，Unity 资产在 `UnityProject/Assets/`。
 
-正式文档统一保存在 `Doc/`。任务计划与临时设计笔记放在 `Doc/Temp/`，任务完成后删除。修改模块边界前先阅读 `Doc/VisualBridgeArchitecture.md`。
+正式文档统一保存在 `Doc/`。任务计划与临时设计笔记放在 `Doc/Temp/`，任务完成后删除。修改模块边界前先阅读 `Doc/VisualBridgeArchitecture.md`（索引）及其核心领域、Authoring/扩展、宿主集成三份子文档。
 
 ## 语言规范
 

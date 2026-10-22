@@ -3,6 +3,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import * as net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 // Runtime Bridge V1 协议常量（与 visualbridge-runtime-bridge.schema.json 一致）。
 export const RUNTIME_BRIDGE_PROTOCOL_VERSION = 1;
@@ -136,12 +137,61 @@ export async function enumerateRuntimeInstances(directoryOverride?: string): Pro
   return instances.sort((left, right) => compareIds(left.instanceId, right.instanceId));
 }
 
+interface PendingRequest {
+  readonly resolve: (response: ResponseMessage) => void;
+  readonly reject: (error: Error) => void;
+  readonly timer: NodeJS.Timeout;
+}
+
+interface Handshake {
+  readonly resolve: () => void;
+  readonly reject: (error: Error) => void;
+  timer: NodeJS.Timeout | undefined;
+}
+
+interface SocketListeners {
+  readonly onData: (chunk: Buffer) => void;
+  readonly onError: (error: Error) => void;
+  readonly onClose: () => void;
+}
+
+/**
+ * NDJSON 行解码器：用 StringDecoder 保留跨 TCP chunk 的不完整多字节序列，
+ * 只在遇到换行后才把整行交给 JSON 解析。
+ */
+export class Utf8LineDecoder {
+  private decoder = new StringDecoder("utf8");
+  private buffer = "";
+
+  public push(chunk: Buffer): string[] {
+    this.buffer += this.decoder.write(chunk);
+    const lines: string[] = [];
+    let newlineIndex = this.buffer.indexOf("\n");
+    while (newlineIndex >= 0) {
+      lines.push(this.buffer.slice(0, newlineIndex));
+      this.buffer = this.buffer.slice(newlineIndex + 1);
+      newlineIndex = this.buffer.indexOf("\n");
+    }
+
+    return lines;
+  }
+
+  public reset(): void {
+    this.buffer = "";
+    // StringDecoder 没有 reset()，重新创建以丢弃跨连接残留的不完整序列。
+    this.decoder = new StringDecoder("utf8");
+  }
+}
+
 /** 单连接 Runtime Bridge 客户端：hello 握手后按 requestId 配对请求/响应。 */
 export class RuntimeBridgeConnection {
   private socket: net.Socket | undefined;
-  private lineBuffer = "";
-  private lineWaiters: ((line: string) => void)[] = [];
+  private decoder = new Utf8LineDecoder();
+  private pending = new Map<string, PendingRequest>();
+  private handshake: Handshake | undefined;
+  private listeners: SocketListeners | undefined;
   private welcomed = false;
+  private connectionError: RuntimeBridgeClientError | undefined;
 
   public constructor(private readonly instance: RuntimeBridgeInstanceRecord) {}
 
@@ -149,32 +199,41 @@ export class RuntimeBridgeConnection {
     return new Promise<void>((resolve, reject) => {
       const socket = net.connect({ host: "127.0.0.1", port: this.instance.tcpPort });
       this.socket = socket;
-      let settled = false;
-      const finish = (error: Error | undefined): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        socket.off("error", onError);
-        socket.off("close", onClose);
-        if (error === undefined) {
-          this.welcomed = true;
-          resolve();
-        } else {
-          socket.destroy();
-          reject(error);
-        }
+      this.decoder.reset();
+      this.welcomed = false;
+      this.connectionError = undefined;
+
+      const handshake: Handshake = { resolve, reject, timer: undefined };
+      this.handshake = handshake;
+      handshake.timer = setTimeout(() => {
+        this.finishHandshake(new RuntimeBridgeClientError("runtime.internalError", "Runtime bridge connect timed out."));
+      }, timeoutMs);
+
+      const onData = (chunk: Buffer): void => {
+        for (const line of this.decoder.push(chunk)) this.handleLine(line);
       };
       const onError = (error: Error): void => {
-        finish(new RuntimeBridgeClientError("runtime.internalError", `Runtime bridge connection failed: ${error.message}`));
+        const failure = new RuntimeBridgeClientError("runtime.internalError", `Runtime bridge connection failed: ${error.message}`);
+        if (this.handshake !== undefined) this.finishHandshake(failure);
+        else this.invalidate(failure);
       };
       const onClose = (): void => {
-        finish(new RuntimeBridgeClientError("runtime.internalError", "Runtime bridge connection closed before welcome."));
+        const failure = new RuntimeBridgeClientError(
+          "runtime.internalError",
+          this.handshake === undefined
+            ? "Runtime bridge connection closed."
+            : "Runtime bridge connection closed before welcome.",
+        );
+        if (this.handshake !== undefined) this.finishHandshake(failure);
+        else this.invalidate(failure);
       };
-      const timer = setTimeout(() => {
-        finish(new RuntimeBridgeClientError("runtime.internalError", "Runtime bridge connect timed out."));
-      }, timeoutMs);
+      this.listeners = { onData, onError, onClose };
+
+      // 握手前后都保留 error/close 监听：握手成功后若移除唯一 error 监听，
+      // 对端 RST 会变成未捕获的 'error' 事件并终止进程。
       socket.on("error", onError);
       socket.on("close", onClose);
+      socket.on("data", onData);
       socket.on("connect", () => {
         socket.write(serializeMessage({
           type: "hello",
@@ -184,16 +243,6 @@ export class RuntimeBridgeConnection {
           clientInstanceId: randomUUID(),
           capabilities: [...CLIENT_CAPABILITIES],
         }));
-      });
-      socket.on("data", (chunk: Buffer) => {
-        this.lineBuffer += chunk.toString("utf8");
-        let newlineIndex = this.lineBuffer.indexOf("\n");
-        while (newlineIndex >= 0) {
-          const line = this.lineBuffer.slice(0, newlineIndex);
-          this.lineBuffer = this.lineBuffer.slice(newlineIndex + 1);
-          this.handleLine(line, settled ? undefined : finish);
-          newlineIndex = this.lineBuffer.indexOf("\n");
-        }
       });
     });
   }
@@ -223,11 +272,17 @@ export class RuntimeBridgeConnection {
   }
 
   public dispose(): void {
-    this.socket?.destroy();
+    this.invalidate(new RuntimeBridgeClientError("runtime.internalError", "Runtime bridge connection disposed."));
+    const socket = this.socket;
     this.socket = undefined;
-    for (const waiter of this.lineWaiters.splice(0)) {
-      waiter("");
+    if (socket !== undefined && this.listeners !== undefined) {
+      socket.off("data", this.listeners.onData);
+      socket.off("error", this.listeners.onError);
+      socket.off("close", this.listeners.onClose);
     }
+
+    this.listeners = undefined;
+    this.decoder.reset();
   }
 
   private async expectLeaseResponse(response: ResponseMessage, fallback: string): Promise<void> {
@@ -236,9 +291,9 @@ export class RuntimeBridgeConnection {
     }
   }
 
-  private async request(action: RequestAction, documentTypeIds?: readonly string[]): Promise<ResponseMessage> {
-    if (!this.welcomed || this.socket === undefined) {
-      throw new RuntimeBridgeClientError("runtime.invalidMessage", "Runtime bridge is not connected.");
+  private request(action: RequestAction, documentTypeIds?: readonly string[]): Promise<ResponseMessage> {
+    if (!this.welcomed || this.connectionError !== undefined || this.socket === undefined || this.socket.destroyed) {
+      return Promise.reject(new RuntimeBridgeClientError("runtime.invalidMessage", "Runtime bridge is not connected."));
     }
     const requestId = `req-${randomUUID().slice(0, 8)}`;
     const payload = {
@@ -248,86 +303,156 @@ export class RuntimeBridgeConnection {
       ...(action === "getSnapshot" && documentTypeIds !== undefined ? { documentTypeIds: [...documentTypeIds] } : {}),
     };
 
-    const deadline = Date.now() + REQUEST_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      // 先注册行等待器再写请求，避免响应在等待器就位前到达被丢弃。
-      const linePromise = this.waitForLine(deadline);
-      this.socket.write(serializeMessage(payload));
-      const line = await linePromise;
-      let value: unknown;
+    return new Promise<ResponseMessage>((resolve, reject) => {
+      let settled = false;
+      const settle = (error: Error | undefined, response?: ResponseMessage): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.pending.delete(requestId);
+        if (error === undefined && response !== undefined) resolve(response);
+        else reject(error ?? new RuntimeBridgeClientError("runtime.internalError", "Runtime bridge request failed."));
+      };
+      const timer = setTimeout(() => {
+        settle(new RuntimeBridgeClientError("runtime.internalError", "Runtime bridge request timed out."));
+      }, REQUEST_TIMEOUT_MS);
+
+      // 先登记等待器再写请求：请求只写一次，响应按 requestId 分发。
+      this.pending.set(requestId, {
+        resolve: (response) => settle(undefined, response),
+        reject: (error) => settle(error),
+        timer,
+      });
       try {
-        value = JSON.parse(line);
+        this.socket?.write(serializeMessage(payload), (error?: Error | null) => {
+          if (error !== undefined && error !== null) {
+            settle(new RuntimeBridgeClientError("runtime.internalError", `Runtime bridge write failed: ${error.message}`));
+          }
+        });
       } catch (errorValue) {
-        throw new RuntimeBridgeClientError("runtime.invalidJson", `Runtime bridge sent an unparseable line: ${formatError(errorValue)}`);
+        settle(new RuntimeBridgeClientError("runtime.internalError", `Runtime bridge write failed: ${formatError(errorValue)}`));
       }
-
-      const message = parseMessage(value);
-      if (message.type === "response") {
-        if (message.requestId !== requestId) continue;
-        return parseResponse(message.raw);
-      }
-      if (message.type === "error") {
-        throw new RuntimeBridgeClientError(message.code, message.detail ?? "Runtime bridge reported a connection-level error.");
-      }
-      // event 等非配对消息忽略，继续等待。
-    }
-
-    throw new RuntimeBridgeClientError("runtime.internalError", "Runtime bridge request timed out.");
+    });
   }
 
-  private handleLine(line: string, finishWelcome?: (error: Error | undefined) => void): void {
+  private handleLine(line: string): void {
     if (line.trim().length === 0) return;
     let value: unknown;
     try {
       value = JSON.parse(line);
     } catch (errorValue) {
-      finishWelcome?.(new RuntimeBridgeClientError("runtime.invalidJson", `Runtime bridge sent an unparseable line: ${formatError(errorValue)}`));
+      const failure = new RuntimeBridgeClientError("runtime.invalidJson", `Runtime bridge sent an unparseable line: ${formatError(errorValue)}`);
+      if (this.handshake !== undefined) this.finishHandshake(failure);
+      else this.invalidate(failure);
       return;
     }
 
-    if (this.welcomed) {
-      const waiter = this.lineWaiters.shift();
-      if (waiter !== undefined) waiter(line);
-      return;
-    }
+    if (this.handshake !== undefined) {
+      // 握手阶段：首条必须是 welcome（或连接级 error）。
+      let message: ParsedMessage;
+      try {
+        message = parseMessage(value);
+      } catch (errorValue) {
+        this.finishHandshake(toClientError(errorValue));
+        return;
+      }
 
-    // 握手阶段：首条必须是 welcome（或连接级 error）。
-    try {
-      const message = parseMessage(value);
       if (message.type === "welcome") {
         if (message.instanceId !== this.instance.instanceId) {
-          throw new RuntimeBridgeClientError(
+          this.finishHandshake(new RuntimeBridgeClientError(
             "runtime.invalidMessage",
             `Runtime instance identity mismatch: expected '${this.instance.instanceId}', received '${message.instanceId}'.`,
-          );
+          ));
+          return;
         }
-        finishWelcome?.(undefined);
+        this.finishHandshake();
         return;
       }
       if (message.type === "error") {
-        throw new RuntimeBridgeClientError(message.code, message.detail ?? "Runtime bridge rejected the hello handshake.");
+        this.finishHandshake(new RuntimeBridgeClientError(message.code, message.detail ?? "Runtime bridge rejected the hello handshake."));
+        return;
       }
-      throw new RuntimeBridgeClientError("runtime.invalidMessage", `Expected a welcome message, received '${message.type}'.`);
-    } catch (errorValue) {
-      finishWelcome?.(errorValue instanceof Error ? errorValue : new Error(String(errorValue)));
+      this.finishHandshake(new RuntimeBridgeClientError("runtime.invalidMessage", `Expected a welcome message, received '${message.type}'.`));
+      return;
     }
+
+    let message: ParsedMessage;
+    try {
+      message = parseMessage(value);
+    } catch (errorValue) {
+      this.invalidate(toClientError(errorValue));
+      return;
+    }
+
+    if (message.type === "response") {
+      const waiter = this.pending.get(message.requestId);
+      if (waiter === undefined) {
+        // 超时后的迟到响应：直接丢弃，不影响后续请求。
+        return;
+      }
+      this.pending.delete(message.requestId);
+      clearTimeout(waiter.timer);
+      try {
+        waiter.resolve(parseResponse(message.raw));
+      } catch (errorValue) {
+        waiter.reject(toClientError(errorValue));
+      }
+      return;
+    }
+
+    if (message.type === "error") {
+      this.rejectPending(new RuntimeBridgeClientError(message.code, message.detail ?? "Runtime bridge reported a connection-level error."));
+      return;
+    }
+
+    // event 等非配对消息忽略；请求只写一次，不因事件重新发送。
   }
 
-  private waitForLine(deadline: number): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        const index = this.lineWaiters.indexOf(waiter);
-        if (index >= 0) this.lineWaiters.splice(index, 1);
-        reject(new RuntimeBridgeClientError("runtime.internalError", "Runtime bridge response timed out."));
-      }, Math.max(1, deadline - Date.now()));
-      const waiter = (line: string): void => {
-        clearTimeout(timer);
-        if (line.length === 0) reject(new RuntimeBridgeClientError("runtime.internalError", "Runtime bridge connection closed."));
-        else resolve(line);
-      };
-      this.lineWaiters.push(waiter);
-    });
+  private finishHandshake(error?: RuntimeBridgeClientError): void {
+    const handshake = this.handshake;
+    if (handshake === undefined) return;
+    this.handshake = undefined;
+    if (handshake.timer !== undefined) clearTimeout(handshake.timer);
+    if (error === undefined) {
+      this.welcomed = true;
+      handshake.resolve();
+      return;
+    }
+
+    this.welcomed = false;
+    this.connectionError = error;
+    this.rejectPending(error);
+    this.socket?.destroy();
+    handshake.reject(error);
   }
+
+  /** 连接失效：拒绝所有等待者并销毁 socket，绝不留下静默挂起的请求。 */
+  private invalidate(error: RuntimeBridgeClientError): void {
+    if (this.handshake !== undefined) {
+      this.finishHandshake(error);
+      return;
+    }
+
+    if (this.connectionError === undefined) this.connectionError = error;
+    this.welcomed = false;
+    this.rejectPending(this.connectionError);
+    this.socket?.destroy();
+  }
+
+  private rejectPending(error: Error): void {
+    const waiters = [...this.pending.values()];
+    this.pending.clear();
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+  }
+}
+
+function toClientError(errorValue: unknown): RuntimeBridgeClientError {
+  return errorValue instanceof RuntimeBridgeClientError
+    ? errorValue
+    : new RuntimeBridgeClientError("runtime.invalidMessage", formatError(errorValue));
 }
 
 type ParsedMessage =

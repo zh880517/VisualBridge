@@ -52,6 +52,10 @@ export class IncrementalSemanticSnapshotStore<TValue> {
   }
 
   public invalidate(): void {
+    // Advance the epoch before aborting so an in-flight build can never write
+    // its results back after the invalidation, even if a source ignores abort.
+    this.epochValue += 1;
+    this.activeController?.abort();
     this.cache.clear();
   }
 

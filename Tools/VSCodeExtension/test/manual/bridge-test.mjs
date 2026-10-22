@@ -1,7 +1,10 @@
-// VisualBridge Runtime Bridge 临时测试客户端（VS Code 侧语义的独立镜像）。
+// VisualBridge Runtime Bridge 手工诊断客户端（VS Code 侧语义的独立镜像）。
+// 位置：Tools/VSCodeExtension/test/manual/bridge-test.mjs（人工排障脚本，
+// 不参与任何 npm test 套件、CI 或发布门槛）。
 // 零依赖（Node 内置模块），覆盖：发现（discover）、通信（comm）、
 // domain reload 重连监视（watch）。协议镜像
-// Packages/com.kyle.visualbridge/Runtime/Bridge/VisualBridgeRuntimeBridgeValidator.cs。
+// ../../../../Packages/com.kyle.visualbridge/Runtime/Bridge/VisualBridgeRuntimeBridgeValidator.cs
+// （相对仓库根的同名路径；本脚本运行时不读取该文件，仅作对照说明）。
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';

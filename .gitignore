@@ -44,8 +44,14 @@ node_modules/
 **/artifacts/
 *.tsbuildinfo
 /.playwright-cli/
-/output/playwright/
-/output/large-corpus/
+/output/
+
+# Test coverage and OS metadata
+/coverage/
+/output/coverage/
+*.coverage
+Thumbs.db
+.DS_Store
 
 # Gradle cache directory
 .gradle/

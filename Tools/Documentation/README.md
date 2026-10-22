@@ -1,6 +1,6 @@
 # 文档门禁
 
-`npm run check:docs` 在不打开 VS Code 或 Unity 的前提下校验受维护的 Markdown、VS Code 扩展面、MCP 注册表与可执行示例。它随后复用 Protocol Contract 工作区真实的 stdio `check:mcp`，因此 MCP 构建产物必须已存在；CI 在 `npm run build` 之后运行本门禁。
+`npm run check:docs` 在不打开 VS Code 或 Unity 的前提下校验受维护的 Markdown、VS Code 扩展面、MCP 注册表与可执行示例。它先运行 `npm run test:samples` 构建产品 Parser，再运行 `npm run build --workspace @visualbridge/mcp` 自行生成 MCP 构建产物，随后复用 Protocol Contract 工作区真实的 stdio `check:mcp`，因此无需依赖此前偶然留下的 `dist` 状态。
 
 ## JSON 围栏元数据
 
@@ -32,7 +32,7 @@
 | `remark-gfm` | `4.0.1` | MIT | GitHub 风格 Markdown 扩展 |
 | `github-slugger` | `2.0.0` | ISC | GitHub 兼容的标题锚点 |
 | `jsdom` | `29.1.1` | MIT | Node 下 Mermaid 解析所需的确定性 DOM |
-| `mermaid` | `11.17.2` | MIT | 真实 Mermaid 语法解析 |
+| `mermaid` | `12.2.0` | MIT | 真实 Mermaid 语法解析 |
 | `ajv` | `8.20.0` | MIT | JSON Schema 2020-12 校验 |
 
 仓库依赖策略要求这些直接依赖版本、工作区许可证元数据与 lockfile importer 保持精确一致。

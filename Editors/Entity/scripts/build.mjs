@@ -1,20 +1,12 @@
-import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
-import path from "node:path";
+import { buildEditor, run } from "../../../Tools/Build/editorBuild.mjs";
 
-const editorRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const root = fileURLToPath(new URL("..", import.meta.url));
 
-await build({
-  absWorkingDir: editorRoot,
-  entryPoints: ["src/webview/index.tsx"],
-  bundle: true,
-  define: {
-    "process.env.NODE_ENV": JSON.stringify("production"),
-  },
-  format: "iife",
-  minify: true,
-  outfile: "dist/entityEditor.js",
-  platform: "browser",
-  sourcemap: true,
-  target: "es2022",
-});
+await run(() =>
+  buildEditor({
+    root,
+    entryPoints: ["src/webview/index.tsx"],
+    outfile: "dist/entityEditor.js",
+  }),
+);

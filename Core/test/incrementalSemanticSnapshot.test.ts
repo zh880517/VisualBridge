@@ -90,6 +90,42 @@ test("duplicate semantic source identities are rejected deterministically", asyn
   assert.deepEqual(store.snapshot.values, ["recovered"]);
 });
 
+test("invalidate supersedes an in-flight build and never writes its cache", async () => {
+  const store = new IncrementalSemanticSnapshotStore<string>();
+  let release: (() => void) | undefined;
+  const slow: SemanticSnapshotSource<string> = {
+    key: "slow",
+    dependencyKey: "stale",
+    // This source deliberately ignores the abort signal so the build has to
+    // detect supersession through the epoch instead of the rejection path.
+    load: () => new Promise<string>((resolve) => {
+      release = () => resolve("stale");
+    }),
+  };
+  const pending = store.rebuild([slow]);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  store.invalidate();
+  release?.();
+  const result = await pending;
+
+  assert.equal(result.status, "superseded");
+  assert.deepEqual(store.snapshot.values, []);
+
+  let loads = 0;
+  const fresh = await store.rebuild([{
+    key: "slow",
+    dependencyKey: "stale",
+    async load() {
+      loads += 1;
+      return "fresh";
+    },
+  }]);
+  assert.equal(loads, 1, "the superseded build must not populate the reusable cache");
+  assert.equal(fresh.status, "applied");
+  assert.deepEqual(store.snapshot.values, ["fresh"]);
+});
+
 test("synchronous source failures clean up cancellation listeners and preserve the snapshot", async () => {
   const store = new IncrementalSemanticSnapshotStore<string>();
   await store.rebuild([{ key: "stable", dependencyKey: "1", async load() { return "stable"; } }]);

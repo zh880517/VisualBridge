@@ -61,7 +61,7 @@ namespace VisualBridge.Runtime
             public string ClientInstanceId;
             /// <summary>当前订阅的执行实例 ID；null 表示未订阅（单实例跟踪）。</summary>
             public string SubscribedExecutionId;
-            public readonly StringBuilder LineBuffer = new StringBuilder();
+            public readonly VisualBridgeUtf8LineReader LineReader = new VisualBridgeUtf8LineReader();
             public readonly byte[] ReadBuffer = new byte[8192];
         }
 
@@ -895,12 +895,8 @@ namespace VisualBridge.Runtime
         {
             while (true)
             {
-                var buffered = connection.LineBuffer.ToString();
-                var newline = buffered.IndexOf('\n');
-                if (newline >= 0)
+                if (connection.LineReader.TryReadLine(out var line))
                 {
-                    var line = connection.LineBuffer.ToString(0, newline);
-                    connection.LineBuffer.Remove(0, newline + 1);
                     if (line.Trim().Length == 0)
                     {
                         continue;
@@ -916,15 +912,18 @@ namespace VisualBridge.Runtime
                 }
                 catch (Exception exception) when (exception is IOException || exception is ObjectDisposedException)
                 {
+                    // 错误路径上丢弃未成行的半截字节，避免被误当成后续行。
+                    connection.LineReader.DiscardPending();
                     throw VisualBridgeRuntimeBridgeValidator.Error("runtime.invalidMessage", "$", "Connection failed while reading: " + exception.Message);
                 }
 
                 if (read == 0)
                 {
+                    connection.LineReader.DiscardPending();
                     return null;
                 }
 
-                connection.LineBuffer.Append(Encoding.UTF8.GetString(connection.ReadBuffer, 0, read));
+                connection.LineReader.Append(connection.ReadBuffer, 0, read);
             }
         }
 

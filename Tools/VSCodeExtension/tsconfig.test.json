@@ -16,6 +16,7 @@
     "src/editor/webviewEpoch.ts",
     "src/document/lifecycleOperationGuard.ts",
     "src/document/projectSemanticDependency.ts",
+    "src/refactor/workspaceReferenceRefactorPlan.ts",
     "test/unit/**/*.ts"
   ]
 }

@@ -116,7 +116,9 @@ export async function withProjectTransaction<T>(
 ): Promise<T> {
   const lock = await acquireProjectLock(projectRoot);
   try {
-    await recoverInterruptedTransaction(projectRoot);
+    // Only a stale lock is evidence that a previous owner crashed. A normal
+    // transaction must not pay for a full orphan scan on every open.
+    await recoverInterruptedTransaction(projectRoot, lock.recoveredStale);
     return await action({
       commit: (writes, preconditions = []) => commitWrites(projectRoot, writes, preconditions),
       mutate: (mutations, preconditions = []) => commitMutations(projectRoot, mutations, preconditions),
@@ -329,13 +331,25 @@ async function verifyPreconditions(preconditions: readonly ProjectTransactionPre
   }
 }
 
-async function recoverInterruptedTransaction(projectRoot: string): Promise<void> {
+async function recoverInterruptedTransaction(
+  projectRoot: string,
+  recoveredStaleOwner = false,
+): Promise<void> {
   const journalPath = path.join(projectRoot, JOURNAL_FILE_NAME);
   let bytes: Buffer;
   try {
     bytes = await readFile(journalPath);
   } catch (errorValue) {
-    if (isNodeError(errorValue, "ENOENT")) return;
+    if (isNodeError(errorValue, "ENOENT")) {
+      if (recoveredStaleOwner) {
+        // A crash between staging the temporary files and publishing the
+        // journal leaves no journal to drive recovery. Only a recovered stale
+        // lock proves that a previous owner crashed; the project lock is held
+        // here, so any remaining transaction temporary file is safe to drop.
+        await removeOrphanedTemporaryFiles(projectRoot);
+      }
+      return;
+    }
     throw errorValue;
   }
   const declaredProjectRoot = path.resolve(projectRoot);
@@ -382,6 +396,71 @@ async function recoverInterruptedTransaction(projectRoot: string): Promise<void>
     );
   }
   await unlink(journalPath);
+}
+
+interface CleanupDirectoryEntry {
+  readonly name: string;
+  isFile(): boolean;
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+}
+
+export interface OrphanCleanupDependencies {
+  readonly readdir?: (directory: string) => Promise<readonly CleanupDirectoryEntry[]>;
+  readonly unlink?: (filePath: string) => Promise<void>;
+}
+
+const IGNORABLE_CLEANUP_ERROR_CODES = new Set(["ENOENT", "EACCES", "EPERM", "ENOTDIR", "EBUSY"]);
+
+/**
+ * Removes staging temporaries that were written before the journal existed.
+ * The scan never follows symbolic links, so it cannot delete files outside the
+ * project root through an aliased directory. Cleanup is best-effort: an
+ * unreadable directory or undeletable file must not fail an otherwise valid
+ * transaction. Only programming errors propagate.
+ */
+export async function removeOrphanedTemporaryFiles(
+  directory: string,
+  dependencies: OrphanCleanupDependencies = {},
+): Promise<void> {
+  const readDirectory = dependencies.readdir
+    ?? ((directoryPath: string) => readdir(directoryPath, { withFileTypes: true }));
+  const removeFile = dependencies.unlink ?? ((filePath: string) => unlink(filePath));
+  let entries: readonly CleanupDirectoryEntry[];
+  try {
+    entries = await readDirectory(directory);
+  } catch (errorValue) {
+    if (isIgnorableCleanupError(errorValue)) return;
+    throw errorValue;
+  }
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      await removeOrphanedTemporaryFiles(entryPath, dependencies);
+    } else if (entry.isFile() && isOrphanedTransactionTemporaryFile(entry.name)) {
+      try {
+        await removeFile(entryPath);
+      } catch (errorValue) {
+        if (!isIgnorableCleanupError(errorValue)) throw errorValue;
+      }
+    }
+  }
+}
+
+function isIgnorableCleanupError(errorValue: unknown): boolean {
+  return errorValue instanceof Error
+    && "code" in errorValue
+    && typeof errorValue.code === "string"
+    && IGNORABLE_CLEANUP_ERROR_CODES.has(errorValue.code);
+}
+
+function isOrphanedTransactionTemporaryFile(fileName: string): boolean {
+  return fileName.includes(".visualbridge-")
+    && fileName.endsWith(".tmp")
+    // A concurrent lock acquisition uses this name before linking the lock and
+    // is not a transaction staging artifact.
+    && !fileName.startsWith(`${LOCK_FILE_NAME}.`);
 }
 
 async function cleanupCommitted(projectRoot: string, entries: readonly JournalEntry[]): Promise<void> {
@@ -533,6 +612,7 @@ async function parseJournal(bytes: Buffer, trustedProjectRoots: readonly string[
 
 async function acquireProjectLock(projectRoot: string) {
   const lockPath = path.join(projectRoot, LOCK_FILE_NAME);
+  let recoveredStale = false;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const token = randomUUID();
     const temporaryPath = `${lockPath}.${token}.tmp`;
@@ -546,11 +626,16 @@ async function acquireProjectLock(projectRoot: string) {
       }
       await link(temporaryPath, lockPath);
       await unlink(temporaryPath).catch(() => undefined);
-      return { token, close: async () => unlink(temporaryPath).catch(() => undefined) };
+      return { token, close: async () => unlink(temporaryPath).catch(() => undefined), recoveredStale };
     } catch (errorValue) {
       await unlink(temporaryPath).catch(() => undefined);
       if (!isNodeError(errorValue, "EEXIST")) throw errorValue;
-      if (attempt === 0 && await recoverStaleOwnerLock(projectRoot, lockPath)) continue;
+      // A false return means another recovery is in flight; never claim crash
+      // evidence unless this acquisition actually took over a stale lock.
+      if (attempt === 0 && await recoverStaleOwnerLock(projectRoot, lockPath)) {
+        recoveredStale = true;
+        continue;
+      }
       throw new ProjectTransactionConflict("writeInProgress", "Another VisualBridge project transaction is in progress.");
     }
   }

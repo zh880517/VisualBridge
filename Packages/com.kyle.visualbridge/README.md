@@ -92,6 +92,6 @@ EditMode 测试位于 `Tests/Editor/`，用 Unity Test Framework 的 EditMode �
 
 - Authoring Document 是唯一权威；Catalog 与编译产物都是派生数据，可随时删除重建。
 - Editor Bridge 只发送 open/reveal 请求，不写 Authoring/Catalog、不触发 Export/Compile、不含 Runtime/Debug/Player 消息；Runtime 快照、调试租约、Source 映射与 Graph 执行观察走包内另一条独立通道（Runtime Bridge，`runtime.*` 错误码、独立版本化）。
-- 仍未完成的工作：独立 Player 构建的产物接线（`StreamingAssets/VisualBridge/Compiled` 路径解析，VB-UX-09 遗留项）、阶段 C 远程与设备连接（项目方 2026-08-31 决策推迟）、Table 的 XLSX 载体编译，以及断点/调用栈式 Debug（协议里没有以占位 Schema 伪装的断点消息）。进度与冻结决策见 [`Doc/UnityDomainAndRuntimeRoadmap.md`](../../Doc/UnityDomainAndRuntimeRoadmap.md)。
+- 仍未完成的工作：独立 Player 构建的产物接线（`StreamingAssets/VisualBridge/Compiled` 路径解析，见 [`Doc/Backlog.md`](../../Doc/Backlog.md)）、阶段 C 远程与设备连接（项目方 2026-08-31 决策推迟）、WebSocket 传输、独立产品 CLI、Table 的 XLSX 载体编译，以及断点/调用栈式 Debug（协议里没有以占位 Schema 伪装的断点消息）。逐项状态、范围边界与验收标准见 [`Doc/Backlog.md`](../../Doc/Backlog.md)；历史进度与冻结决策见[已归档的 Unity 领域与 Runtime 任务清单](../../Doc/Archive/UnityDomainAndRuntimeRoadmap.md)。
 
-架构与冻结决策见 [Unity Editor 接入架构](../../Doc/UnityIntegrationArchitecture.md)。
+架构与冻结决策见 [Unity Editor 接入架构（索引）](../../Doc/UnityIntegrationArchitecture.md) 及其 [C# 契约](../../Doc/UnityIntegrationArchitectureContracts.md)、[Editor Bridge](../../Doc/UnityIntegrationArchitectureEditorBridge.md)、[Runtime Bridge](../../Doc/UnityIntegrationArchitectureRuntime.md) 子文档。

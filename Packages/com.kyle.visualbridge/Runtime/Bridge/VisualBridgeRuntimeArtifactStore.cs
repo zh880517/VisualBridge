@@ -126,7 +126,8 @@ namespace VisualBridge.Runtime
             {
                 foreach (var pair in entries)
                 {
-                    sha.TransformBlock(Encoding.UTF8.GetBytes(pair.Key), 0, pair.Key.Length, null, 0);
+                    var path = Encoding.UTF8.GetBytes(pair.Key);
+                    sha.TransformBlock(path, 0, path.Length, null, 0);
                     var separator = Encoding.UTF8.GetBytes("\n");
                     sha.TransformBlock(separator, 0, separator.Length, null, 0);
                     var hash = Encoding.UTF8.GetBytes(pair.Value);

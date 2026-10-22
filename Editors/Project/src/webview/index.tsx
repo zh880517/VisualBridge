@@ -7,7 +7,6 @@ import type {
   ProjectFileIssue,
   ProjectOperation,
   ProjectProviderDefinition,
-  VisualBridgeProjectDefinition,
 } from "@visualbridge/core";
 import {
   CommonIcon,
@@ -17,37 +16,30 @@ import {
   SaveState,
   ToolbarSpacer,
 } from "@visualbridge/editor-ui";
+import {
+  clearProviderDraft,
+  createDocumentType,
+  createProvider,
+  initialProjectEditorState,
+  move,
+  reduceProjectHostMessage,
+  withReferenceKinds,
+  withValidatorTypes,
+  withWebviewToken,
+  type ProjectEditorState,
+  type ProjectHostMessage,
+} from "../projectEditorLogic";
 import "../styles.css";
 
 interface VsCodeApi { postMessage(message: unknown): void }
 declare function acquireVsCodeApi(): VsCodeApi;
-
-interface ProjectStateMessage {
-  readonly type: "projectState";
-  readonly documentVersion: number;
-  readonly sourceHash: string;
-  readonly project: VisualBridgeProjectDefinition;
-  readonly isDirty: boolean;
-  readonly issues: readonly ProjectFileIssue[];
-}
-
-type HostMessage = ProjectStateMessage | {
-  readonly type: "projectInvalid";
-  readonly documentVersion: number;
-  readonly sourceHash: string;
-  readonly isDirty: boolean;
-  readonly issues: readonly ProjectFileIssue[];
-} | { readonly type: "operationRejected"; readonly message: string }
-  | { readonly type: "requestReady"; readonly webviewToken: string };
 
 const rawVscode = acquireVsCodeApi();
 const instanceId = crypto.randomUUID();
 let webviewToken: string | undefined;
 const vscode: VsCodeApi = {
   postMessage(message) {
-    rawVscode.postMessage(typeof message === "object" && message !== null && !Array.isArray(message)
-      ? { ...message, ...(webviewToken === undefined ? {} : { webviewToken }) }
-      : message);
+    rawVscode.postMessage(withWebviewToken(message, webviewToken));
   },
 };
 const rootElement = document.getElementById("root");
@@ -55,36 +47,18 @@ if (rootElement === null) throw new Error("Project editor root element is missin
 createRoot(rootElement).render(<ProjectEditorApp />);
 
 function ProjectEditorApp(): ReactElement {
-  const [state, setState] = useState<ProjectStateMessage>();
-  const [invalid, setInvalid] = useState<Extract<HostMessage, { readonly type: "projectInvalid" }>>();
-  const [status, setStatus] = useState("正在加载工程设置…");
-  const [pending, setPending] = useState(false);
-  const [providerDraft, setProviderDraft] = useState<ProjectProviderDefinition>();
+  const [editorState, setEditorState] = useState<ProjectEditorState>(initialProjectEditorState);
+  const { state, invalid, status, pending, providerDraft } = editorState;
 
   useEffect(() => {
-    const listener = (event: MessageEvent<HostMessage>): void => {
+    const listener = (event: MessageEvent<ProjectHostMessage>): void => {
       const message = event.data;
       if (message.type === "requestReady") {
         webviewToken = message.webviewToken;
         vscode.postMessage({ type: "ready", instanceId });
-      } else if (message.type === "projectState") {
-        setState(message);
-        setProviderDraft((draft) => draft !== undefined
-          && message.project.providers.some((provider) => provider.id === draft.id)
-          ? undefined
-          : draft);
-        setInvalid(undefined);
-        setPending(false);
-        setStatus("配置有效");
-      } else if (message.type === "projectInvalid") {
-        setState(undefined);
-        setInvalid(message);
-        setPending(false);
-        setStatus("工程文件无效");
-      } else if (message.type === "operationRejected") {
-        setPending(false);
-        setStatus(message.message);
+        return;
       }
+      setEditorState((current) => reduceProjectHostMessage(current, message));
     };
     window.addEventListener("message", listener);
     vscode.postMessage({ type: "ready", instanceId });
@@ -93,8 +67,7 @@ function ProjectEditorApp(): ReactElement {
 
   const submit = (operations: readonly ProjectOperation[]): void => {
     if (state === undefined || pending) return;
-    setPending(true);
-    setStatus("正在验证并应用…");
+    setEditorState((current) => ({ ...current, pending: true, status: "正在验证并应用…" }));
     vscode.postMessage({
       type: "applyOperations",
       documentVersion: state.documentVersion,
@@ -154,7 +127,7 @@ function ProjectEditorApp(): ReactElement {
         <SectionTitle
           title="工程提供器"
           count={project.providers.length + (providerDraft === undefined ? 0 : 1)}
-          onAdd={() => setProviderDraft(createProvider(project))}
+          onAdd={() => setEditorState((current) => ({ ...current, providerDraft: createProvider(project) }))}
           disabled={pending || providerDraft !== undefined}
         />
         <DragDropProvider onDragEnd={(event) => {
@@ -170,8 +143,8 @@ function ProjectEditorApp(): ReactElement {
             {providerDraft !== undefined && <ProviderDraftCard
               provider={providerDraft}
               disabled={pending}
-              onChange={setProviderDraft}
-              onCancel={() => setProviderDraft(undefined)}
+              onChange={(next) => setEditorState((current) => ({ ...current, providerDraft: next }))}
+              onCancel={() => setEditorState(clearProviderDraft)}
               onSave={(provider) => submit([{ type: "project.addProvider", provider }])}
             />}
           </div>
@@ -349,43 +322,4 @@ function NumberInput(props: { readonly label: string; readonly value: number; re
 
 function IssueList(props: { readonly issues: readonly ProjectFileIssue[] }): ReactElement {
   return props.issues.length === 0 ? <></> : <section className="issues"><h2>校验</h2><ul>{props.issues.map((issue, index) => <li key={`${issue.path}:${index}`}><code>{issue.path}</code> {issue.message}</li>)}</ul></section>;
-}
-
-function createDocumentType(project: VisualBridgeProjectDefinition): DocumentTypeDefinition {
-  let index = project.documentTypes.length + 1;
-  while (project.documentTypes.some((entry) => entry.id === `document.type.${index}`)) index += 1;
-  return { id: `document.type.${index}`, editor: "structured", include: [`Config/**/*.type${index}`], exclude: [], catalogs: [] };
-}
-
-function createProvider(project: VisualBridgeProjectDefinition): ProjectProviderDefinition {
-  let index = project.providers.length + 1;
-  while (project.providers.some((entry) => entry.id === `project.provider.${index}`)) index += 1;
-  return { id: `project.provider.${index}`, entry: `Providers/provider-${index}.mjs`, args: [], capabilities: { reference: { kinds: [`custom.reference.${index}`] } } };
-}
-
-function withReferenceKinds(
-  provider: ProjectProviderDefinition,
-  kinds: readonly string[],
-): ProjectProviderDefinition["capabilities"] {
-  return {
-    ...(kinds.length === 0 ? {} : { reference: { kinds } }),
-    ...(provider.capabilities.validator === undefined ? {} : { validator: provider.capabilities.validator }),
-  };
-}
-
-function withValidatorTypes(
-  provider: ProjectProviderDefinition,
-  documentTypes: readonly string[],
-): ProjectProviderDefinition["capabilities"] {
-  return {
-    ...(provider.capabilities.reference === undefined ? {} : { reference: provider.capabilities.reference }),
-    ...(documentTypes.length === 0 ? {} : { validator: { documentTypes } }),
-  };
-}
-
-function move<T>(values: readonly T[], from: number, to: number): T[] {
-  const result = [...values];
-  const [entry] = result.splice(from, 1);
-  if (entry !== undefined) result.splice(to, 0, entry);
-  return result;
 }

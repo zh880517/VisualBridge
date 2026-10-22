@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.editor.test.base.json",
+  "compilerOptions": {
+    "outDir": ".test-dist",
+    "rootDir": "."
+  },
+  "include": [
+    "src/commonIcons.tsx",
+    "src/editorChrome.tsx",
+    "src/feedback.tsx",
+    "src/layout.tsx",
+    "src/propertyLayout.tsx",
+    "src/uiLogic.ts",
+    "test/**/*.ts",
+    "test/**/*.tsx"
+  ]
+}

@@ -463,21 +463,22 @@ namespace VisualBridge.Editor.Tests
             private string Receive()
             {
                 var buffer = new byte[4096];
-                var text = new StringBuilder();
+                var reader = new VisualBridge.Runtime.VisualBridgeUtf8LineReader();
                 while (true)
                 {
+                    if (reader.TryReadLine(out var line))
+                    {
+                        return line;
+                    }
+
                     var read = stream.Read(buffer, 0, buffer.Length);
                     if (read == 0)
                     {
+                        reader.DiscardPending();
                         return null;
                     }
 
-                    text.Append(Encoding.UTF8.GetString(buffer, 0, read));
-                    var newline = text.ToString().IndexOf('\n');
-                    if (newline >= 0)
-                    {
-                        return text.ToString(0, newline);
-                    }
+                    reader.Append(buffer, 0, read);
                 }
             }
 

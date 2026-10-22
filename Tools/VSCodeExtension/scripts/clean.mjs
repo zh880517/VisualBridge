@@ -1,10 +1,6 @@
-import { rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import path from "node:path";
+import { cleanEditor, run } from "../../Build/editorBuild.mjs";
 
-const extensionRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const root = fileURLToPath(new URL("..", import.meta.url));
 
-await Promise.all([
-  rm(path.join(extensionRoot, "dist"), { recursive: true, force: true }),
-  rm(path.join(extensionRoot, "artifacts"), { recursive: true, force: true }),
-]);
+await run(() => cleanEditor({ root, dist: true, artifacts: true }));

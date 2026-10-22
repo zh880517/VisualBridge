@@ -14,8 +14,14 @@
 
 ## 总体架构与共享平台
 
-- [VisualBridge 架构设计](VisualBridgeArchitecture.md)：平台定位、模块边界、数据所有权、Authoring/Unity 分工和长期演进边界。
-- [Unity Editor 接入架构](UnityIntegrationArchitecture.md)：UPM Package 与 C# wire/data bags、固定 Profile、Structured offline 切片与四领域扩展边界、Catalog Export、派生编译、信任边界、Editor Bridge，以及 Runtime 实例发现、Runtime Bridge 协议与 Graph 执行过程可视化的冻结设计与落地记录（阶段 A/B/D 已关闭）。
+- [VisualBridge 架构设计](VisualBridgeArchitecture.md)：索引与总览；平台定位、模块边界、数据所有权、Authoring/Unity 分工和长期演进边界。
+  - [核心领域模型与事务](VisualBridgeArchitectureCore.md)：产品定位、核心原则、总体架构、Authoring Project、Document System、Catalog 与 Reference System。
+  - [Authoring、编辑器与扩展机制](VisualBridgeArchitectureAuthoring.md)：编辑器原语、VS Code 基础插件、Extension System 与安全边界。
+  - [宿主集成与边界决策](VisualBridgeArchitectureIntegration.md)：Unity 集成与 Bridge 边界、AI/MCP、平台仓库结构、开发方案、关键风险与已确定决策。
+- [Unity Editor 接入架构](UnityIntegrationArchitecture.md)：索引与总览；UPM Package、C# wire/data bags、Catalog Export、派生编译、Editor Bridge 与 Runtime Bridge 的冻结设计与落地记录（阶段 A/B/D 已关闭）。
+  - [C# 契约与离线 Catalog/Compile](UnityIntegrationArchitectureContracts.md)：首期范围、冻结交接面、Package 边界、C# contract、Profile、Field 映射、三域 Catalog Export、四域 Compile 与领域扩展记录。
+  - [Editor Bridge 与冻结决策](UnityIntegrationArchitectureEditorBridge.md)：Editor Bridge spike/冻结设计、Unity Adapter API 决策、命令与验证层级、已冻结与待关闭决策。
+  - [Runtime Bridge 与 Graph 执行观察](UnityIntegrationArchitectureRuntime.md)：Runtime 产物形态、实例发现、Runtime Bridge 协议、DAP 检查适配器与 Graph 执行过程可视化。
 - [VS Code Host](VSCodeHost.md)：激活、Project Registry、Custom Editor 路由、Webview epoch、保存/冲突、诊断、Trust，以及 Bridge 与调试注册的激活期接线。
 - [Form Field Editor](FormFieldEditor.md)：跨 Graph、Entity、Structured、Table 的共享字段语义、React 控件、Reference Bridge 和提交边界。
 - [Authoring 编辑器共享 UI](AuthoringEditorUi.md)：内置 Webview 的主题 Token、公共 Shell/布局/图标、属性密度、Graph 与属性面板视觉边界。
@@ -50,9 +56,15 @@
 - [Release Quality](ReleaseQuality.md)：Node/npm/依赖锁定、Windows CI、真实 VSIX 激活、空缓存复现、依赖本机 Unity Editor 的两个端到端门槛、私有分发边界和正式样例。
 - [大工程确定性验证与性能报告](LargeProjectValidation.md)：确定性语料生成、correctness/benchmark profile 和报告解释。
 - [Unity 接入前文档完整性矩阵](DocumentationCompleteness.md)：功能、设计、流程图、使用手册、Schema/Manifest 和自动验证的最终审计入口。
-- [Unity 接入前开发任务清单](PreUnityDevelopmentRoadmap.md)：PU 任务状态、强制验证门槛和 Unity 正式接入条件。
-- [Unity Editor 接入任务清单](UnityIntegrationRoadmap.md)：已完成的 C# contract generator、Package、Structured Export/Compile、最小 Editor Bridge 与发布门槛/文档/基线（VB-UI 系列全部关闭）。
-- [Unity 领域扩展与 Runtime 接入任务清单](UnityDomainAndRuntimeRoadmap.md)：VB-UI 系列之后的下一大阶段规划——Entity/Table/Graph 离线编译、本机 Runtime 调试链路与 Graph 执行过程可视化（阶段 A/B/D）已全部完成，远程/设备连接（阶段 C）项目方推迟。
+- [Backlog](Backlog.md)：六项明确未实现能力的当前状态、范围边界、验收标准、未实施原因与决策日期。
 - [Unity Graph 执行过程调试接入指南](UnityGraphExecutionDebug.md)：游戏侧引擎事件转发、稳定 ID 映射规则、采集门面 API 与适配器示例。
+
+## 历史归档
+
+以下路线图已完成并归档。原路径保留简短指针页以兼容既有链接，完整历史内容位于 `Doc/Archive/`。
+
+- [Unity 接入前开发任务清单](PreUnityDevelopmentRoadmap.md)：原路径入口；完整内容见 [Archive/PreUnityDevelopmentRoadmap.md](Archive/PreUnityDevelopmentRoadmap.md)。
+- [Unity Editor 接入任务清单](UnityIntegrationRoadmap.md)：原路径入口；完整内容见 [Archive/UnityIntegrationRoadmap.md](Archive/UnityIntegrationRoadmap.md)。
+- [Unity 领域扩展与 Runtime 接入任务清单](UnityDomainAndRuntimeRoadmap.md)：原路径入口；完整内容见 [Archive/UnityDomainAndRuntimeRoadmap.md](Archive/UnityDomainAndRuntimeRoadmap.md)。
 
 开发过程中的设计草稿、实施计划和任务文档统一放在 `Doc/Temp`。任务完成后必须删除对应临时文档；需要长期保留的结论应整理进上述正式文档。文档目录新增或删除文件时，根级文档门禁会要求本索引同步更新。

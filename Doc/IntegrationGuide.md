@@ -180,4 +180,4 @@ git diff --check
 - 人为制造外部修改时 VS Code 与 MCP 都拒绝覆盖；
 - Provider/MCP 日志和事务恢复材料的位置已纳入团队运维说明。
 
-[`PreUnityDevelopmentRoadmap.md`](PreUnityDevelopmentRoadmap.md) 已完成并由 `v0.1.0` 固化；首个 Unity Structured offline slice 的实现、验证与后续 Editor Bridge 任务见 [`UnityIntegrationRoadmap.md`](UnityIntegrationRoadmap.md)。该切片不包含 Runtime、Debug 或 Player。
+历史记录：[`PreUnityDevelopmentRoadmap.md`](Archive/PreUnityDevelopmentRoadmap.md) 已完成并由 `v0.1.0` 固化；首个 Unity Structured offline slice 的实现、验证与后续 Editor Bridge 任务见 [`UnityIntegrationRoadmap.md`](Archive/UnityIntegrationRoadmap.md)（均已归档）。该切片不包含 Runtime、Debug 或 Player。

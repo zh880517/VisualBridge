@@ -77,7 +77,7 @@ npm run test:runtime-e2e
 
 ### 非规范的手工诊断客户端
 
-`output/bridge-tests/bridge-test.mjs` 是零依赖的 Runtime Bridge 手工诊断客户端，提供 `discover` / `comm` / `watch` 三个子命令。它**不是发布门槛**：不被任何 npm script、CI 或测试引用，需要活体 Unity Editor 手工驱动，因此无法进入自动化。
+`Tools/VSCodeExtension/test/manual/bridge-test.mjs` 是零依赖的 Runtime Bridge 手工诊断客户端，提供 `discover` / `comm` / `watch` 三个子命令。它**不是发布门槛**：不被任何 npm script、CI 或测试引用，需要活体 Unity Editor 手工驱动，因此无法进入自动化。
 
 它的唯一不可替代价值是 `watch`：观测**真实 domain reload** 下的连接行为（generation 递增、端口重绑、旧 token 失效、活体重连）。现有自动化都覆盖不到这一场景——EditMode 测试在进程内无法产生真实 reload，`test:runtime-e2e` 的 batchmode Play 不触发 reload，宿主测试使用假实例。其余覆盖与正式门槛重叠：`discover` 的心跳/pid 双信号陈旧判定由 EditMode 的 Runtime Bridge 测试覆盖，`comm` 的握手与错误码负路径同样由 EditMode 逐条覆盖，快照/租约/事件正路径由 `test:runtime-e2e` 覆盖。
 

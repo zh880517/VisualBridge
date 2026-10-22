@@ -37,6 +37,36 @@ export interface ProjectDiscoveryResult {
   readonly issues: readonly WorkspaceIssue[];
 }
 
+/**
+ * Filesystem entries a Project may enumerate. Symbolic links are always
+ * excluded: a Project may only contain real files inside the workspace.
+ */
+export interface DirectoryEntryIdentity {
+  isFile(): boolean;
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+}
+
+export function isRealFileEntry(entry: DirectoryEntryIdentity): boolean {
+  return !entry.isSymbolicLink() && entry.isFile();
+}
+
+export function isRealDirectoryEntry(entry: DirectoryEntryIdentity): boolean {
+  return !entry.isSymbolicLink() && entry.isDirectory();
+}
+
+/**
+ * Project file identity follows the host platform: Windows compares paths
+ * case-insensitively, other platforms compare them exactly.
+ */
+export function projectFilePathEquals(
+  left: string,
+  right: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
 export interface DeclaredDocumentContext {
   readonly project: ProjectContext;
   readonly documentType: DocumentTypeDefinition;
@@ -152,7 +182,8 @@ export class VisualBridgeWorkspace {
     }
 
     const normalizedProjectFile = normalizeRelativePath(projectFile, "projectFile");
-    const project = discovery.projects.find((candidate) => candidate.projectFile === normalizedProjectFile);
+    const project = discovery.projects.find((candidate) =>
+      projectFilePathEquals(candidate.projectFile, normalizedProjectFile));
     if (project === undefined) {
       throw new VisualBridgeMcpError(
         "project.notFound",
@@ -357,9 +388,9 @@ async function collectProjectFiles(directory: string, result: string[]): Promise
   entries.sort((left, right) => compareUtf16CodeUnits(left.name, right.name));
   for (const entry of entries) {
     const entryPath = path.join(directory, entry.name);
-    if (entry.isFile() && entry.name === PROJECT_FILE_NAME) {
+    if (isRealFileEntry(entry) && entry.name === PROJECT_FILE_NAME) {
       result.push(entryPath);
-    } else if (entry.isDirectory() && !skippedDirectoryNames.has(entry.name)) {
+    } else if (isRealDirectoryEntry(entry) && !skippedDirectoryNames.has(entry.name)) {
       await collectProjectFiles(entryPath, result);
     }
   }
@@ -379,13 +410,10 @@ async function collectDocumentFiles(projectRoot: string, directory: string, resu
   const entries = await readdir(resolvedDirectory, { withFileTypes: true });
   entries.sort((left, right) => compareUtf16CodeUnits(left.name, right.name));
   for (const entry of entries) {
-    if (entry.isSymbolicLink()) {
-      continue;
-    }
     const entryPath = path.join(resolvedDirectory, entry.name);
-    if (entry.isFile() && !isVisualBridgeTransactionArtifact(entry.name)) {
+    if (isRealFileEntry(entry) && !isVisualBridgeTransactionArtifact(entry.name)) {
       result.push(entryPath);
-    } else if (entry.isDirectory() && !skippedDirectoryNames.has(entry.name)) {
+    } else if (isRealDirectoryEntry(entry) && !skippedDirectoryNames.has(entry.name)) {
       await collectDocumentFiles(projectRoot, entryPath, result);
     }
   }
@@ -410,9 +438,9 @@ async function collectPotentialAuthoringFiles(
   entries.sort((left, right) => compareUtf16CodeUnits(left.name, right.name));
   for (const entry of entries) {
     const entryPath = path.join(resolvedDirectory, entry.name);
-    if ((entry.isFile() || entry.isSymbolicLink()) && !isVisualBridgeTransactionArtifact(entry.name)) {
+    if (isRealFileEntry(entry) && !isVisualBridgeTransactionArtifact(entry.name)) {
       result.push(entryPath);
-    } else if (entry.isDirectory() && !skippedDirectoryNames.has(entry.name)) {
+    } else if (isRealDirectoryEntry(entry) && !skippedDirectoryNames.has(entry.name)) {
       await collectPotentialAuthoringFiles(projectRoot, entryPath, result);
     }
   }

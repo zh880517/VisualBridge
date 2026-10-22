@@ -1,22 +1,13 @@
-import { build } from "esbuild";
-import { copyFile, mkdir } from "node:fs/promises";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildEditor, run } from "../../../Tools/Build/editorBuild.mjs";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-await mkdir(path.join(root, "dist"), { recursive: true });
-await Promise.all([
-  build({
-    absWorkingDir: root,
+const root = fileURLToPath(new URL("..", import.meta.url));
+
+await run(() =>
+  buildEditor({
+    root,
     entryPoints: ["src/webview/index.tsx"],
-    bundle: true,
-    define: { "process.env.NODE_ENV": JSON.stringify("production") },
-    format: "iife",
-    minify: true,
     outfile: "dist/projectEditor.js",
-    platform: "browser",
-    sourcemap: true,
-    target: "es2022"
+    assets: [{ from: "src/styles.css", to: "dist/projectEditor.css" }],
   }),
-  copyFile(path.join(root, "src", "styles.css"), path.join(root, "dist", "projectEditor.css")),
-]);
+);

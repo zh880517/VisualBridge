@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +10,7 @@ import { createRequire } from "node:module";
 import {
   ProjectTransactionConflict,
   ProjectTransactionFailure,
+  removeOrphanedTemporaryFiles,
   withProjectTransaction,
 } from "../dist/projectTransaction.js";
 
@@ -473,6 +476,142 @@ test("version 1 replacement journals remain recoverable and paths stay inside th
     );
   });
 });
+
+test("transactions without stale-lock evidence leave orphaned staging files untouched", async () => {
+  await withTemporaryProject(async (projectRoot) => {
+    const transactionId = "00000000-0000-4000-8000-000000000109";
+    const orphanPath = path.join(projectRoot, `target.txt.visualbridge-${transactionId}.tmp`);
+    await writeFile(orphanPath, bytes("orphaned staging bytes"));
+
+    await withProjectTransaction(projectRoot, async () => undefined);
+
+    // No stale lock means there is no evidence of a crash, so opening a normal
+    // transaction must not scan (or mutate) the project tree.
+    assert.deepEqual(await readFile(orphanPath), bytes("orphaned staging bytes"));
+  });
+});
+
+test("recovering a stale lock removes orphaned staging files when the journal is absent", async () => {
+  await withTemporaryProject(async (projectRoot) => {
+    const transactionId = "00000000-0000-4000-8000-000000000109";
+    const deadPid = await exitedProcessId();
+    await writeFile(
+      path.join(projectRoot, ".visualbridge-transaction.lock"),
+      `${JSON.stringify({
+        version: 1,
+        token: "stale-owner-token",
+        pid: deadPid,
+        startedAt: new Date(0).toISOString(),
+      })}\n`,
+      "utf8",
+    );
+
+    const nestedDirectory = path.join(projectRoot, "nested");
+    await mkdir(nestedDirectory);
+    const orphanPaths = [
+      path.join(projectRoot, `target.txt.visualbridge-${transactionId}.tmp`),
+      path.join(nestedDirectory, `nested.txt.visualbridge-${transactionId}.tmp`),
+    ];
+    for (const orphanPath of orphanPaths) {
+      await writeFile(orphanPath, bytes("orphaned staging bytes"));
+    }
+    const normalPath = path.join(nestedDirectory, "normal.txt");
+    await writeFile(normalPath, bytes("normal bytes"));
+    const unrelatedTemporaryPath = path.join(nestedDirectory, "keep.tmp");
+    await writeFile(unrelatedTemporaryPath, bytes("unrelated temporary"));
+
+    // A symlinked directory must never be traversed during orphan cleanup.
+    const outsideRoot = await mkdtemp(path.join(tmpdir(), "visualbridge-outside-"));
+    try {
+      const outsideFile = path.join(outsideRoot, `outside.txt.visualbridge-${transactionId}.tmp`);
+      await writeFile(outsideFile, bytes("outside"));
+      let linked = false;
+      try {
+        await symlink(
+          outsideRoot,
+          path.join(projectRoot, "linked-outside"),
+          process.platform === "win32" ? "junction" : "dir",
+        );
+        linked = true;
+      } catch (error) {
+        if (!["EPERM", "EACCES", "ENOSYS", "ENOTSUP"].includes(error?.code)) {
+          throw error;
+        }
+      }
+
+      await withProjectTransaction(projectRoot, async () => undefined);
+
+      for (const orphanPath of orphanPaths) {
+        await assert.rejects(lstat(orphanPath), { code: "ENOENT" }, `${orphanPath} was not cleaned up.`);
+      }
+      assert.deepEqual(await readFile(normalPath), bytes("normal bytes"));
+      assert.deepEqual(await readFile(unrelatedTemporaryPath), bytes("unrelated temporary"));
+      if (linked) {
+        assert.deepEqual(await readFile(outsideFile), bytes("outside"));
+      }
+      await assert.rejects(lstat(path.join(projectRoot, ".visualbridge-transaction.lock")), { code: "ENOENT" });
+    } finally {
+      await rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+test("orphan cleanup skips unreadable directories and still cleans readable ones", async () => {
+  await withTemporaryProject(async (projectRoot) => {
+    const transactionId = "00000000-0000-4000-8000-000000000110";
+    const blockedDirectory = path.join(projectRoot, "blocked");
+    const readableDirectory = path.join(projectRoot, "readable");
+    await mkdir(blockedDirectory);
+    await mkdir(readableDirectory);
+    const rootOrphan = path.join(projectRoot, `root.txt.visualbridge-${transactionId}.tmp`);
+    const blockedOrphan = path.join(blockedDirectory, `blocked.txt.visualbridge-${transactionId}.tmp`);
+    const readableOrphan = path.join(readableDirectory, `readable.txt.visualbridge-${transactionId}.tmp`);
+    for (const orphanPath of [rootOrphan, blockedOrphan, readableOrphan]) {
+      await writeFile(orphanPath, bytes("orphaned staging bytes"));
+    }
+
+    const denied = Object.assign(new Error("access denied"), { code: "EACCES" });
+    await assert.doesNotReject(removeOrphanedTemporaryFiles(projectRoot, {
+      readdir: async (directory) => {
+        if (path.resolve(directory) === path.resolve(blockedDirectory)) throw denied;
+        return readdir(directory, { withFileTypes: true });
+      },
+    }));
+
+    await assert.rejects(lstat(rootOrphan), { code: "ENOENT" });
+    await assert.rejects(lstat(readableOrphan), { code: "ENOENT" });
+    // The unreadable subtree is skipped rather than aborting the whole cleanup.
+    assert.deepEqual(await readFile(blockedOrphan), bytes("orphaned staging bytes"));
+  });
+});
+
+test("orphan cleanup ignores undeletable files and lets the transaction continue", async () => {
+  await withTemporaryProject(async (projectRoot) => {
+    const transactionId = "00000000-0000-4000-8000-000000000111";
+    const orphanPath = path.join(projectRoot, `target.txt.visualbridge-${transactionId}.tmp`);
+    await writeFile(orphanPath, bytes("orphaned staging bytes"));
+
+    const permissionDenied = Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+    await assert.doesNotReject(removeOrphanedTemporaryFiles(projectRoot, {
+      unlink: async () => { throw permissionDenied; },
+    }));
+    assert.deepEqual(await readFile(orphanPath), bytes("orphaned staging bytes"));
+
+    // Cleanup is best-effort and must never make the transaction itself fail.
+    let transactionRan = false;
+    await assert.doesNotReject(withProjectTransaction(projectRoot, async () => {
+      transactionRan = true;
+      return undefined;
+    }));
+    assert.equal(transactionRan, true);
+  });
+});
+
+async function exitedProcessId() {
+  const child = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
+  await once(child, "exit");
+  return child.pid;
+}
 
 function journalEntry(absolutePath, logicalPath, transactionId, before, after) {
   const prefix = `${absolutePath}.visualbridge-${transactionId}`;

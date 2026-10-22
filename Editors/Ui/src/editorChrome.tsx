@@ -1,8 +1,9 @@
 import type { HTMLAttributes, ReactElement, ReactNode } from "react";
-
-function joinClassNames(...values: readonly (string | undefined)[]): string {
-  return values.filter((value): value is string => value !== undefined && value.length > 0).join(" ");
-}
+import {
+  DEFAULT_SAVE_STATE_LABELS,
+  joinClassNames,
+  resolveSaveStateKind,
+} from "./uiLogic";
 
 export function EditorShell(props: HTMLAttributes<HTMLDivElement>): ReactElement {
   return <div {...props} className={joinClassNames("vb-editor-shell", props.className)} />;
@@ -41,12 +42,12 @@ export function SaveState(props: {
   readonly className?: string;
   readonly title?: string;
 }): ReactElement {
-  const kind = props.pending ? "pending" : props.dirty ? "dirty" : "saved";
-  const label = props.pending
-    ? (props.pendingLabel ?? "正在应用…")
-    : props.dirty
-      ? (props.dirtyLabel ?? "未保存")
-      : (props.savedLabel ?? "已保存");
+  const kind = resolveSaveStateKind(props.dirty, props.pending);
+  const label = kind === "pending"
+    ? (props.pendingLabel ?? DEFAULT_SAVE_STATE_LABELS.pending)
+    : kind === "dirty"
+      ? (props.dirtyLabel ?? DEFAULT_SAVE_STATE_LABELS.dirty)
+      : (props.savedLabel ?? DEFAULT_SAVE_STATE_LABELS.saved);
   return (
     <span className={joinClassNames("vb-save-state", kind, props.className)} data-save-state={kind} title={props.title}>
       <i aria-hidden="true" />

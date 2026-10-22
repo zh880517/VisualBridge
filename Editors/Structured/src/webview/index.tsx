@@ -1,13 +1,18 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { DocumentDiagnostic } from "@visualbridge/core";
-import type {
-  RegisteredStructuredConfigTypeDefinition,
-  StructuredDocument,
-  StructuredOperation,
-} from "@visualbridge/structured";
+import type { StructuredOperation } from "@visualbridge/structured";
 import { EditorShell, EditorStatusBar, EditorToolbar, SaveState } from "@visualbridge/editor-ui";
 import { FieldsEditor, WebviewReferenceBridge } from "@visualbridge/form-editor";
+import {
+  createSetFieldOperation,
+  formatDiagnosticSummary,
+  initialStructuredEditorState,
+  reduceStructuredHostMessage,
+  withWebviewToken,
+  type StructuredEditorState,
+  type StructuredHostMessage,
+} from "../structuredEditorLogic";
 import "../styles.css";
 
 interface VsCodeApi {
@@ -15,33 +20,6 @@ interface VsCodeApi {
 }
 
 declare function acquireVsCodeApi(): VsCodeApi;
-
-interface StructuredStateMessage {
-  readonly type: "structuredState";
-  readonly documentVersion: number;
-  readonly document: StructuredDocument;
-  readonly configType: RegisteredStructuredConfigTypeDefinition;
-  readonly isDirty: boolean;
-  readonly diagnostics: readonly DocumentDiagnostic[];
-}
-
-interface StructuredInvalidMessage {
-  readonly type: "structuredInvalid";
-  readonly documentVersion: number;
-  readonly isDirty: boolean;
-  readonly diagnostics: readonly DocumentDiagnostic[];
-}
-
-type HostMessage = StructuredStateMessage | StructuredInvalidMessage | {
-  readonly type: "operationRejected";
-  readonly message: string;
-} | {
-  readonly type: "operationCompleted";
-  readonly changed: boolean;
-} | {
-  readonly type: "requestReady";
-  readonly webviewToken: string;
-};
 
 const rawVscode = acquireVsCodeApi();
 const webviewInstanceId = crypto.randomUUID();
@@ -58,13 +36,11 @@ if (rootElement === null) {
 createRoot(rootElement).render(<StructuredEditorApp />);
 
 function StructuredEditorApp(): ReactElement {
-  const [state, setState] = useState<StructuredStateMessage>();
-  const [invalid, setInvalid] = useState<StructuredInvalidMessage>();
-  const [pending, setPending] = useState(false);
-  const [status, setStatus] = useState("正在加载结构化配置…");
+  const [editorState, setEditorState] = useState<StructuredEditorState>(initialStructuredEditorState);
+  const { state, invalid, pending, status } = editorState;
 
   useEffect(() => {
-    const listener = (event: MessageEvent<HostMessage>): void => {
+    const listener = (event: MessageEvent<StructuredHostMessage>): void => {
       const message = event.data;
       if (message.type === "requestReady") {
         webviewToken = message.webviewToken;
@@ -74,25 +50,7 @@ function StructuredEditorApp(): ReactElement {
       if (references.handleMessage(message)) {
         return;
       }
-      if (message.type === "structuredState") {
-        setState(message);
-        setInvalid(undefined);
-        setPending(false);
-        setStatus("就绪");
-      } else if (message.type === "structuredInvalid") {
-        setState(undefined);
-        setInvalid(message);
-        setPending(false);
-        setStatus("结构化配置无效");
-      } else if (message.type === "operationRejected") {
-        setPending(false);
-        setStatus(message.message);
-      } else if (message.type === "operationCompleted") {
-        setPending(false);
-        if (!message.changed) {
-          setStatus("没有产生文档修改");
-        }
-      }
+      setEditorState((current) => reduceStructuredHostMessage(current, message));
     };
     window.addEventListener("message", listener);
     webviewToken = undefined;
@@ -107,8 +65,7 @@ function StructuredEditorApp(): ReactElement {
     if (state === undefined || pending) {
       return;
     }
-    setPending(true);
-    setStatus("正在应用修改…");
+    setEditorState((current) => ({ ...current, pending: true, status: "正在应用修改…" }));
     vscode.postMessage({ type: "applyOperations", documentVersion: state.documentVersion, operations });
   };
 
@@ -138,7 +95,7 @@ function StructuredEditorApp(): ReactElement {
             properties={state.document.properties}
             disabled={pending}
             referenceActions={references}
-            onCommit={(fieldId, value) => submit([{ type: "structured.setField", fieldId, value }])}
+            onCommit={(fieldId, value) => submit([createSetFieldOperation(fieldId, value)])}
           />
         </section>
       </main>
@@ -148,12 +105,6 @@ function StructuredEditorApp(): ReactElement {
       </EditorStatusBar>
     </EditorShell>
   );
-}
-
-function withWebviewToken(message: unknown, token: string | undefined): unknown {
-  return token === undefined || typeof message !== "object" || message === null || Array.isArray(message)
-    ? message
-    : { ...message, webviewToken: token };
 }
 
 function Diagnostics(props: { readonly diagnostics: readonly DocumentDiagnostic[] }): ReactElement {
@@ -166,10 +117,4 @@ function Diagnostics(props: { readonly diagnostics: readonly DocumentDiagnostic[
       ))}
     </ul>
   );
-}
-
-function formatDiagnosticSummary(diagnostics: readonly DocumentDiagnostic[]): string {
-  const errors = diagnostics.filter((diagnostic) => diagnostic.severity === "error").length;
-  const warnings = diagnostics.filter((diagnostic) => diagnostic.severity === "warning").length;
-  return errors === 0 && warnings === 0 ? "无诊断" : `${errors} 错误 · ${warnings} 警告`;
 }

@@ -1,6 +1,6 @@
-import { rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import path from "node:path";
+import { cleanEditor, run } from "../../../Tools/Build/editorBuild.mjs";
 
-const editorRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-await rm(path.join(editorRoot, "dist"), { recursive: true, force: true });
+const root = fileURLToPath(new URL("..", import.meta.url));
+
+await run(() => cleanEditor({ root, dist: true, testDist: true }));

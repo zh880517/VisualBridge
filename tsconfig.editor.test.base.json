@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.editor.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "noEmit": false,
+    "sourceMap": false,
+    "types": ["node"]
+  }
+}

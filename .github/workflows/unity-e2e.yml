@@ -1,0 +1,135 @@
+name: Unity E2E
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "47 3 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  # A self-hosted Unity installation cannot serve two jobs at once. Queue
+  # instead of cancelling: a cancelled run can leave the Editor locked.
+  group: visualbridge-unity-e2e
+  cancel-in-progress: false
+
+jobs:
+  unity:
+    name: Windows / Unity 6000.3.10f1
+    runs-on: [self-hosted, windows, unity]
+    timeout-minutes: 60
+    env:
+      CI: "true"
+      VISUALBRIDGE_UNITY_EDITOR: ${{ vars.VISUALBRIDGE_UNITY_EDITOR || 'C:\Program Files\Unity 6000.3.10f1\Editor\Unity.exe' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Verify toolchain and Unity version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ((node --version) -ne "v22.22.1") { throw "Expected Node v22.22.1, found $(node --version)." }
+          if ((npm --version) -ne "10.9.4") { throw "Expected npm 10.9.4, found $(npm --version)." }
+
+          $project = Join-Path $env:GITHUB_WORKSPACE "UnityProject"
+          if (-not (Test-Path $project)) { throw "UnityProject not found at $project." }
+          $versionFile = Join-Path $project "ProjectSettings/ProjectVersion.txt"
+          if (-not (Test-Path $versionFile)) { throw "ProjectVersion.txt not found at $versionFile." }
+          $versionMatch = Select-String -Path $versionFile -Pattern "^m_EditorVersion:\s*(\S+)" | Select-Object -First 1
+          if (-not $versionMatch) { throw "Cannot read m_EditorVersion from $versionFile." }
+          $unityVersion = $versionMatch.Matches[0].Groups[1].Value
+          if ($unityVersion -ne "6000.3.10f1") { throw "Expected Unity 6000.3.10f1, found $unityVersion." }
+
+          $editor = $env:VISUALBRIDGE_UNITY_EDITOR
+          if (-not (Test-Path $editor)) {
+            throw "Unity editor not found at '$editor'. Set the VISUALBRIDGE_UNITY_EDITOR repository variable or install the pinned editor."
+          }
+          Write-Host "Unity $unityVersion at $editor"
+
+      - name: Install from lockfile
+        run: npm ci
+
+      - name: Run Unity batch gates and EditMode tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $editor = $env:VISUALBRIDGE_UNITY_EDITOR
+          $project = Join-Path $env:GITHUB_WORKSPACE "UnityProject"
+          $logRoot = Join-Path $env:RUNNER_TEMP "visualbridge-unity-e2e"
+          New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
+          $results = Join-Path $logRoot "editmode-results.xml"
+
+          function Invoke-UnityStep {
+            param([string]$Name, [string[]]$Arguments)
+            $log = Join-Path $logRoot "$Name.log"
+            Write-Host "::group::$Name"
+            & $editor @Arguments -projectPath $project -logFile $log
+            $exitCode = $LASTEXITCODE
+            Write-Host "exit=$exitCode log=$log"
+            Write-Host "::endgroup::"
+            if ($exitCode -ne 0) {
+              throw "Unity step '$Name' failed with exit code $exitCode. See $log."
+            }
+          }
+
+          # Refresh/import once so the Catalog and Compiler batches see current assemblies.
+          Invoke-UnityStep "refresh" @("-batchmode", "-nographics", "-quit")
+          foreach ($domain in @("Structured", "Entity", "Graph")) {
+            Invoke-UnityStep "catalog-generate-$domain" @("-batchmode", "-nographics", "-quit", "-executeMethod", "VisualBridge.Editor.VisualBridge${domain}CatalogBatch.Generate")
+            Invoke-UnityStep "catalog-check-$domain" @("-batchmode", "-nographics", "-quit", "-executeMethod", "VisualBridge.Editor.VisualBridge${domain}CatalogBatch.Check")
+          }
+          foreach ($domain in @("Structured", "Entity", "Table", "Graph")) {
+            Invoke-UnityStep "compile-generate-$domain" @("-batchmode", "-nographics", "-quit", "-executeMethod", "VisualBridge.Editor.VisualBridge${domain}CompilerBatch.Generate")
+            Invoke-UnityStep "compile-check-$domain" @("-batchmode", "-nographics", "-quit", "-executeMethod", "VisualBridge.Editor.VisualBridge${domain}CompilerBatch.Check")
+          }
+
+          # The test runner exits on its own; do not pass -quit.
+          Invoke-UnityStep "editmode" @("-batchmode", "-nographics", "-runTests", "-testPlatform", "EditMode", "-testResults", $results)
+
+          if (-not (Test-Path $results)) { throw "EditMode results were not written to $results." }
+          [xml]$xml = Get-Content -Raw $results
+          $testRun = $xml."test-run"
+          $total = [int]$testRun.total
+          $failed = [int]$testRun.failed
+          if ($total -eq 0) { throw "EditMode run reported zero tests. See $results." }
+          if ($failed -ne 0) { throw "EditMode run reported $failed failure(s) out of $total. See $results." }
+          if ($testRun.result -ne "Passed") { throw "EditMode run result was '$($testRun.result)'. See $results." }
+          Write-Host "EditMode: $total test(s) passed."
+
+      - name: Run Editor Bridge E2E
+        run: npm run test:bridge-e2e
+
+      - name: Run Runtime Bridge E2E
+        run: npm run test:runtime-e2e
+
+      - name: Collect Unity editor log
+        if: always()
+        shell: pwsh
+        run: |
+          $logRoot = Join-Path $env:RUNNER_TEMP "visualbridge-unity-e2e"
+          New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
+          $editorLog = Join-Path $env:LOCALAPPDATA "Unity/Editor/Editor.log"
+          if (Test-Path $editorLog) {
+            Copy-Item $editorLog (Join-Path $logRoot "Editor.log") -Force
+          }
+
+      - name: Upload Unity logs and results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: unity-e2e-logs
+          path: |
+            ${{ runner.temp }}/visualbridge-unity-e2e/
+            UnityProject/Logs/
+            .utmp/**/*.log
+          if-no-files-found: warn

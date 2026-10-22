@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net.Sockets;
 using System.Text;
 using Newtonsoft.Json.Linq;
+using VisualBridge.Runtime;
 
 namespace VisualBridge.Editor
 {
@@ -31,7 +32,7 @@ namespace VisualBridge.Editor
         private readonly string clientInstanceId;
         private readonly List<string> requestedCapabilities;
         private readonly object ioLock = new object();
-        private readonly StringBuilder lineBuffer = new StringBuilder();
+        private readonly VisualBridgeUtf8LineReader lineReader = new VisualBridgeUtf8LineReader();
         private readonly byte[] readBuffer = new byte[8192];
 
         private Stream stream;
@@ -312,11 +313,8 @@ namespace VisualBridge.Editor
         {
             while (true)
             {
-                var newline = lineBuffer.ToString().IndexOf('\n');
-                if (newline >= 0)
+                if (lineReader.TryReadLine(out var line))
                 {
-                    var line = lineBuffer.ToString(0, newline);
-                    lineBuffer.Remove(0, newline + 1);
                     if (line.Trim().Length == 0)
                     {
                         continue;
@@ -328,6 +326,7 @@ namespace VisualBridge.Editor
                 var target = stream;
                 if (target == null)
                 {
+                    lineReader.DiscardPending();
                     throw VisualBridgeEditorBridgeValidator.Error("bridge.disconnected", "$", "Connection closed.");
                 }
 
@@ -338,15 +337,17 @@ namespace VisualBridge.Editor
                 }
                 catch (Exception exception) when (exception is IOException || exception is ObjectDisposedException)
                 {
+                    lineReader.DiscardPending();
                     throw VisualBridgeEditorBridgeValidator.Error("bridge.disconnected", "$", "Connection failed while reading: " + exception.Message);
                 }
 
                 if (read == 0)
                 {
+                    lineReader.DiscardPending();
                     throw VisualBridgeEditorBridgeValidator.Error("bridge.disconnected", "$", "Connection closed by the server.");
                 }
 
-                lineBuffer.Append(Encoding.UTF8.GetString(readBuffer, 0, read));
+                lineReader.Append(readBuffer, 0, read);
             }
         }
 
