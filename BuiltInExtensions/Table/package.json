@@ -12,8 +12,8 @@
     "test": "npm run build --workspace @visualbridge/core && npm run build && node --test dist/test/tableSemantics.test.js dist/test/tableReferences.test.js dist/test/tableSourceFactory.test.js"
   },
   "dependencies": {
-    "csv-parse": "7.0.2",
-    "csv-stringify": "6.8.3",
+    "csv-parse": "7.0.3",
+    "csv-stringify": "6.9.0",
     "exceljs": "4.4.0"
   },
   "devDependencies": {
