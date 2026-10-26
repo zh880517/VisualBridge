@@ -7,8 +7,9 @@ using System.Linq;
 namespace VisualBridge.Editor
 {
     /// <summary>
-    /// 枚举本地发现目录中按窗口划分的发现记录，
-    /// 过滤心跳过期或发布进程已终止的记录。
+    /// 枚举本地发现目录中按窗口划分的发现记录（格式版本 2），
+    /// 过滤方向错配（role 不是 vscode）、心跳过期或发布进程已终止的记录。
+    /// 陈旧记录视为"无记录"：调用方最终只会看到没有可连接端点。
     /// </summary>
     public static class VisualBridgeEditorBridgeDiscovery
     {
@@ -16,7 +17,7 @@ namespace VisualBridge.Editor
         public static readonly TimeSpan HeartbeatTimeout = TimeSpan.FromSeconds(5);
 
         /// <summary>
-        /// 列出存活的 bridge 窗口。校验失败、心跳过期或进程已死的记录
+        /// 列出存活的 bridge 窗口。校验失败、方向不符、心跳过期或进程已死的记录
         /// 会被跳过并逐条报告原因。
         /// </summary>
         public static IReadOnlyList<VisualBridgeBridgeWindow> EnumerateWindows(Action<string> skipReason = null, string directoryOverride = null)
@@ -38,6 +39,14 @@ namespace VisualBridge.Editor
                 catch (VisualBridgeIntegrationException exception)
                 {
                     Report(skipReason, $"skipped '{Path.GetFileName(file)}': {exception.Code}");
+                    continue;
+                }
+
+                // 方向层：VS Code 监听方的发现记录 role = vscode；Unity 自己写的监听记录
+                // （Player/Editor-Play 方向）留给 E5，不能当作可拨号的编辑器窗口。
+                if (!string.Equals(window.Role, "vscode", StringComparison.Ordinal))
+                {
+                    Report(skipReason, $"skipped '{Path.GetFileName(file)}': bridge.roleMismatch");
                     continue;
                 }
 

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://visualbridge.dev/schema/visualbridge-runtime-bridge.schema.json",
-  "title": "VisualBridge Runtime Bridge V1",
-  "description": "Local NDJSON message contracts between the VS Code runtime bridge client and a Unity Runtime instance listener (Editor Play mode or same-machine Player), plus the per-instance discovery record published at <temp>/visualbridge-runtime/<instanceId>.json. The hello/welcome/error shapes realize the shared bridge protocol core (coreVersion 1) established by the Editor Bridge; this channel carries runtime snapshots, artifact-change events, and capability-gated graph execution observation (subscribe + batched execution events, no breakpoints). Execution-level debug messages (breakpoints, call stacks, variable evaluation) remain out of scope by design.",
+  "title": "VisualBridge Runtime Bridge V2",
+  "description": "Runtime-mode leg of the unified VisualBridge connection protocol (protocolVersion 4) between the VS Code runtime bridge client and a Unity Runtime instance listener (Editor Play mode or same-machine Player), plus the current per-instance discovery record published at <temp>/visualbridge-runtime/<instanceId>.json. This leg still carries the runtime snapshot, artifact-change, and graph-execution messages. By the 2026-10-27 review ruling, the following are all owned by E5: unifying the runtime-leg hello/welcome fields (removing coreVersion/capabilities/clientInstanceId/kind), direction probing, runtime discovery record v2, and grace-period reconnection. Until E5 lands, this schema intentionally keeps the pre-unification runtime handshake fields while the connection-layer protocolVersion is already shared with the Editor leg (4).",
   "oneOf": [
     {
       "$ref": "#/$defs/helloMessage"
@@ -25,7 +25,7 @@
   ],
   "$defs": {
     "protocolVersion": {
-      "const": 1
+      "const": 4
     },
     "coreVersion": {
       "const": 1

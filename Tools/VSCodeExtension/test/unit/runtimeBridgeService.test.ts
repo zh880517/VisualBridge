@@ -30,7 +30,7 @@ function frame(message: unknown): Buffer {
 function welcomeFrame(): Buffer {
   return frame({
     type: "welcome",
-    protocolVersion: 1,
+    protocolVersion: 4,
     coreVersion: 1,
     instanceId: INSTANCE_ID,
     kind: "editor-play",

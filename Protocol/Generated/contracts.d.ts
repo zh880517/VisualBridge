@@ -66,24 +66,29 @@ export namespace VisualBridgeCatalogSource {
 export namespace VisualBridgeEditorBridge {
   export type Root = (HelloMessage) | (WelcomeMessage) | (OpenRequest) | (RevealRequest) | (ResponseMessage) | (ErrorMessage);
   export type AbsolutePath = string;
-  export type Capability = "open" | "reveal";
-  export type CapabilityList = readonly Capability[];
-  export type DiscoveryRecord = { readonly "capabilities": CapabilityList; readonly "formatVersion": 1; readonly "generation": ServerGeneration; readonly "pid": ProcessId; readonly "pipePath": PipePath; readonly "projectRoots": readonly AbsolutePath[]; readonly "protocolVersion": ProtocolVersion; readonly "startedAt": string; readonly "tcpPort": TcpPort; readonly "token": Token; readonly "windowId": InstanceId };
-  export type ErrorCode = "bridge.capabilityMissing" | "bridge.documentAmbiguous" | "bridge.documentUnresolved" | "bridge.internalError" | "bridge.invalidJson" | "bridge.invalidMessage" | "bridge.invalidToken" | "bridge.protocolVersionMismatch" | "bridge.unknownMessageType";
+  export type BootId = string;
+  export type ConnectType = "editor" | "editor-player" | "player";
+  export type ContractHash = string;
+  export type DebugFilter = readonly string[];
+  export type DiscoveryRecord = { readonly "formatVersion": 2; readonly "generation": Generation; readonly "pid": ProcessId; readonly "projectRoots": readonly AbsolutePath[]; readonly "protocolVersion": ProtocolVersion; readonly "role": Role; readonly "tcpPort": TcpPort; readonly "token": Token; readonly "windowId": string };
+  export type EndpointId = string;
+  export type ErrorCode = "bridge.capabilityMissing" | "bridge.documentAmbiguous" | "bridge.documentUnresolved" | "bridge.internalError" | "bridge.invalidJson" | "bridge.invalidMessage" | "bridge.invalidToken" | "bridge.protocolVersionMismatch" | "bridge.unknownMessageType" | "runtime.alreadyConnected" | "runtime.contractHashMismatch" | "runtime.invalidToken" | "runtime.roleMismatch" | "runtime.unsupportedPayload" | "runtime.unsupportedProtocolVersion";
   export type ErrorMessage = { readonly "code": ErrorCode; readonly "detail"?: string; readonly "type": "error" };
-  export type HelloMessage = { readonly "capabilities": CapabilityList; readonly "clientInstanceId": InstanceId; readonly "protocolVersion": ProtocolVersion; readonly "token": Token; readonly "type": "hello" };
-  export type InstanceId = string;
+  export type Generation = number;
+  export type HelloMessage = { readonly "clientEndpointId": EndpointId; readonly "contractHash": ContractHash; readonly "debugCategories"?: DebugFilter; readonly "debugInstances"?: DebugFilter; readonly "payloads": PayloadList; readonly "protocolVersion": ProtocolVersion; readonly "resumeSessionId"?: SessionId; readonly "role": Role; readonly "token"?: Token; readonly "type": "hello" };
   export type OpenRequest = { readonly "documentPath": VisualBridgePrimitives.NormalizedPath; readonly "requestId": RequestId; readonly "type": "open" };
-  export type PipePath = string;
+  export type Payload = "json" | "binary";
+  export type PayloadList = readonly Payload[];
   export type ProcessId = number;
-  export type ProtocolVersion = 1;
+  export type ProtocolVersion = 4;
   export type RequestId = string;
   export type ResponseMessage = ({ readonly "requestId": RequestId; readonly "status": "ok"; readonly "type": "response" }) | ({ readonly "error": ErrorCode; readonly "requestId": RequestId; readonly "status": "error"; readonly "type": "response" });
   export type RevealRequest = { readonly "reference": VisualBridgePrimitives.ReferenceValue; readonly "requestId": RequestId; readonly "type": "reveal" };
-  export type ServerGeneration = number;
+  export type Role = "editor" | "vscode";
+  export type SessionId = string;
   export type TcpPort = number;
   export type Token = string;
-  export type WelcomeMessage = { readonly "capabilities": CapabilityList; readonly "protocolVersion": ProtocolVersion; readonly "serverGeneration": ServerGeneration; readonly "type": "welcome"; readonly "windowId": InstanceId };
+  export type WelcomeMessage = { readonly "bootId": BootId; readonly "connectType": ConnectType; readonly "contractHash": ContractHash; readonly "debugEnabled": boolean; readonly "endpointId": EndpointId; readonly "generation": Generation; readonly "payloads": PayloadList; readonly "protocolVersion": ProtocolVersion; readonly "resumed": boolean; readonly "sessionId": SessionId; readonly "startedAt": string; readonly "type": "welcome" };
 }
 
 // 来源：Protocol/Schema/visualbridge-entity-catalog.schema.json
@@ -285,7 +290,7 @@ export namespace VisualBridgeRuntimeBridge {
   export type InstanceId = string;
   export type InstanceKind = "editor-play" | "player";
   export type ProcessId = number;
-  export type ProtocolVersion = 1;
+  export type ProtocolVersion = 4;
   export type RequestId = string;
   export type ResponseMessage = (({ readonly "documents": readonly DocumentSnapshot[]; readonly "execution"?: GraphExecutionInstance; readonly "executions"?: readonly GraphExecutionInstance[]; readonly "requestId": RequestId; readonly "sources"?: readonly DocumentSource[]; readonly "status": "ok"; readonly "type": "response" }) | ({ readonly "documents"?: readonly DocumentSnapshot[]; readonly "execution"?: GraphExecutionInstance; readonly "executions"?: readonly GraphExecutionInstance[]; readonly "requestId": RequestId; readonly "sources": readonly DocumentSource[]; readonly "status": "ok"; readonly "type": "response" }) | ({ readonly "documents"?: readonly DocumentSnapshot[]; readonly "execution"?: GraphExecutionInstance; readonly "executions": readonly GraphExecutionInstance[]; readonly "requestId": RequestId; readonly "sources"?: readonly DocumentSource[]; readonly "status": "ok"; readonly "type": "response" }) | ({ readonly "documents"?: readonly DocumentSnapshot[]; readonly "execution": GraphExecutionInstance; readonly "executions"?: readonly GraphExecutionInstance[]; readonly "requestId": RequestId; readonly "sources"?: readonly DocumentSource[]; readonly "status": "ok"; readonly "type": "response" }) | ({ readonly "documents"?: readonly DocumentSnapshot[]; readonly "execution"?: GraphExecutionInstance; readonly "executions"?: readonly GraphExecutionInstance[]; readonly "requestId": RequestId; readonly "sources"?: readonly DocumentSource[]; readonly "status": "ok"; readonly "type": "response" })) | ({ readonly "detail"?: string; readonly "error": ErrorCode; readonly "requestId": RequestId; readonly "status": "error"; readonly "type": "response" });
   export type SnapshotRequest = ({ readonly "action": "getSnapshot"; readonly "documentId"?: never; readonly "documentTypeIds"?: readonly VisualBridgePrimitives.StableId[]; readonly "executionId"?: never; readonly "requestId": RequestId; readonly "type": "request" }) | ({ readonly "action": "getGraphExecutionInstances"; readonly "documentId"?: string; readonly "documentTypeIds"?: never; readonly "executionId"?: never; readonly "requestId": RequestId; readonly "type": "request" }) | ({ readonly "action": "acquireLease"; readonly "documentId"?: never; readonly "documentTypeIds"?: never; readonly "executionId"?: never; readonly "requestId": RequestId; readonly "type": "request" }) | ({ readonly "action": "releaseLease"; readonly "documentId"?: never; readonly "documentTypeIds"?: never; readonly "executionId"?: never; readonly "requestId": RequestId; readonly "type": "request" }) | ({ readonly "action": "getDocumentSources"; readonly "documentId"?: never; readonly "documentTypeIds"?: never; readonly "executionId"?: never; readonly "requestId": RequestId; readonly "type": "request" }) | ({ readonly "action": "subscribeGraphExecution"; readonly "documentId"?: never; readonly "documentTypeIds"?: never; readonly "executionId": string; readonly "requestId": RequestId; readonly "type": "request" }) | ({ readonly "action": "unsubscribeGraphExecution"; readonly "documentId"?: never; readonly "documentTypeIds"?: never; readonly "executionId": string; readonly "requestId": RequestId; readonly "type": "request" }) | ({ readonly "action": "getGraphExecutionSnapshot"; readonly "documentId"?: never; readonly "documentTypeIds"?: never; readonly "executionId": string; readonly "requestId": RequestId; readonly "type": "request" });

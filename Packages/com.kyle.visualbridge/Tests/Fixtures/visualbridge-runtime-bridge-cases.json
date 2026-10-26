@@ -6,7 +6,7 @@
       "valid": true,
       "value": {
         "type": "hello",
-        "protocolVersion": 1,
+        "protocolVersion": 4,
         "coreVersion": 1,
         "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
         "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
@@ -22,7 +22,7 @@
       "valid": true,
       "value": {
         "type": "welcome",
-        "protocolVersion": 1,
+        "protocolVersion": 4,
         "coreVersion": 1,
         "instanceId": "editor-44936",
         "kind": "editor-play",
@@ -136,7 +136,7 @@
       "valid": true,
       "value": {
         "formatVersion": 1,
-        "protocolVersion": 1,
+        "protocolVersion": 4,
         "coreVersion": 1,
         "instanceId": "player-82252",
         "kind": "player",
@@ -156,7 +156,7 @@
       "valid": true,
       "value": {
         "formatVersion": 1,
-        "protocolVersion": 1,
+        "protocolVersion": 4,
         "coreVersion": 1,
         "instanceId": "editor-44936",
         "kind": "editor-play",
@@ -178,7 +178,7 @@
       "loaderCode": "runtime.missingProperty",
       "value": {
         "type": "hello",
-        "protocolVersion": 1,
+        "protocolVersion": 4,
         "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
         "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
         "capabilities": [
@@ -193,7 +193,7 @@
       "loaderCode": "runtime.invalidToken",
       "value": {
         "type": "hello",
-        "protocolVersion": 1,
+        "protocolVersion": 4,
         "coreVersion": 1,
         "token": "deadbeef",
         "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
@@ -225,7 +225,7 @@
       "loaderCode": "runtime.invalidMessage",
       "value": {
         "type": "welcome",
-        "protocolVersion": 1,
+        "protocolVersion": 4,
         "coreVersion": 1,
         "instanceId": "window-1234",
         "kind": "editor-play",
@@ -243,7 +243,7 @@
       "loaderCode": "runtime.invalidMessage",
       "value": {
         "type": "welcome",
-        "protocolVersion": 1,
+        "protocolVersion": 4,
         "coreVersion": 1,
         "instanceId": "editor-44936",
         "kind": "editor-play",
@@ -335,7 +335,7 @@
       "loaderCode": "runtime.invalidMessage",
       "value": {
         "formatVersion": 1,
-        "protocolVersion": 1,
+        "protocolVersion": 4,
         "coreVersion": 1,
         "instanceId": "editor-44936",
         "kind": "player",
@@ -355,7 +355,7 @@
       "loaderCode": "runtime.invalidMessage",
       "value": {
         "formatVersion": 1,
-        "protocolVersion": 1,
+        "protocolVersion": 4,
         "coreVersion": 1,
         "instanceId": "player-82252",
         "kind": "player",
@@ -376,7 +376,7 @@
       "loaderCode": "runtime.invalidMessage",
       "value": {
         "formatVersion": 1,
-        "protocolVersion": 1,
+        "protocolVersion": 4,
         "coreVersion": 1,
         "instanceId": "player-82252",
         "kind": "player",
@@ -391,13 +391,13 @@
       }
     },
     {
-      "label": "discovery record with pipe path is rejected",
+      "label": "discovery record with a removed ackWindow field is rejected",
       "target": "discoveryRecord",
       "valid": false,
       "loaderCode": "runtime.unknownProperty",
       "value": {
         "formatVersion": 1,
-        "protocolVersion": 1,
+        "protocolVersion": 4,
         "coreVersion": 1,
         "instanceId": "editor-44936",
         "kind": "editor-play",
@@ -409,7 +409,7 @@
         "pid": 44936,
         "generation": 1,
         "startedAt": "2026-08-31T12:00:00.000Z",
-        "pipePath": "\\\\.\\pipe\\visualbridge-runtime"
+        "ackWindow": 8
       }
     },
     {
@@ -534,7 +534,7 @@
       "valid": true,
       "value": {
         "formatVersion": 1,
-        "protocolVersion": 1,
+        "protocolVersion": 4,
         "coreVersion": 1,
         "instanceId": "editor-44936",
         "kind": "editor-play",
@@ -557,7 +557,7 @@
       "valid": true,
       "value": {
         "type": "hello",
-        "protocolVersion": 1,
+        "protocolVersion": 4,
         "coreVersion": 1,
         "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
         "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
@@ -576,7 +576,7 @@
       "valid": true,
       "value": {
         "formatVersion": 1,
-        "protocolVersion": 1,
+        "protocolVersion": 4,
         "coreVersion": 1,
         "instanceId": "editor-44936",
         "kind": "editor-play",

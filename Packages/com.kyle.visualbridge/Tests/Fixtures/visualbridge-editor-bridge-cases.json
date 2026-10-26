@@ -1,365 +1,389 @@
 {
   "cases": [
     {
-      "label": "valid hello message",
-      "target": "message",
+      "label": "hello carries every handshake field",
       "valid": true,
       "value": {
         "type": "hello",
-        "protocolVersion": 1,
-        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
-        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
-        "capabilities": [
-          "open",
-          "reveal"
-        ]
+        "protocolVersion": 4,
+        "role": "editor",
+        "clientEndpointId": "editor-1234",
+        "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "contractHash": "efbd32c726d801eb",
+        "payloads": ["json", "binary"],
+        "debugCategories": ["visualbridge.entity"],
+        "debugInstances": ["hero-01"],
+        "resumeSessionId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f#boot-1"
       }
     },
     {
-      "label": "valid welcome message",
-      "target": "message",
+      "label": "hello omits optional token, filters, and resume session",
+      "valid": true,
+      "value": {
+        "type": "hello",
+        "protocolVersion": 4,
+        "role": "vscode",
+        "clientEndpointId": "vscode-window-1",
+        "contractHash": "",
+        "payloads": ["json"]
+      }
+    },
+    {
+      "label": "welcome carries the negotiated connection identity",
       "valid": true,
       "value": {
         "type": "welcome",
-        "protocolVersion": 1,
-        "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
-        "serverGeneration": 3,
-        "capabilities": [
-          "open"
-        ]
+        "protocolVersion": 4,
+        "endpointId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "sessionId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f#boot-1",
+        "resumed": true,
+        "connectType": "editor",
+        "generation": 7,
+        "bootId": "boot-1",
+        "contractHash": "efbd32c726d801eb",
+        "payloads": ["json", "binary"],
+        "debugEnabled": true,
+        "startedAt": "2026-10-26T12:00:00.000Z"
       }
     },
     {
-      "label": "valid open request",
-      "target": "message",
+      "label": "open request targets a normalized project-relative path",
       "valid": true,
       "value": {
         "type": "open",
-        "requestId": "req-001",
+        "requestId": "req-open-1",
         "documentPath": "Config/Game.gamesettings"
       }
     },
     {
-      "label": "valid reveal request",
-      "target": "message",
+      "label": "reveal request accepts a string reference",
       "valid": true,
       "value": {
         "type": "reveal",
-        "requestId": "req-002",
+        "requestId": "req-reveal-1",
         "reference": "game.item:ion-blaster"
       }
     },
     {
-      "label": "valid ok response",
-      "target": "message",
+      "label": "reveal request accepts an integer reference",
+      "valid": true,
+      "value": {
+        "type": "reveal",
+        "requestId": "req-reveal-2",
+        "reference": 101
+      }
+    },
+    {
+      "label": "response reports success",
       "valid": true,
       "value": {
         "type": "response",
-        "requestId": "req-001",
+        "requestId": "req-open-2",
         "status": "ok"
       }
     },
     {
-      "label": "valid error response",
-      "target": "message",
+      "label": "response reports an editor error code",
       "valid": true,
       "value": {
         "type": "response",
-        "requestId": "req-002",
+        "requestId": "req-open-3",
         "status": "error",
         "error": "bridge.documentUnresolved"
       }
     },
     {
-      "label": "valid error message with detail",
-      "target": "message",
+      "label": "error reports a handshake rejection",
       "valid": true,
       "value": {
         "type": "error",
-        "code": "bridge.invalidToken",
-        "detail": "token rejected"
+        "code": "runtime.roleMismatch",
+        "detail": "Listener expects an editor dialer."
       }
     },
     {
-      "label": "valid discovery record",
+      "label": "discovery record v2 identifies a VS Code listener",
       "target": "discoveryRecord",
       "valid": true,
       "value": {
-        "formatVersion": 1,
-        "protocolVersion": 1,
-        "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
-        "capabilities": [
-          "open",
-          "reveal"
-        ],
-        "projectRoots": [
-          "D:/GitHub/VisualBridge/UnityProject/VisualBridgeAuthoring"
-        ],
-        "pipePath": "\\\\.\\pipe\\visualbridge-bridge-6f9619ff",
-        "tcpPort": 8226,
-        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
-        "pid": 41648,
-        "generation": 3,
-        "startedAt": "2026-08-30T12:41:06.879Z"
+        "formatVersion": 2,
+        "protocolVersion": 4,
+        "role": "vscode",
+        "tcpPort": 28301,
+        "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "pid": 4242,
+        "generation": 7,
+        "windowId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "projectRoots": ["D:/Authoring"]
       }
     },
     {
-      "label": "unknown message type",
-      "target": "message",
-      "valid": false,
-      "loaderCode": "bridge.unknownMessageType",
-      "value": {
-        "type": "compile",
-        "requestId": "req-003"
-      }
-    },
-    {
-      "label": "hello with unknown property",
-      "target": "message",
-      "valid": false,
-      "loaderCode": "bridge.unknownProperty",
-      "value": {
-        "type": "hello",
-        "protocolVersion": 1,
-        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
-        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
-        "capabilities": [
-          "open"
-        ],
-        "currentUnity": true
-      }
-    },
-    {
-      "label": "hello missing token",
-      "target": "message",
+      "label": "hello without role is rejected",
       "valid": false,
       "loaderCode": "bridge.missingProperty",
       "value": {
         "type": "hello",
-        "protocolVersion": 1,
-        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
-        "capabilities": [
-          "open"
-        ]
+        "protocolVersion": 4,
+        "clientEndpointId": "editor-1234",
+        "contractHash": "",
+        "payloads": ["json"]
       }
     },
     {
-      "label": "hello with unsupported protocol version",
-      "target": "message",
+      "label": "hello with an unknown role is rejected",
       "valid": false,
-      "loaderCode": "bridge.unsupportedProtocolVersion",
+      "loaderCode": "bridge.invalidMessage",
       "value": {
         "type": "hello",
-        "protocolVersion": 2,
-        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
-        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
-        "capabilities": [
-          "open"
-        ]
+        "protocolVersion": 4,
+        "role": "player",
+        "clientEndpointId": "editor-1234",
+        "contractHash": "",
+        "payloads": ["json"]
       }
     },
     {
-      "label": "hello with malformed token",
-      "target": "message",
+      "label": "hello with a stale protocol version is rejected",
+      "valid": false,
+      "loaderCode": "runtime.unsupportedProtocolVersion",
+      "value": {
+        "type": "hello",
+        "protocolVersion": 3,
+        "role": "editor",
+        "clientEndpointId": "editor-1234",
+        "contractHash": "",
+        "payloads": ["json"]
+      }
+    },
+    {
+      "label": "pre-unification hello is rejected by the connection layer first",
+      "valid": false,
+      "loaderCode": "runtime.unsupportedProtocolVersion",
+      "value": {
+        "type": "hello",
+        "protocolVersion": 1,
+        "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "capabilities": ["open", "reveal"]
+      }
+    },
+    {
+      "label": "hello without the json payload kind is rejected",
+      "valid": false,
+      "loaderCode": "runtime.unsupportedPayload",
+      "value": {
+        "type": "hello",
+        "protocolVersion": 4,
+        "role": "editor",
+        "clientEndpointId": "editor-1234",
+        "contractHash": "",
+        "payloads": ["binary"]
+      }
+    },
+    {
+      "label": "hello with an empty payload intersection is rejected",
+      "valid": false,
+      "loaderCode": "runtime.unsupportedPayload",
+      "value": {
+        "type": "hello",
+        "protocolVersion": 4,
+        "role": "editor",
+        "clientEndpointId": "editor-1234",
+        "contractHash": "",
+        "payloads": []
+      }
+    },
+    {
+      "label": "hello with a malformed token is rejected",
       "valid": false,
       "loaderCode": "bridge.invalidToken",
       "value": {
         "type": "hello",
-        "protocolVersion": 1,
-        "token": "not-hex!",
-        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
-        "capabilities": [
-          "open"
-        ]
+        "protocolVersion": 4,
+        "role": "editor",
+        "clientEndpointId": "editor-1234",
+        "token": "not-a-token",
+        "contractHash": "",
+        "payloads": ["json"]
       }
     },
     {
-      "label": "open request with backslash document path",
-      "target": "message",
+      "label": "hello with a malformed contract hash is rejected",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "type": "hello",
+        "protocolVersion": 4,
+        "role": "editor",
+        "clientEndpointId": "editor-1234",
+        "contractHash": "XYZ",
+        "payloads": ["json"]
+      }
+    },
+    {
+      "label": "hello with a removed handshake field is rejected",
+      "valid": false,
+      "loaderCode": "bridge.unknownProperty",
+      "value": {
+        "type": "hello",
+        "protocolVersion": 4,
+        "role": "editor",
+        "clientEndpointId": "editor-1234",
+        "contractHash": "",
+        "payloads": ["json"],
+        "coreVersion": 1
+      }
+    },
+    {
+      "label": "welcome without the json payload kind is rejected",
+      "valid": false,
+      "loaderCode": "runtime.unsupportedPayload",
+      "value": {
+        "type": "welcome",
+        "protocolVersion": 4,
+        "endpointId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "sessionId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f#boot-1",
+        "resumed": false,
+        "connectType": "editor",
+        "generation": 1,
+        "bootId": "boot-1",
+        "contractHash": "",
+        "payloads": ["binary"],
+        "debugEnabled": true,
+        "startedAt": "2026-10-26T12:00:00.000Z"
+      }
+    },
+    {
+      "label": "welcome without bootId is rejected",
+      "valid": false,
+      "loaderCode": "bridge.missingProperty",
+      "value": {
+        "type": "welcome",
+        "protocolVersion": 4,
+        "endpointId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "sessionId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f#boot-1",
+        "resumed": false,
+        "connectType": "editor",
+        "generation": 1,
+        "contractHash": "",
+        "payloads": ["json"],
+        "debugEnabled": true,
+        "startedAt": "2026-10-26T12:00:00.000Z"
+      }
+    },
+    {
+      "label": "open request rejects an absolute path",
       "valid": false,
       "loaderCode": "bridge.invalidMessage",
       "value": {
         "type": "open",
-        "requestId": "req-004",
-        "documentPath": "Config\\Game.gamesettings"
+        "requestId": "req-open-1",
+        "documentPath": "/Config/Game.gamesettings"
       }
     },
     {
-      "label": "reveal request missing reference",
-      "target": "message",
-      "valid": false,
-      "loaderCode": "bridge.missingProperty",
-      "value": {
-        "type": "reveal",
-        "requestId": "req-005"
-      }
-    },
-    {
-      "label": "error response missing error code",
-      "target": "message",
+      "label": "response rejects an unregistered error code",
       "valid": false,
       "loaderCode": "bridge.invalidMessage",
       "value": {
         "type": "response",
-        "requestId": "req-006",
-        "status": "error"
+        "requestId": "req-open-1",
+        "status": "error",
+        "error": "bridge.notARealCode"
       }
     },
     {
-      "label": "valid error message with malformed message code",
-      "target": "message",
-      "valid": true,
-      "value": {
-        "type": "error",
-        "code": "bridge.invalidMessage",
-        "detail": "malformed message"
-      }
-    },
-    {
-      "label": "error message with unknown code",
-      "target": "message",
+      "label": "error rejects an unregistered code",
       "valid": false,
       "loaderCode": "bridge.invalidMessage",
       "value": {
         "type": "error",
-        "code": "bridge.runtimeAttach"
+        "code": "runtime.notARealCode"
       }
     },
     {
-      "label": "discovery record with unknown property",
-      "target": "discoveryRecord",
-      "valid": false,
-      "loaderCode": "bridge.unknownProperty",
-      "value": {
-        "formatVersion": 1,
-        "protocolVersion": 1,
-        "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
-        "capabilities": [
-          "open"
-        ],
-        "projectRoots": [
-          "D:/Authoring"
-        ],
-        "pipePath": "\\\\.\\pipe\\visualbridge-bridge-1",
-        "tcpPort": 8226,
-        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
-        "pid": 41648,
-        "generation": 1,
-        "startedAt": "2026-08-30T12:41:06.879Z",
-        "currentUnity": true
-      }
-    },
-    {
-      "label": "discovery record with unsupported format version",
+      "label": "discovery record with formatVersion 1 is rejected",
       "target": "discoveryRecord",
       "valid": false,
       "loaderCode": "bridge.unsupportedFormatVersion",
       "value": {
+        "formatVersion": 1,
+        "protocolVersion": 4,
+        "role": "vscode",
+        "tcpPort": 28301,
+        "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "pid": 4242,
+        "generation": 1,
+        "windowId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "projectRoots": ["D:/Authoring"]
+      }
+    },
+    {
+      "label": "discovery record with a stale protocol version is rejected",
+      "target": "discoveryRecord",
+      "valid": false,
+      "loaderCode": "bridge.unsupportedProtocolVersion",
+      "value": {
         "formatVersion": 2,
-        "protocolVersion": 1,
-        "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
-        "capabilities": [
-          "open"
-        ],
-        "projectRoots": [
-          "D:/Authoring"
-        ],
-        "pipePath": "\\\\.\\pipe\\visualbridge-bridge-1",
-        "tcpPort": 8226,
-        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
-        "pid": 41648,
+        "protocolVersion": 3,
+        "role": "vscode",
+        "tcpPort": 28301,
+        "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "pid": 4242,
         "generation": 1,
-        "startedAt": "2026-08-30T12:41:06.879Z"
+        "windowId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "projectRoots": ["D:/Authoring"]
       }
     },
     {
-      "label": "discovery record with malformed pipe path",
+      "label": "discovery record with an unknown role is rejected",
       "target": "discoveryRecord",
       "valid": false,
       "loaderCode": "bridge.invalidMessage",
       "value": {
-        "formatVersion": 1,
-        "protocolVersion": 1,
-        "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
-        "capabilities": [
-          "open"
-        ],
-        "projectRoots": [
-          "D:/Authoring"
-        ],
-        "pipePath": "localhost:1234",
-        "tcpPort": 8226,
-        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
-        "pid": 41648,
+        "formatVersion": 2,
+        "protocolVersion": 4,
+        "role": "player",
+        "tcpPort": 28301,
+        "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "pid": 4242,
         "generation": 1,
-        "startedAt": "2026-08-30T12:41:06.879Z"
+        "windowId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "projectRoots": ["D:/Authoring"]
       }
     },
     {
-      "label": "discovery record with port zero",
+      "label": "discovery record with the removed capabilities field is rejected",
       "target": "discoveryRecord",
       "valid": false,
-      "loaderCode": "bridge.invalidMessage",
+      "loaderCode": "bridge.unknownProperty",
       "value": {
-        "formatVersion": 1,
-        "protocolVersion": 1,
-        "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
-        "capabilities": [
-          "open"
-        ],
-        "projectRoots": [
-          "D:/Authoring"
-        ],
-        "pipePath": "\\\\.\\pipe\\visualbridge-bridge-1",
-        "tcpPort": 0,
-        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
-        "pid": 41648,
+        "formatVersion": 2,
+        "protocolVersion": 4,
+        "role": "vscode",
+        "tcpPort": 28301,
+        "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "pid": 4242,
         "generation": 1,
-        "startedAt": "2026-08-30T12:41:06.879Z"
+        "windowId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
+        "projectRoots": ["D:/Authoring"],
+        "capabilities": ["open"]
       }
     },
     {
-      "label": "discovery record with empty project roots",
+      "label": "discovery record without project roots is rejected",
       "target": "discoveryRecord",
       "valid": false,
-      "loaderCode": "bridge.invalidMessage",
+      "loaderCode": "bridge.missingProperty",
       "value": {
-        "formatVersion": 1,
-        "protocolVersion": 1,
-        "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
-        "capabilities": [
-          "open"
-        ],
-        "projectRoots": [],
-        "pipePath": "\\\\.\\pipe\\visualbridge-bridge-1",
-        "tcpPort": 8226,
-        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
-        "pid": 41648,
+        "formatVersion": 2,
+        "protocolVersion": 4,
+        "role": "vscode",
+        "tcpPort": 28301,
+        "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "pid": 4242,
         "generation": 1,
-        "startedAt": "2026-08-30T12:41:06.879Z"
-      }
-    },
-    {
-      "label": "discovery record with malformed started timestamp",
-      "target": "discoveryRecord",
-      "valid": false,
-      "loaderCode": "bridge.invalidMessage",
-      "value": {
-        "formatVersion": 1,
-        "protocolVersion": 1,
-        "windowId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
-        "capabilities": [
-          "open"
-        ],
-        "projectRoots": [
-          "D:/Authoring"
-        ],
-        "pipePath": "\\\\.\\pipe\\visualbridge-bridge-1",
-        "tcpPort": 8226,
-        "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
-        "pid": 41648,
-        "generation": 1,
-        "startedAt": "yesterday"
+        "windowId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f"
       }
     }
   ]

@@ -26,15 +26,37 @@ namespace VisualBridge.Editor
 
         public int ProtocolVersion { get; internal set; }
 
+        public string Role { get; internal set; }
+
+        public string ClientEndpointId { get; internal set; }
+
         public string Token { get; internal set; }
 
-        public string ClientInstanceId { get; internal set; }
+        public string ContractHash { get; internal set; }
 
-        public string WindowId { get; internal set; }
+        public IReadOnlyList<string> Payloads { get; internal set; }
 
-        public int ServerGeneration { get; internal set; }
+        public IReadOnlyList<string> DebugCategories { get; internal set; }
 
-        public IReadOnlyList<string> Capabilities { get; internal set; }
+        public IReadOnlyList<string> DebugInstances { get; internal set; }
+
+        public string ResumeSessionId { get; internal set; }
+
+        public string EndpointId { get; internal set; }
+
+        public string SessionId { get; internal set; }
+
+        public bool Resumed { get; internal set; }
+
+        public string ConnectType { get; internal set; }
+
+        public int Generation { get; internal set; }
+
+        public string BootId { get; internal set; }
+
+        public bool DebugEnabled { get; internal set; }
+
+        public DateTime StartedAt { get; internal set; }
 
         public string RequestId { get; internal set; }
 
@@ -62,7 +84,7 @@ namespace VisualBridge.Editor
     }
 
     /// <summary>
-    /// 已通过校验的、由 VS Code Extension Host 发布的按窗口划分的发现记录。
+    /// 已通过校验的、由 VS Code Extension Host 发布的按窗口划分的发现记录（v2）。
     /// </summary>
     public sealed class VisualBridgeBridgeWindow
     {
@@ -70,11 +92,9 @@ namespace VisualBridge.Editor
 
         public int ProtocolVersion { get; internal set; }
 
-        public IReadOnlyList<string> Capabilities { get; internal set; }
+        public string Role { get; internal set; }
 
         public IReadOnlyList<string> ProjectRoots { get; internal set; }
-
-        public string PipePath { get; internal set; }
 
         public int TcpPort { get; internal set; }
 
@@ -84,34 +104,34 @@ namespace VisualBridge.Editor
 
         public int Generation { get; internal set; }
 
-        public DateTime StartedAt { get; internal set; }
-
         public string RecordPath { get; internal set; }
-
-        public bool Supports(string capability)
-        {
-            return Capabilities.Contains(capability, StringComparer.Ordinal);
-        }
     }
 
     /// <summary>
-    /// Editor Bridge V1 消息与发现记录的严格 JSON 校验器。
+    /// 统一连接协议（协议版本 4）的 Editor 腿消息与发现记录 v2 的严格 JSON 校验器。
     /// 与 Protocol/Schema/visualbridge-editor-bridge.schema.json 保持镜像；
     /// 共享 parity fixture 同时由 AJV（generator）与 Unity EditMode 测试执行。
     /// </summary>
     public static class VisualBridgeEditorBridgeValidator
     {
-        public const int ProtocolVersion = 1;
-        public const int DiscoveryFormatVersion = 1;
+        /// <summary>唯一连接层版本；Runtime 腿共用同一数值（附录 A.1/A.3）。</summary>
+        public const int ProtocolVersion = 4;
+
+        /// <summary>发现记录格式版本（附录 A.7）；旧格式视为无记录。</summary>
+        public const int DiscoveryFormatVersion = 2;
 
         private static readonly Regex RequestIdPattern = new Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", RegexOptions.Compiled);
+        private static readonly Regex EndpointIdPattern = new Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", RegexOptions.Compiled);
+        private static readonly Regex SessionIdPattern = new Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}#[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", RegexOptions.Compiled);
+        private static readonly Regex ContractHashPattern = new Regex("^(?:[0-9a-f]{16})?$", RegexOptions.Compiled);
         private static readonly Regex TokenPattern = new Regex("^[0-9a-f]{48,64}$", RegexOptions.Compiled);
         private static readonly Regex UuidPattern = new Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-        private static readonly Regex PipePathPattern = new Regex("^\\\\\\\\.\\\\pipe\\\\[A-Za-z0-9][A-Za-z0-9._-]{0,200}$", RegexOptions.Compiled);
         private static readonly Regex AbsolutePathPattern = new Regex("^(?:[A-Za-z]:)?/(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*\\\\)(?!.*/$)(?:[^/]+/)*[^/]+$", RegexOptions.Compiled);
         private static readonly Regex StartedAtPattern = new Regex("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$", RegexOptions.Compiled);
 
-        private static readonly HashSet<string> Capabilities = new HashSet<string>(StringComparer.Ordinal) { "open", "reveal" };
+        private static readonly HashSet<string> Roles = new HashSet<string>(StringComparer.Ordinal) { "editor", "vscode" };
+        private static readonly HashSet<string> ConnectTypes = new HashSet<string>(StringComparer.Ordinal) { "editor", "editor-player", "player" };
+        private static readonly HashSet<string> PayloadKinds = new HashSet<string>(StringComparer.Ordinal) { "json", "binary" };
         private static readonly HashSet<string> ErrorCodes = new HashSet<string>(StringComparer.Ordinal)
         {
             "bridge.capabilityMissing",
@@ -123,6 +143,12 @@ namespace VisualBridge.Editor
             "bridge.invalidToken",
             "bridge.protocolVersionMismatch",
             "bridge.unknownMessageType",
+            "runtime.alreadyConnected",
+            "runtime.contractHashMismatch",
+            "runtime.invalidToken",
+            "runtime.roleMismatch",
+            "runtime.unsupportedPayload",
+            "runtime.unsupportedProtocolVersion",
         };
 
         public static VisualBridgeBridgeMessage ValidateMessage(JObject value)
@@ -159,7 +185,19 @@ namespace VisualBridge.Editor
                 throw Error("bridge.invalidMessage", "$", "Expected a discovery record object.");
             }
 
-            RequireOnlyKeys(value, "$", "formatVersion", "protocolVersion", "windowId", "capabilities", "projectRoots", "pipePath", "tcpPort", "token", "pid", "generation", "startedAt");
+            RequireOnlyKeys(
+                value,
+                "$",
+                "formatVersion",
+                "protocolVersion",
+                "role",
+                "tcpPort",
+                "token",
+                "pid",
+                "generation",
+                "windowId",
+                "projectRoots");
+
             var formatVersion = RequireInteger(value, "formatVersion", "$.formatVersion");
             if (formatVersion != DiscoveryFormatVersion)
             {
@@ -172,20 +210,7 @@ namespace VisualBridge.Editor
                 throw Error("bridge.unsupportedProtocolVersion", "$.protocolVersion", $"Expected protocolVersion {ProtocolVersion}.");
             }
 
-            var windowId = RequireString(value, "windowId", "$.windowId");
-            if (!UuidPattern.IsMatch(windowId))
-            {
-                throw Error("bridge.invalidMessage", "$.windowId", "Expected a UUID window identifier.");
-            }
-
-            var capabilities = RequireCapabilities(value, "$.capabilities");
-            var projectRoots = RequireProjectRoots(value, "$.projectRoots");
-            var pipePath = RequireString(value, "pipePath", "$.pipePath");
-            if (!PipePathPattern.IsMatch(pipePath))
-            {
-                throw Error("bridge.invalidMessage", "$.pipePath", "Expected a Windows named pipe path.");
-            }
-
+            var role = RequireRole(value, "$.role");
             var tcpPort = RequireInteger(value, "tcpPort", "$.tcpPort");
             if (tcpPort < 1 || tcpPort > 65535)
             {
@@ -207,27 +232,26 @@ namespace VisualBridge.Editor
             var generation = RequireInteger(value, "generation", "$.generation");
             if (generation < 1)
             {
-                throw Error("bridge.invalidMessage", "$.generation", "Expected a positive server generation.");
+                throw Error("bridge.invalidMessage", "$.generation", "Expected a positive listener generation.");
             }
 
-            var startedAtText = RequireString(value, "startedAt", "$.startedAt");
-            if (!StartedAtPattern.IsMatch(startedAtText) || !DateTime.TryParse(startedAtText, null, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var startedAt))
+            var windowId = RequireString(value, "windowId", "$.windowId");
+            if (!UuidPattern.IsMatch(windowId))
             {
-                throw Error("bridge.invalidMessage", "$.startedAt", "Expected a UTC ISO date-time.");
+                throw Error("bridge.invalidMessage", "$.windowId", "Expected a UUID window identifier.");
             }
 
+            var projectRoots = RequireProjectRoots(value, "$.projectRoots");
             return new VisualBridgeBridgeWindow
             {
                 WindowId = windowId,
                 ProtocolVersion = protocolVersion,
-                Capabilities = capabilities,
+                Role = role,
                 ProjectRoots = projectRoots,
-                PipePath = pipePath,
                 TcpPort = tcpPort,
                 Token = token,
                 Pid = pid,
                 Generation = generation,
-                StartedAt = startedAt,
                 RecordPath = recordPath,
             };
         }
@@ -240,16 +264,44 @@ namespace VisualBridge.Editor
                 case VisualBridgeBridgeMessageType.Hello:
                     value["type"] = "hello";
                     value["protocolVersion"] = message.ProtocolVersion;
-                    value["token"] = message.Token;
-                    value["clientInstanceId"] = message.ClientInstanceId;
-                    value["capabilities"] = new JArray(message.Capabilities);
+                    value["role"] = message.Role;
+                    value["clientEndpointId"] = message.ClientEndpointId;
+                    if (message.Token != null)
+                    {
+                        value["token"] = message.Token;
+                    }
+
+                    value["contractHash"] = message.ContractHash;
+                    value["payloads"] = new JArray(message.Payloads);
+                    if (message.DebugCategories != null)
+                    {
+                        value["debugCategories"] = new JArray(message.DebugCategories);
+                    }
+
+                    if (message.DebugInstances != null)
+                    {
+                        value["debugInstances"] = new JArray(message.DebugInstances);
+                    }
+
+                    if (message.ResumeSessionId != null)
+                    {
+                        value["resumeSessionId"] = message.ResumeSessionId;
+                    }
+
                     break;
                 case VisualBridgeBridgeMessageType.Welcome:
                     value["type"] = "welcome";
                     value["protocolVersion"] = message.ProtocolVersion;
-                    value["windowId"] = message.WindowId;
-                    value["serverGeneration"] = message.ServerGeneration;
-                    value["capabilities"] = new JArray(message.Capabilities);
+                    value["endpointId"] = message.EndpointId;
+                    value["sessionId"] = message.SessionId;
+                    value["resumed"] = message.Resumed;
+                    value["connectType"] = message.ConnectType;
+                    value["generation"] = message.Generation;
+                    value["bootId"] = message.BootId;
+                    value["contractHash"] = message.ContractHash;
+                    value["payloads"] = new JArray(message.Payloads);
+                    value["debugEnabled"] = message.DebugEnabled;
+                    value["startedAt"] = message.StartedAt.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture);
                     break;
                 case VisualBridgeBridgeMessageType.Open:
                     value["type"] = "open";
@@ -269,6 +321,7 @@ namespace VisualBridge.Editor
                     {
                         value["error"] = message.ErrorCode;
                     }
+
                     break;
                 case VisualBridgeBridgeMessageType.Error:
                     value["type"] = "error";
@@ -277,6 +330,7 @@ namespace VisualBridge.Editor
                     {
                         value["detail"] = message.ErrorDetail;
                     }
+
                     break;
                 default:
                     throw Error("bridge.invalidMessage", "$.type", "Cannot serialize an unknown message type.");
@@ -287,15 +341,27 @@ namespace VisualBridge.Editor
             return value;
         }
 
-        internal static VisualBridgeBridgeMessage CreateHello(string clientInstanceId, string token, IReadOnlyList<string> capabilities)
+        internal static VisualBridgeBridgeMessage CreateHello(
+            string clientEndpointId,
+            string token,
+            string contractHash,
+            IReadOnlyList<string> payloads,
+            IReadOnlyList<string> debugCategories = null,
+            IReadOnlyList<string> debugInstances = null,
+            string resumeSessionId = null)
         {
             return new VisualBridgeBridgeMessage
             {
                 Type = VisualBridgeBridgeMessageType.Hello,
                 ProtocolVersion = ProtocolVersion,
+                Role = "editor",
+                ClientEndpointId = clientEndpointId,
                 Token = token,
-                ClientInstanceId = clientInstanceId,
-                Capabilities = capabilities,
+                ContractHash = contractHash,
+                Payloads = payloads,
+                DebugCategories = debugCategories,
+                DebugInstances = debugInstances,
+                ResumeSessionId = resumeSessionId,
             };
         }
 
@@ -322,53 +388,124 @@ namespace VisualBridge.Editor
 
         private static VisualBridgeBridgeMessage ValidateHello(JObject value)
         {
-            RequireOnlyKeys(value, "$", "type", "protocolVersion", "token", "clientInstanceId", "capabilities");
-            var protocolVersion = RequireVersion(value, "$.protocolVersion");
-            var token = RequireString(value, "token", "$.token");
-            if (!TokenPattern.IsMatch(token))
+            PrecheckProtocolVersion(value);
+            RequireOnlyKeys(
+                value,
+                "$",
+                new[] { "type", "protocolVersion", "role", "clientEndpointId", "contractHash", "payloads" },
+                new[] { "token", "debugCategories", "debugInstances", "resumeSessionId" });
+
+            var protocolVersion = RequireProtocolVersion(value, "$.protocolVersion");
+            var role = RequireRole(value, "$.role");
+            var clientEndpointId = RequireEndpointId(value, "clientEndpointId", "$.clientEndpointId");
+            string token = null;
+            if (value.Property("token", StringComparison.Ordinal) != null)
             {
-                throw Error("bridge.invalidToken", "$.token", "Expected a hex authentication token.");
+                token = RequireString(value, "token", "$.token");
+                if (!TokenPattern.IsMatch(token))
+                {
+                    throw Error("bridge.invalidToken", "$.token", "Expected a hex authentication token.");
+                }
             }
 
-            var clientInstanceId = RequireString(value, "clientInstanceId", "$.clientInstanceId");
-            if (!UuidPattern.IsMatch(clientInstanceId))
+            var contractHash = RequireContractHash(value);
+            var payloads = RequirePayloads(value, "$.payloads");
+            var debugCategories = value.Property("debugCategories", StringComparison.Ordinal) == null
+                ? null
+                : RequireDebugFilter(value, "debugCategories", "$.debugCategories");
+            var debugInstances = value.Property("debugInstances", StringComparison.Ordinal) == null
+                ? null
+                : RequireDebugFilter(value, "debugInstances", "$.debugInstances");
+            string resumeSessionId = null;
+            if (value.Property("resumeSessionId", StringComparison.Ordinal) != null)
             {
-                throw Error("bridge.invalidMessage", "$.clientInstanceId", "Expected a UUID client instance identifier.");
+                resumeSessionId = RequireSessionId(value, "resumeSessionId", "$.resumeSessionId");
             }
 
             return new VisualBridgeBridgeMessage
             {
                 Type = VisualBridgeBridgeMessageType.Hello,
                 ProtocolVersion = protocolVersion,
+                Role = role,
+                ClientEndpointId = clientEndpointId,
                 Token = token,
-                ClientInstanceId = clientInstanceId,
-                Capabilities = RequireCapabilities(value, "$.capabilities"),
+                ContractHash = contractHash,
+                Payloads = payloads,
+                DebugCategories = debugCategories,
+                DebugInstances = debugInstances,
+                ResumeSessionId = resumeSessionId,
             };
         }
 
         private static VisualBridgeBridgeMessage ValidateWelcome(JObject value)
         {
-            RequireOnlyKeys(value, "$", "type", "protocolVersion", "windowId", "serverGeneration", "capabilities");
-            var protocolVersion = RequireVersion(value, "$.protocolVersion");
-            var windowId = RequireString(value, "windowId", "$.windowId");
-            if (!UuidPattern.IsMatch(windowId))
+            PrecheckProtocolVersion(value);
+            RequireOnlyKeys(
+                value,
+                "$",
+                "type",
+                "protocolVersion",
+                "endpointId",
+                "sessionId",
+                "resumed",
+                "connectType",
+                "generation",
+                "bootId",
+                "contractHash",
+                "payloads",
+                "debugEnabled",
+                "startedAt");
+
+            var protocolVersion = RequireProtocolVersion(value, "$.protocolVersion");
+            var endpointId = RequireEndpointId(value, "endpointId", "$.endpointId");
+            var bootId = RequireEndpointId(value, "bootId", "$.bootId");
+            var sessionId = RequireSessionId(value, "sessionId", "$.sessionId");
+            if (!string.Equals(sessionId, endpointId + "#" + bootId, StringComparison.Ordinal))
             {
-                throw Error("bridge.invalidMessage", "$.windowId", "Expected a UUID window identifier.");
+                throw Error("bridge.invalidMessage", "$.sessionId", "sessionId must equal endpointId#bootId.");
             }
 
-            var serverGeneration = RequireInteger(value, "serverGeneration", "$.serverGeneration");
-            if (serverGeneration < 1)
+            var resumed = RequireBoolean(value, "resumed", "$.resumed");
+            var connectType = RequireString(value, "connectType", "$.connectType");
+            if (!ConnectTypes.Contains(connectType))
             {
-                throw Error("bridge.invalidMessage", "$.serverGeneration", "Expected a positive server generation.");
+                throw Error("bridge.invalidMessage", "$.connectType", "Expected connectType 'editor', 'editor-player', or 'player'.");
+            }
+
+            var generation = RequireInteger(value, "generation", "$.generation");
+            if (generation < 1)
+            {
+                throw Error("bridge.invalidMessage", "$.generation", "Expected a positive listener generation.");
+            }
+
+            var contractHash = RequireContractHash(value);
+            var payloads = RequirePayloads(value, "$.payloads");
+            var debugEnabled = RequireBoolean(value, "debugEnabled", "$.debugEnabled");
+            var startedAtText = RequireString(value, "startedAt", "$.startedAt");
+            if (!StartedAtPattern.IsMatch(startedAtText)
+                || !DateTime.TryParse(
+                    startedAtText,
+                    null,
+                    System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                    out var startedAt))
+            {
+                throw Error("bridge.invalidMessage", "$.startedAt", "Expected a UTC ISO date-time.");
             }
 
             return new VisualBridgeBridgeMessage
             {
                 Type = VisualBridgeBridgeMessageType.Welcome,
                 ProtocolVersion = protocolVersion,
-                WindowId = windowId,
-                ServerGeneration = serverGeneration,
-                Capabilities = RequireCapabilities(value, "$.capabilities"),
+                EndpointId = endpointId,
+                SessionId = sessionId,
+                Resumed = resumed,
+                ConnectType = connectType,
+                Generation = generation,
+                BootId = bootId,
+                ContractHash = contractHash,
+                Payloads = payloads,
+                DebugEnabled = debugEnabled,
+                StartedAt = startedAt,
             };
         }
 
@@ -512,12 +649,25 @@ namespace VisualBridge.Editor
             };
         }
 
-        private static int RequireVersion(JObject value, string path)
+        /// <summary>
+        /// 连接层优先：旧版本 peer 的字段集合可能不同，先按版本拒绝，
+        /// 避免把"版本不符"误报成缺字段/未知字段（附录 A.3 的拒绝层级）。
+        /// </summary>
+        private static void PrecheckProtocolVersion(JObject value)
+        {
+            var token = value["protocolVersion"];
+            if (token != null && token.Type == JTokenType.Integer && token.Value<int>() != ProtocolVersion)
+            {
+                throw Error("runtime.unsupportedProtocolVersion", "$.protocolVersion", $"Expected protocolVersion {ProtocolVersion}.");
+            }
+        }
+
+        private static int RequireProtocolVersion(JObject value, string path)
         {
             var protocolVersion = RequireInteger(value, "protocolVersion", path);
             if (protocolVersion != ProtocolVersion)
             {
-                throw Error("bridge.unsupportedProtocolVersion", path, $"Expected protocolVersion {ProtocolVersion}.");
+                throw Error("runtime.unsupportedProtocolVersion", path, $"Expected protocolVersion {ProtocolVersion}.");
             }
 
             return protocolVersion;
@@ -534,32 +684,120 @@ namespace VisualBridge.Editor
             return requestId;
         }
 
-        private static IReadOnlyList<string> RequireCapabilities(JObject value, string path)
+        private static string RequireRole(JObject value, string path)
         {
-            var token = value["capabilities"];
-            if (!(token is JArray array) || array.Count == 0)
+            var role = RequireString(value, "role", path);
+            if (!Roles.Contains(role, StringComparer.Ordinal))
             {
-                throw Error("bridge.invalidMessage", path, "Expected a non-empty capabilities array.");
+                throw Error("bridge.invalidMessage", path, "Expected role 'editor' or 'vscode'.");
             }
 
-            var capabilities = new List<string>(array.Count);
+            return role;
+        }
+
+        private static string RequireEndpointId(JObject value, string property, string path)
+        {
+            var endpointId = RequireString(value, property, path);
+            if (!EndpointIdPattern.IsMatch(endpointId))
+            {
+                throw Error("bridge.invalidMessage", path, "Expected a stable endpoint identifier.");
+            }
+
+            return endpointId;
+        }
+
+        private static string RequireSessionId(JObject value, string property, string path)
+        {
+            var sessionId = RequireString(value, property, path);
+            if (!SessionIdPattern.IsMatch(sessionId))
+            {
+                throw Error("bridge.invalidMessage", path, "Expected an 'endpointId#bootId' session identifier.");
+            }
+
+            return sessionId;
+        }
+
+        private static string RequireContractHash(JObject value)
+        {
+            var contractHash = RequireString(value, "contractHash", "$.contractHash");
+            if (!ContractHashPattern.IsMatch(contractHash))
+            {
+                throw Error("bridge.invalidMessage", "$.contractHash", "Expected 16 lowercase hex characters or an empty string.");
+            }
+
+            return contractHash;
+        }
+
+        private static IReadOnlyList<string> RequirePayloads(JObject value, string path)
+        {
+            var token = value[path.Substring(2)];
+            if (!(token is JArray array))
+            {
+                throw Error("bridge.invalidMessage", path, "Expected a payload array.");
+            }
+
+            // 空交集与缺 json 同属载荷协商失败（附录 A.3），不是形状错误。
+            if (array.Count == 0)
+            {
+                throw Error("runtime.unsupportedPayload", path, "No supported payload kind; 'json' is mandatory.");
+            }
+
+            var payloads = new List<string>(array.Count);
             var unique = new HashSet<string>(StringComparer.Ordinal);
             for (var index = 0; index < array.Count; index++)
             {
-                if (array[index].Type != JTokenType.String || !Capabilities.Contains(array[index].Value<string>(), StringComparer.Ordinal))
+                if (array[index].Type != JTokenType.String || !PayloadKinds.Contains(array[index].Value<string>(), StringComparer.Ordinal))
                 {
-                    throw Error("bridge.invalidMessage", $"{path}[{index}]", "Expected a registered capability.");
+                    throw Error("bridge.invalidMessage", $"{path}[{index}]", "Expected payload kinds 'json' and/or 'binary'.");
                 }
 
                 if (!unique.Add(array[index].Value<string>()))
                 {
-                    throw Error("bridge.invalidMessage", $"{path}[{index}]", "Duplicate capability.");
+                    throw Error("bridge.invalidMessage", $"{path}[{index}]", "Duplicate payload kind.");
                 }
 
-                capabilities.Add(array[index].Value<string>());
+                payloads.Add(array[index].Value<string>());
             }
 
-            return capabilities;
+            if (!unique.Contains("json"))
+            {
+                throw Error("runtime.unsupportedPayload", path, "The 'json' payload kind is mandatory.");
+            }
+
+            return payloads;
+        }
+
+        private static IReadOnlyList<string> RequireDebugFilter(JObject value, string property, string path)
+        {
+            if (!(value[property] is JArray array))
+            {
+                throw Error("bridge.invalidMessage", path, "Expected an array of filter names.");
+            }
+
+            var filters = new List<string>(array.Count);
+            var unique = new HashSet<string>(StringComparer.Ordinal);
+            for (var index = 0; index < array.Count; index++)
+            {
+                if (array[index].Type != JTokenType.String)
+                {
+                    throw Error("bridge.invalidMessage", $"{path}[{index}]", "Expected a filter name string.");
+                }
+
+                var name = array[index].Value<string>();
+                if (name.Length == 0 || name.Length > 256)
+                {
+                    throw Error("bridge.invalidMessage", $"{path}[{index}]", "Expected non-empty filter names of at most 256 characters.");
+                }
+
+                if (!unique.Add(name))
+                {
+                    throw Error("bridge.invalidMessage", $"{path}[{index}]", "Duplicate filter name.");
+                }
+
+                filters.Add(name);
+            }
+
+            return filters;
         }
 
         private static IReadOnlyList<string> RequireProjectRoots(JObject value, string path)
@@ -635,6 +873,17 @@ namespace VisualBridge.Editor
             }
 
             return token.Value<int>();
+        }
+
+        private static bool RequireBoolean(JObject value, string property, string path)
+        {
+            var token = value[property];
+            if (token == null || token.Type != JTokenType.Boolean)
+            {
+                throw Error("bridge.invalidMessage", path, "Expected a boolean.");
+            }
+
+            return token.Value<bool>();
         }
 
         private static string RequireString(JObject value, string property, string path)

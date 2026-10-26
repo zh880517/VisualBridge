@@ -214,7 +214,8 @@ async function verifyEditorBridgeExamples(compiler) {
   const bridgeId = "https://visualbridge.dev/schema/visualbridge-editor-bridge.schema.json";
   const messageValidator = requireValidator(compiler, bridgeId);
   const discoveryValidator = requireValidator(compiler, `${bridgeId}#/$defs/discoveryRecord`);
-  assert.equal(contractManifest.versions.editorBridge, 1, "Editor Bridge version registry drift.");
+  // Editor Bridge 版本注册表在 E2 与发现记录 v2 同步（协议版本 4 由 $defs.protocolVersion 表达）。
+  assert.equal(contractManifest.versions.editorBridge, 2, "Editor Bridge version registry drift.");
   const bridgeSchema = schemas.find((entry) => entry.name === "visualbridge-editor-bridge.schema.json")?.schema;
   assert.equal(
     bridgeSchema?.$defs?.discoveryRecord?.properties?.formatVersion?.const,

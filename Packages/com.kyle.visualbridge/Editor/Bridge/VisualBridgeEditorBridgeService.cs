@@ -3,16 +3,22 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
+using Newtonsoft.Json.Linq;
+using UnityEditor;
 
 namespace VisualBridge.Editor
 {
     /// <summary>
     /// 面向 Editor 的 bridge 服务。用 Integration Profile 的 authoring 项目
     /// 匹配已发布的发现记录；多个窗口匹配时要求显式选择，连接失败按退避重试。
+    /// 握手身份在进程内稳定（editor-&lt;pid&gt;），会话 id 用 SessionState 跨
+    /// Domain Reload 续接（附录 A.3 的 resumeSessionId）。
     /// </summary>
     public sealed class VisualBridgeEditorBridgeService
     {
+        private const string ResumeSessionKey = "VisualBridge.EditorBridge.ResumeSessionId";
         private static readonly TimeSpan InitialBackoff = TimeSpan.FromSeconds(1);
         private static readonly TimeSpan MaximumBackoff = TimeSpan.FromSeconds(30);
 
@@ -25,6 +31,12 @@ namespace VisualBridge.Editor
         public VisualBridgeBridgeWindow ConnectedWindow { get; private set; }
 
         public bool IsConnected => client != null && client.State == VisualBridgeBridgeConnectionState.Connected;
+
+        /// <summary>Editor 进程内稳定的拨号方端点标识（Domain Reload 不改变）。</summary>
+        public static string LocalEndpointId()
+        {
+            return "editor-" + Process.GetCurrentProcess().Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
 
         public static string UnityProjectRoot()
         {
@@ -74,7 +86,13 @@ namespace VisualBridge.Editor
             }
 
             Disconnect();
-            var instance = new VisualBridgeEditorBridgeClient(window, Guid.NewGuid().ToString(), new[] { "open", "reveal" });
+            var previousSessionId = LoadResumeSessionId();
+            var contractHash = VisualBridgeDebugContractFingerprint.Read(UnityProjectRoot());
+            var instance = new VisualBridgeEditorBridgeClient(
+                window,
+                LocalEndpointId(),
+                contractHash,
+                string.IsNullOrEmpty(previousSessionId) ? null : previousSessionId);
             try
             {
                 instance.Connect(timeoutMs);
@@ -85,6 +103,9 @@ namespace VisualBridge.Editor
                 throw;
             }
 
+            // 会话 id 跨 Domain Reload 保存：下次连接以 resumeSessionId 续接，
+            // 服务端据此返回 resumed（不匹配时安全起新会话）。
+            SaveResumeSessionId(instance.SessionId);
             client = instance;
             ConnectedWindow = window;
             return client;
@@ -216,7 +237,7 @@ namespace VisualBridge.Editor
             }
 
             throw lastFailure
-                ?? VisualBridgeEditorBridgeValidator.Error("bridge.timeout", "$", "Timed out waiting for a matching bridge window.");
+                ?? VisualBridgeEditorBridgeValidator.Error("runtime.noEndpoint", "$", "No live bridge window was discovered.");
         }
 
         private void EnsureConnected()
@@ -230,6 +251,106 @@ namespace VisualBridge.Editor
         private static string NewRequestId()
         {
             return "req-" + Guid.NewGuid().ToString("N");
+        }
+
+        /// <summary>SessionState 在 Domain Reload 后仍在；后台线程上不可用时退化为不续接。</summary>
+        private static string LoadResumeSessionId()
+        {
+            try
+            {
+                return SessionState.GetString(ResumeSessionKey, string.Empty);
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static void SaveResumeSessionId(string sessionId)
+        {
+            try
+            {
+                SessionState.SetString(ResumeSessionKey, sessionId ?? string.Empty);
+            }
+            catch
+            {
+                // 会话续接是优化项：写不进去也不影响本次连接。
+            }
+        }
+    }
+
+    /// <summary>
+    /// 读取 D2 调试生成器产出的 <c>debug-contracts.json</c> 指纹，供 Editor 握手使用。
+    /// 本类只读取、不计算 Fingerprint（附录 A.3 的"无契约时空串"）：
+    /// 契约层 <c>manifest.schemaVersion</c> 不等于 <see cref="ContractSchemaVersion"/>
+    /// 时该目录契约不加载，按无契约处理。
+    /// </summary>
+    internal static class VisualBridgeDebugContractFingerprint
+    {
+        /// <summary>调试契约文件格式版本（D2 回填附录 B.5 的 manifest.schemaVersion）。</summary>
+        public const int ContractSchemaVersion = 2;
+
+        private static readonly Regex HashPattern = new Regex("^[0-9a-f]{16}$", RegexOptions.Compiled);
+
+        public const string Empty = "";
+
+        /// <summary>返回工程的调试契约指纹；无产物、格式不符或字段非法时返回空串。</summary>
+        public static string Read(string unityProjectRoot)
+        {
+            if (string.IsNullOrWhiteSpace(unityProjectRoot))
+            {
+                return Empty;
+            }
+
+            // 握手可能在后台线程执行：这里不能用 AssetDatabase 读取 ScriptableObject 配置。
+            // 只认默认产物根；自定义 ArtifactsRoot 的工程按"无契约"处理（降级 JSON，不拒连）。
+            var artifactsRoot = VisualBridgeDebugGeneratorSettings.DefaultArtifactsRoot;
+
+            string contractPath;
+            try
+            {
+                contractPath = Path.Combine(
+                    Path.GetFullPath(unityProjectRoot),
+                    artifactsRoot.Replace('/', Path.DirectorySeparatorChar),
+                    "debug-contracts.json");
+            }
+            catch
+            {
+                return Empty;
+            }
+
+            try
+            {
+                if (!File.Exists(contractPath))
+                {
+                    return Empty;
+                }
+
+                var value = VisualBridgeIntegrationProfileLoader.ReadStrictObject(contractPath, "debug.contractsInvalid");
+                var manifest = value["manifest"] as JObject;
+                if (manifest == null || manifest["schemaVersion"] == null || manifest["schemaVersion"].Type != JTokenType.Integer)
+                {
+                    return Empty;
+                }
+
+                if (manifest["schemaVersion"].Value<int>() != ContractSchemaVersion)
+                {
+                    // 契约层拒绝：版本不符时不加载该目录契约。
+                    return Empty;
+                }
+
+                var hash = value["contractHash"];
+                if (hash == null || hash.Type != JTokenType.String || !HashPattern.IsMatch(hash.Value<string>()))
+                {
+                    return Empty;
+                }
+
+                return hash.Value<string>();
+            }
+            catch
+            {
+                return Empty;
+            }
         }
     }
 }

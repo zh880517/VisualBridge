@@ -22,6 +22,7 @@ import {
   RuntimeBridgeWelcomeMessage,
 } from "./runtimeBridgeProtocol";
 import { BridgeSocket } from "./bridgeSocket";
+import { BRIDGE_PROTOCOL_VERSION } from "./bridgeProtocol";
 import { BridgePayloadKind } from "./framing";
 import { GraphExecutionRecording } from "./graphExecutionRecording";
 
@@ -309,7 +310,7 @@ export class RuntimeBridgeConnection {
 
         bridge.sendControlJson({
           type: "hello",
-          protocolVersion: 1,
+          protocolVersion: BRIDGE_PROTOCOL_VERSION,
           coreVersion: 1,
           token: this.instance.token,
           clientInstanceId: randomUUID(),

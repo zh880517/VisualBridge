@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://visualbridge.dev/schema/visualbridge-editor-bridge.schema.json",
-  "title": "VisualBridge Editor Bridge V1",
-  "description": "Local NDJSON message contracts between the Unity Editor bridge client and the VS Code extension host bridge server, plus the per-window discovery record. Version 1 carries open/reveal requests only; it does not define Runtime, Debug, or Player messages.",
+  "title": "VisualBridge Editor Bridge V2",
+  "description": "Editor-mode leg of the unified VisualBridge connection protocol: the hello/welcome handshake (protocolVersion 4), editor open/reveal requests, and the per-window discovery record (formatVersion 2). This is the target unified handshake shape; per the 2026-10-27 review ruling, the Runtime leg adopts the same hello/welcome fields in E5. This schema only adds the editor-only messages.",
   "oneOf": [
     { "$ref": "#/$defs/helloMessage" },
     { "$ref": "#/$defs/welcomeMessage" },
@@ -13,7 +13,52 @@
   ],
   "$defs": {
     "protocolVersion": {
-      "const": 1
+      "const": 4
+    },
+    "role": {
+      "description": "拨号方身份；监听方据此拒绝错配（方向层）。",
+      "enum": ["editor", "vscode"]
+    },
+    "connectType": {
+      "description": "监听方实际承载的连接拓扑。",
+      "enum": ["editor", "editor-player", "player"]
+    },
+    "payload": {
+      "description": "协商的载荷类型；json 必选。",
+      "enum": ["json", "binary"]
+    },
+    "endpointId": {
+      "description": "端点标识（不是调试实例 id）；VS Code 窗口与 Unity Editor 进程各自稳定。",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "bootId": {
+      "description": "每次进程启动随机生成；Domain Reload 不改变。",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "sessionId": {
+      "description": "endpointId#bootId；跨 Domain Reload 稳定，generation 不参与。",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}#[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "contractHash": {
+      "description": "调试契约指纹：16 位小写十六进制，无契约时为空串。",
+      "type": "string",
+      "pattern": "^([0-9a-f]{16})?$"
+    },
+    "payloadList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/payload" },
+      "contains": { "const": "json" }
+    },
+    "debugFilter": {
+      "description": "调试筛选：空数组/省略表示全部；服务端在入队前过滤。",
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
     },
     "requestId": {
       "type": "string",
@@ -24,26 +69,13 @@
       "description": "Hex-encoded per-window authentication token of at least 192 bits.",
       "pattern": "^[0-9a-f]{48,64}$"
     },
-    "instanceId": {
-      "type": "string",
-      "format": "uuid"
-    },
-    "serverGeneration": {
+    "generation": {
       "type": "integer",
       "minimum": 1
     },
     "processId": {
       "type": "integer",
       "minimum": 1
-    },
-    "capability": {
-      "enum": ["open", "reveal"]
-    },
-    "capabilityList": {
-      "type": "array",
-      "minItems": 1,
-      "uniqueItems": true,
-      "items": { "$ref": "#/$defs/capability" }
     },
     "errorCode": {
       "enum": [
@@ -55,44 +87,73 @@
         "bridge.invalidMessage",
         "bridge.invalidToken",
         "bridge.protocolVersionMismatch",
-        "bridge.unknownMessageType"
+        "bridge.unknownMessageType",
+        "runtime.alreadyConnected",
+        "runtime.contractHashMismatch",
+        "runtime.invalidToken",
+        "runtime.roleMismatch",
+        "runtime.unsupportedPayload",
+        "runtime.unsupportedProtocolVersion"
       ]
     },
     "helloMessage": {
       "type": "object",
-      "description": "First message sent by the Unity Editor client after connecting; authenticates the connection and negotiates the protocol version and capabilities.",
+      "description": "拨号方 → 监听方的首条消息；握手字段与 Runtime 腿共用同一形状（附录 A.3）。",
       "required": [
         "type",
         "protocolVersion",
-        "token",
-        "clientInstanceId",
-        "capabilities"
+        "role",
+        "clientEndpointId",
+        "contractHash",
+        "payloads"
       ],
       "properties": {
         "type": { "const": "hello" },
         "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "role": { "$ref": "#/$defs/role" },
+        "clientEndpointId": { "$ref": "#/$defs/endpointId" },
         "token": { "$ref": "#/$defs/token" },
-        "clientInstanceId": { "$ref": "#/$defs/instanceId" },
-        "capabilities": { "$ref": "#/$defs/capabilityList" }
+        "contractHash": { "$ref": "#/$defs/contractHash" },
+        "payloads": { "$ref": "#/$defs/payloadList" },
+        "debugCategories": { "$ref": "#/$defs/debugFilter" },
+        "debugInstances": { "$ref": "#/$defs/debugFilter" },
+        "resumeSessionId": { "$ref": "#/$defs/sessionId" }
       },
       "additionalProperties": false
     },
     "welcomeMessage": {
       "type": "object",
-      "description": "Server reply to a valid hello message; identifies the window and the current server instance generation.",
+      "description": "监听方 → 拨号方的握手应答；指明监听方端点、会话、连接拓扑与协商结果。",
       "required": [
         "type",
         "protocolVersion",
-        "windowId",
-        "serverGeneration",
-        "capabilities"
+        "endpointId",
+        "sessionId",
+        "resumed",
+        "connectType",
+        "generation",
+        "bootId",
+        "contractHash",
+        "payloads",
+        "debugEnabled",
+        "startedAt"
       ],
       "properties": {
         "type": { "const": "welcome" },
         "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
-        "windowId": { "$ref": "#/$defs/instanceId" },
-        "serverGeneration": { "$ref": "#/$defs/serverGeneration" },
-        "capabilities": { "$ref": "#/$defs/capabilityList" }
+        "endpointId": { "$ref": "#/$defs/endpointId" },
+        "sessionId": { "$ref": "#/$defs/sessionId" },
+        "resumed": { "type": "boolean" },
+        "connectType": { "$ref": "#/$defs/connectType" },
+        "generation": { "$ref": "#/$defs/generation" },
+        "bootId": { "$ref": "#/$defs/bootId" },
+        "contractHash": { "$ref": "#/$defs/contractHash" },
+        "payloads": { "$ref": "#/$defs/payloadList" },
+        "debugEnabled": { "type": "boolean" },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
       },
       "additionalProperties": false
     },
@@ -166,7 +227,7 @@
     },
     "errorMessage": {
       "type": "object",
-      "description": "Connection-level failure report sent before the server closes the connection.",
+      "description": "Connection-level failure report sent before the peer closes the connection.",
       "required": [
         "type",
         "code"
@@ -187,11 +248,6 @@
       "description": "Absolute forward-slash path with an optional Windows drive prefix; no backslashes, dot segments, duplicate separators or trailing slash.",
       "pattern": "^(?:[A-Za-z]:)?/(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*\\\\)(?!.*/$)(?:[^/]+/)*[^/]+$"
     },
-    "pipePath": {
-      "type": "string",
-      "description": "Windows named pipe full path of the bridge server listener.",
-      "pattern": "^\\\\\\\\.\\\\pipe\\\\[A-Za-z0-9][A-Za-z0-9._-]{0,200}$"
-    },
     "tcpPort": {
       "type": "integer",
       "minimum": 1,
@@ -199,39 +255,35 @@
     },
     "discoveryRecord": {
       "type": "object",
-      "description": "Per-window discovery record published at <temp>/visualbridge-bridge/<windowId>.json; heartbeat is the file modification time.",
+      "description": "Per-window discovery record published at <temp>/visualbridge-bridge/<windowId>.json; heartbeat is the file modification time. Staleness is heartbeat older than 5 seconds or a dead pid; records with formatVersion != 2 are ignored as if absent.",
       "required": [
         "formatVersion",
         "protocolVersion",
-        "windowId",
-        "capabilities",
-        "projectRoots",
-        "pipePath",
+        "role",
         "tcpPort",
         "token",
         "pid",
         "generation",
-        "startedAt"
+        "windowId",
+        "projectRoots"
       ],
       "properties": {
-        "formatVersion": { "const": 1 },
+        "formatVersion": { "const": 2 },
         "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
-        "windowId": { "$ref": "#/$defs/instanceId" },
-        "capabilities": { "$ref": "#/$defs/capabilityList" },
+        "role": { "$ref": "#/$defs/role" },
+        "tcpPort": { "$ref": "#/$defs/tcpPort" },
+        "token": { "$ref": "#/$defs/token" },
+        "pid": { "$ref": "#/$defs/processId" },
+        "generation": { "$ref": "#/$defs/generation" },
+        "windowId": {
+          "type": "string",
+          "format": "uuid"
+        },
         "projectRoots": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/absolutePath" }
-        },
-        "pipePath": { "$ref": "#/$defs/pipePath" },
-        "tcpPort": { "$ref": "#/$defs/tcpPort" },
-        "token": { "$ref": "#/$defs/token" },
-        "pid": { "$ref": "#/$defs/processId" },
-        "generation": { "$ref": "#/$defs/serverGeneration" },
-        "startedAt": {
-          "type": "string",
-          "format": "date-time"
         }
       },
       "additionalProperties": false

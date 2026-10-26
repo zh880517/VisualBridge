@@ -2558,14 +2558,17 @@ exports.run = async function run() {
     );
 
     const record = JSON.parse(await readFile(state.recordPath, "utf8"));
-    assert.equal(record.formatVersion, 1);
-    assert.equal(record.protocolVersion, 1);
+    assert.equal(record.formatVersion, 2);
+    assert.equal(record.protocolVersion, 4);
+    assert.equal(record.role, "vscode");
     assert.equal(record.windowId, state.windowId);
     assert.equal(record.token, state.token);
     assert.equal(record.pid, process.pid);
     assert.equal(record.generation, state.generation);
+    assert.equal(state.sessionId, `${state.windowId}#${state.bootId}`);
     assert.match(record.token, /^[0-9a-f]{48,64}$/);
-    assert.match(record.pipePath, /^\\\\.\\pipe\\visualbridge-bridge-[0-9a-f-]+$/);
+    assert.equal("capabilities" in record, false, "Discovery record v2 must not publish the removed capabilities field.");
+    assert.equal("startedAt" in record, false, "Discovery record v2 heartbeat is mtime, not startedAt.");
     assert.ok(record.tcpPort >= 1 && record.tcpPort <= 65535);
     const structuredRoot = normalizeFileSystemPath(path.join(workspacePath, "StructuredSemanticProject")).replaceAll("\\", "/");
     assert.ok(record.projectRoots.some((root) => normalizeFileSystemPath(root).replaceAll("\\", "/") === structuredRoot),
@@ -2590,12 +2593,15 @@ exports.run = async function run() {
         },
       };
     };
-    const hello = (token) => ({
+    const hello = (token, overrides = {}) => ({
       type: "hello",
-      protocolVersion: 1,
+      protocolVersion: 4,
+      role: "editor",
+      clientEndpointId: "editor-1234",
       token,
-      clientInstanceId: "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
-      capabilities: ["open", "reveal"],
+      contractHash: "",
+      payloads: ["json", "binary"],
+      ...overrides,
     });
 
     // 无效 token 以连接级错误拒绝。
@@ -2605,7 +2611,33 @@ exports.run = async function run() {
         connection.send(hello("0".repeat(48)));
         const errorLine = await connection.waitForLine(
           (line) => line.type === "error", "Bridge server did not reject an invalid token.");
-        assert.equal(errorLine.code, "bridge.invalidToken");
+        assert.equal(errorLine.code, "runtime.invalidToken");
+      } finally {
+        connection.socket.destroy();
+      }
+    }
+
+    // 方向层：监听方是 vscode，拨号方必须声明 editor。
+    {
+      const connection = await connectBridge();
+      try {
+        connection.send(hello(state.token, { role: "vscode" }));
+        const errorLine = await connection.waitForLine(
+          (line) => line.type === "error", "Bridge server did not reject a role mismatch.");
+        assert.equal(errorLine.code, "runtime.roleMismatch");
+      } finally {
+        connection.socket.destroy();
+      }
+    }
+
+    // 载荷协商：缺少 json 或以纯 binary 声明时拒绝。
+    {
+      const connection = await connectBridge();
+      try {
+        connection.send(hello(state.token, { payloads: ["binary"] }));
+        const errorLine = await connection.waitForLine(
+          (line) => line.type === "error", "Bridge server did not reject an unsupported payload set.");
+        assert.equal(errorLine.code, "runtime.unsupportedPayload");
       } finally {
         connection.socket.destroy();
       }
@@ -2644,9 +2676,27 @@ exports.run = async function run() {
         connection.send(hello(state.token));
         const welcome = await connection.waitForLine(
           (line) => line.type === "welcome", "Bridge server did not answer the hello handshake.");
-        assert.equal(welcome.protocolVersion, 1);
-        assert.equal(welcome.windowId, state.windowId);
-        assert.equal(welcome.serverGeneration, state.generation);
+        assert.equal(welcome.protocolVersion, 4);
+        assert.equal(welcome.endpointId, state.windowId);
+        assert.equal(welcome.sessionId, state.sessionId);
+        // generation 每次传输 +1：前面的拒绝探针各消耗一次，只要求不落后于记录。
+        assert.ok(welcome.generation >= state.generation);
+        assert.equal(welcome.connectType, "editor");
+        assert.deepEqual(welcome.payloads, ["json", "binary"]);
+        assert.equal(welcome.resumed, false);
+
+        // 一对一约束：第二条连接被拒，且不影响已建立的连接。
+        {
+          const second = await connectBridge();
+          try {
+            second.send(hello(state.token));
+            const errorLine = await second.waitForLine(
+              (line) => line.type === "error", "Bridge server did not reject a second connection.");
+            assert.equal(errorLine.code, "runtime.alreadyConnected");
+          } finally {
+            second.socket.destroy();
+          }
+        }
 
         connection.send({ type: "open", requestId: "bridge-open-1", documentPath: "Config/Missing.gamesettings" });
         const unresolved = await connection.waitForLine(
@@ -2696,6 +2746,48 @@ exports.run = async function run() {
           "Bridge reveal request did not reveal the referenced entity component.",
         );
         await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+      } finally {
+        connection.socket.destroy();
+      }
+    }
+
+    // 指纹层：两侧 hash 不同仍建立连接，welcome.payloads 去掉 binary。
+    {
+      const connection = await connectBridge();
+      try {
+        connection.send(hello(state.token, { contractHash: "aaaaaaaaaaaaaaaa" }));
+        const welcome = await connection.waitForLine(
+          (line) => line.type === "welcome", "Bridge server did not complete a mismatched-fingerprint handshake.");
+        assert.equal(welcome.contractHash, "");
+        assert.deepEqual(welcome.payloads, ["json"]);
+      } finally {
+        connection.socket.destroy();
+      }
+    }
+
+    // 会话续接：resumeSessionId 与服务端当前 sessionId 相同时 resumed=true。
+    {
+      const connection = await connectBridge();
+      try {
+        connection.send(hello(state.token, { resumeSessionId: state.sessionId }));
+        const welcome = await connection.waitForLine(
+          (line) => line.type === "welcome", "Bridge server did not complete a resumed handshake.");
+        assert.equal(welcome.resumed, true);
+        assert.equal(welcome.sessionId, state.sessionId);
+      } finally {
+        connection.socket.destroy();
+      }
+    }
+
+    // 不匹配的 resumeSessionId 必须安全起新会话：resumed=false，sessionId 仍为当前会话。
+    {
+      const connection = await connectBridge();
+      try {
+        connection.send(hello(state.token, { resumeSessionId: `${state.windowId}#other-boot` }));
+        const welcome = await connection.waitForLine(
+          (line) => line.type === "welcome", "Bridge server did not complete a fresh handshake.");
+        assert.equal(welcome.resumed, false);
+        assert.equal(welcome.sessionId, state.sessionId);
       } finally {
         connection.socket.destroy();
       }
@@ -2765,11 +2857,11 @@ exports.run = async function run() {
       let handshake = false;
       attachJsonReader(socket, (message) => {
           if (!handshake) {
-            if (message.type === "hello" && message.token === token && message.protocolVersion === 1) {
+            if (message.type === "hello" && message.token === token && message.protocolVersion === 4) {
               handshake = true;
               send(socket, {
                 type: "welcome",
-                protocolVersion: 1,
+                protocolVersion: 4,
                 coreVersion: 1,
                 instanceId,
                 kind: "editor-play",
@@ -2826,7 +2918,7 @@ exports.run = async function run() {
     const tcpPort = server.address().port;
     const writeRecord = () => writeFile(recordPath, `${JSON.stringify({
       formatVersion: 1,
-      protocolVersion: 1,
+      protocolVersion: 4,
       coreVersion: 1,
       instanceId,
       kind: "editor-play",
@@ -2887,7 +2979,7 @@ exports.run = async function run() {
         attachJsonReader(second, (message) => lines.push(message));
         send(second, {
           type: "hello",
-          protocolVersion: 1,
+          protocolVersion: 4,
           coreVersion: 1,
           token,
           clientInstanceId: "6e4d75d6-2b15-4f5e-9d8a-4c0d5f1a9b2c",
@@ -2950,11 +3042,11 @@ exports.run = async function run() {
       let handshake = false;
       attachJsonReader(socket, (message) => {
           if (!handshake) {
-            if (message.type === "hello" && message.token === token && message.protocolVersion === 1) {
+            if (message.type === "hello" && message.token === token && message.protocolVersion === 4) {
               handshake = true;
               send(socket, {
                 type: "welcome",
-                protocolVersion: 1,
+                protocolVersion: 4,
                 coreVersion: 1,
                 instanceId,
                 kind: "editor-play",
@@ -3010,7 +3102,7 @@ exports.run = async function run() {
     const tcpPort = server.address().port;
     const writeRecord = () => writeFile(recordPath, `${JSON.stringify({
       formatVersion: 1,
-      protocolVersion: 1,
+      protocolVersion: 4,
       coreVersion: 1,
       instanceId,
       kind: "editor-play",
@@ -3064,7 +3156,7 @@ exports.run = async function run() {
       attachJsonReader(observer, (message) => observerLines.push(message));
       send(observer, {
         type: "hello",
-        protocolVersion: 1,
+        protocolVersion: 4,
         coreVersion: 1,
         token,
         clientInstanceId: "6e4d75d6-2b15-4f5e-9d8a-4c0d5f1a9b2d",
@@ -3192,11 +3284,11 @@ exports.run = async function run() {
       let handshake = false;
       attachJsonReader(socket, (message) => {
           if (!handshake) {
-            if (message.type === "hello" && message.token === token && message.protocolVersion === 1) {
+            if (message.type === "hello" && message.token === token && message.protocolVersion === 4) {
               handshake = true;
               send(socket, {
                 type: "welcome",
-                protocolVersion: 1,
+                protocolVersion: 4,
                 coreVersion: 1,
                 instanceId,
                 kind: "editor-play",
@@ -3252,7 +3344,7 @@ exports.run = async function run() {
     const tcpPort = server.address().port;
     const writeRecord = () => writeFile(recordPath, `${JSON.stringify({
       formatVersion: 1,
-      protocolVersion: 1,
+      protocolVersion: 4,
       coreVersion: 1,
       instanceId,
       kind: "editor-play",

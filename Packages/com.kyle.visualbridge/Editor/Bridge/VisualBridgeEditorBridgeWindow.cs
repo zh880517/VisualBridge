@@ -157,7 +157,13 @@ namespace VisualBridge.Editor
                 var window = windows[Math.Min(selectedWindow, windows.Length - 1)];
                 VisualBridgeEditorBridgeService.Instance.Connect(window);
                 connected = VisualBridgeEditorBridgeService.Instance.IsConnected;
+                var client = VisualBridgeEditorBridgeService.Instance.Client;
                 AppendLog($"connected to {window.WindowId} (generation {window.Generation})");
+                // 指纹层不拒连：两侧 hash 都展示出来，数据面按 payloads 降级。
+                AppendLog(
+                    $"contract client='{client.ContractHash}' server='{client.ServerContractHash}' "
+                    + $"payloads=[{string.Join(",", client.ServerPayloads ?? Array.Empty<string>())}] "
+                    + $"session={client.SessionId} resumed={client.Resumed}");
             }
             catch (Exception exception)
             {

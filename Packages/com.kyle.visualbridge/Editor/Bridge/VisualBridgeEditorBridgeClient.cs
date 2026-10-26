@@ -18,17 +18,19 @@ namespace VisualBridge.Editor
 
     /// <summary>
     /// Unity 侧 Editor Bridge 客户端。一个实例持有一条到单个 VS Code 窗口的连接。
-    /// 线上格式为统一协议的 6 字节帧头（控制通道承载 JSON 消息）；命名管道端点
-    /// 已删除，只保留回环 TCP。V1 协议是严格的请求/响应模型，因此全部流 I/O 在
-    /// 调用方线程上同步执行。
+    /// 线上格式为统一协议的 6 字节帧头（控制通道承载 JSON 消息）；握手按附录 A.3：
+    /// hello 声明编辑器身份、端点、token、契约指纹与载荷，welcome 返回监听方端点、
+    /// 会话（endpointId#bootId）与协商结果。V1 请求/响应模型仍在调用方线程同步执行。
     /// </summary>
     public sealed class VisualBridgeEditorBridgeClient : IDisposable
     {
         private const int ConnectTimeoutMs = 3000;
+        private static readonly string[] RequestedPayloads = { "json", "binary" };
 
         private readonly VisualBridgeBridgeWindow window;
-        private readonly string clientInstanceId;
-        private readonly List<string> requestedCapabilities;
+        private readonly string endpointId;
+        private readonly string contractHash;
+        private readonly string resumeSessionId;
         private readonly object ioLock = new object();
         private readonly VisualBridgeFrameReader frameReader = new VisualBridgeFrameReader();
         private readonly byte[] readBuffer = new byte[8192];
@@ -36,24 +38,41 @@ namespace VisualBridge.Editor
         private Stream stream;
         private TcpClient tcpClient;
 
-        public VisualBridgeEditorBridgeClient(VisualBridgeBridgeWindow window, string clientInstanceId, IEnumerable<string> requestedCapabilities)
+        public VisualBridgeEditorBridgeClient(
+            VisualBridgeBridgeWindow window,
+            string endpointId,
+            string contractHash,
+            string resumeSessionId = null)
         {
             this.window = window ?? throw new ArgumentNullException(nameof(window));
-            this.clientInstanceId = clientInstanceId ?? throw new ArgumentNullException(nameof(clientInstanceId));
-            this.requestedCapabilities = new List<string>(requestedCapabilities ?? throw new ArgumentNullException(nameof(requestedCapabilities)));
+            this.endpointId = endpointId ?? throw new ArgumentNullException(nameof(endpointId));
+            this.contractHash = contractHash ?? string.Empty;
+            this.resumeSessionId = resumeSessionId;
         }
 
         public VisualBridgeBridgeConnectionState State { get; private set; }
 
         public VisualBridgeBridgeWindow Window => window;
 
-        public IReadOnlyList<string> ServerCapabilities { get; private set; }
+        public string EndpointId => endpointId;
 
-        public string ClientInstanceId => clientInstanceId;
+        public string ContractHash => contractHash;
+
+        public string ServerContractHash { get; private set; }
+
+        public string SessionId { get; private set; }
+
+        public bool Resumed { get; private set; }
+
+        public string ConnectType { get; private set; }
+
+        public IReadOnlyList<string> ServerPayloads { get; private set; }
+
+        public bool ServerDebugEnabled { get; private set; }
 
         /// <summary>
         /// 连接窗口的 TCP 端点，完成 hello/welcome 握手并校验服务端 generation
-        /// 与发现记录一致。
+        /// 与发现记录一致（记录因此陈旧时立即失败）。
         /// </summary>
         public VisualBridgeBridgeMessage Connect(int timeoutMs = ConnectTimeoutMs)
         {
@@ -68,7 +87,8 @@ namespace VisualBridge.Editor
                 stream = OpenTransport(timeoutMs);
                 ApplyReadTimeout(stream, timeoutMs);
 
-                var hello = VisualBridgeEditorBridgeValidator.CreateHello(clientInstanceId, window.Token, requestedCapabilities);
+                var hello = VisualBridgeEditorBridgeValidator.CreateHello(
+                    endpointId, window.Token, contractHash, RequestedPayloads, null, null, resumeSessionId);
                 Write(hello.ToLine());
 
                 var reply = ReadMessage(timeoutMs);
@@ -88,17 +108,24 @@ namespace VisualBridge.Editor
                         $"Expected a welcome message, received '{reply.Type}'.");
                 }
 
-                if (reply.ServerGeneration != window.Generation)
+                // generation 每次传输 +1：本次连接会高于发现记录里发布的值；
+                // 只有服务端 generation 落后于记录才说明记录来自旧监听方（陈旧）。
+                if (reply.Generation < window.Generation)
                 {
                     throw VisualBridgeEditorBridgeValidator.Error(
                         "bridge.staleGeneration",
-                        "$.serverGeneration",
-                        $"Server generation {reply.ServerGeneration} does not match discovery record generation {window.Generation}; the record is stale.");
+                        "$.generation",
+                        $"Server generation {reply.Generation} is older than discovery record generation {window.Generation}; the record is stale.");
                 }
 
-                ServerCapabilities = reply.Capabilities;
+                ServerContractHash = reply.ContractHash;
+                SessionId = reply.SessionId;
+                Resumed = reply.Resumed;
+                ConnectType = reply.ConnectType;
+                ServerPayloads = reply.Payloads;
+                ServerDebugEnabled = reply.DebugEnabled;
                 State = VisualBridgeBridgeConnectionState.Connected;
-                // 保留 welcome 行之后已缓冲的字节：服务端可能紧随其后发送连接级错误。
+                // 保留 welcome 帧之后已缓冲的字节：服务端可能紧随其后发送连接级错误。
                 return reply;
             }
             catch
@@ -126,15 +153,6 @@ namespace VisualBridge.Editor
             if (request.RequestId == null)
             {
                 throw VisualBridgeEditorBridgeValidator.Error("bridge.invalidMessage", "$.requestId", "Request requires a request id.");
-            }
-
-            var capability = request.Type == VisualBridgeBridgeMessageType.Open ? "open" : "reveal";
-            if (!ServerCapabilities.Contains(capability, StringComparer.Ordinal))
-            {
-                throw VisualBridgeEditorBridgeValidator.Error(
-                    "bridge.capabilityMissing",
-                    "$.type",
-                    $"Window '{window.WindowId}' does not advertise the '{capability}' capability.");
             }
 
             lock (ioLock)

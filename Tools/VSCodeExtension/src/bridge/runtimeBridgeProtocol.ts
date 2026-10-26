@@ -1,4 +1,7 @@
-export const RUNTIME_BRIDGE_PROTOCOL_VERSION = 1;
+import { BRIDGE_PROTOCOL_VERSION } from "./bridgeProtocol";
+
+// Runtime 腿在 E3/E5 收敛前仍沿用旧握手字段（coreVersion/capabilities/kind）；
+// 连接层版本与 Editor 腿共用同一个来源，不再声明第二份版本常量。
 export const RUNTIME_BRIDGE_CORE_VERSION = 1;
 export const RUNTIME_BRIDGE_DISCOVERY_FORMAT_VERSION = 1;
 export const RUNTIME_BRIDGE_DISCOVERY_DIRECTORY = "visualbridge-runtime";
@@ -748,8 +751,8 @@ function requireString(record: Record<string, unknown>, key: string, path: strin
 
 function requireProtocolVersion(record: Record<string, unknown>, path: string): number {
   const value = requireInteger(record, "protocolVersion", path);
-  if (value !== RUNTIME_BRIDGE_PROTOCOL_VERSION) {
-    throw new RuntimeBridgeProtocolError("runtime.protocolVersionMismatch", path, `Expected protocolVersion ${RUNTIME_BRIDGE_PROTOCOL_VERSION}.`);
+  if (value !== BRIDGE_PROTOCOL_VERSION) {
+    throw new RuntimeBridgeProtocolError("runtime.protocolVersionMismatch", path, `Expected protocolVersion ${BRIDGE_PROTOCOL_VERSION}.`);
   }
 
   return value;

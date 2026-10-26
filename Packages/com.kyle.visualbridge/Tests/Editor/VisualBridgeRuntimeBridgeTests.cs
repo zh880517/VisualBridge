@@ -138,7 +138,7 @@ namespace VisualBridge.Editor.Tests
                     Assert.That(welcome.InstanceId, Is.EqualTo("editor-41001"));
                     Assert.That(welcome.Kind, Is.EqualTo("editor-play"));
                     Assert.That(welcome.Generation, Is.EqualTo(3));
-                    Assert.That(welcome.ProtocolVersion, Is.EqualTo(1));
+                    Assert.That(welcome.ProtocolVersion, Is.EqualTo(4));
                     Assert.That(welcome.CoreVersion, Is.EqualTo(1));
                     Assert.That(welcome.Capabilities, Is.EquivalentTo(new[] { "snapshot", "events", "lease", "sources", "graphExecution" }));
                     Assert.That(welcome.StartedAt, Is.Not.Null.And.Not.Empty);
@@ -1181,7 +1181,7 @@ namespace VisualBridge.Editor.Tests
             string directory, string fileName, string instanceId, int pid, TimeSpan? heartbeatAge = null)
         {
             var path = Path.Combine(directory, fileName);
-            File.WriteAllText(path, "{\"formatVersion\":1,\"protocolVersion\":1,\"coreVersion\":1,\"instanceId\":\""
+            File.WriteAllText(path, "{\"formatVersion\":1,\"protocolVersion\":4,\"coreVersion\":1,\"instanceId\":\""
                 + instanceId + "\",\"kind\":\"" + (instanceId.StartsWith("player-") ? "player" : "editor-play")
                 + "\",\"capabilities\":[\"snapshot\",\"events\"],\"tcpPort\":4594,\"token\":\"" + ValidToken
                 + "\",\"pid\":" + pid + ",\"generation\":2,\"startedAt\":\"2026-08-31T12:00:00.000Z\"}");

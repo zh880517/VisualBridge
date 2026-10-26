@@ -17,6 +17,7 @@ namespace VisualBridge.Editor.Tests
     public sealed class VisualBridgeEditorBridgeTests
     {
         private static readonly string ValidToken = new string('a', 48);
+        private static readonly string SessionId = "6f9619ff-8b86-4d01-b42d-00cf4fc964ff#boot-1";
 
         [Test]
         public void BridgeSchemaAndValidatorShareParityFixture()
@@ -70,7 +71,7 @@ namespace VisualBridge.Editor.Tests
         public void SerializedRequestsSurviveStrictValidation()
         {
             var hello = VisualBridgeEditorBridgeValidator.CreateHello(
-                "1b3121ab-2646-4e0f-a789-e970d4fbca8f", ValidToken, new[] { "open", "reveal" });
+                "editor-1234", ValidToken, "efbd32c726d801eb", new[] { "json", "binary" });
             Assert.DoesNotThrow(() => VisualBridgeEditorBridgeValidator.ValidateMessage(hello.ToJson()));
 
             var open = VisualBridgeEditorBridgeValidator.CreateOpen("req-1", "Config/Game.gamesettings");
@@ -88,11 +89,23 @@ namespace VisualBridge.Editor.Tests
         public void ClientConnectsHandshakesAndSendsOpenRequest()
         {
             using (var server = BridgeTestServer.Start(Welcome(generation: 7)))
-            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port, generation: 7), "1b3121ab-2646-4e0f-a789-e970d4fbca8f", new[] { "open", "reveal" }))
+            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port, generation: 7), "editor-1234", ""))
             {
                 var welcome = client.Connect();
-                Assert.That(welcome.ServerGeneration, Is.EqualTo(7));
+                Assert.That(welcome.Generation, Is.EqualTo(7));
+                Assert.That(welcome.SessionId, Is.EqualTo(SessionId));
+                Assert.That(welcome.Resumed, Is.False);
                 Assert.That(client.State, Is.EqualTo(VisualBridgeBridgeConnectionState.Connected));
+
+                var hello = (JObject)JToken.Parse(server.ReceivedHello);
+                Assert.That(hello["type"].Value<string>(), Is.EqualTo("hello"));
+                Assert.That(hello["protocolVersion"].Value<int>(), Is.EqualTo(4));
+                Assert.That(hello["role"].Value<string>(), Is.EqualTo("editor"));
+                Assert.That(hello["clientEndpointId"].Value<string>(), Is.EqualTo("editor-1234"));
+                Assert.That(hello["token"].Value<string>(), Is.EqualTo(ValidToken));
+                Assert.That(hello["contractHash"].Value<string>(), Is.EqualTo(""));
+                Assert.That(hello["payloads"].ToObject<string[]>(), Is.EquivalentTo(new[] { "json", "binary" }));
+                Assert.That(hello.Property("resumeSessionId"), Is.Null);
 
                 server.QueueResponse("{\"type\":\"response\",\"requestId\":\"req-open-1\",\"status\":\"ok\"}");
                 var response = client.SendRequest(VisualBridgeEditorBridgeValidator.CreateOpen("req-open-1", "Config/Game.gamesettings"), 5000);
@@ -108,13 +121,31 @@ namespace VisualBridge.Editor.Tests
         }
 
         [Test]
+        public void ClientSendsResumeSessionAndAcceptsResumedWelcome()
+        {
+            using (var server = BridgeTestServer.Start(Welcome(generation: 1, resumed: true)))
+            using (var client = new VisualBridgeEditorBridgeClient(
+                TestWindow(server.Port), "editor-1234", "efbd32c726d801eb", SessionId))
+            {
+                var welcome = client.Connect();
+                Assert.That(welcome.Resumed, Is.True);
+                Assert.That(client.Resumed, Is.True);
+                Assert.That(client.SessionId, Is.EqualTo(SessionId));
+
+                var hello = (JObject)JToken.Parse(server.ReceivedHello);
+                Assert.That(hello["contractHash"].Value<string>(), Is.EqualTo("efbd32c726d801eb"));
+                Assert.That(hello["resumeSessionId"].Value<string>(), Is.EqualTo(SessionId));
+            }
+        }
+
+        [Test]
         public void ClientRejectsInvalidTokenErrorFromServer()
         {
-            using (var server = BridgeTestServer.Start("{\"type\":\"error\",\"code\":\"bridge.invalidToken\",\"detail\":\"rejected\"}"))
-            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "1b3121ab-2646-4e0f-a789-e970d4fbca8f", new[] { "open", "reveal" }))
+            using (var server = BridgeTestServer.Start("{\"type\":\"error\",\"code\":\"runtime.invalidToken\",\"detail\":\"rejected\"}"))
+            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "editor-1234", ""))
             {
                 var exception = Assert.Throws<VisualBridgeIntegrationException>(() => client.Connect());
-                Assert.That(exception.Code, Is.EqualTo("bridge.invalidToken"));
+                Assert.That(exception.Code, Is.EqualTo("runtime.invalidToken"));
                 Assert.That(client.State, Is.EqualTo(VisualBridgeBridgeConnectionState.Disconnected));
             }
         }
@@ -122,19 +153,19 @@ namespace VisualBridge.Editor.Tests
         [Test]
         public void ClientRejectsProtocolVersionMismatchErrorFromServer()
         {
-            using (var server = BridgeTestServer.Start("{\"type\":\"error\",\"code\":\"bridge.protocolVersionMismatch\"}"))
-            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "1b3121ab-2646-4e0f-a789-e970d4fbca8f", new[] { "open", "reveal" }))
+            using (var server = BridgeTestServer.Start("{\"type\":\"error\",\"code\":\"runtime.unsupportedProtocolVersion\"}"))
+            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "editor-1234", ""))
             {
                 var exception = Assert.Throws<VisualBridgeIntegrationException>(() => client.Connect());
-                Assert.That(exception.Code, Is.EqualTo("bridge.protocolVersionMismatch"));
+                Assert.That(exception.Code, Is.EqualTo("runtime.unsupportedProtocolVersion"));
             }
         }
 
         [Test]
         public void ClientRejectsWelcomeWithStaleServerGeneration()
         {
-            using (var server = BridgeTestServer.Start(Welcome(generation: 2)))
-            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port, generation: 1), "1b3121ab-2646-4e0f-a789-e970d4fbca8f", new[] { "open", "reveal" }))
+            using (var server = BridgeTestServer.Start(Welcome(generation: 1)))
+            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port, generation: 2), "editor-1234", ""))
             {
                 var exception = Assert.Throws<VisualBridgeIntegrationException>(() => client.Connect());
                 Assert.That(exception.Code, Is.EqualTo("bridge.staleGeneration"));
@@ -142,15 +173,15 @@ namespace VisualBridge.Editor.Tests
         }
 
         [Test]
-        public void ClientRejectsRequestWithoutAdvertisedCapability()
+        public void ClientKeepsConnectionWhenServerContractHashDiffers()
         {
-            using (var server = BridgeTestServer.Start(Welcome(generation: 1, capabilities: "[\"open\"]")))
-            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port, generation: 1), "1b3121ab-2646-4e0f-a789-e970d4fbca8f", new[] { "open", "reveal" }))
+            using (var server = BridgeTestServer.Start(Welcome(generation: 1, contractHash: "aaaaaaaaaaaaaaaa", payloads: "[\"json\"]")))
+            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port, generation: 1), "editor-1234", "efbd32c726d801eb"))
             {
                 Assert.DoesNotThrow(() => client.Connect());
-                var exception = Assert.Throws<VisualBridgeIntegrationException>(() =>
-                    client.SendRequest(VisualBridgeEditorBridgeValidator.CreateReveal("req-cap-1", "game.item:x", false), 5000));
-                Assert.That(exception.Code, Is.EqualTo("bridge.capabilityMissing"));
+                Assert.That(client.ServerContractHash, Is.EqualTo("aaaaaaaaaaaaaaaa"));
+                Assert.That(client.ServerPayloads, Is.EquivalentTo(new[] { "json" }));
+                Assert.That(client.State, Is.EqualTo(VisualBridgeBridgeConnectionState.Connected));
             }
         }
 
@@ -158,7 +189,7 @@ namespace VisualBridge.Editor.Tests
         public void ClientFailsPendingRequestWhenServerSendsInvalidJson()
         {
             using (var server = BridgeTestServer.Start(Welcome(generation: 1), thenSend: "{not json"))
-            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "1b3121ab-2646-4e0f-a789-e970d4fbca8f", new[] { "open", "reveal" }))
+            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "editor-1234", ""))
             {
                 Assert.DoesNotThrow(() => client.Connect());
                 var exception = Assert.Throws<VisualBridgeIntegrationException>(() =>
@@ -171,7 +202,7 @@ namespace VisualBridge.Editor.Tests
         public void ClientRejectsResponseToUnknownRequest()
         {
             using (var server = BridgeTestServer.Start(Welcome(generation: 1)))
-            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "1b3121ab-2646-4e0f-a789-e970d4fbca8f", new[] { "open", "reveal" }))
+            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "editor-1234", ""))
             {
                 Assert.DoesNotThrow(() => client.Connect());
                 server.QueueResponse("{\"type\":\"response\",\"requestId\":\"req-not-mine\",\"status\":\"ok\"}");
@@ -185,7 +216,7 @@ namespace VisualBridge.Editor.Tests
         public void ClientReportsServerCloseAsDisconnected()
         {
             using (var server = BridgeTestServer.Start(Welcome(generation: 1)))
-            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "1b3121ab-2646-4e0f-a789-e970d4fbca8f", new[] { "open", "reveal" }))
+            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "editor-1234", ""))
             {
                 Assert.DoesNotThrow(() => client.Connect());
                 server.CloseConnection();
@@ -221,6 +252,27 @@ namespace VisualBridge.Editor.Tests
                 var deadException = Assert.Throws<VisualBridgeIntegrationException>(
                     () => VisualBridgeEditorBridgeDiscovery.LoadRecord(Path.Combine(directory, "dead.json")));
                 Assert.That(deadException.Code, Is.EqualTo("bridge.staleRecord"));
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+
+        [Test]
+        public void ServiceReportsNoEndpointWhenEveryDiscoveryRecordIsStale()
+        {
+            var directory = CreateDiscoveryDirectory();
+            try
+            {
+                WriteRecord(directory, "stale.json", pid: Process.GetCurrentProcess().Id, heartbeatAge: TimeSpan.FromMinutes(5));
+                var exception = Assert.Throws<VisualBridgeIntegrationException>(() =>
+                    VisualBridgeEditorBridgeService.Instance.OpenDocumentWithRetry(
+                        "Config/Game.gamesettings",
+                        VisualBridgeEditorBridgeService.UnityProjectRoot(),
+                        totalTimeoutMs: 50,
+                        discoveryDirectory: directory));
+                Assert.That(exception.Code, Is.EqualTo("runtime.noEndpoint"));
             }
             finally
             {
@@ -298,23 +350,27 @@ namespace VisualBridge.Editor.Tests
             return new VisualBridgeBridgeWindow
             {
                 WindowId = "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
-                ProtocolVersion = 1,
-                Capabilities = new[] { "open", "reveal" },
+                ProtocolVersion = 4,
+                Role = "vscode",
                 ProjectRoots = new[] { "D:/Authoring" },
-                PipePath = @"\\.\pipe\visualbridge-unused",
                 TcpPort = tcpPort,
                 Token = ValidToken,
                 Pid = Process.GetCurrentProcess().Id,
                 Generation = generation,
-                StartedAt = DateTime.UtcNow,
                 RecordPath = null,
             };
         }
 
-        private static string Welcome(int generation = 1, string capabilities = "[\"open\",\"reveal\"]")
+        private static string Welcome(
+            int generation = 1,
+            string contractHash = "",
+            string payloads = "[\"json\",\"binary\"]",
+            bool resumed = false)
         {
-            return "{\"type\":\"welcome\",\"protocolVersion\":1,\"windowId\":\"6f9619ff-8b86-4d01-b42d-00cf4fc964ff\",\"serverGeneration\":"
-                + generation + ",\"capabilities\":" + capabilities + "}";
+            return "{\"type\":\"welcome\",\"protocolVersion\":4,\"endpointId\":\"6f9619ff-8b86-4d01-b42d-00cf4fc964ff\","
+                + "\"sessionId\":\"" + SessionId + "\",\"resumed\":" + (resumed ? "true" : "false") + ",\"connectType\":\"editor\","
+                + "\"generation\":" + generation + ",\"bootId\":\"boot-1\",\"contractHash\":\"" + contractHash + "\","
+                + "\"payloads\":" + payloads + ",\"debugEnabled\":true,\"startedAt\":\"2026-10-26T12:00:00.000Z\"}";
         }
 
         private static string CreateDiscoveryDirectory()
@@ -327,10 +383,9 @@ namespace VisualBridge.Editor.Tests
         private static void WriteRecord(string directory, string fileName, int pid, TimeSpan? heartbeatAge = null, string projectRoot = "D:/Authoring", string windowId = "1b3121ab-2646-4e0f-a789-e970d4fbca8f")
         {
             var path = Path.Combine(directory, fileName);
-            File.WriteAllText(path, "{\"formatVersion\":1,\"protocolVersion\":1,\"windowId\":\"" + windowId
-                + "\",\"capabilities\":[\"open\",\"reveal\"],\"projectRoots\":[\"" + projectRoot.Replace('\\', '/')
-                + "\"],\"pipePath\":\"\\\\\\\\.\\\\pipe\\\\visualbridge-test\",\"tcpPort\":8226,\"token\":\"" + ValidToken
-                + "\",\"pid\":" + pid + ",\"generation\":1,\"startedAt\":\"2026-08-30T12:41:06.879Z\"}");
+            File.WriteAllText(path, "{\"formatVersion\":2,\"protocolVersion\":4,\"role\":\"vscode\",\"tcpPort\":8226,\"token\":\""
+                + ValidToken + "\",\"pid\":" + pid + ",\"generation\":1,\"windowId\":\"" + windowId
+                + "\",\"projectRoots\":[\"" + projectRoot.Replace('\\', '/') + "\"]}");
             if (heartbeatAge.HasValue)
             {
                 File.SetLastWriteTimeUtc(path, DateTime.UtcNow - heartbeatAge.Value);
@@ -367,6 +422,7 @@ namespace VisualBridge.Editor.Tests
                 new VisualBridge.Runtime.VisualBridgeFrameReader();
             private TcpClient client;
             private NetworkStream stream;
+            private string helloLine;
 
             private BridgeTestServer(string replyToHello, string thenSend)
             {
@@ -384,6 +440,9 @@ namespace VisualBridge.Editor.Tests
             }
 
             public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
+
+            /// <summary>握手 hello 的原始 JSON（在应答 welcome 之前记录）。</summary>
+            public string ReceivedHello => helloLine;
 
             public string[] GetReceivedRequests()
             {
@@ -416,7 +475,7 @@ namespace VisualBridge.Editor.Tests
                     client = listener.AcceptTcpClient();
                     stream = client.GetStream();
                     // 先消费 hello 握手再应答 welcome，与服务端协议行为一致。
-                    Receive();
+                    helloLine = Receive();
                     Send(replyToHello);
                     if (thenSend != null)
                     {

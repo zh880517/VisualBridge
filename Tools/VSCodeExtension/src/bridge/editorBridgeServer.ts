@@ -6,20 +6,28 @@ import * as vscode from "vscode";
 import type { ProjectRegistry } from "../project/projectRegistry";
 import type { WorkspaceDocumentIndex } from "../document/workspaceDocumentIndex";
 import {
-  BRIDGE_CAPABILITIES,
+  BRIDGE_DISCOVERY_DIRECTORY_NAME,
   BRIDGE_DISCOVERY_FORMAT_VERSION,
   BRIDGE_PROTOCOL_VERSION,
   BridgeProtocolError,
+  evaluateHello,
   isBridgeErrorCode,
+  negotiatePayloads,
   parseBridgeMessage,
-  type BridgeErrorMessage,
+  shouldDegradeToJson,
+  type BridgeDiscoveryRecord,
+  type BridgeErrorCode,
   type BridgeMessage,
   type BridgeWelcomeMessage,
 } from "./bridgeProtocol";
+import {
+  assertDiscoveryRecordRoundTrips,
+  touchDiscoveryRecord,
+  writeDiscoveryRecordAtomically,
+} from "./bridgeDiscovery";
 import { BridgeSocket } from "./bridgeSocket";
 import type { BridgePayloadKind } from "./framing";
 
-export const BRIDGE_DISCOVERY_DIRECTORY_NAME = "visualbridge-bridge";
 export const OPEN_DOCUMENT_COMMAND = "visualbridge.openDocument";
 export const REVEAL_REFERENCE_COMMAND = "visualbridge.revealReference";
 
@@ -27,7 +35,10 @@ export interface EditorBridgeServerState {
   readonly discoveryDirectory: string;
   readonly recordPath: string;
   readonly windowId: string;
-  readonly pipePath: string;
+  readonly role: "vscode";
+  readonly sessionId: string;
+  readonly bootId: string;
+  readonly contractHash: string;
   readonly tcpPort: number;
   readonly token: string;
   readonly generation: number;
@@ -37,17 +48,18 @@ export interface EditorBridgeServerState {
 interface BridgeConnection {
   readonly bridge: BridgeSocket;
   helloCompleted: boolean;
-  authenticated: boolean;
 }
 
 /**
- * Local Editor Bridge server. Listens on a loopback TCP port, publishes a
- * per-window discovery record with a heartbeat, authenticates Unity Editor
- * clients with a per-window token, and answers open/reveal requests by routing
- * them through the Project Registry and the document index.
+ * 本地 Editor Bridge 监听方（VS Code Extension Host）。
  *
- * 线上格式为统一协议的 6 字节帧头（通道 0 承载本通道的 JSON 消息）；
- * 命名管道端点已删除，发现记录中的 `pipePath` 字段仅为过渡期兼容保留。
+ * 连接层为统一协议的 6 字节帧（控制通道承载 JSON）。本类负责：
+ * - 发布发现记录 v2（原子写 + mtime 心跳），供 Unity Editor 拨号；
+ * - 编辑器模式的 hello/welcome 握手（方向层、连接层、token、一对一、载荷协商）；
+ * - open/reveal 请求的路由与应答。
+ *
+ * 指纹不一致时保留连接，只把 welcome.payloads 收敛为 ["json"]，并把两侧 hash
+ * 写进日志与 UI 状态（E2 的 VS Code 侧尚无契约注册表，服务端指纹暂时为空串）。
  */
 export class EditorBridgeServer implements vscode.Disposable {
   private readonly projects: ProjectRegistry;
@@ -61,9 +73,13 @@ export class EditorBridgeServer implements vscode.Disposable {
   private recordPath: string | undefined;
   private windowId: string | undefined;
   private token: string | undefined;
-  private pipePath: string | undefined;
   private tcpPort: number | undefined;
+  private bootId = "";
+  private sessionId = "";
   private generation = 0;
+  private readonly startedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  // F1 接入契约注册表前，VS Code 侧没有可发布的调试契约指纹。
+  private readonly contractHash = "";
 
   public constructor(
     projects: ProjectRegistry,
@@ -76,7 +92,7 @@ export class EditorBridgeServer implements vscode.Disposable {
   }
 
   public get state(): EditorBridgeServerState | undefined {
-    if (this.windowId === undefined || this.token === undefined || this.pipePath === undefined || this.tcpPort === undefined || this.recordPath === undefined) {
+    if (this.windowId === undefined || this.token === undefined || this.tcpPort === undefined || this.recordPath === undefined) {
       return undefined;
     }
 
@@ -84,7 +100,10 @@ export class EditorBridgeServer implements vscode.Disposable {
       discoveryDirectory: nodePath.dirname(this.recordPath),
       recordPath: this.recordPath,
       windowId: this.windowId,
-      pipePath: this.pipePath,
+      role: "vscode",
+      sessionId: this.sessionId,
+      bootId: this.bootId,
+      contractHash: this.contractHash,
       tcpPort: this.tcpPort,
       token: this.token,
       generation: this.generation,
@@ -94,9 +113,10 @@ export class EditorBridgeServer implements vscode.Disposable {
 
   public async start(): Promise<void> {
     this.windowId = crypto.randomUUID();
+    this.bootId = crypto.randomBytes(16).toString("hex");
+    this.sessionId = `${this.windowId}#${this.bootId}`;
     this.token = crypto.randomBytes(24).toString("hex");
     this.generation += 1;
-    this.pipePath = `\\\\.\\pipe\\visualbridge-bridge-${this.windowId}`;
 
     const discoveryDirectory = nodePath.join(
       process.env.VISUALBRIDGE_TEST_TEMP_DIR !== undefined && process.env.VISUALBRIDGE_TEST_TEMP_DIR.length > 0
@@ -129,7 +149,7 @@ export class EditorBridgeServer implements vscode.Disposable {
     this.recordPath = recordPath;
     await this.writeDiscoveryRecord();
     this.heartbeat = setInterval(() => {
-      void this.touchDiscoveryRecord();
+      void this.touchHeartbeat();
     }, 1000);
     this.disposables.push(
       this.projects.onDidChange(() => {
@@ -137,7 +157,7 @@ export class EditorBridgeServer implements vscode.Disposable {
       }),
     );
     this.output.appendLine(
-      `[bridge] listening tcp=127.0.0.1:${this.tcpPort} record=${this.recordPath}`,
+      `[bridge] listening tcp=127.0.0.1:${this.tcpPort} record=${this.recordPath} session=${this.sessionId}`,
     );
   }
 
@@ -155,9 +175,16 @@ export class EditorBridgeServer implements vscode.Disposable {
     this.tcpServer?.close();
     this.tcpServer = undefined;
     if (this.recordPath !== undefined) {
-      void vscode.workspace.fs.delete(vscode.Uri.file(this.recordPath))
-        .then(() => undefined, () => undefined);
+      const recordPath = this.recordPath;
       this.recordPath = undefined;
+      void (async () => {
+        try {
+          const { promises: fs } = await import("node:fs");
+          await fs.unlink(recordPath);
+        } catch {
+          // 记录可能已被外部删除。
+        }
+      })();
     }
 
     for (const disposable of this.disposables.splice(0)) {
@@ -166,6 +193,9 @@ export class EditorBridgeServer implements vscode.Disposable {
   }
 
   private accept(socket: net.Socket): void {
+    // 每次传输建立 generation +1（附录 A.3）；sessionId 不受影响。
+    this.generation += 1;
+    void this.writeDiscoveryRecord();
     let connection: BridgeConnection | undefined;
     const bridge = new BridgeSocket(socket, {
       onControlPayload: (payload) => {
@@ -174,7 +204,7 @@ export class EditorBridgeServer implements vscode.Disposable {
         }
       },
       onDebugFrame: (payloadKind: BridgePayloadKind, payload: Buffer) => {
-        // 编辑器通道当前只承载控制消息；E1 不消费调试载荷，收到即记录后丢弃。
+        // 编辑器通道当前的业务消息全部走控制通道；调试载荷由 E4 接入。
         this.output.appendLine(`[bridge] ignoring a ${payload.length}-byte debug payload (kind ${payloadKind}) on the editor connection.`);
       },
       onClosed: (error) => {
@@ -188,7 +218,7 @@ export class EditorBridgeServer implements vscode.Disposable {
       },
     }, { log: (message) => this.output.appendLine(message) });
 
-    connection = { bridge, helloCompleted: false, authenticated: false };
+    connection = { bridge, helloCompleted: false };
     this.connections.add(connection);
   }
 
@@ -206,7 +236,8 @@ export class EditorBridgeServer implements vscode.Disposable {
       message = parseBridgeMessage(value);
     } catch (errorValue) {
       if (errorValue instanceof BridgeProtocolError) {
-        this.sendErrorAndClose(connection, isBridgeErrorCode(errorValue.code) ? errorValue.code : "bridge.invalidMessage", errorValue.message);
+        const code = isBridgeErrorCode(errorValue.code) ? errorValue.code : "bridge.invalidMessage";
+        this.sendErrorAndClose(connection, code, errorValue.message);
         return;
       }
 
@@ -232,26 +263,45 @@ export class EditorBridgeServer implements vscode.Disposable {
       return;
     }
 
-    if (message.token !== this.token) {
-      this.sendErrorAndClose(connection, "bridge.invalidToken", "Authentication token rejected.");
+    const rejection = evaluateHello(message, {
+      role: "vscode",
+      token: this.token!,
+      hasActiveConnection: this.hasActiveConnection(connection),
+      supportsBinary: true,
+    });
+    if (rejection !== undefined) {
+      this.sendErrorAndClose(connection, rejection.code, rejection.detail);
       return;
     }
 
-    if (message.protocolVersion !== BRIDGE_PROTOCOL_VERSION) {
-      this.sendErrorAndClose(connection, "bridge.protocolVersionMismatch", `Server speaks protocol version ${BRIDGE_PROTOCOL_VERSION}.`);
-      return;
+    // 指纹层：不一致不拒连，只把数据面降级为 JSON（附录 A.3）。
+    const degradeToJson = shouldDegradeToJson(message.contractHash, this.contractHash);
+    const payloads = negotiatePayloads(message.payloads, !degradeToJson) ?? ["json"];
+    if (degradeToJson) {
+      this.output.appendLine(
+        `[bridge] contract hash mismatch client='${message.contractHash}' server='${this.contractHash}'; data plane degrades to JSON.`,
+      );
     }
 
     const welcome: BridgeWelcomeMessage = {
       type: "welcome",
       protocolVersion: BRIDGE_PROTOCOL_VERSION,
-      windowId: this.windowId!,
-      serverGeneration: this.generation,
-      capabilities: [...BRIDGE_CAPABILITIES],
+      endpointId: this.windowId!,
+      sessionId: this.sessionId,
+      resumed: message.resumeSessionId !== undefined && message.resumeSessionId === this.sessionId,
+      connectType: "editor",
+      generation: this.generation,
+      bootId: this.bootId,
+      contractHash: this.contractHash,
+      payloads,
+      debugEnabled: true,
+      startedAt: this.startedAt,
     };
     connection.helloCompleted = true;
-    connection.authenticated = true;
     connection.bridge.sendControlJson(welcome);
+    this.output.appendLine(
+      `[bridge] handshake complete endpoint='${message.clientEndpointId}' session=${welcome.sessionId} resumed=${welcome.resumed} payloads=[${payloads.join(",")}]`,
+    );
   }
 
   private async handleRequest(connection: BridgeConnection, message: BridgeOpenRequestLike): Promise<void> {
@@ -360,7 +410,18 @@ export class EditorBridgeServer implements vscode.Disposable {
     return locations[0];
   }
 
-  private sendErrorAndClose(connection: BridgeConnection, code: BridgeErrorMessage["code"], detail: string): void {
+  /** 一对一约束：同端点上除自己以外已有完成握手的连接时拒绝新连接。 */
+  private hasActiveConnection(current: BridgeConnection): boolean {
+    for (const connection of this.connections) {
+      if (connection !== current && connection.helloCompleted) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private sendErrorAndClose(connection: BridgeConnection, code: BridgeErrorCode, detail: string): void {
     this.output.appendLine(`[bridge] connection error ${code}: ${detail}`);
     connection.bridge.sendControlJson({ type: "error", code, detail });
     // 先让已入队的错误帧写完，再断开发送方向。
@@ -373,43 +434,58 @@ export class EditorBridgeServer implements vscode.Disposable {
       .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
   }
 
-  private async writeDiscoveryRecord(): Promise<void> {
-    if (this.recordPath === undefined || this.windowId === undefined || this.token === undefined || this.pipePath === undefined || this.tcpPort === undefined) {
-      return;
+  private buildDiscoveryRecord(): BridgeDiscoveryRecord | undefined {
+    if (this.windowId === undefined || this.token === undefined || this.tcpPort === undefined) {
+      return undefined;
     }
 
-    const record = {
+    const projectRoots = this.currentProjectRoots();
+    if (projectRoots.length === 0) {
+      // 记录格式要求至少一个项目根；工程尚未加载时先不发布，等 onDidChange 重试。
+      return undefined;
+    }
+
+    return {
       formatVersion: BRIDGE_DISCOVERY_FORMAT_VERSION,
       protocolVersion: BRIDGE_PROTOCOL_VERSION,
-      windowId: this.windowId,
-      capabilities: [...BRIDGE_CAPABILITIES],
-      projectRoots: this.currentProjectRoots(),
-      pipePath: this.pipePath,
+      role: "vscode",
       tcpPort: this.tcpPort,
       token: this.token,
       pid: process.pid,
       generation: this.generation,
-      startedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+      windowId: this.windowId,
+      projectRoots,
     };
+  }
+
+  private async writeDiscoveryRecord(): Promise<void> {
+    if (this.recordPath === undefined) {
+      return;
+    }
+
+    const record = this.buildDiscoveryRecord();
+    if (record === undefined) {
+      return;
+    }
+
     try {
-      await vscode.workspace.fs.createDirectory(vscode.Uri.file(nodePath.dirname(this.recordPath)));
-      await vscode.workspace.fs.writeFile(vscode.Uri.file(this.recordPath), Buffer.from(`${JSON.stringify(record)}\n`, "utf8"));
+      assertDiscoveryRecordRoundTrips(record);
+      await writeDiscoveryRecordAtomically(this.recordPath, record);
     } catch (errorValue) {
       this.output.appendLine(`[bridge] failed to publish discovery record: ${String(errorValue)}`);
     }
   }
 
-  private async touchDiscoveryRecord(): Promise<void> {
+  private async touchHeartbeat(): Promise<void> {
     if (this.recordPath === undefined) {
       return;
     }
 
     try {
-      const uri = vscode.Uri.file(this.recordPath);
-      const current = await vscode.workspace.fs.readFile(uri);
-      await vscode.workspace.fs.writeFile(uri, current);
+      await touchDiscoveryRecord(this.recordPath);
     } catch {
-      // 记录被外部删除时忽略，下次项目变更会重写。
+      // 记录被外部删除时按项目状态重写；没有项目根时保持缺失（客户端报 noEndpoint）。
+      await this.writeDiscoveryRecord();
     }
   }
 }

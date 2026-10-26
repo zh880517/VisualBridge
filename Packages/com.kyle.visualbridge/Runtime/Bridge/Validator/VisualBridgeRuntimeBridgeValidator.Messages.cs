@@ -9,8 +9,8 @@ namespace VisualBridge.Runtime
         private static VisualBridgeRuntimeBridgeMessage ValidateHello(JObject value)
         {
             RequireOnlyKeys(value, "$", "type", "protocolVersion", "coreVersion", "token", "clientInstanceId", "capabilities");
-            var protocolVersion = RequireVersion(value, "protocolVersion", "$.protocolVersion");
-            var coreVersion = RequireVersion(value, "coreVersion", "$.coreVersion");
+            var protocolVersion = RequireVersion(value, "protocolVersion", "$.protocolVersion", ProtocolVersion);
+            var coreVersion = RequireVersion(value, "coreVersion", "$.coreVersion", CoreVersion);
             var token = RequireString(value, "token", "$.token");
             if (!TokenPattern.IsMatch(token))
             {
@@ -37,8 +37,8 @@ namespace VisualBridge.Runtime
         private static VisualBridgeRuntimeBridgeMessage ValidateWelcome(JObject value)
         {
             RequireOnlyKeys(value, "$", "type", "protocolVersion", "coreVersion", "instanceId", "kind", "generation", "capabilities", "startedAt");
-            var protocolVersion = RequireVersion(value, "protocolVersion", "$.protocolVersion");
-            var coreVersion = RequireVersion(value, "coreVersion", "$.coreVersion");
+            var protocolVersion = RequireVersion(value, "protocolVersion", "$.protocolVersion", ProtocolVersion);
+            var coreVersion = RequireVersion(value, "coreVersion", "$.coreVersion", CoreVersion);
             var instanceId = RequireString(value, "instanceId", "$.instanceId");
             if (!InstanceIdPattern.IsMatch(instanceId))
             {

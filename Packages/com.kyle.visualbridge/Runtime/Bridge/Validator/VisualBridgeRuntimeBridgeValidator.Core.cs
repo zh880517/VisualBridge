@@ -15,7 +15,9 @@ namespace VisualBridge.Runtime
     /// </summary>
     public static partial class VisualBridgeRuntimeBridgeValidator
     {
-        public const int ProtocolVersion = 1;
+        // 连接层版本与 Editor 腿共用 4；Runtime 腿的旧握手字段（coreVersion 等）
+        // 在 E3/E5 收敛前仍保留，但不再声明第二份连接层版本。
+        public const int ProtocolVersion = 4;
         public const int CoreVersion = 1;
         public const int DiscoveryFormatVersion = 1;
 
@@ -373,7 +375,7 @@ namespace VisualBridge.Runtime
             }
         }
 
-        private static int RequireVersion(JObject value, string property, string path)
+        private static int RequireVersion(JObject value, string property, string path, int expected)
         {
             var token = value[property];
             if (token == null)
@@ -387,10 +389,11 @@ namespace VisualBridge.Runtime
             }
 
             var version = token.Value<int>();
-            if (version != ProtocolVersion)
+            if (version != expected)
             {
-                // protocolVersion 与 coreVersion 都是版本协商声明，不匹配共用同一错误码。
-                throw Error("runtime.protocolVersionMismatch", path, $"Expected {property} {ProtocolVersion}.");
+                // protocolVersion 与 coreVersion 都是版本协商声明，不匹配共用同一错误码；
+                // 两者期望值不同（连接层 4 / 契约核心 1），不能共用同一个常量。
+                throw Error("runtime.protocolVersionMismatch", path, $"Expected {property} {expected}.");
             }
 
             return version;
