@@ -55,14 +55,13 @@ namespace VisualBridge.Runtime
         private sealed class Connection
         {
             public TcpClient Client;
-            public NetworkStream Stream;
-            public readonly object WriteGate = new object();
+            public VisualBridgeBridgeSocket Bridge;
+            public readonly ManualResetEventSlim Closed = new ManualResetEventSlim(false);
+            public bool HelloCompleted;
             public bool WantsEvents;
             public string ClientInstanceId;
             /// <summary>当前订阅的执行实例 ID；null 表示未订阅（单实例跟踪）。</summary>
             public string SubscribedExecutionId;
-            public readonly VisualBridgeUtf8LineReader LineReader = new VisualBridgeUtf8LineReader();
-            public readonly byte[] ReadBuffer = new byte[8192];
         }
 
         /// <summary>
@@ -238,71 +237,37 @@ namespace VisualBridge.Runtime
 
         private void HandleClient(TcpClient client)
         {
-            var connection = new Connection { Client = client, Stream = client.GetStream() };
+            var connection = new Connection { Client = client };
             try
             {
+                connection.Bridge = new VisualBridgeBridgeSocket(
+                    client.GetStream(),
+                    payload => HandleControlFrame(connection, payload),
+                    (payloadKind, payload) =>
+                    {
+                        // E1 只搭传输底座：Runtime 通道当前全部业务消息走控制通道。
+                        log?.Invoke("[runtime-bridge] ignored a " + payload.Length + "-byte debug payload (kind " + payloadKind + ").");
+                    },
+                    error =>
+                    {
+                        if (error != null)
+                        {
+                            log?.Invoke("[runtime-bridge] connection closed: " + error.Message);
+                        }
+
+                        connection.Closed.Set();
+                    },
+                    null,
+                    log);
+                // 先发布 connection.Bridge 再启动读写线程，保证首帧回调看到完整连接状态。
+                connection.Bridge.Start();
                 lock (connectionsGate)
                 {
                     connections.Add(connection);
                 }
 
-                // 首条消息必须 hello：非法 JSON/残缺消息/版本不符/未知类型分别按冻结错误码回发后断开。
-                string firstLine;
-                try
-                {
-                    firstLine = ReadLine(connection);
-                }
-                catch (VisualBridgeRuntimeBridgeException)
-                {
-                    return;
-                }
-
-                if (firstLine == null)
-                {
-                    return;
-                }
-
-                JObject helloObject;
-                try
-                {
-                    helloObject = VisualBridgeRuntimeBridgeValidator.ParseObject(firstLine, "runtime.invalidJson");
-                }
-                catch (VisualBridgeRuntimeBridgeException exception)
-                {
-                    SendError(connection, "runtime.invalidJson", exception.Message);
-                    return;
-                }
-
-                VisualBridgeRuntimeBridgeMessage hello;
-                try
-                {
-                    hello = VisualBridgeRuntimeBridgeValidator.ValidateMessage(helloObject);
-                }
-                catch (VisualBridgeRuntimeBridgeException exception)
-                {
-                    SendError(connection, VisualBridgeRuntimeBridgeValidator.MapWireCode(exception.Code), exception.Message);
-                    return;
-                }
-
-                if (hello.Type != VisualBridgeRuntimeBridgeMessageType.Hello)
-                {
-                    SendError(connection, "runtime.unknownMessageType", "First message must be hello.");
-                    return;
-                }
-
-                if (!string.Equals(hello.Token, token, StringComparison.Ordinal))
-                {
-                    SendError(connection, "runtime.invalidToken", "Token does not match the discovery record.");
-                    return;
-                }
-
-                connection.WantsEvents = hello.SupportsCapability("events");
-                connection.ClientInstanceId = hello.ClientInstanceId;
-                var welcome = VisualBridgeRuntimeBridgeValidator.CreateWelcome(
-                    instanceId, kind, generation, AdvertisedCapabilities, startedAtText);
-                WriteLine(connection, welcome.ToLine());
-
-                RequestLoop(connection);
+                // 帧读取在 BridgeSocket 的读线程上回调；本线程只负责连接生命周期。
+                connection.Closed.Wait();
             }
             catch (Exception exception) when (exception is IOException || exception is ObjectDisposedException || exception is SocketException)
             {
@@ -318,8 +283,114 @@ namespace VisualBridge.Runtime
                 ReleaseLeaseOnDisconnect(connection);
                 UpdateExecutionSubscriptionState();
                 CloseConnection(connection);
+                connection.Bridge?.Dispose();
+                connection.Closed.Dispose();
             }
         }
+
+        /// <summary>
+        /// 控制通道的逐帧分发：首帧必须 hello；之后只接受 request。
+        /// 连接级错误回发 error 帧后闭合连接，请求级错误（unknownRequest）保留连接。
+        /// </summary>
+        private void HandleControlFrame(Connection connection, byte[] payload)
+        {
+            string text;
+            try
+            {
+                text = Encoding.UTF8.GetString(payload);
+            }
+            catch (ArgumentException exception)
+            {
+                FailConnection(connection, "runtime.invalidJson", exception.Message);
+                return;
+            }
+
+            JObject messageObject;
+            try
+            {
+                messageObject = VisualBridgeRuntimeBridgeValidator.ParseObject(text, "runtime.invalidJson");
+            }
+            catch (VisualBridgeRuntimeBridgeException exception)
+            {
+                FailConnection(connection, "runtime.invalidJson", exception.Message);
+                return;
+            }
+
+            VisualBridgeRuntimeBridgeMessage message;
+            try
+            {
+                message = VisualBridgeRuntimeBridgeValidator.ValidateMessage(messageObject);
+            }
+            catch (VisualBridgeRuntimeBridgeException exception)
+            {
+                // 未知 action 是请求级错误（response error，连接保持），其余为连接级错误。
+                if (exception.Code == "runtime.unknownRequest")
+                {
+                    var requestId = (messageObject["requestId"] as JValue)?.Value<string>();
+                    if (requestId != null && !string.IsNullOrEmpty(requestId) && requestId.Length <= 128)
+                    {
+                        WriteLine(connection, VisualBridgeRuntimeBridgeValidator
+                            .CreateResponseError(requestId, "runtime.unknownRequest", exception.Message)
+                            .ToLine());
+                        return;
+                    }
+                }
+
+                FailConnection(connection, VisualBridgeRuntimeBridgeValidator.MapWireCode(exception.Code), exception.Message);
+                return;
+            }
+
+            if (!connection.HelloCompleted)
+            {
+                HandleHello(connection, message);
+                return;
+            }
+
+            if (message.Type != VisualBridgeRuntimeBridgeMessageType.Request)
+            {
+                FailConnection(connection, "runtime.unknownMessageType", "Only request messages are allowed after the handshake.");
+                return;
+            }
+
+            if (message.Action == null)
+            {
+                // 校验器已保证已知 action；这里只是避免理论上的空引用。
+                FailConnection(connection, "runtime.invalidMessage", "Request action is missing.");
+                return;
+            }
+
+            HandleRequest(connection, message);
+        }
+
+        private void HandleHello(Connection connection, VisualBridgeRuntimeBridgeMessage hello)
+        {
+            if (hello.Type != VisualBridgeRuntimeBridgeMessageType.Hello)
+            {
+                FailConnection(connection, "runtime.unknownMessageType", "First message must be hello.");
+                return;
+            }
+
+            if (!string.Equals(hello.Token, token, StringComparison.Ordinal))
+            {
+                FailConnection(connection, "runtime.invalidToken", "Token does not match the discovery record.");
+                return;
+            }
+
+            connection.WantsEvents = hello.SupportsCapability("events");
+            connection.ClientInstanceId = hello.ClientInstanceId;
+            connection.HelloCompleted = true;
+            var welcome = VisualBridgeRuntimeBridgeValidator.CreateWelcome(
+                instanceId, kind, generation, AdvertisedCapabilities, startedAtText);
+            WriteLine(connection, welcome.ToLine());
+        }
+
+        /// <summary>连接级错误：回发 error 帧后优雅闭合（确保错误帧先写完）。</summary>
+        private static void FailConnection(Connection connection, string code, string detail)
+        {
+            SendError(connection, code, detail);
+            CloseConnection(connection, flushPending: true);
+        }
+
 
         /// <summary>连接断开时自动释放其持有的租约（租约绑定连接）。</summary>
         private void ReleaseLeaseOnDisconnect(Connection connection)
@@ -349,70 +420,6 @@ namespace VisualBridge.Runtime
             }
 
             VisualBridgeGraphExecutionCapture.SetSubscribed(false);
-        }
-
-        private void RequestLoop(Connection connection)
-        {
-            while (!stopping)
-            {
-                string line;
-                try
-                {
-                    line = ReadLine(connection);
-                }
-                catch (VisualBridgeRuntimeBridgeException exception)
-                {
-                    SendError(connection, VisualBridgeRuntimeBridgeValidator.MapWireCode(exception.Code), exception.Message);
-                    return;
-                }
-
-                if (line == null)
-                {
-                    return;
-                }
-
-                JObject requestObject;
-                try
-                {
-                    requestObject = VisualBridgeRuntimeBridgeValidator.ParseObject(line, "runtime.invalidJson");
-                }
-                catch (VisualBridgeRuntimeBridgeException exception)
-                {
-                    SendError(connection, "runtime.invalidJson", exception.Message);
-                    return;
-                }
-
-                VisualBridgeRuntimeBridgeMessage request;
-                try
-                {
-                    request = VisualBridgeRuntimeBridgeValidator.ValidateMessage(requestObject);
-                    if (request.Type != VisualBridgeRuntimeBridgeMessageType.Request)
-                    {
-                        throw VisualBridgeRuntimeBridgeValidator.Error(
-                            "runtime.invalidMessage", "$.type", "Only request messages are allowed after the handshake.");
-                    }
-                }
-                catch (VisualBridgeRuntimeBridgeException exception)
-                {
-                    // 未知 action 是请求级错误（response error，连接保持），其余为连接级错误。
-                    if (exception.Code == "runtime.unknownRequest")
-                    {
-                        var requestId = (requestObject["requestId"] as JValue)?.Value<string>();
-                        if (requestId != null && !string.IsNullOrEmpty(requestId) && requestId.Length <= 128)
-                        {
-                            SendLine(connection, VisualBridgeRuntimeBridgeValidator
-                                .CreateResponseError(requestId, "runtime.unknownRequest", exception.Message)
-                                .ToLine());
-                            continue;
-                        }
-                    }
-
-                    SendError(connection, VisualBridgeRuntimeBridgeValidator.MapWireCode(exception.Code), exception.Message);
-                    return;
-                }
-
-                HandleRequest(connection, request);
-            }
         }
 
         private void HandleRequest(Connection connection, VisualBridgeRuntimeBridgeMessage request)
@@ -891,43 +898,7 @@ namespace VisualBridge.Runtime
             File.Move(temporaryPath, recordPath);
         }
 
-        private static string ReadLine(Connection connection)
-        {
-            while (true)
-            {
-                if (connection.LineReader.TryReadLine(out var line))
-                {
-                    if (line.Trim().Length == 0)
-                    {
-                        continue;
-                    }
-
-                    return line;
-                }
-
-                int read;
-                try
-                {
-                    read = connection.Stream.Read(connection.ReadBuffer, 0, connection.ReadBuffer.Length);
-                }
-                catch (Exception exception) when (exception is IOException || exception is ObjectDisposedException)
-                {
-                    // 错误路径上丢弃未成行的半截字节，避免被误当成后续行。
-                    connection.LineReader.DiscardPending();
-                    throw VisualBridgeRuntimeBridgeValidator.Error("runtime.invalidMessage", "$", "Connection failed while reading: " + exception.Message);
-                }
-
-                if (read == 0)
-                {
-                    connection.LineReader.DiscardPending();
-                    return null;
-                }
-
-                connection.LineReader.Append(connection.ReadBuffer, 0, read);
-            }
-        }
-
-        private void SendError(Connection connection, string code, string detail)
+        private static void SendError(Connection connection, string code, string detail)
         {
             try
             {
@@ -946,21 +917,40 @@ namespace VisualBridge.Runtime
 
         private static void WriteLine(Connection connection, string line)
         {
-            lock (connection.WriteGate)
-            {
-                var bytes = Encoding.UTF8.GetBytes(line + "\n");
-                connection.Stream.Write(bytes, 0, bytes.Length);
-                connection.Stream.Flush();
-            }
+            connection.Bridge?.SendControlJson(line);
         }
 
-        private static void CloseConnection(Connection connection)
+        /// <summary>
+        /// 关闭连接。flushPending 为 true 时先让写线程把已入队的错误帧写完再断开，
+        /// 避免「回发 error 后立即断连」把错误帧丢掉。
+        /// </summary>
+        private static void CloseConnection(Connection connection, bool flushPending = false)
         {
+            try
+            {
+                if (flushPending && connection.Bridge != null)
+                {
+                    connection.Bridge.CloseGracefully(500);
+                }
+                else
+                {
+                    connection.Bridge?.Close();
+                }
+            }
+            catch (Exception exception) when (exception is IOException || exception is ObjectDisposedException || exception is SocketException)
+            {
+                // 桥接层可能已经关闭。
+            }
+
             try
             {
                 connection.Client.Close();
             }
             catch (SocketException)
+            {
+                // 已关闭。
+            }
+            catch (ObjectDisposedException)
             {
                 // 已关闭。
             }

@@ -350,9 +350,9 @@ namespace VisualBridge.Editor.Tests
         }
 
         /// <summary>
-        /// 监听 127.0.0.1 随机端口的最小服务端 TCP 对等体：用固定行应答 hello 握手、
-        /// 记录收到的每个请求，并在每个请求后回放排队的响应行。进程内 Mono 命名管道
-        /// 服务端在写入时死锁（2026-08-30 实测），因此协议测试走客户端优先的 TCP 端点。
+        /// 监听 127.0.0.1 随机端口的最小服务端 TCP 对等体：用统一协议的 6 字节帧
+        /// 应答 hello 握手、记录收到的每个请求，并在每个请求后回放排队的响应帧。
+        /// 编辑器通道只使用控制通道（JSON）。
         /// </summary>
         private sealed class BridgeTestServer : IDisposable
         {
@@ -363,6 +363,8 @@ namespace VisualBridge.Editor.Tests
             private readonly object gate = new object();
             private readonly Queue<string> pending = new Queue<string>();
             private readonly System.Collections.Concurrent.ConcurrentQueue<string> received = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            private readonly VisualBridge.Runtime.VisualBridgeFrameReader frameReader =
+                new VisualBridge.Runtime.VisualBridgeFrameReader();
             private TcpClient client;
             private NetworkStream stream;
 
@@ -455,30 +457,37 @@ namespace VisualBridge.Editor.Tests
 
             private void Send(string line)
             {
-                var bytes = Encoding.UTF8.GetBytes(line + "\n");
-                stream.Write(bytes, 0, bytes.Length);
+                var frame = VisualBridge.Runtime.VisualBridgeFraming.EncodeFrame(
+                    VisualBridge.Runtime.VisualBridgeChannel.Editor,
+                    VisualBridge.Runtime.VisualBridgePayloadKind.Json,
+                    Encoding.UTF8.GetBytes(line));
+                stream.Write(frame, 0, frame.Length);
                 stream.Flush();
             }
 
             private string Receive()
             {
                 var buffer = new byte[4096];
-                var reader = new VisualBridge.Runtime.VisualBridgeUtf8LineReader();
                 while (true)
                 {
-                    if (reader.TryReadLine(out var line))
+                    while (frameReader.TryReadFrame(out var frame))
                     {
-                        return line;
+                        if (frame.Channel != VisualBridge.Runtime.VisualBridgeChannel.Editor)
+                        {
+                            continue;
+                        }
+
+                        return Encoding.UTF8.GetString(frame.Payload);
                     }
 
                     var read = stream.Read(buffer, 0, buffer.Length);
                     if (read == 0)
                     {
-                        reader.DiscardPending();
+                        frameReader.DiscardPending();
                         return null;
                     }
 
-                    reader.Append(buffer, 0, read);
+                    frameReader.Append(buffer, 0, read);
                 }
             }
 

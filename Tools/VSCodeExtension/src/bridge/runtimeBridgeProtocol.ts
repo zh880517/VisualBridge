@@ -294,10 +294,6 @@ export function parseRuntimeBridgeDiscoveryRecord(value: unknown): RuntimeBridge
   return { formatVersion, protocolVersion, coreVersion, instanceId, kind, capabilities, tcpPort, token, pid, generation, startedAt };
 }
 
-export function serializeRuntimeBridgeMessage(message: RuntimeBridgeMessage): string {
-  return `${JSON.stringify(message)}\n`;
-}
-
 export function isRuntimeBridgeProtocolError(errorValue: unknown): errorValue is RuntimeBridgeProtocolError {
   return errorValue instanceof RuntimeBridgeProtocolError;
 }

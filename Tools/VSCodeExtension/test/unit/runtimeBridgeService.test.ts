@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import net from "node:net";
-import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import {
   RuntimeBridgeConnection,
   RuntimeBridgeInstance,
 } from "../../src/bridge/runtimeBridgeService";
+import {
+  BridgeChannel,
+  BridgeFrameDecoder,
+  BridgePayloadKind,
+  encodeFrame,
+} from "../../src/bridge/framing";
 
 const TOKEN = "a".repeat(48);
 const INSTANCE_ID = "editor-1234";
@@ -17,8 +22,13 @@ const SNAPSHOT_DOCUMENT = {
   data: { label: "中文内容", nested: { text: "跨包解析完成" } },
 };
 
-function welcomeLine(): string {
-  return `${JSON.stringify({
+/** 与服务端一致的控制通道 JSON 帧。 */
+function frame(message: unknown): Buffer {
+  return encodeFrame(BridgeChannel.Control, BridgePayloadKind.Json, Buffer.from(JSON.stringify(message), "utf8"));
+}
+
+function welcomeFrame(): Buffer {
+  return frame({
     type: "welcome",
     protocolVersion: 1,
     coreVersion: 1,
@@ -27,7 +37,7 @@ function welcomeLine(): string {
     generation: 1,
     capabilities: ["snapshot", "events", "lease", "sources", "graphExecution"],
     startedAt: "2026-01-01T00:00:00Z",
-  })}\n`;
+  });
 }
 
 function instanceFor(port: number): RuntimeBridgeInstance {
@@ -48,18 +58,13 @@ interface ReceivedMessage {
   readonly requestId?: string;
 }
 
-function createLineReader(onMessage: (message: ReceivedMessage) => void): (chunk: Buffer) => void {
-  const decoder = new StringDecoder("utf8");
-  let buffer = "";
+/** 帧解码对端：按统一协议的帧头解析客户端消息。 */
+function createFrameReader(onMessage: (message: ReceivedMessage) => void): (chunk: Buffer) => void {
+  const decoder = new BridgeFrameDecoder();
   return (chunk: Buffer): void => {
-    buffer += decoder.write(chunk);
-    let newlineIndex = buffer.indexOf("\n");
-    while (newlineIndex >= 0) {
-      const line = buffer.slice(0, newlineIndex);
-      buffer = buffer.slice(newlineIndex + 1);
-      newlineIndex = buffer.indexOf("\n");
-      if (line.trim().length === 0) continue;
-      onMessage(JSON.parse(line) as ReceivedMessage);
+    for (const received of decoder.push(chunk)) {
+      if (received.channel !== BridgeChannel.Control) continue;
+      onMessage(JSON.parse(received.payload.toString("utf8")) as ReceivedMessage);
     }
   };
 }
@@ -84,33 +89,32 @@ async function withFakeServer(
   }
 }
 
-test("runtime bridge client decodes a multibyte JSON line split across TCP chunks", async () => {
+test("runtime bridge client decodes a multibyte JSON payload split across TCP chunks", async () => {
   let splitInsideMultibyte = false;
   await withFakeServer((socket) => {
     let replied = false;
-    const readLine = createLineReader((message) => {
+    const readFrames = createFrameReader((message) => {
       if (message.type === "hello") {
-        socket.write(welcomeLine());
+        socket.write(welcomeFrame());
         return;
       }
 
       if (message.type !== "request" || replied) return;
       replied = true;
-      const line = `${JSON.stringify({
+      const response = frame({
         type: "response",
         requestId: message.requestId,
         status: "ok",
         documents: [SNAPSHOT_DOCUMENT],
-      })}\n`;
-      const bytes = Buffer.from(line, "utf8");
-      const chineseIndex = bytes.indexOf(Buffer.from("中", "utf8"));
+      });
+      const chineseIndex = response.indexOf(Buffer.from("中", "utf8"));
       assert.ok(chineseIndex > 0);
       const splitIndex = chineseIndex + 1;
       splitInsideMultibyte = splitIndex > chineseIndex && splitIndex < chineseIndex + 3;
-      socket.write(bytes.subarray(0, splitIndex));
-      setTimeout(() => socket.write(bytes.subarray(splitIndex)), 20);
+      socket.write(response.subarray(0, splitIndex));
+      setTimeout(() => socket.write(response.subarray(splitIndex)), 20);
     });
-    socket.on("data", readLine);
+    socket.on("data", readFrames);
   }, async ({ connection }) => {
     await connection.connect(2000);
     const documents = await connection.getSnapshot();
@@ -130,9 +134,9 @@ test("runtime bridge client rejects a pending request when the server drops the 
   process.on("uncaughtException", onUncaught);
   try {
     await withFakeServer((socket) => {
-      const readLine = createLineReader((message) => {
+      const readFrames = createFrameReader((message) => {
         if (message.type === "hello") {
-          socket.write(welcomeLine());
+          socket.write(welcomeFrame());
           return;
         }
 
@@ -140,7 +144,7 @@ test("runtime bridge client rejects a pending request when the server drops the 
           socket.destroy();
         }
       });
-      socket.on("data", readLine);
+      socket.on("data", readFrames);
     }, async ({ connection }) => {
       await connection.connect(2000);
       await assert.rejects(connection.getSnapshot(), /closed|failed|reset|ECONNRESET|timed out/i);
@@ -155,25 +159,25 @@ test("runtime bridge client rejects a pending request when the server drops the 
 test("runtime bridge client handles an event before the response without resending the request", async () => {
   let requestCount = 0;
   await withFakeServer((socket) => {
-    const readLine = createLineReader((message) => {
+    const readFrames = createFrameReader((message) => {
       if (message.type === "hello") {
-        socket.write(welcomeLine());
+        socket.write(welcomeFrame());
         return;
       }
 
       if (message.type !== "request") return;
       requestCount += 1;
-      socket.write(`${JSON.stringify({ type: "event", event: "artifactsChanged", documents: [] })}\n`);
+      socket.write(frame({ type: "event", event: "artifactsChanged", documents: [] }));
       setTimeout(() => {
-        socket.write(`${JSON.stringify({
+        socket.write(frame({
           type: "response",
           requestId: message.requestId,
           status: "ok",
           documents: [SNAPSHOT_DOCUMENT],
-        })}\n`);
+        }));
       }, 20);
     });
-    socket.on("data", readLine);
+    socket.on("data", readFrames);
   }, async ({ connection }) => {
     await connection.connect(2000);
     const documents = await connection.getSnapshot();

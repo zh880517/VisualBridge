@@ -173,10 +173,6 @@ export function parseDiscoveryRecord(value: unknown): BridgeDiscoveryRecord {
   return { formatVersion, protocolVersion, windowId, capabilities, projectRoots, pipePath, tcpPort, token, pid, generation, startedAt };
 }
 
-export function serializeMessage(message: BridgeMessage): string {
-  return `${JSON.stringify(message)}\n`;
-}
-
 export function isBridgeProtocolError(errorValue: unknown): errorValue is BridgeProtocolError {
   return errorValue instanceof BridgeProtocolError;
 }

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.Pipes;
 using System.Linq;
 using System.Net.Sockets;
 using System.Text;
@@ -19,10 +18,9 @@ namespace VisualBridge.Editor
 
     /// <summary>
     /// Unity 侧 Editor Bridge 客户端。一个实例持有一条到单个 VS Code 窗口的连接。
-    /// V1 协议是严格的请求/响应模型，因此全部流 I/O 在调用方线程上同步执行：
-    /// Unity Mono 运行时在 NamedPipeClientStream 上用共享锁串行化并发 Read/Write，
-    /// 排除了后台读线程的方案（2026-08-30 实测）。优先使用回环 TCP，因为
-    /// NetworkStream 支持读超时；命名管道端点保留为回退。
+    /// 线上格式为统一协议的 6 字节帧头（控制通道承载 JSON 消息）；命名管道端点
+    /// 已删除，只保留回环 TCP。V1 协议是严格的请求/响应模型，因此全部流 I/O 在
+    /// 调用方线程上同步执行。
     /// </summary>
     public sealed class VisualBridgeEditorBridgeClient : IDisposable
     {
@@ -32,7 +30,7 @@ namespace VisualBridge.Editor
         private readonly string clientInstanceId;
         private readonly List<string> requestedCapabilities;
         private readonly object ioLock = new object();
-        private readonly VisualBridgeUtf8LineReader lineReader = new VisualBridgeUtf8LineReader();
+        private readonly VisualBridgeFrameReader frameReader = new VisualBridgeFrameReader();
         private readonly byte[] readBuffer = new byte[8192];
 
         private Stream stream;
@@ -54,8 +52,8 @@ namespace VisualBridge.Editor
         public string ClientInstanceId => clientInstanceId;
 
         /// <summary>
-        /// 连接窗口的 TCP 端点（Windows 下命名管道回退），完成 hello/welcome
-        /// 握手并校验服务端 generation 与发现记录一致。
+        /// 连接窗口的 TCP 端点，完成 hello/welcome 握手并校验服务端 generation
+        /// 与发现记录一致。
         /// </summary>
         public VisualBridgeBridgeMessage Connect(int timeoutMs = ConnectTimeoutMs)
         {
@@ -206,35 +204,17 @@ namespace VisualBridge.Editor
 
         private Stream OpenTransport(int timeoutMs)
         {
-            Exception tcpFailure;
             try
             {
                 return OpenTcp(window.TcpPort, timeoutMs);
             }
-            catch (Exception exception)
+            catch (Exception tcpFailure)
             {
-                tcpFailure = exception;
+                throw VisualBridgeEditorBridgeValidator.Error(
+                    "bridge.connectionFailed",
+                    "$",
+                    $"Failed to connect to window '{window.WindowId}' over TCP: {tcpFailure.Message}");
             }
-
-            if (Environment.OSVersion.Platform == PlatformID.Win32NT && !string.IsNullOrEmpty(window.PipePath))
-            {
-                try
-                {
-                    return OpenPipe(window.PipePath, timeoutMs);
-                }
-                catch (Exception pipeFailure)
-                {
-                    throw VisualBridgeEditorBridgeValidator.Error(
-                        "bridge.connectionFailed",
-                        "$",
-                        $"Failed to connect to window '{window.WindowId}' over TCP ({tcpFailure.Message}) and pipe ({pipeFailure.Message}).");
-                }
-            }
-
-            throw VisualBridgeEditorBridgeValidator.Error(
-                "bridge.connectionFailed",
-                "$",
-                $"Failed to connect to window '{window.WindowId}' over TCP: {tcpFailure.Message}");
         }
 
         private Stream OpenTcp(int port, int timeoutMs)
@@ -262,27 +242,9 @@ namespace VisualBridge.Editor
             }
         }
 
-        private static Stream OpenPipe(string pipePath, int timeoutMs)
-        {
-            const string prefix = @"\\.\pipe\";
-            var pipeName = pipePath.StartsWith(prefix, StringComparison.Ordinal) ? pipePath.Substring(prefix.Length) : pipePath;
-            var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut);
-            try
-            {
-                client.Connect(timeoutMs);
-                return client;
-            }
-            catch
-            {
-                client.Dispose();
-                throw;
-            }
-        }
-
         private static void ApplyReadTimeout(Stream target, int timeoutMs)
         {
-            // 命名管道流不支持读超时；TCP 流在 OpenTcp 时已携带超时。
-            // 管道回退用读超时换取传输可用性，靠连接重置失败。
+            // 只保留 TCP 端点；NetworkStream 支持读超时。
             if (target is NetworkStream)
             {
                 target.ReadTimeout = timeoutMs;
@@ -291,7 +253,9 @@ namespace VisualBridge.Editor
 
         private void Write(string line)
         {
-            var bytes = Encoding.UTF8.GetBytes(line + "\n");
+            var bytes = Encoding.UTF8.GetBytes(line);
+            var frame = VisualBridgeFraming.EncodeFrame(
+                VisualBridgeChannel.Editor, VisualBridgePayloadKind.Json, bytes);
             var target = stream;
             if (target == null)
             {
@@ -300,7 +264,7 @@ namespace VisualBridge.Editor
 
             try
             {
-                target.Write(bytes, 0, bytes.Length);
+                target.Write(frame, 0, frame.Length);
                 target.Flush();
             }
             catch (Exception exception) when (exception is IOException || exception is ObjectDisposedException || exception is SocketException)
@@ -313,20 +277,33 @@ namespace VisualBridge.Editor
         {
             while (true)
             {
-                if (lineReader.TryReadLine(out var line))
+                VisualBridgeFrame frame;
+                try
                 {
-                    if (line.Trim().Length == 0)
+                    if (frameReader.TryReadFrame(out frame))
                     {
-                        continue;
-                    }
+                        // 编辑器连接当前只消费控制通道；调试通道帧留给统一协议阶段。
+                        if (frame.Channel != VisualBridgeChannel.Editor)
+                        {
+                            continue;
+                        }
 
-                    return ParseLine(line);
+                        return ParsePayload(frame.Payload);
+                    }
+                }
+                catch (VisualBridgeFrameException exception)
+                {
+                    frameReader.DiscardPending();
+                    throw VisualBridgeEditorBridgeValidator.Error(
+                        "bridge.protocolViolation",
+                        "$",
+                        "Connection framing failed: " + exception.Message);
                 }
 
                 var target = stream;
                 if (target == null)
                 {
-                    lineReader.DiscardPending();
+                    frameReader.DiscardPending();
                     throw VisualBridgeEditorBridgeValidator.Error("bridge.disconnected", "$", "Connection closed.");
                 }
 
@@ -335,28 +312,29 @@ namespace VisualBridge.Editor
                 {
                     read = target.Read(readBuffer, 0, readBuffer.Length);
                 }
-                catch (Exception exception) when (exception is IOException || exception is ObjectDisposedException)
+                catch (Exception exception) when (exception is IOException || exception is ObjectDisposedException || exception is SocketException)
                 {
-                    lineReader.DiscardPending();
+                    frameReader.DiscardPending();
                     throw VisualBridgeEditorBridgeValidator.Error("bridge.disconnected", "$", "Connection failed while reading: " + exception.Message);
                 }
 
                 if (read == 0)
                 {
-                    lineReader.DiscardPending();
+                    frameReader.DiscardPending();
                     throw VisualBridgeEditorBridgeValidator.Error("bridge.disconnected", "$", "Connection closed by the server.");
                 }
 
-                lineReader.Append(readBuffer, 0, read);
+                frameReader.Append(readBuffer, 0, read);
             }
         }
 
-        private static VisualBridgeBridgeMessage ParseLine(string line)
+        private static VisualBridgeBridgeMessage ParsePayload(byte[] payload)
         {
             JObject value;
             try
             {
-                using (var stringReader = new StringReader(line))
+                var text = Encoding.UTF8.GetString(payload);
+                using (var stringReader = new StringReader(text))
                 using (var reader = new Newtonsoft.Json.JsonTextReader(stringReader))
                 {
                     reader.DateParseHandling = Newtonsoft.Json.DateParseHandling.None;
@@ -366,7 +344,7 @@ namespace VisualBridge.Editor
             }
             catch
             {
-                throw VisualBridgeEditorBridgeValidator.Error("bridge.invalidJson", "$", "Server sent a non-JSON line.");
+                throw VisualBridgeEditorBridgeValidator.Error("bridge.invalidJson", "$", "Server sent a non-JSON payload.");
             }
 
             return VisualBridgeEditorBridgeValidator.ValidateMessage(value);

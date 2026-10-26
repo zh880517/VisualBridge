@@ -2,7 +2,6 @@ import * as net from "net";
 import * as os from "os";
 import * as path from "path";
 import { randomUUID } from "crypto";
-import { StringDecoder } from "string_decoder";
 import {
   parseRuntimeBridgeDiscoveryRecord,
   parseRuntimeBridgeMessage,
@@ -21,8 +20,9 @@ import {
   RuntimeBridgeGraphExecutionSubscriptionRequest,
   RuntimeBridgeGraphExecutionSnapshotRequest,
   RuntimeBridgeWelcomeMessage,
-  serializeRuntimeBridgeMessage,
 } from "./runtimeBridgeProtocol";
+import { BridgeSocket } from "./bridgeSocket";
+import { BridgePayloadKind } from "./framing";
 import { GraphExecutionRecording } from "./graphExecutionRecording";
 
 export interface RuntimeBridgeInstance {
@@ -239,46 +239,10 @@ interface Handshake {
   timer: NodeJS.Timeout | undefined;
 }
 
-interface SocketListeners {
-  readonly onData: (chunk: Buffer) => void;
-  readonly onError: (error: Error) => void;
-  readonly onClose: () => void;
-}
-
-/**
- * NDJSON 行解码器：StringDecoder 保留跨 TCP chunk 的不完整多字节序列，
- * 只在遇到换行后才把整行交给 JSON 解析。
- */
-export class Utf8LineDecoder {
-  private decoder = new StringDecoder("utf8");
-  private buffer = "";
-
-  public push(chunk: Buffer): string[] {
-    this.buffer += this.decoder.write(chunk);
-    const lines: string[] = [];
-    let newlineIndex = this.buffer.indexOf("\n");
-    while (newlineIndex >= 0) {
-      lines.push(this.buffer.slice(0, newlineIndex));
-      this.buffer = this.buffer.slice(newlineIndex + 1);
-      newlineIndex = this.buffer.indexOf("\n");
-    }
-
-    return lines;
-  }
-
-  public reset(): void {
-    this.buffer = "";
-    // StringDecoder 没有 reset()，重新创建以丢弃跨连接残留的不完整序列。
-    this.decoder = new StringDecoder("utf8");
-  }
-}
-
 export class RuntimeBridgeConnection {
-  private socket: net.Socket | undefined;
-  private decoder = new Utf8LineDecoder();
+  private bridge: BridgeSocket | undefined;
   private pending = new Map<string, PendingRequest>();
   private handshake: Handshake | undefined;
-  private listeners: SocketListeners | undefined;
   private readonly events: RuntimeBridgeEventMessage[] = [];
   private welcome: RuntimeBridgeWelcomeMessage | undefined;
   private snapshotCount = 0;
@@ -312,8 +276,6 @@ export class RuntimeBridgeConnection {
   public connect(timeoutMs: number): Promise<RuntimeBridgeWelcomeMessage> {
     return new Promise<RuntimeBridgeWelcomeMessage>((resolve, reject) => {
       const socket = net.connect({ host: "127.0.0.1", port: this.instance.tcpPort });
-      this.socket = socket;
-      this.decoder.reset();
       this.disposed = false;
       this.welcome = undefined;
       this.connectionError = undefined;
@@ -324,36 +286,35 @@ export class RuntimeBridgeConnection {
         this.finishHandshake(undefined, new Error("Runtime bridge connect timed out."));
       }, timeoutMs);
 
-      const onData = (chunk: Buffer): void => {
-        for (const line of this.decoder.push(chunk)) this.handleLine(line);
-      };
-      const onError = (errorValue: Error): void => {
-        if (this.handshake !== undefined) this.finishHandshake(undefined, errorValue);
-        else this.invalidate(errorValue);
-      };
-      const onClose = (): void => {
-        const failure = new Error(this.handshake === undefined
-          ? "Runtime bridge connection closed."
-          : "Runtime bridge connection closed before welcome.");
-        if (this.handshake !== undefined) this.finishHandshake(undefined, failure);
-        else this.invalidate(failure);
-      };
-      this.listeners = { onData, onError, onClose };
+      const bridge = new BridgeSocket(socket, {
+        onControlPayload: (payload) => this.handlePayload(payload),
+        onDebugFrame: (payloadKind: BridgePayloadKind, payload: Buffer) => {
+          // E1 只搭传输：Runtime 通道现阶段的业务消息全部走控制通道，调试通道留给 E4。
+          this.output(`Runtime bridge ignored a ${payload.length}-byte debug payload (kind ${payloadKind}).`);
+        },
+        onClosed: (error) => {
+          const failure = error ?? new Error(this.handshake === undefined
+            ? "Runtime bridge connection closed."
+            : "Runtime bridge connection closed before welcome.");
+          if (this.handshake !== undefined) this.finishHandshake(undefined, failure);
+          else this.invalidate(failure);
+        },
+      }, { log: (message) => this.output(message) });
+      this.bridge = bridge;
 
-      // 握手成功后仍保留 error/close 监听：否则对端 RST 会变成未捕获异常，
-      // pending 请求也会永远挂起。
-      socket.on("error", onError);
-      socket.on("close", onClose);
-      socket.on("data", onData);
       socket.on("connect", () => {
-        socket.write(serializeRuntimeBridgeMessage({
+        if (!bridge.isOpen) {
+          return;
+        }
+
+        bridge.sendControlJson({
           type: "hello",
           protocolVersion: 1,
           coreVersion: 1,
           token: this.instance.token,
           clientInstanceId: randomUUID(),
           capabilities: [...RUNTIME_BRIDGE_CAPABILITIES],
-        }));
+        });
       });
     });
   }
@@ -476,7 +437,7 @@ export class RuntimeBridgeConnection {
 
   private request(payload: RuntimeBridgeSnapshotRequest | RuntimeBridgeLeaseRequest | RuntimeBridgeSourcesRequest | RuntimeBridgeGraphExecutionInstancesRequest | RuntimeBridgeGraphExecutionSubscriptionRequest | RuntimeBridgeGraphExecutionSnapshotRequest): Promise<RuntimeBridgeResponseMessage> {
     if (this.welcome === undefined || this.connectionError !== undefined
-      || this.socket === undefined || this.socket.destroyed) {
+      || this.bridge === undefined || !this.bridge.isOpen) {
       return Promise.reject(new RuntimeBridgeProtocolError("runtime.invalidMessage", "$", "Runtime bridge is not connected."));
     }
 
@@ -503,11 +464,9 @@ export class RuntimeBridgeConnection {
         timer,
       });
       try {
-        this.socket?.write(serializeRuntimeBridgeMessage(payload), (error?: Error | null) => {
-          if (error !== undefined && error !== null) {
-            settle(new Error(`Runtime bridge write failed: ${error.message}`));
-          }
-        });
+        if (!this.bridge?.sendControlJson(payload)) {
+          settle(new Error("Runtime bridge write failed."));
+        }
       } catch (errorValue) {
         settle(errorValue instanceof Error ? errorValue : new Error(String(errorValue)));
       }
@@ -517,25 +476,16 @@ export class RuntimeBridgeConnection {
   public dispose(): void {
     this.disposed = true;
     this.invalidate(new Error("Runtime bridge connection disposed."));
-    const socket = this.socket;
-    this.socket = undefined;
-    if (socket !== undefined && this.listeners !== undefined) {
-      socket.off("data", this.listeners.onData);
-      socket.off("error", this.listeners.onError);
-      socket.off("close", this.listeners.onClose);
-    }
-
-    this.listeners = undefined;
-    this.decoder.reset();
+    this.bridge?.close();
+    this.bridge = undefined;
   }
 
-  private handleLine(line: string): void {
-    if (line.trim().length === 0) return;
+  private handlePayload(payload: Buffer): void {
     let message: ReturnType<typeof parseRuntimeBridgeMessage>;
     try {
-      message = parseRuntimeBridgeMessage(JSON.parse(line));
+      message = parseRuntimeBridgeMessage(JSON.parse(payload.toString("utf8")));
     } catch (errorValue) {
-      this.output(`Runtime bridge received an unparseable line: ${(errorValue as Error).message}`);
+      this.output(`Runtime bridge received an unparseable payload: ${(errorValue as Error).message}`);
       if (this.handshake !== undefined) this.finishHandshake(undefined, errorValue as Error);
       else this.invalidate(errorValue as Error);
       return;
@@ -598,7 +548,7 @@ export class RuntimeBridgeConnection {
     this.welcome = undefined;
     this.connectionError = error ?? new Error("Runtime bridge connection failed.");
     this.rejectPending(this.connectionError);
-    this.socket?.destroy();
+    this.bridge?.close();
     handshake.reject(this.connectionError);
   }
 
@@ -612,7 +562,7 @@ export class RuntimeBridgeConnection {
     if (this.connectionError === undefined) this.connectionError = error;
     this.welcome = undefined;
     this.rejectPending(this.connectionError);
-    this.socket?.destroy();
+    this.bridge?.close();
   }
 
   private rejectPending(error: Error): void {

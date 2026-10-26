@@ -12,11 +12,12 @@ import {
   BridgeProtocolError,
   isBridgeErrorCode,
   parseBridgeMessage,
-  serializeMessage,
   type BridgeErrorMessage,
   type BridgeMessage,
   type BridgeWelcomeMessage,
 } from "./bridgeProtocol";
+import { BridgeSocket } from "./bridgeSocket";
+import type { BridgePayloadKind } from "./framing";
 
 export const BRIDGE_DISCOVERY_DIRECTORY_NAME = "visualbridge-bridge";
 export const OPEN_DOCUMENT_COMMAND = "visualbridge.openDocument";
@@ -34,17 +35,19 @@ export interface EditorBridgeServerState {
 }
 
 interface BridgeConnection {
-  readonly socket: net.Socket;
+  readonly bridge: BridgeSocket;
   helloCompleted: boolean;
   authenticated: boolean;
-  buffer: string;
 }
 
 /**
- * Local Editor Bridge server. Listens on a Windows named pipe and a loopback TCP
- * port, publishes a per-window discovery record with a heartbeat, authenticates
- * Unity Editor clients with a per-window token, and answers open/reveal requests
- * by routing them through the Project Registry and the document index.
+ * Local Editor Bridge server. Listens on a loopback TCP port, publishes a
+ * per-window discovery record with a heartbeat, authenticates Unity Editor
+ * clients with a per-window token, and answers open/reveal requests by routing
+ * them through the Project Registry and the document index.
+ *
+ * 线上格式为统一协议的 6 字节帧头（通道 0 承载本通道的 JSON 消息）；
+ * 命名管道端点已删除，发现记录中的 `pipePath` 字段仅为过渡期兼容保留。
  */
 export class EditorBridgeServer implements vscode.Disposable {
   private readonly projects: ProjectRegistry;
@@ -53,7 +56,6 @@ export class EditorBridgeServer implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private readonly connections = new Set<BridgeConnection>();
 
-  private pipeServer: net.Server | undefined;
   private tcpServer: net.Server | undefined;
   private heartbeat: NodeJS.Timeout | undefined;
   private recordPath: string | undefined;
@@ -105,27 +107,21 @@ export class EditorBridgeServer implements vscode.Disposable {
     const recordPath = nodePath.join(discoveryDirectory, `${this.windowId}.json`);
 
     const connected = new Promise<void>((resolve, reject) => {
-      const pipeServer = net.createServer((socket) => this.accept(socket));
       const tcpServer = net.createServer((socket) => this.accept(socket));
       let settled = false;
       const cleanup = (errorValue: Error) => {
         if (settled) return;
         settled = true;
-        pipeServer.close();
         tcpServer.close();
         reject(errorValue);
       };
-      pipeServer.once("error", cleanup);
       tcpServer.once("error", cleanup);
-      pipeServer.listen(this.pipePath!, () => {
-        tcpServer.listen(0, "127.0.0.1", () => {
-          if (settled) return;
-          settled = true;
-          this.pipeServer = pipeServer;
-          this.tcpServer = tcpServer;
-          this.tcpPort = (tcpServer.address() as net.AddressInfo).port;
-          resolve();
-        });
+      tcpServer.listen(0, "127.0.0.1", () => {
+        if (settled) return;
+        settled = true;
+        this.tcpServer = tcpServer;
+        this.tcpPort = (tcpServer.address() as net.AddressInfo).port;
+        resolve();
       });
     });
     await connected;
@@ -141,7 +137,7 @@ export class EditorBridgeServer implements vscode.Disposable {
       }),
     );
     this.output.appendLine(
-      `[bridge] listening pipe=${this.pipePath} tcp=127.0.0.1:${this.tcpPort} record=${this.recordPath}`,
+      `[bridge] listening tcp=127.0.0.1:${this.tcpPort} record=${this.recordPath}`,
     );
   }
 
@@ -152,13 +148,11 @@ export class EditorBridgeServer implements vscode.Disposable {
     }
 
     for (const connection of [...this.connections]) {
-      connection.socket.destroy();
+      connection.bridge.close();
     }
 
     this.connections.clear();
-    this.pipeServer?.close();
     this.tcpServer?.close();
-    this.pipeServer = undefined;
     this.tcpServer = undefined;
     if (this.recordPath !== undefined) {
       void vscode.workspace.fs.delete(vscode.Uri.file(this.recordPath))
@@ -172,40 +166,36 @@ export class EditorBridgeServer implements vscode.Disposable {
   }
 
   private accept(socket: net.Socket): void {
-    const connection: BridgeConnection = { socket, helloCompleted: false, authenticated: false, buffer: "" };
-    this.connections.add(connection);
-    socket.setEncoding("utf8");
-    socket.on("data", (chunk: string) => {
-      connection.buffer += chunk;
-      let newline = connection.buffer.indexOf("\n");
-      while (newline >= 0) {
-        const line = connection.buffer.slice(0, newline);
-        connection.buffer = connection.buffer.slice(newline + 1);
-        if (line.trim().length > 0) {
-          try {
-            this.handleLine(connection, line);
-          } catch (errorValue) {
-            this.reportInternalError(connection, errorValue);
-            return;
-          }
+    let connection: BridgeConnection | undefined;
+    const bridge = new BridgeSocket(socket, {
+      onControlPayload: (payload) => {
+        if (connection !== undefined) {
+          this.handlePayload(connection, payload);
+        }
+      },
+      onDebugFrame: (payloadKind: BridgePayloadKind, payload: Buffer) => {
+        // 编辑器通道当前只承载控制消息；E1 不消费调试载荷，收到即记录后丢弃。
+        this.output.appendLine(`[bridge] ignoring a ${payload.length}-byte debug payload (kind ${payloadKind}) on the editor connection.`);
+      },
+      onClosed: (error) => {
+        if (error !== undefined) {
+          this.output.appendLine(`[bridge] connection closed: ${error.message}`);
         }
 
-        newline = connection.buffer.indexOf("\n");
-      }
-    });
-    const finish = () => {
-      this.connections.delete(connection);
-    };
-    socket.on("close", finish);
-    socket.on("error", () => {
-      this.connections.delete(connection);
-    });
+        if (connection !== undefined) {
+          this.connections.delete(connection);
+        }
+      },
+    }, { log: (message) => this.output.appendLine(message) });
+
+    connection = { bridge, helloCompleted: false, authenticated: false };
+    this.connections.add(connection);
   }
 
-  private handleLine(connection: BridgeConnection, line: string): void {
+  private handlePayload(connection: BridgeConnection, payload: Buffer): void {
     let value: unknown;
     try {
-      value = JSON.parse(line);
+      value = JSON.parse(payload.toString("utf8"));
     } catch {
       this.sendErrorAndClose(connection, "bridge.invalidJson", "Message is not valid JSON.");
       return;
@@ -261,7 +251,7 @@ export class EditorBridgeServer implements vscode.Disposable {
     };
     connection.helloCompleted = true;
     connection.authenticated = true;
-    connection.socket.write(serializeMessage(welcome));
+    connection.bridge.sendControlJson(welcome);
   }
 
   private async handleRequest(connection: BridgeConnection, message: BridgeOpenRequestLike): Promise<void> {
@@ -272,7 +262,7 @@ export class EditorBridgeServer implements vscode.Disposable {
         await this.revealReference(message.reference);
       }
 
-      connection.socket.write(serializeMessage({ type: "response", requestId: message.requestId, status: "ok" }));
+      connection.bridge.sendControlJson({ type: "response", requestId: message.requestId, status: "ok" });
       return;
     } catch (errorValue) {
       const code = errorValue instanceof BridgeProtocolError && isBridgeErrorCode(errorValue.code)
@@ -282,12 +272,12 @@ export class EditorBridgeServer implements vscode.Disposable {
         this.output.appendLine(`[bridge] request '${message.requestId}' failed: ${String(errorValue)}`);
       }
 
-      connection.socket.write(serializeMessage({
+      connection.bridge.sendControlJson({
         type: "response",
         requestId: message.requestId,
         status: "error",
         error: code,
-      }));
+      });
     }
   }
 
@@ -372,16 +362,9 @@ export class EditorBridgeServer implements vscode.Disposable {
 
   private sendErrorAndClose(connection: BridgeConnection, code: BridgeErrorMessage["code"], detail: string): void {
     this.output.appendLine(`[bridge] connection error ${code}: ${detail}`);
-    connection.socket.write(serializeMessage({ type: "error", code, detail }));
-    connection.socket.end();
-    this.connections.delete(connection);
-  }
-
-  private reportInternalError(connection: BridgeConnection, errorValue: unknown): void {
-    this.output.appendLine(`[bridge] internal error while processing a message: ${String(errorValue)}`);
-    connection.socket.write(serializeMessage({ type: "error", code: "bridge.internalError" }));
-    connection.socket.end();
-    this.connections.delete(connection);
+    connection.bridge.sendControlJson({ type: "error", code, detail });
+    // 先让已入队的错误帧写完，再断开发送方向。
+    connection.bridge.end();
   }
 
   private currentProjectRoots(): readonly string[] {

@@ -9,6 +9,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { attachJsonLines, encodeFrame, encodeJsonFrame, KIND_JSON } from '../support/bridgeFrames.cjs';
 
 const PROTOCOL_VERSION = 1;
 const CORE_VERSION = 1;
@@ -122,7 +123,7 @@ function plantStaleRecords() {
   return ['editor-999999', 'editor-888888'];
 }
 
-// —— 连接原语：JSON 行协议客户端 ——
+// —— 连接原语：统一协议帧客户端（控制通道 JSON） ——
 
 class BridgeConnection {
   constructor(port, token, capabilities) {
@@ -137,17 +138,9 @@ class BridgeConnection {
         token, clientInstanceId: uuidV4(), capabilities,
       });
     });
-    let buffer = '';
-    this.socket.on('data', (chunk) => {
-      buffer += chunk.toString('utf8');
-      let newline;
-      while ((newline = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, newline).trim();
-        buffer = buffer.slice(newline + 1);
-        if (!line) continue;
-        this.lines.push(line);
-        this.waiters.shift()?.();
-      }
+    attachJsonLines(this.socket, (line) => {
+      this.lines.push(line);
+      this.waiters.shift()?.();
     });
     this.socket.on('close', () => {
       this.closed = true;
@@ -158,11 +151,11 @@ class BridgeConnection {
   }
 
   send(object) {
-    this.socket.write(JSON.stringify(object) + '\n');
+    this.socket.write(encodeJsonFrame(object));
   }
 
   sendRaw(text) {
-    this.socket.write(text + '\n');
+    this.socket.write(encodeFrame(0, KIND_JSON, Buffer.from(text, 'utf8')));
   }
 
   async nextLine(timeoutMs = 5000) {

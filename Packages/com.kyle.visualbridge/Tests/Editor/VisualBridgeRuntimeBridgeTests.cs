@@ -931,58 +931,80 @@ namespace VisualBridge.Editor.Tests
         }
 
         [Test]
-        public void Utf8LineReaderPreservesMultibyteCharactersSplitAcrossChunks()
+        public void FrameReaderPreservesMultibyteCharactersSplitAcrossChunks()
         {
-            var line = "{\"type\":\"response\",\"requestId\":\"req-1\",\"detail\":\"中文内容\"}";
-            var bytes = Encoding.UTF8.GetBytes(line + "\n");
+            var payloadText = "{\"type\":\"response\",\"requestId\":\"req-1\",\"detail\":\"中文内容\"}";
+            var payload = Encoding.UTF8.GetBytes(payloadText);
+            var bytes = VisualBridge.Runtime.VisualBridgeFraming.EncodeFrame(
+                VisualBridge.Runtime.VisualBridgeChannel.Editor,
+                VisualBridge.Runtime.VisualBridgePayloadKind.Json,
+                payload);
             var chineseStart = IndexOfBytes(bytes, Encoding.UTF8.GetBytes("中"));
             Assert.That(chineseStart, Is.GreaterThan(0));
             var split = chineseStart + 1; // 落在三字节字符中间
 
-            var reader = new VisualBridge.Runtime.VisualBridgeUtf8LineReader();
+            var reader = new VisualBridge.Runtime.VisualBridgeFrameReader();
             reader.Append(bytes, 0, split);
-            Assert.That(reader.TryReadLine(out _), Is.False, "半行不应提前解码。");
+            Assert.That(reader.TryReadFrame(out _), Is.False, "帧未读满时不得提前交付。");
             Assert.That(reader.BufferedByteCount, Is.EqualTo(split));
 
             reader.Append(bytes, split, bytes.Length - split);
-            Assert.That(reader.TryReadLine(out var decoded), Is.True);
-            Assert.That(decoded, Is.EqualTo(line));
+            Assert.That(reader.TryReadFrame(out var frame), Is.True);
+            var decoded = Encoding.UTF8.GetString(frame.Payload);
+            Assert.That(decoded, Is.EqualTo(payloadText));
             Assert.That(decoded.Contains("�"), Is.False, "跨块解码不得产生替换字符。");
             Assert.That(decoded, Does.Contain("中文内容"));
-            Assert.That(reader.TryReadLine(out _), Is.False);
+            Assert.That(reader.TryReadFrame(out _), Is.False);
         }
 
         [Test]
-        public void Utf8LineReaderDropsIncompleteTrailingBytesOnDiscard()
+        public void FrameReaderDropsIncompleteTrailingBytesOnDiscard()
         {
-            var reader = new VisualBridge.Runtime.VisualBridgeUtf8LineReader();
-            var partial = Encoding.UTF8.GetBytes("{\"detail\":\"中");
-            reader.Append(partial, 0, partial.Length);
-            Assert.That(reader.TryReadLine(out _), Is.False);
+            var reader = new VisualBridge.Runtime.VisualBridgeFrameReader();
+            var payload = Encoding.UTF8.GetBytes("{\"detail\":\"完成\"}");
+            var complete = VisualBridge.Runtime.VisualBridgeFraming.EncodeFrame(
+                VisualBridge.Runtime.VisualBridgeChannel.Editor,
+                VisualBridge.Runtime.VisualBridgePayloadKind.Json,
+                payload);
+            // 只收到帧头 + 部分载荷：长度字段声明的字节尚未到齐。
+            var partialLength = VisualBridge.Runtime.VisualBridgeFraming.HeaderBytes + 4;
+            reader.Append(complete, 0, partialLength);
+            Assert.That(reader.TryReadFrame(out _), Is.False);
 
-            // 连接关闭/读取失败：剩余半行被显式丢弃，不会静默拼进后续数据。
+            // 连接关闭/读取失败：残留半帧被显式丢弃，不会静默拼进后续数据。
             reader.DiscardPending();
             Assert.That(reader.BufferedByteCount, Is.Zero);
-            Assert.That(reader.TryReadLine(out _), Is.False);
+            Assert.That(reader.TryReadFrame(out _), Is.False);
 
-            var complete = Encoding.UTF8.GetBytes("{\"detail\":\"完成\"}\n");
             reader.Append(complete, 0, complete.Length);
-            Assert.That(reader.TryReadLine(out var line), Is.True);
-            Assert.That(line, Is.EqualTo("{\"detail\":\"完成\"}"));
-            Assert.That(line.Contains("�"), Is.False);
+            Assert.That(reader.TryReadFrame(out var frame), Is.True);
+            var decoded = Encoding.UTF8.GetString(frame.Payload);
+            Assert.That(decoded, Is.EqualTo("{\"detail\":\"完成\"}"));
+            Assert.That(decoded.Contains("�"), Is.False);
         }
 
         [Test]
-        public void Utf8LineReaderReturnsMultipleCompleteLinesFromOneChunk()
+        public void FrameReaderReturnsMultipleCompleteFramesFromOneChunk()
         {
-            var reader = new VisualBridge.Runtime.VisualBridgeUtf8LineReader();
-            var bytes = Encoding.UTF8.GetBytes("第一行\n第二行\n");
+            var reader = new VisualBridge.Runtime.VisualBridgeFrameReader();
+            var first = VisualBridge.Runtime.VisualBridgeFraming.EncodeFrame(
+                VisualBridge.Runtime.VisualBridgeChannel.Editor,
+                VisualBridge.Runtime.VisualBridgePayloadKind.Json,
+                Encoding.UTF8.GetBytes("第一帧"));
+            var second = VisualBridge.Runtime.VisualBridgeFraming.EncodeFrame(
+                VisualBridge.Runtime.VisualBridgeChannel.Debug,
+                VisualBridge.Runtime.VisualBridgePayloadKind.Binary,
+                new byte[] { 1, 2, 3 });
+            var bytes = new byte[first.Length + second.Length];
+            Buffer.BlockCopy(first, 0, bytes, 0, first.Length);
+            Buffer.BlockCopy(second, 0, bytes, first.Length, second.Length);
             reader.Append(bytes, 0, bytes.Length);
-            Assert.That(reader.TryReadLine(out var first), Is.True);
-            Assert.That(first, Is.EqualTo("第一行"));
-            Assert.That(reader.TryReadLine(out var second), Is.True);
-            Assert.That(second, Is.EqualTo("第二行"));
-            Assert.That(reader.TryReadLine(out _), Is.False);
+            Assert.That(reader.TryReadFrame(out var firstFrame), Is.True);
+            Assert.That(Encoding.UTF8.GetString(firstFrame.Payload), Is.EqualTo("第一帧"));
+            Assert.That(reader.TryReadFrame(out var secondFrame), Is.True);
+            Assert.That(secondFrame.Channel, Is.EqualTo(VisualBridge.Runtime.VisualBridgeChannel.Debug));
+            Assert.That(secondFrame.Payload, Is.EqualTo(new byte[] { 1, 2, 3 }));
+            Assert.That(reader.TryReadFrame(out _), Is.False);
         }
 
         private static int IndexOfBytes(byte[] haystack, byte[] needle)
@@ -1200,15 +1222,15 @@ namespace VisualBridge.Editor.Tests
         }
 
         /// <summary>
-        /// 测试用最小同步 TCP 客户端：连接后按 NDJSON 行收发，
+        /// 测试用最小同步 TCP 客户端：连接后按统一协议的 6 字节帧收发，
         /// 用 Runtime 校验器解析每条服务端消息。
         /// </summary>
         private sealed class RuntimeBridgeTestClient : IDisposable
         {
             private readonly TcpClient client;
             private readonly NetworkStream stream;
-            private readonly VisualBridge.Runtime.VisualBridgeUtf8LineReader lineReader =
-                new VisualBridge.Runtime.VisualBridgeUtf8LineReader();
+            private readonly VisualBridge.Runtime.VisualBridgeFrameReader frameReader =
+                new VisualBridge.Runtime.VisualBridgeFrameReader();
             private readonly byte[] readBuffer = new byte[8192];
 
             private RuntimeBridgeTestClient(TcpClient client, NetworkStream stream)
@@ -1235,14 +1257,17 @@ namespace VisualBridge.Editor.Tests
 
             public void Send(string line)
             {
-                var bytes = Encoding.UTF8.GetBytes(line + "\n");
-                stream.Write(bytes, 0, bytes.Length);
+                var frame = VisualBridge.Runtime.VisualBridgeFraming.EncodeFrame(
+                    VisualBridge.Runtime.VisualBridgeChannel.Editor,
+                    VisualBridge.Runtime.VisualBridgePayloadKind.Json,
+                    Encoding.UTF8.GetBytes(line));
+                stream.Write(frame, 0, frame.Length);
                 stream.Flush();
             }
 
             public VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessage ReadMessage()
             {
-                return VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(ReadLine());
+                return VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(ReadPayload());
             }
 
             /// <summary>轮询读取直到出现目标事件或超时；期间跳过其它消息。</summary>
@@ -1288,27 +1313,29 @@ namespace VisualBridge.Editor.Tests
                 }
             }
 
-            private string ReadLine()
+            private string ReadPayload()
             {
                 while (true)
                 {
-                    if (lineReader.TryReadLine(out var line))
+                    while (frameReader.TryReadFrame(out var frame))
                     {
-                        if (line.Trim().Length > 0)
+                        // 该测试客户端只消费控制通道消息。
+                        if (frame.Channel != VisualBridge.Runtime.VisualBridgeChannel.Editor)
                         {
-                            return line;
+                            continue;
                         }
 
-                        continue;
+                        return Encoding.UTF8.GetString(frame.Payload);
                     }
 
                     var read = stream.Read(readBuffer, 0, readBuffer.Length);
                     if (read == 0)
                     {
+                        frameReader.DiscardPending();
                         throw new IOException("connection closed by the server.");
                     }
 
-                    lineReader.Append(readBuffer, 0, read);
+                    frameReader.Append(readBuffer, 0, read);
                 }
             }
 

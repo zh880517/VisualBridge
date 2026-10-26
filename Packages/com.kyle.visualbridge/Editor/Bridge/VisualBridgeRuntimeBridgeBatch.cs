@@ -353,12 +353,13 @@ namespace VisualBridge.Editor
                 {
                     stream.ReadTimeout = ReadTimeoutMs;
                     stream.WriteTimeout = ReadTimeoutMs;
+                    var frameReader = new VisualBridgeFrameReader();
 
                     var hello = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.CreateHello(
                         Guid.NewGuid().ToString(), record.Token, new[] { "snapshot", "events" });
                     WriteLine(stream, hello.ToLine());
 
-                    var welcome = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(ReadLine(stream));
+                    var welcome = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(ReadMessage(stream, frameReader));
                     if (welcome.Type != VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome)
                     {
                         throw new InvalidOperationException("expected a welcome message, received '" + welcome.Type + "'.");
@@ -372,7 +373,7 @@ namespace VisualBridge.Editor
                     var request = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.CreateSnapshotRequest("req-e2e-1", null);
                     WriteLine(stream, request.ToLine());
 
-                    var response = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(ReadLine(stream));
+                    var response = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(ReadMessage(stream, frameReader));
                     if (response.Type != VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Response || !response.IsOk)
                     {
                         throw new InvalidOperationException("expected an ok snapshot response.");
@@ -425,20 +426,28 @@ namespace VisualBridge.Editor
 
         private static void WriteLine(NetworkStream stream, string line)
         {
-            var bytes = Encoding.UTF8.GetBytes(line + "\n");
-            stream.Write(bytes, 0, bytes.Length);
+            var frame = VisualBridgeFraming.EncodeFrame(
+                VisualBridgeChannel.Editor,
+                VisualBridgePayloadKind.Json,
+                Encoding.UTF8.GetBytes(line));
+            stream.Write(frame, 0, frame.Length);
             stream.Flush();
         }
 
-        private static string ReadLine(NetworkStream stream)
+        private static string ReadMessage(NetworkStream stream, VisualBridgeFrameReader reader)
         {
             var buffer = new byte[8192];
-            var reader = new VisualBridgeUtf8LineReader();
             while (true)
             {
-                if (reader.TryReadLine(out var line))
+                while (reader.TryReadFrame(out var frame))
                 {
-                    return line;
+                    // 该自检客户端只消费控制通道；调试帧不属于本批次的业务消息。
+                    if (frame.Channel != VisualBridgeChannel.Editor)
+                    {
+                        continue;
+                    }
+
+                    return Encoding.UTF8.GetString(frame.Payload);
                 }
 
                 var read = stream.Read(buffer, 0, buffer.Length);

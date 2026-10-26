@@ -7,6 +7,7 @@ const { tmpdir } = require("node:os");
 const path = require("node:path");
 const vscode = require("vscode");
 const ExcelJS = require("exceljs");
+const { attachJsonReader, encodeFrame, KIND_JSON, sendJson } = require("../support/bridgeFrames.cjs");
 
 const EXTENSION_ID = "kyl.visualbridge";
 const EXPECTED_COMMANDS = [
@@ -2035,8 +2036,9 @@ exports.run = async function run() {
     assert.equal(baseline.projectId, "visualbridge.structured-semantics");
     await assert.rejects(
       vscode.commands.executeCommand("visualbridge.test.applyProjectOperations", uri, "0".repeat(64), [{
-        type: "project.setTableLayout",
-        tableLayout: { nameKeyRow: 1, dataStartRow: 3 },
+        type: "project.setModuleOptions",
+        moduleId: "visualbridge.table",
+        options: { tableLayout: { nameKeyRow: 1, dataStartRow: 3 } },
       }]),
       /sourceHash conflict/u,
     );
@@ -2121,8 +2123,9 @@ exports.run = async function run() {
 
     const concurrent = await Promise.allSettled([3, 4].map((dataStartRow) => (
       vscode.commands.executeCommand("visualbridge.test.applyProjectOperations", uri, baseline.sourceHash, [{
-        type: "project.setTableLayout",
-        tableLayout: { nameKeyRow: 1, dataStartRow },
+        type: "project.setModuleOptions",
+        moduleId: "visualbridge.table",
+        options: { tableLayout: { nameKeyRow: 1, dataStartRow } },
       }])
     )));
     assert.equal(concurrent.filter((entry) => entry.status === "fulfilled").length, 1);
@@ -2136,8 +2139,9 @@ exports.run = async function run() {
       "Project Settings Operation was not applied.",
     );
     const changed = JSON.parse((await vscode.workspace.openTextDocument(uri)).getText());
-    assert.equal(changed.tableLayout.nameKeyRow, 1);
-    assert.ok(changed.tableLayout.dataStartRow === 3 || changed.tableLayout.dataStartRow === 4);
+    const changedTableModule = changed.modules.find((module) => module.id === "visualbridge.table");
+    assert.equal(changedTableModule.options.tableLayout.nameKeyRow, 1);
+    assert.ok(changedTableModule.options.tableLayout.dataStartRow === 3 || changedTableModule.options.tableLayout.dataStartRow === 4);
     await vscode.commands.executeCommand("undo");
     await waitForAsync(
       () => vscode.commands.executeCommand("visualbridge.test.getProjectSettingsState", uri),
@@ -2230,23 +2234,13 @@ exports.run = async function run() {
         socket.once("connect", resolve);
         socket.once("error", reject);
       });
-      socket.setEncoding("utf8");
       const lines = [];
-      let buffer = "";
-      socket.on("data", (chunk) => {
-        buffer += chunk;
-        let index;
-        while ((index = buffer.indexOf("\n")) >= 0) {
-          const line = buffer.slice(0, index);
-          buffer = buffer.slice(index + 1);
-          if (line.trim().length > 0) lines.push(JSON.parse(line));
-        }
-      });
+      attachJsonReader(socket, (message) => lines.push(message));
       return {
         socket,
         lines,
-        send: (message) => socket.write(`${JSON.stringify(message)}\n`),
-        sendRaw: (line) => socket.write(`${line}\n`),
+        send: (message) => sendJson(socket, message),
+        sendRaw: (line) => socket.write(encodeFrame(0, KIND_JSON, Buffer.from(line, "utf8"))),
         waitForLine: async (predicate, message) => {
           await waitForAsync(() => lines.find(predicate), (value) => value !== undefined, 20_000, message);
           return lines.find(predicate);
@@ -2423,19 +2417,10 @@ exports.run = async function run() {
     ];
     const actions = [];
     let leaseHolder = null;
-    const send = (socket, message) => socket.write(`${JSON.stringify(message)}\n`);
+    const send = (socket, message) => sendJson(socket, message);
     const server = net.createServer((socket) => {
-      socket.setEncoding("utf8");
-      let buffer = "";
       let handshake = false;
-      socket.on("data", (chunk) => {
-        buffer += chunk;
-        let index;
-        while ((index = buffer.indexOf("\n")) >= 0) {
-          const line = buffer.slice(0, index);
-          buffer = buffer.slice(index + 1);
-          if (line.trim().length === 0) continue;
-          const message = JSON.parse(line);
+      attachJsonReader(socket, (message) => {
           if (!handshake) {
             if (message.type === "hello" && message.token === token && message.protocolVersion === 1) {
               handshake = true;
@@ -2453,10 +2438,10 @@ exports.run = async function run() {
               send(socket, { type: "error", code: "runtime.invalidToken" });
               socket.destroy();
             }
-            continue;
+            return;
           }
 
-          if (message.type !== "request") continue;
+          if (message.type !== "request") return;
           actions.push({ action: message.action });
           if (message.action === "getSnapshot") {
             send(socket, { type: "response", requestId: message.requestId, status: "ok", documents });
@@ -2488,7 +2473,6 @@ exports.run = async function run() {
           } else {
             send(socket, { type: "response", requestId: message.requestId, status: "error", error: "runtime.unknownRequest" });
           }
-        }
       });
       // 断线自动释放租约（对齐 §18.3 单控制者语义）。
       socket.on("close", () => {
@@ -2556,18 +2540,8 @@ exports.run = async function run() {
           second.once("connect", resolve);
           second.once("error", reject);
         });
-        second.setEncoding("utf8");
         const lines = [];
-        let lineBuffer = "";
-        second.on("data", (chunk) => {
-          lineBuffer += chunk;
-          let index;
-          while ((index = lineBuffer.indexOf("\n")) >= 0) {
-            const line = lineBuffer.slice(0, index);
-            lineBuffer = lineBuffer.slice(index + 1);
-            if (line.trim().length > 0) lines.push(JSON.parse(line));
-          }
-        });
+        attachJsonReader(second, (message) => lines.push(message));
         send(second, {
           type: "hello",
           protocolVersion: 1,
@@ -2623,24 +2597,15 @@ exports.run = async function run() {
     let executionActive = true;
     const subscribers = new Set();
     const actions = [];
-    const send = (socket, message) => socket.write(`${JSON.stringify(message)}\n`);
+    const send = (socket, message) => sendJson(socket, message);
     const pushBatch = (events) => {
       for (const socket of subscribers) {
         send(socket, { type: "event", event: "graphExecution", executionEvents: events });
       }
     };
     const server = net.createServer((socket) => {
-      socket.setEncoding("utf8");
-      let buffer = "";
       let handshake = false;
-      socket.on("data", (chunk) => {
-        buffer += chunk;
-        let index;
-        while ((index = buffer.indexOf("\n")) >= 0) {
-          const line = buffer.slice(0, index);
-          buffer = buffer.slice(index + 1);
-          if (line.trim().length === 0) continue;
-          const message = JSON.parse(line);
+      attachJsonReader(socket, (message) => {
           if (!handshake) {
             if (message.type === "hello" && message.token === token && message.protocolVersion === 1) {
               handshake = true;
@@ -2658,10 +2623,10 @@ exports.run = async function run() {
               send(socket, { type: "error", code: "runtime.invalidToken" });
               socket.destroy();
             }
-            continue;
+            return;
           }
 
-          if (message.type !== "request") continue;
+          if (message.type !== "request") return;
           actions.push({ action: message.action });
           if (message.action === "getGraphExecutionInstances") {
             const executions = executionActive
@@ -2693,7 +2658,6 @@ exports.run = async function run() {
           } else {
             send(socket, { type: "response", requestId: message.requestId, status: "error", error: "runtime.unknownRequest" });
           }
-        }
       });
       socket.on("close", () => {
         subscribers.delete(socket);
@@ -2753,18 +2717,8 @@ exports.run = async function run() {
         observer.once("connect", resolve);
         observer.once("error", reject);
       });
-      observer.setEncoding("utf8");
       const observerLines = [];
-      let observerBuffer = "";
-      observer.on("data", (chunk) => {
-        observerBuffer += chunk;
-        let index;
-        while ((index = observerBuffer.indexOf("\n")) >= 0) {
-          const line = observerBuffer.slice(0, index);
-          observerBuffer = observerBuffer.slice(index + 1);
-          if (line.trim().length > 0) observerLines.push(JSON.parse(line));
-        }
-      });
+      attachJsonReader(observer, (message) => observerLines.push(message));
       send(observer, {
         type: "hello",
         protocolVersion: 1,
@@ -2885,24 +2839,15 @@ exports.run = async function run() {
     let executionActive = true;
     const subscribers = new Set();
     const actions = [];
-    const send = (socket, message) => socket.write(`${JSON.stringify(message)}\n`);
+    const send = (socket, message) => sendJson(socket, message);
     const pushBatch = (events) => {
       for (const socket of subscribers) {
         send(socket, { type: "event", event: "graphExecution", executionEvents: events });
       }
     };
     const server = net.createServer((socket) => {
-      socket.setEncoding("utf8");
-      let buffer = "";
       let handshake = false;
-      socket.on("data", (chunk) => {
-        buffer += chunk;
-        let index;
-        while ((index = buffer.indexOf("\n")) >= 0) {
-          const line = buffer.slice(0, index);
-          buffer = buffer.slice(index + 1);
-          if (line.trim().length === 0) continue;
-          const message = JSON.parse(line);
+      attachJsonReader(socket, (message) => {
           if (!handshake) {
             if (message.type === "hello" && message.token === token && message.protocolVersion === 1) {
               handshake = true;
@@ -2920,10 +2865,10 @@ exports.run = async function run() {
               send(socket, { type: "error", code: "runtime.invalidToken" });
               socket.destroy();
             }
-            continue;
+            return;
           }
 
-          if (message.type !== "request") continue;
+          if (message.type !== "request") return;
           actions.push({ action: message.action });
           if (message.action === "getGraphExecutionInstances") {
             const executions = executionActive
@@ -2955,7 +2900,6 @@ exports.run = async function run() {
           } else {
             send(socket, { type: "response", requestId: message.requestId, status: "error", error: "runtime.unknownRequest" });
           }
-        }
       });
       socket.on("close", () => {
         subscribers.delete(socket);

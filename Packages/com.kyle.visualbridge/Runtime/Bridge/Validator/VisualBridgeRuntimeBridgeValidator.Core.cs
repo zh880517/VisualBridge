@@ -72,7 +72,7 @@ namespace VisualBridge.Runtime
             "runtime.unknownRequest",
         };
 
-        /// <summary>解析并校验一行 NDJSON 消息；非法 JSON 报 runtime.invalidJson。</summary>
+        /// <summary>解析并校验一条消息 JSON 文本；非法 JSON 报 runtime.invalidJson。</summary>
         public static VisualBridgeRuntimeBridgeMessage ParseMessage(string line)
         {
             return ValidateMessage(ParseObject(line, "runtime.invalidJson"));

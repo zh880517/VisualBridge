@@ -21,8 +21,8 @@ namespace VisualBridge.Editor
         private static void OpenSampleDocumentFromMenu()
         {
             var response = VisualBridgeEditorBridgeService.Instance.OpenDocumentWithRetry(
-                "Config/Game.gamesettings", null, E2ETotalTimeoutMs, message => Debug.Log($"[bridge] {message}"));
-            Debug.Log($"[bridge] open result: {(response.IsOk ? "ok" : response.ErrorCode)}");
+                "Config/Game.gamesettings", null, E2ETotalTimeoutMs, message => UnityEngine.Debug.Log($"[bridge] {message}"));
+            UnityEngine.Debug.Log($"[bridge] open result: {(response.IsOk ? "ok" : response.ErrorCode)}");
         }
 
         /// <summary>
@@ -36,7 +36,7 @@ namespace VisualBridge.Editor
             var resultPath = Environment.GetEnvironmentVariable("VISUALBRIDGE_BRIDGE_E2E_RESULT");
             if (string.IsNullOrEmpty(resultPath))
             {
-                Debug.LogError("[bridge] VISUALBRIDGE_BRIDGE_E2E_RESULT is required for the bridge E2E run.");
+                UnityEngine.Debug.LogError("[bridge] VISUALBRIDGE_BRIDGE_E2E_RESULT is required for the bridge E2E run.");
                 EditorApplication.Exit(FailureExitCode);
                 return;
             }
@@ -46,7 +46,7 @@ namespace VisualBridge.Editor
             try
             {
                 var openResponse = VisualBridgeEditorBridgeService.Instance.OpenDocumentWithRetry(
-                    documentPath, null, E2ETotalTimeoutMs, message => Debug.Log($"[bridge] open: {message}"));
+                    documentPath, null, E2ETotalTimeoutMs, message => UnityEngine.Debug.Log($"[bridge] open: {message}"));
                 result.Append($"open={(openResponse.IsOk ? "ok" : openResponse.ErrorCode)}\n");
                 if (!openResponse.IsOk)
                 {
@@ -54,7 +54,7 @@ namespace VisualBridge.Editor
                 }
 
                 var revealResponse = VisualBridgeEditorBridgeService.Instance.RevealReferenceWithRetry(
-                    referenceValue, false, null, E2ETotalTimeoutMs, message => Debug.Log($"[bridge] reveal: {message}"));
+                    referenceValue, false, null, E2ETotalTimeoutMs, message => UnityEngine.Debug.Log($"[bridge] reveal: {message}"));
                 result.Append($"reveal={(revealResponse.IsOk ? "ok" : revealResponse.ErrorCode)}\n");
                 if (!revealResponse.IsOk)
                 {
@@ -73,7 +73,7 @@ namespace VisualBridge.Editor
             }
             catch (Exception exception)
             {
-                Debug.LogError($"[bridge] failed to write the E2E result: {exception.Message}");
+                UnityEngine.Debug.LogError($"[bridge] failed to write the E2E result: {exception.Message}");
                 EditorApplication.Exit(FailureExitCode);
                 return;
             }
