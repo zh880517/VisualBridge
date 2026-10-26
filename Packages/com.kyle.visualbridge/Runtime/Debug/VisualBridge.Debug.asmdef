@@ -1,0 +1,16 @@
+{
+  "name": "VisualBridge.Debug",
+  "rootNamespace": "VisualBridge.Diagnostics",
+  "references": [
+    "VisualBridge.Runtime"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": true
+}

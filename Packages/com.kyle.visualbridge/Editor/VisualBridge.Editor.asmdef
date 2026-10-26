@@ -2,7 +2,8 @@
   "name": "VisualBridge.Editor",
   "rootNamespace": "VisualBridge.Editor",
   "references": [
-    "VisualBridge.Runtime"
+    "VisualBridge.Runtime",
+    "VisualBridge.Debug"
   ],
   "includePlatforms": [
     "Editor"
