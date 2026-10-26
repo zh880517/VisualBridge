@@ -95,6 +95,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     references,
     documentDiagnostics,
     output,
+    modules,
   );
   // Table 编辑器入口统一走模块门禁：未受信任/模块失败时只给只读 Shell（P0）。
   const tableEditorGate = new TableEditorGate(tableEditorProvider, projects, modules, output);
@@ -382,8 +383,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       ),
       vscode.commands.registerCommand(
         "visualbridge.test.applyDocumentOperations",
-        (uri: vscode.Uri, editor: "entity" | "graph" | "structured", operations: unknown) => (
-          editorProvider.applyOperationsForTest(uri, editor, operations)
+        (uri: vscode.Uri, editor: "entity" | "graph" | "structured", operations: unknown, revision?: number) => (
+          editorProvider.applyOperationsForTest(uri, editor, operations, revision)
+        ),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.getEditorLastRejection",
+        (uri: vscode.Uri) => editorProvider.getLastRejection(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.getEditorLastOperationCompleted",
+        (uri: vscode.Uri) => editorProvider.getLastOperationCompleted(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.getTableLastOperationCompleted",
+        (uri: vscode.Uri) => tableEditorProvider.getLastOperationCompleted(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.backupTableDocument",
+        (uri: vscode.Uri, destination: vscode.Uri) => tableEditorProvider.backupForTest(uri, destination),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.restoreTableDocumentFromBackup",
+        (uri: vscode.Uri, backup: vscode.Uri, save?: boolean) => (
+          tableEditorProvider.restoreFromBackupForTest(uri, backup, save === true)
+        ),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.revertTableDocument",
+        (uri: vscode.Uri) => tableEditorProvider.revertForTest(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.getTableLastRejection",
+        (uri: vscode.Uri) => tableEditorProvider.getLastRejection(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.applyTableOperationsWithRevision",
+        (uri: vscode.Uri, operations: unknown, revision: number) => (
+          tableEditorProvider.applyOperationsWithRevisionForTest(uri, operations, revision)
         ),
       ),
       vscode.commands.registerCommand(
@@ -731,12 +768,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!isReferenceLocation(location)) {
         throw new Error("Invalid VisualBridge reference location.");
       }
-      if (isGraphElementReferenceLocation(location)) {
-        await editorProvider.revealGraphReference(location);
-        return;
-      }
-      if (isEntityComponentReferenceLocation(location)) {
-        await editorProvider.revealEntityReference(location);
+      if (isGraphElementReferenceLocation(location) || isEntityComponentReferenceLocation(location)) {
+        await editorProvider.revealElementReference(location);
         return;
       }
       const project = projects.projects.find((candidate) => candidate.definition.projectId === location.projectId);

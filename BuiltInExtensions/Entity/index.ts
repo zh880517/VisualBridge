@@ -3,3 +3,5 @@ export * from "./src/entityDocument";
 export * from "./src/entityDocumentAdapter";
 export * from "./src/entityLifecycle";
 export * from "./src/entityReferences";
+export * from "./src/entitySession";
+export * from "./src/moduleSessionContract";

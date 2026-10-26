@@ -7,5 +7,7 @@ export * from "./src/tableDocumentAdapter";
 export * from "./src/tableLifecycle";
 export * from "./src/tableReferences";
 export * from "./src/tableSearch";
+export * from "./src/tableSession";
 export * from "./src/tableSourceFactory";
 export * from "./src/xlsxCodec";
+export * from "./src/moduleSessionContract";

@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build --workspace @visualbridge/core && npm run build && node --test dist/test/structuredSemantics.test.js"
+    "test": "npm run build --workspace @visualbridge/core && npm run build && node --test dist/test/structuredSemantics.test.js dist/test/structuredSession.test.js"
   },
   "devDependencies": {
     "@types/node": "22.20.1",

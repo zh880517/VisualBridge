@@ -28,7 +28,14 @@ export function resolveProjectTableLayout(
   project: VisualBridgeProjectDefinition,
 ): TableLayoutDefinition | undefined {
   const module = project.modules.find((entry) => entry.id === TABLE_MODULE_ID);
-  const value = module?.options?.[TABLE_LAYOUT_OPTION];
+  return resolveTableLayoutFromOptions(module?.options);
+}
+
+/** 与 `resolveProjectTableLayout` 同一份校验，供只拿到模块 `options` 的调用方（会话控制器）使用。 */
+export function resolveTableLayoutFromOptions(options: unknown): TableLayoutDefinition | undefined {
+  const value = typeof options === "object" && options !== null && !Array.isArray(options)
+    ? (options as Readonly<Record<string, unknown>>)[TABLE_LAYOUT_OPTION]
+    : undefined;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return undefined;
   }

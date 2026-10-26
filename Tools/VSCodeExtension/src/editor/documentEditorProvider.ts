@@ -1,21 +1,24 @@
+/**
+ * 通用文档编辑器入口（B2）。
+ *
+ * 按 `HostModuleRegistry` 的 editor 可用性分派到两类会话：
+ * - `storage: "text"` → `ModuleTextEditorSession`（Entity / Graph / Structured 共用一份实现）；
+ * - `storage: "sources"` → 交给多源编辑器视图（`ModuleSourcesEditorProvider`）。
+ *
+ * 宿主内不再有按 `editor` 字面量分支的会话代码：领域差异全部来自模块的 `session` / `storage`
+ * facet（进程内适配见 `moduleEditorFacets.ts`，C2 换成 ModuleLoader）。模块不可用时仍回退 B1 的
+ * 只读 Shell，保持 Restricted Mode 门禁。
+ */
 import * as nodePath from "node:path";
 import * as vscode from "vscode";
 import type { ReferenceLocation } from "@visualbridge/core";
-import { ENTITY_EDITOR_ID } from "@visualbridge/entity";
-import { readEntityRevealTarget, type EntityRevealTarget } from "@visualbridge/entity-editor";
-import { GRAPH_EDITOR_ID } from "@visualbridge/graph";
-import { readGraphRevealTarget, type GraphRevealTarget } from "@visualbridge/graph-editor";
-import { STRUCTURED_EDITOR_ID } from "@visualbridge/structured";
-import { TABLE_EDITOR_ID } from "@visualbridge/table";
 import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
 import type { HostModuleRegistry } from "../modules/hostModuleRegistry";
 import type { ModuleEditorAvailability, ModuleEditorFallbackReason } from "../modules/moduleRegistration";
 import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
-import type { GraphExecutionDebugTestState } from "./graphExecutionDebugController";
-import { EntityEditorSession } from "./entityEditorSession";
-import { GraphEditorSession } from "./graphEditorSession";
-import { StructuredEditorSession } from "./structuredEditorSession";
-import { TABLE_EDITOR_VIEW_TYPE } from "./tableEditorProvider";
+import { SOURCES_EDITOR_VIEW_TYPE } from "../document/moduleSourcesEditorProvider";
+import { loadModuleEditorFacets, type ModuleEditorFacets } from "./moduleEditorFacets";
+import { ModuleTextEditorSession } from "./moduleTextEditorSession";
 import { createReadonlyShellHtml, readonlyShellTitle } from "./readonlyShell";
 
 export const DEFAULT_EDITOR_VIEW_TYPE = "visualbridge.documentEditor";
@@ -36,16 +39,13 @@ interface ReadonlyShell {
 }
 
 export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
-  private readonly graphSessions = new Map<string, Set<GraphEditorSession>>();
-  private readonly pendingGraphReveals = new Map<string, GraphRevealTarget>();
-  private readonly entitySessions = new Map<string, Set<EntityEditorSession>>();
-  private readonly pendingEntityReveals = new Map<string, EntityRevealTarget>();
-  private readonly structuredSessions = new Map<string, Set<StructuredEditorSession>>();
+  private readonly textSessions = new Map<string, Set<ModuleTextEditorSession>>();
+  private readonly pendingReveals = new Map<string, unknown>();
   private readonly initializedPanels = new Map<string, Set<vscode.WebviewPanel>>();
   /** 同一文档可以开多个只读 Shell（split），每个面板各自维护原因文案。 */
   private readonly readonlyShells = new Map<string, Set<ReadonlyShell>>();
   private readonly pendingReopens = new Set<string>();
-  /** 领域会话面板 → 它所属的文档；模块转 failed/stale 时据此关闭会话。 */
+  /** 文本会话面板 → 它所属的文档；模块转 failed/stale 时据此关闭会话。 */
   private readonly sessionPanels = new Map<
     vscode.WebviewPanel,
     { readonly documentUri: vscode.Uri; readonly match: DocumentMatch }
@@ -77,7 +77,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     }
 
     // 模块未装载（未信任 / 加载失败 / 已停用 / 未声明）时回退只读 Shell：不进入领域会话，
-    // 也不把文档交给 Table 编辑器，从而保证 Restricted Mode 下不执行任何模块代码。
+    // 也不把文档交给多源编辑器，从而保证 Restricted Mode 下不执行任何模块代码。
     await this.modules.ensureProject(match.project);
     const availability = this.modules.editorAvailability(match.project, match.documentType.editor);
     if (availability.kind === "unavailable") {
@@ -85,168 +85,68 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
       return;
     }
 
-    if (match.documentType.editor === TABLE_EDITOR_ID) {
+    const facets = await this.loadFacets(availability.moduleId);
+    if (facets === undefined) {
+      webviewPanel.webview.options = { enableScripts: true, localResourceRoots: [] };
+      webviewPanel.title = `${match.documentType.id}: ${nodePath.basename(document.uri.fsPath)}`;
+      webviewPanel.webview.html = createEditorHtml(webviewPanel.webview, match, document.getText());
+      this.registerFallbackPanel(document, webviewPanel);
+      return;
+    }
+
+    if (facets.storage === "sources") {
       webviewPanel.dispose();
-      await vscode.commands.executeCommand("vscode.openWith", document.uri, TABLE_EDITOR_VIEW_TYPE);
+      await vscode.commands.executeCommand("vscode.openWith", document.uri, SOURCES_EDITOR_VIEW_TYPE);
       return;
     }
 
-    if (match.documentType.editor === GRAPH_EDITOR_ID) {
-      webviewPanel.title = `${match.documentType.id}: ${nodePath.basename(document.uri.fsPath)}`;
-      const diagnosticsOwner = this.createDiagnosticsOwner(document.uri);
-      const session = new GraphEditorSession(
-        this.extensionUri,
-        document,
-        webviewPanel,
-        match,
-        this.projects,
-        this.references,
-        diagnosticsOwner.publish,
-        this.output,
-      );
-      const uriKey = document.uri.toString();
-      let sessions = this.graphSessions.get(uriKey);
-      if (sessions === undefined) {
-        sessions = new Set();
-        this.graphSessions.set(uriKey, sessions);
-      }
-      sessions.add(session);
-      this.sessionPanels.set(webviewPanel, { documentUri: document.uri, match });
-      const panelSubscription = webviewPanel.onDidDispose(() => {
-        this.sessionPanels.delete(webviewPanel);
-        diagnosticsOwner.dispose();
-        this.removeGraphSession(uriKey, session);
-      });
-      try {
-        await session.open();
-        const pendingReveal = this.pendingGraphReveals.get(uriKey);
-        if (pendingReveal !== undefined) {
-          this.pendingGraphReveals.delete(uriKey);
-          await session.reveal(pendingReveal);
-        }
-      } catch (error) {
-        panelSubscription.dispose();
-        this.sessionPanels.delete(webviewPanel);
-        diagnosticsOwner.dispose();
-        this.removeGraphSession(uriKey, session);
-        throw error;
-      }
-      return;
-    }
-
-    if (match.documentType.editor === ENTITY_EDITOR_ID) {
-      webviewPanel.title = `${match.documentType.id}: ${nodePath.basename(document.uri.fsPath)}`;
-      const diagnosticsOwner = this.createDiagnosticsOwner(document.uri);
-      const session = new EntityEditorSession(
-        this.extensionUri,
-        document,
-        webviewPanel,
-        match,
-        this.projects,
-        this.references,
-        diagnosticsOwner.publish,
-        this.output,
-      );
-      const uriKey = document.uri.toString();
-      let sessions = this.entitySessions.get(uriKey);
-      if (sessions === undefined) {
-        sessions = new Set();
-        this.entitySessions.set(uriKey, sessions);
-      }
-      sessions.add(session);
-      this.sessionPanels.set(webviewPanel, { documentUri: document.uri, match });
-      const panelSubscription = webviewPanel.onDidDispose(() => {
-        this.sessionPanels.delete(webviewPanel);
-        diagnosticsOwner.dispose();
-        this.removeEntitySession(uriKey, session);
-      });
-      try {
-        await session.open();
-        const pendingReveal = this.pendingEntityReveals.get(uriKey);
-        if (pendingReveal !== undefined) {
-          this.pendingEntityReveals.delete(uriKey);
-          await session.reveal(pendingReveal);
-        }
-      } catch (error) {
-        panelSubscription.dispose();
-        this.sessionPanels.delete(webviewPanel);
-        diagnosticsOwner.dispose();
-        this.removeEntitySession(uriKey, session);
-        throw error;
-      }
-      return;
-    }
-
-    if (match.documentType.editor === STRUCTURED_EDITOR_ID) {
-      webviewPanel.title = `${match.documentType.id}: ${nodePath.basename(document.uri.fsPath)}`;
-      const diagnosticsOwner = this.createDiagnosticsOwner(document.uri);
-      const session = new StructuredEditorSession(
-        this.extensionUri,
-        document,
-        webviewPanel,
-        match,
-        this.projects,
-        this.references,
-        diagnosticsOwner.publish,
-        this.output,
-      );
-      const uriKey = document.uri.toString();
-      let sessions = this.structuredSessions.get(uriKey);
-      if (sessions === undefined) {
-        sessions = new Set();
-        this.structuredSessions.set(uriKey, sessions);
-      }
-      sessions.add(session);
-      this.sessionPanels.set(webviewPanel, { documentUri: document.uri, match });
-      const panelSubscription = webviewPanel.onDidDispose(() => {
-        this.sessionPanels.delete(webviewPanel);
-        diagnosticsOwner.dispose();
-        this.removeStructuredSession(uriKey, session);
-      });
-      try {
-        await session.open();
-      } catch (error) {
-        panelSubscription.dispose();
-        this.sessionPanels.delete(webviewPanel);
-        diagnosticsOwner.dispose();
-        this.removeStructuredSession(uriKey, session);
-        throw error;
-      }
-      return;
-    }
-
-    webviewPanel.webview.options = { enableScripts: true, localResourceRoots: [] };
     webviewPanel.title = `${match.documentType.id}: ${nodePath.basename(document.uri.fsPath)}`;
-    webviewPanel.webview.html = createEditorHtml(webviewPanel.webview, match, document.getText());
-
-    const documentSubscription = vscode.workspace.onDidChangeTextDocument((event) => {
-      if (event.document.uri.toString() !== document.uri.toString()) {
-        return;
+    const diagnosticsOwner = this.createDiagnosticsOwner(document.uri);
+    const session = new ModuleTextEditorSession({
+      extensionUri: this.extensionUri,
+      document,
+      panel: webviewPanel,
+      match,
+      projects: this.projects,
+      references: this.references,
+      publishDiagnostics: diagnosticsOwner.publish,
+      output: this.output,
+      facets,
+      controller: facets.createController(),
+      options: moduleOptions(match, availability.moduleId),
+    });
+    const uriKey = document.uri.toString();
+    let sessions = this.textSessions.get(uriKey);
+    if (sessions === undefined) {
+      sessions = new Set();
+      this.textSessions.set(uriKey, sessions);
+    }
+    sessions.add(session);
+    this.sessionPanels.set(webviewPanel, { documentUri: document.uri, match });
+    const panelSubscription = webviewPanel.onDidDispose(() => {
+      this.sessionPanels.delete(webviewPanel);
+      diagnosticsOwner.dispose();
+      this.removeSession(uriKey, session);
+    });
+    try {
+      await session.open();
+      const pendingReveal = this.pendingReveals.get(uriKey);
+      if (pendingReveal !== undefined) {
+        this.pendingReveals.delete(uriKey);
+        await session.reveal(pendingReveal);
       }
-      void webviewPanel.webview.postMessage({ type: "documentChanged", text: event.document.getText() });
-    });
-
-    const projectSubscription = this.projects.onDidChange(() => {
-      const refreshedMatch = this.projects.resolveDocument(document.uri);
-      if (refreshedMatch === undefined) {
-        webviewPanel.dispose();
-        void vscode.commands.executeCommand("vscode.openWith", document.uri, "default");
-      }
-    });
-
-    webviewPanel.onDidDispose(() => {
-      documentSubscription.dispose();
-      projectSubscription.dispose();
-      this.removeInitializedPanel(document.uri.toString(), webviewPanel);
-    });
-    this.addInitializedPanel(document.uri.toString(), webviewPanel);
+    } catch (error) {
+      panelSubscription.dispose();
+      this.sessionPanels.delete(webviewPanel);
+      diagnosticsOwner.dispose();
+      this.removeSession(uriKey, session);
+      throw error;
+    }
   }
 
   public isEditorReady(uri: vscode.Uri): boolean {
     const uriKey = uri.toString();
-    return [...this.graphSessions.get(uriKey) ?? []].some((session) => session.isReady)
-      || [...this.entitySessions.get(uriKey) ?? []].some((session) => session.isReady)
-      || [...this.structuredSessions.get(uriKey) ?? []].some((session) => session.isReady)
+    return [...this.textSessions.get(uriKey) ?? []].some((session) => session.isReady)
       || (this.initializedPanels.get(uriKey)?.size ?? 0) > 0;
   }
 
@@ -270,7 +170,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
 
   /**
    * 模块状态变化后重算：
-   * - 领域会话（Graph/Entity/Structured）失去模块时关闭，避免继续跑领域代码；
+   * - 领域会话失去模块时关闭，避免继续跑领域代码；
    * - 已可用的只读 Shell 重新按正常路径打开，其余只更新提示文案。
    * 模块装载完成（例如授予 Trust）后无需重载窗口。
    */
@@ -296,6 +196,193 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
       this.refreshingShells = false;
     }
     for (const uri of reopen) this.scheduleEditorReopen(uri);
+  }
+
+  public getGraphEditorTestState(uri: vscode.Uri): {
+    readonly sessionCount: number;
+    readonly readySessionCount: number;
+    readonly activeSessionCount: number;
+    readonly visibleSessionCount: number;
+    readonly maxReadyGeneration: number;
+    readonly diagnosticOwnerCount: number;
+    readonly publishedDiagnosticCount: number;
+    readonly sessionIds: readonly number[];
+    readonly readyTokens: readonly string[];
+    readonly lastRevealResults: readonly {
+      readonly target: unknown;
+      readonly found: boolean;
+    }[];
+    readonly debugStates: readonly unknown[];
+  } {
+    const uriKey = uri.toString();
+    const sessions = [...this.textSessions.get(uriKey) ?? []];
+    const states = sessions.map((session) => session.testState);
+    return {
+      sessionCount: states.length,
+      readySessionCount: states.filter((state) => state.ready).length,
+      activeSessionCount: states.filter((state) => state.active).length,
+      visibleSessionCount: states.filter((state) => state.visible).length,
+      sessionIds: sessions.map((session) => session.testSessionId),
+      readyTokens: states.flatMap((state) => state.readyToken === undefined ? [] : [state.readyToken]),
+      lastRevealResults: states.flatMap((state) => (
+        state.lastRevealResult === undefined ? [] : [state.lastRevealResult]
+      )),
+      debugStates: sessions.flatMap((session) => session.debugTestState === undefined ? [] : [session.debugTestState]),
+      maxReadyGeneration: states.reduce(
+        (maximum, state) => Math.max(maximum, state.readyGeneration),
+        0,
+      ),
+      diagnosticOwnerCount: this.sessionDiagnostics.get(uriKey)?.size ?? 0,
+      publishedDiagnosticCount: this.diagnostics.get(uri)?.length ?? 0,
+    };
+  }
+
+  /** 首个 Graph 会话的执行调试状态（测试轮询用）。 */
+  public getGraphEditorDebugState(uri: vscode.Uri): unknown {
+    return [...this.textSessions.get(uri.toString()) ?? []][0]?.debugTestState;
+  }
+
+  /** 向首个 Graph 会话注入执行调试消息（带 token，与真实 Webview 同路径）。 */
+  public async sendGraphEditorDebugMessage(uri: vscode.Uri, message: unknown): Promise<void> {
+    const session = [...this.textSessions.get(uri.toString()) ?? []][0];
+    if (session === undefined) throw new Error("No active graph editor session was found.");
+    await session.sendDebugMessageForTest(message);
+  }
+
+  public getEntityEditorTestState(uri: vscode.Uri): {
+    readonly sessionCount: number;
+    readonly readySessionCount: number;
+    readonly lastRevealResults: readonly {
+      readonly target: unknown;
+      readonly found: boolean;
+    }[];
+  } {
+    const states = [...this.textSessions.get(uri.toString()) ?? []].map((session) => session.testState);
+    return {
+      sessionCount: states.length,
+      readySessionCount: states.filter((state) => state.ready).length,
+      lastRevealResults: states.flatMap((state) => (
+        state.lastRevealResult === undefined ? [] : [state.lastRevealResult]
+      )),
+    };
+  }
+
+  public assertIdentityOperationsAllowedForTest(
+    uri: vscode.Uri,
+    editor: string,
+    operations: unknown,
+  ): void {
+    const session = [...this.textSessions.get(uri.toString()) ?? []][0];
+    if (session === undefined) throw new Error(`No active ${editor} editor session was found.`);
+    session.assertOperationsAllowedForTest(operations);
+  }
+
+  public async applyOperationsForTest(
+    uri: vscode.Uri,
+    editor: string,
+    operations: unknown,
+    revisionOverride?: number,
+  ): Promise<void> {
+    const session = [...this.textSessions.get(uri.toString()) ?? []][0];
+    if (session === undefined) throw new Error(`No active ${editor} editor session was found.`);
+    await session.applyOperationsForTest(operations, revisionOverride);
+  }
+
+  /** 最近一次拒绝文案（宿主测试断言"可读提示"用）。 */
+  public getLastRejection(uri: vscode.Uri): string | undefined {
+    return [...this.textSessions.get(uri.toString()) ?? []][0]?.lastRejection;
+  }
+
+  /** 最近一次 `operationCompleted`（宿主测试断言宿主盖章的修订号用）。 */
+  public getLastOperationCompleted(uri: vscode.Uri): Readonly<Record<string, unknown>> | undefined {
+    return [...this.textSessions.get(uri.toString()) ?? []][0]?.lastOperationCompleted;
+  }
+
+  public async applyOperationsAfterExternalWriteForTest(
+    uri: vscode.Uri,
+    externalText: string,
+    operations: unknown,
+  ): Promise<void> {
+    const session = [...this.textSessions.get(uri.toString()) ?? []][0];
+    if (session === undefined) throw new Error("No active structured editor session was found.");
+    await session.applyOperationsAfterExternalWriteForTest(externalText, operations);
+  }
+
+  /** 元素级定位：目标形状由模块的 `reveal` facet 解析（Graph 节点 / Entity 组件…）。 */
+  public async revealElementReference(location: ReferenceLocation): Promise<void> {
+    if (!isProjectRelativePath(location.path)) {
+      throw new Error("Invalid VisualBridge reference location.");
+    }
+    const project = this.projects.projects.find(
+      (candidate) => candidate.definition.projectId === location.projectId,
+    );
+    if (project === undefined) {
+      throw new Error(`VisualBridge Project '${location.projectId}' is not open.`);
+    }
+    const uri = vscode.Uri.joinPath(project.rootUri, ...location.path.split("/"));
+    const match = this.projects.resolveDocument(uri);
+    if (match?.project.markerUri.toString() !== project.markerUri.toString()
+      || match.documentType.id !== location.documentTypeId) {
+      throw new Error("Reference location is outside its declared Project Document Type.");
+    }
+    await this.modules.ensureProject(project);
+    const availability = this.modules.editorAvailability(project, match.documentType.editor);
+    if (availability.kind === "unavailable") {
+      // 只读回退：定位目标形状由模块解析，模块未加载时不解析任何领域数据，只打开只读 Shell。
+      await vscode.commands.executeCommand("vscode.openWith", uri, OPTIONAL_EDITOR_VIEW_TYPE);
+      return;
+    }
+    const facets = await this.loadFacets(availability.moduleId);
+    const target = facets?.reveal?.readTarget(location);
+    if (target === undefined) {
+      throw new Error(facets?.reveal?.invalidLocationMessage ?? "Invalid VisualBridge reference location.");
+    }
+    const uriKey = uri.toString();
+    const session = [...this.textSessions.get(uriKey) ?? []][0];
+    if (session !== undefined) {
+      await session.reveal(target);
+      return;
+    }
+    this.pendingReveals.set(uriKey, target);
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", uri, OPTIONAL_EDITOR_VIEW_TYPE);
+    } catch (error) {
+      if (this.pendingReveals.get(uriKey) === target) {
+        this.pendingReveals.delete(uriKey);
+      }
+      throw error;
+    }
+  }
+
+  private async loadFacets(moduleId: string): Promise<ModuleEditorFacets | undefined> {
+    try {
+      return await loadModuleEditorFacets(moduleId, { references: this.references });
+    } catch (errorValue) {
+      this.output.appendLine(`[modules] Editor facets for '${moduleId}' failed to load: ${String(errorValue)}`);
+      return undefined;
+    }
+  }
+
+  private registerFallbackPanel(document: vscode.TextDocument, webviewPanel: vscode.WebviewPanel): void {
+    const documentSubscription = vscode.workspace.onDidChangeTextDocument((event) => {
+      if (event.document.uri.toString() !== document.uri.toString()) {
+        return;
+      }
+      void webviewPanel.webview.postMessage({ type: "documentChanged", text: event.document.getText() });
+    });
+    const projectSubscription = this.projects.onDidChange(() => {
+      const refreshedMatch = this.projects.resolveDocument(document.uri);
+      if (refreshedMatch === undefined) {
+        webviewPanel.dispose();
+        void vscode.commands.executeCommand("vscode.openWith", document.uri, "default");
+      }
+    });
+    webviewPanel.onDidDispose(() => {
+      documentSubscription.dispose();
+      projectSubscription.dispose();
+      this.removeInitializedPanel(document.uri.toString(), webviewPanel);
+    });
+    this.addInitializedPanel(document.uri.toString(), webviewPanel);
   }
 
   private closeUnavailableSessions(): void {
@@ -396,205 +483,11 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     shell.panel.webview.html = createReadonlyShellHtml(shell.panel.webview, shell.match, shell.text, availability.message);
   }
 
-  public getGraphEditorTestState(uri: vscode.Uri): {
-    readonly sessionCount: number;
-    readonly readySessionCount: number;
-    readonly activeSessionCount: number;
-    readonly visibleSessionCount: number;
-    readonly maxReadyGeneration: number;
-    readonly diagnosticOwnerCount: number;
-    readonly publishedDiagnosticCount: number;
-    readonly sessionIds: readonly number[];
-    readonly readyTokens: readonly string[];
-    readonly lastRevealResults: readonly {
-      readonly target: GraphRevealTarget;
-      readonly found: boolean;
-    }[];
-    readonly debugStates: readonly GraphExecutionDebugTestState[];
-  } {
-    const uriKey = uri.toString();
-    const sessions = [...this.graphSessions.get(uriKey) ?? []];
-    const states = sessions.map((session) => session.testState);
-    return {
-      sessionCount: states.length,
-      readySessionCount: states.filter((state) => state.ready).length,
-      activeSessionCount: states.filter((state) => state.active).length,
-      visibleSessionCount: states.filter((state) => state.visible).length,
-      sessionIds: sessions.map((session) => session.testSessionId),
-      readyTokens: states.flatMap((state) => state.readyToken === undefined ? [] : [state.readyToken]),
-      lastRevealResults: states.flatMap((state) => (
-        state.lastRevealResult === undefined ? [] : [state.lastRevealResult]
-      )),
-      debugStates: sessions.map((session) => session.debugTestState),
-      maxReadyGeneration: states.reduce(
-        (maximum, state) => Math.max(maximum, state.readyGeneration),
-        0,
-      ),
-      diagnosticOwnerCount: this.sessionDiagnostics.get(uriKey)?.size ?? 0,
-      publishedDiagnosticCount: this.diagnostics.get(uri)?.length ?? 0,
-    };
-  }
-
-  /** 首个 Graph 会话的执行调试状态（测试轮询用）。 */
-  public getGraphEditorDebugState(uri: vscode.Uri): GraphExecutionDebugTestState | undefined {
-    const session = [...this.graphSessions.get(uri.toString()) ?? []][0];
-    return session === undefined ? undefined : session.debugTestState;
-  }
-
-  /** 向首个 Graph 会话注入执行调试消息（带 token，与真实 Webview 同路径）。 */
-  public async sendGraphEditorDebugMessage(uri: vscode.Uri, message: unknown): Promise<void> {
-    const session = [...this.graphSessions.get(uri.toString()) ?? []][0];
-    if (session === undefined) throw new Error("No active graph editor session was found.");
-    await session.sendDebugMessageForTest(message);
-  }
-
-  public getEntityEditorTestState(uri: vscode.Uri): {
-    readonly sessionCount: number;
-    readonly readySessionCount: number;
-    readonly lastRevealResults: readonly {
-      readonly target: EntityRevealTarget;
-      readonly found: boolean;
-    }[];
-  } {
-    const states = [...this.entitySessions.get(uri.toString()) ?? []].map((session) => session.testState);
-    return {
-      sessionCount: states.length,
-      readySessionCount: states.filter((state) => state.ready).length,
-      lastRevealResults: states.flatMap((state) => (
-        state.lastRevealResult === undefined ? [] : [state.lastRevealResult]
-      )),
-    };
-  }
-
-  public assertIdentityOperationsAllowedForTest(
-    uri: vscode.Uri,
-    editor: "entity" | "graph",
-    operations: unknown,
-  ): void {
-    const uriKey = uri.toString();
-    const session = editor === "entity"
-      ? [...this.entitySessions.get(uriKey) ?? []][0]
-      : [...this.graphSessions.get(uriKey) ?? []][0];
-    if (session === undefined) throw new Error(`No active ${editor} editor session was found.`);
-    session.assertIdentityOperationsAllowedForTest(operations);
-  }
-
-  public async applyOperationsForTest(
-    uri: vscode.Uri,
-    editor: "entity" | "graph" | "structured",
-    operations: unknown,
-  ): Promise<void> {
-    const uriKey = uri.toString();
-    const session = editor === "entity"
-      ? [...this.entitySessions.get(uriKey) ?? []][0]
-      : editor === "graph"
-        ? [...this.graphSessions.get(uriKey) ?? []][0]
-        : [...this.structuredSessions.get(uriKey) ?? []][0];
-    if (session === undefined) throw new Error(`No active ${editor} editor session was found.`);
-    await session.applyOperationsForTest(operations);
-  }
-
-  public async applyOperationsAfterExternalWriteForTest(
-    uri: vscode.Uri,
-    externalText: string,
-    operations: unknown,
-  ): Promise<void> {
-    const session = [...this.structuredSessions.get(uri.toString()) ?? []][0];
-    if (session === undefined) throw new Error("No active structured editor session was found.");
-    await session.applyOperationsAfterExternalWriteForTest(externalText, operations);
-  }
-
-  public async revealGraphReference(location: ReferenceLocation): Promise<void> {
-    const target = readGraphRevealTarget(location);
-    if (target === undefined || !isProjectRelativePath(location.path)) {
-      throw new Error("Invalid Graph element reference location.");
-    }
-    const project = this.projects.projects.find(
-      (candidate) => candidate.definition.projectId === location.projectId,
-    );
-    if (project === undefined) {
-      throw new Error(`VisualBridge Project '${location.projectId}' is not open.`);
-    }
-    const uri = vscode.Uri.joinPath(project.rootUri, ...location.path.split("/"));
-    const match = this.projects.resolveDocument(uri);
-    if (match?.project.markerUri.toString() !== project.markerUri.toString()
-      || match.documentType.editor !== GRAPH_EDITOR_ID
-      || match.documentType.id !== location.documentTypeId) {
-      throw new Error("Graph reference location is outside its declared Project Document Type.");
-    }
-    const uriKey = uri.toString();
-    const session = [...(this.graphSessions.get(uriKey) ?? [])][0];
-    if (session !== undefined) {
-      await session.reveal(target);
-      return;
-    }
-    this.pendingGraphReveals.set(uriKey, target);
-    try {
-      await vscode.commands.executeCommand("vscode.openWith", uri, OPTIONAL_EDITOR_VIEW_TYPE);
-    } catch (error) {
-      if (this.pendingGraphReveals.get(uriKey) === target) {
-        this.pendingGraphReveals.delete(uriKey);
-      }
-      throw error;
-    }
-  }
-
-  public async revealEntityReference(location: ReferenceLocation): Promise<void> {
-    const target = readEntityRevealTarget(location);
-    if (target === undefined || !isProjectRelativePath(location.path)) {
-      throw new Error("Invalid Entity component reference location.");
-    }
-    const project = this.projects.projects.find(
-      (candidate) => candidate.definition.projectId === location.projectId,
-    );
-    if (project === undefined) {
-      throw new Error(`VisualBridge Project '${location.projectId}' is not open.`);
-    }
-    const uri = vscode.Uri.joinPath(project.rootUri, ...location.path.split("/"));
-    const match = this.projects.resolveDocument(uri);
-    if (match?.project.markerUri.toString() !== project.markerUri.toString()
-      || match.documentType.editor !== ENTITY_EDITOR_ID
-      || match.documentType.id !== location.documentTypeId) {
-      throw new Error("Entity reference location is outside its declared Project Document Type.");
-    }
-    const uriKey = uri.toString();
-    const session = [...(this.entitySessions.get(uriKey) ?? [])][0];
-    if (session !== undefined) {
-      await session.reveal(target);
-      return;
-    }
-    this.pendingEntityReveals.set(uriKey, target);
-    try {
-      await vscode.commands.executeCommand("vscode.openWith", uri, OPTIONAL_EDITOR_VIEW_TYPE);
-    } catch (error) {
-      if (this.pendingEntityReveals.get(uriKey) === target) {
-        this.pendingEntityReveals.delete(uriKey);
-      }
-      throw error;
-    }
-  }
-
-  private removeGraphSession(uriKey: string, session: GraphEditorSession): void {
-    const sessions = this.graphSessions.get(uriKey);
+  private removeSession(uriKey: string, session: ModuleTextEditorSession): void {
+    const sessions = this.textSessions.get(uriKey);
     sessions?.delete(session);
     if (sessions?.size === 0) {
-      this.graphSessions.delete(uriKey);
-    }
-  }
-
-  private removeEntitySession(uriKey: string, session: EntityEditorSession): void {
-    const sessions = this.entitySessions.get(uriKey);
-    sessions?.delete(session);
-    if (sessions?.size === 0) {
-      this.entitySessions.delete(uriKey);
-    }
-  }
-
-  private removeStructuredSession(uriKey: string, session: StructuredEditorSession): void {
-    const sessions = this.structuredSessions.get(uriKey);
-    sessions?.delete(session);
-    if (sessions?.size === 0) {
-      this.structuredSessions.delete(uriKey);
+      this.textSessions.delete(uriKey);
     }
   }
 
@@ -664,6 +557,10 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
       this.initializedPanels.delete(uriKey);
     }
   }
+}
+
+function moduleOptions(match: DocumentMatch, moduleId: string): Record<string, import("@visualbridge/core").JsonValue> | undefined {
+  return match.project.definition.modules.find((module) => module.id === moduleId)?.options;
 }
 
 function diagnosticIdentity(diagnostic: vscode.Diagnostic): string {

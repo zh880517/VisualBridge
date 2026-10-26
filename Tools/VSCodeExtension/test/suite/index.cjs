@@ -1080,6 +1080,498 @@ exports.run = async function run() {
     }
   });
 
+  /**
+   * 打开 → 编辑 → 保存 → 关闭重开：四个领域各跑一次（每次断言磁盘持久化与会话干净）。
+   */
+  const reopenDomainDocument = async (entry) => {
+    const before = await vscode.workspace.fs.readFile(entry.uri);
+    const openEditor = async () => {
+      await vscode.commands.executeCommand("vscode.openWith", entry.uri, entry.viewType);
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", entry.uri),
+        (ready) => ready === true,
+        20_000,
+        `${entry.domain} editor did not become ready for the reopen test.`,
+      );
+    };
+    const readDiskText = async () => new TextDecoder().decode(await vscode.workspace.fs.readFile(entry.uri));
+    try {
+      await openEditor();
+      if (entry.domain === "table") {
+        await vscode.commands.executeCommand("visualbridge.test.applyTableOperations", entry.uri, entry.operations);
+        assert.equal(
+          await vscode.commands.executeCommand("visualbridge.test.saveTable", entry.uri),
+          1,
+          "A single Table cell edit must write exactly one source file.",
+        );
+      } else {
+        const document = await vscode.workspace.openTextDocument(entry.uri);
+        await vscode.commands.executeCommand(
+          "visualbridge.test.applyDocumentOperations",
+          entry.uri,
+          entry.domain,
+          entry.operations,
+        );
+        await waitFor(
+          () => {
+            try {
+              return entry.read(JSON.parse(document.getText()));
+            } catch {
+              return undefined;
+            }
+          },
+          (value) => value === entry.expected,
+          10_000,
+          `${entry.domain} operation did not reach the authoritative TextDocument `
+          + `(last rejection: ${String(await vscode.commands.executeCommand("visualbridge.test.getEditorLastRejection", entry.uri))}).`,
+        );
+        assert.equal(await document.save(), true);
+        assert.equal(document.isDirty, false);
+      }
+      // 关闭再重开：会话必须从磁盘重新装载并保持干净。
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+      await openEditor();
+      const diskText = await readDiskText();
+      assert.ok(
+        entry.domain === "table" ? diskText.includes(entry.expected) : entry.read(JSON.parse(diskText)) === entry.expected,
+        `${entry.domain} save did not persist to disk before the reopen.`,
+      );
+      if (entry.domain === "table") {
+        assert.equal(
+          (await vscode.commands.executeCommand("visualbridge.test.getTableEditorState", entry.uri)).dirty,
+          false,
+          "A reopened Table document must not be dirty.",
+        );
+      } else {
+        const document = await vscode.workspace.openTextDocument(entry.uri);
+        assert.equal(document.isDirty, false, `A reopened ${entry.domain} document must not be dirty.`);
+        assert.equal(entry.read(JSON.parse(document.getText())), entry.expected);
+      }
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeAllGroups").catch(() => undefined);
+      await vscode.workspace.fs.writeFile(entry.uri, before);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+      }
+  };
+
+  await test("saves, reopens and reloads an Entity document through the module session", () => (
+    reopenDomainDocument({
+      domain: "entity",
+      uri: vscode.Uri.file(path.join(workspacePath, "EntitySemanticProject", "Config", "Entities", "Player.herojson")),
+      viewType: "visualbridge.documentEditor.option",
+      operations: [{ type: "entity.setTitle", title: "Reopened Entity" }],
+      read: (value) => value.title,
+      expected: "Reopened Entity",
+    })
+  ));
+  await test("saves, reopens and reloads a Graph document through the module session", () => (
+    reopenDomainDocument({
+      domain: "graph",
+      uri: vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "Graph", "SemanticSample.vbgraph")),
+      viewType: "visualbridge.documentEditor.option",
+      operations: [{
+        type: "graph.updateGraph",
+        graphId: "root",
+        title: "Reopened Graph",
+        properties: { priority: 1 },
+      }],
+      read: (value) => value.graphs.find((graph) => graph.id === "root")?.title,
+      expected: "Reopened Graph",
+    })
+  ));
+  await test("saves, reopens and reloads a Structured Config document through the module session", () => (
+    reopenDomainDocument({
+      domain: "structured",
+      uri: vscode.Uri.file(path.join(workspacePath, "StructuredSemanticProject", "Config", "Game.gamesettings")),
+      viewType: "visualbridge.documentEditor.option",
+      operations: [{ type: "structured.setField", fieldId: "maxPlayers", value: 6 }],
+      read: (value) => value.properties.maxPlayers,
+      expected: 6,
+    })
+  ));
+  await test("saves, reopens and reloads a multi-source Table document through the module session", () => (
+    reopenDomainDocument({
+      domain: "table",
+      uri: vscode.Uri.file(path.join(workspacePath, "TableSemanticProject", "Tables", "Skills_A.csv")),
+      viewType: "visualbridge.tableEditor",
+      operations: [{
+        type: "table.setCell",
+        sheetId: "skills:Skills_A",
+        rowId: "Skills_A:key-101",
+        columnId: "name",
+        value: "Reopened Table",
+      }],
+      expected: "Reopened Table",
+    })
+  ));
+
+  await test("backs up and restores an unsaved multi-source Table document after a crash", async () => {
+    const uri = vscode.Uri.file(path.join(workspacePath, "TableSemanticProject", "Tables", "Skills_A.csv"));
+    const backupUri = vscode.Uri.file(path.join(workspacePath, "TableSemanticProject", "Tables", "Skills_A.vbbak"));
+    const before = await vscode.workspace.fs.readFile(uri);
+    const readDiskText = async () => new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", uri, "visualbridge.tableEditor");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", uri),
+        (ready) => ready === true,
+        20_000,
+        "Table editor did not become ready for the backup test.",
+      );
+      await vscode.commands.executeCommand("visualbridge.test.applyTableOperations", uri, [{
+        type: "table.setCell",
+        sheetId: "skills:Skills_A",
+        rowId: "Skills_A:key-101",
+        columnId: "name",
+        value: "Backupprobe",
+      }]);
+      assert.equal(
+        (await vscode.commands.executeCommand("visualbridge.test.getTableEditorState", uri)).dirty,
+        true,
+      );
+
+      const backup = await vscode.commands.executeCommand(
+        "visualbridge.test.backupTableDocument",
+        uri,
+        backupUri,
+      );
+      assert.equal(backup.id, backupUri.toString());
+      const backupValue = JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(backupUri)));
+      assert.equal(backupValue.formatVersion, 1);
+      // 逻辑文档是 Skills_A + Skills_B 两源分表家族，备份必须覆盖整个家族。
+      assert.equal(backupValue.sources.length, 2);
+      assert.ok(
+        backupValue.sources.some((source) => /Backupprobe/u.test(
+          Buffer.from(source.bytes, "base64").toString("utf8"),
+        )),
+        "The backup must contain the unsaved Table edit bytes.",
+      );
+
+      // 模拟崩溃：丢弃内存编辑（从磁盘重读），磁盘上不应有未保存的编辑。
+      await vscode.commands.executeCommand("visualbridge.test.revertTableDocument", uri);
+      assert.equal(
+        (await vscode.commands.executeCommand("visualbridge.test.getTableEditorState", uri)).dirty,
+        false,
+      );
+      assert.doesNotMatch(await readDiskText(), /Backupprobe/u);
+      await vscode.commands.executeCommand("workbench.action.closeAllGroups");
+
+      // 从备份恢复并保存：恢复出的文档带着未保存编辑，并能写回源文件。
+      const restored = await vscode.commands.executeCommand(
+        "visualbridge.test.restoreTableDocumentFromBackup",
+        uri,
+        backupUri,
+        true,
+      );
+      assert.equal(restored.restoredDirty, true, "A backup must restore as an unsaved (dirty) document.");
+      assert.equal(restored.isDirty, false);
+      assert.equal(restored.savedWrites, 1);
+      assert.match(await readDiskText(), /Backupprobe/u);
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeAllGroups").catch(() => undefined);
+      await vscode.workspace.fs.writeFile(uri, before);
+      await vscode.workspace.fs.delete(backupUri).catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("reverts unsaved multi-source edits back to the disk sources", async () => {
+    const uri = vscode.Uri.file(path.join(workspacePath, "TableSemanticProject", "Tables", "Skills_A.csv"));
+    const before = await vscode.workspace.fs.readFile(uri);
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", uri, "visualbridge.tableEditor");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", uri),
+        (ready) => ready === true,
+        20_000,
+        "Table editor did not become ready for the revert test.",
+      );
+      await vscode.commands.executeCommand("visualbridge.test.applyTableOperations", uri, [{
+        type: "table.setCell",
+        sheetId: "skills:Skills_A",
+        rowId: "Skills_A:key-101",
+        columnId: "name",
+        value: "Revertprobe",
+      }]);
+      assert.equal(
+        (await vscode.commands.executeCommand("visualbridge.test.getTableEditorState", uri)).dirty,
+        true,
+      );
+      await vscode.commands.executeCommand("visualbridge.test.revertTableDocument", uri);
+      assert.equal(
+        (await vscode.commands.executeCommand("visualbridge.test.getTableEditorState", uri)).dirty,
+        false,
+      );
+      // revert 不写盘：磁盘仍是原字节。
+      assert.equal(
+        Buffer.compare(
+          Buffer.from(await vscode.workspace.fs.readFile(uri)),
+          Buffer.from(before),
+        ),
+        0,
+      );
+      assert.doesNotMatch(new TextDecoder().decode(await vscode.workspace.fs.readFile(uri)), /Revertprobe/u);
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeAllGroups").catch(() => undefined);
+      await vscode.workspace.fs.writeFile(uri, before);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("rejects stale revision batches with a readable message and no write", async () => {
+    const entityUri = vscode.Uri.file(path.join(
+      workspacePath, "EntitySemanticProject", "Config", "Entities", "Player.herojson"));
+    const entityBefore = await vscode.workspace.fs.readFile(entityUri);
+    let entityDocument;
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", entityUri, "visualbridge.documentEditor.option");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", entityUri),
+        (ready) => ready === true,
+        20_000,
+        "Entity editor did not become ready for the stale revision test.",
+      );
+      entityDocument = await vscode.workspace.openTextDocument(entityUri);
+      const beforeText = entityDocument.getText();
+      const staleVersion = entityDocument.version - 1;
+      await vscode.commands.executeCommand(
+        "visualbridge.test.applyDocumentOperations",
+        entityUri,
+        "entity",
+        [{ type: "entity.setTitle", title: "Stale Entity" }],
+        staleVersion,
+      );
+      assert.equal(entityDocument.getText(), beforeText, "A stale Entity batch must not write any effect.");
+      assert.match(
+        String(await vscode.commands.executeCommand("visualbridge.test.getEditorLastRejection", entityUri)),
+        /文档已发生变化/u,
+      );
+    } finally {
+      if (entityDocument?.isDirty) {
+        await vscode.commands.executeCommand("workbench.action.files.revert").catch(() => undefined);
+      }
+      await vscode.commands.executeCommand("workbench.action.closeAllGroups").catch(() => undefined);
+      await vscode.workspace.fs.writeFile(entityUri, entityBefore);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+
+    const tableUri = vscode.Uri.file(path.join(workspacePath, "TableSemanticProject", "Tables", "Skills_A.csv"));
+    const tableBefore = await vscode.workspace.fs.readFile(tableUri);
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", tableUri, "visualbridge.tableEditor");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", tableUri),
+        (ready) => ready === true,
+        20_000,
+        "Table editor did not become ready for the stale revision test.",
+      );
+      await vscode.commands.executeCommand(
+        "visualbridge.test.applyTableOperationsWithRevision",
+        tableUri,
+        [{
+          type: "table.setCell",
+          sheetId: "skills:Skills_A",
+          rowId: "Skills_A:key-101",
+          columnId: "name",
+          value: "Stale Table",
+        }],
+        0,
+      );
+      assert.match(
+        String(await vscode.commands.executeCommand("visualbridge.test.getTableLastRejection", tableUri)),
+        /文档已发生变化/u,
+      );
+      // 生产执行器（与 Webview 同一路径）必须在批处理前拒绝：文档修订号、脏状态与磁盘都不推进。
+      const staleState = await vscode.commands.executeCommand("visualbridge.test.getTableEditorState", tableUri);
+      assert.equal(staleState.dirty, false, "A stale Table batch must leave the document clean.");
+      assert.equal(staleState.revision, 1, "A stale Table batch must not advance the document revision.");
+      assert.doesNotMatch(
+        new TextDecoder().decode(await vscode.workspace.fs.readFile(tableUri)),
+        /Stale Table/u,
+      );
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeAllGroups").catch(() => undefined);
+      await vscode.workspace.fs.writeFile(tableUri, tableBefore);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("stamps operationCompleted with the post-apply revision in both session types", async () => {
+    const entityUri = vscode.Uri.file(path.join(
+      workspacePath, "EntitySemanticProject", "Config", "Entities", "Player.herojson"));
+    const entityBefore = await vscode.workspace.fs.readFile(entityUri);
+    let entityDocument;
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", entityUri, "visualbridge.documentEditor.option");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", entityUri),
+        (ready) => ready === true,
+        20_000,
+        "Entity editor did not become ready for the revision stamping test.",
+      );
+      entityDocument = await vscode.workspace.openTextDocument(entityUri);
+      const versionBefore = entityDocument.version;
+      await vscode.commands.executeCommand(
+        "visualbridge.test.applyDocumentOperations",
+        entityUri,
+        "entity",
+        [{ type: "entity.setTitle", title: "Stamped Entity" }],
+      );
+      await waitFor(
+        () => entityDocument.getText(),
+        (text) => text.includes("Stamped Entity"),
+        10_000,
+        "Entity operation did not reach the TextDocument.",
+      );
+      assert.ok(entityDocument.version > versionBefore);
+      const completed = await vscode.commands.executeCommand(
+        "visualbridge.test.getEditorLastOperationCompleted",
+        entityUri,
+      );
+      assert.equal(completed?.changed, true);
+      // 宿主必须用 apply 之后的 version 盖章，而不是控制器里的 apply 前 snapshot.revision。
+      assert.equal(completed?.documentVersion, entityDocument.version);
+    } finally {
+      if (entityDocument?.isDirty) {
+        await vscode.commands.executeCommand("workbench.action.files.revert").catch(() => undefined);
+      }
+      await vscode.commands.executeCommand("workbench.action.closeAllGroups").catch(() => undefined);
+      await vscode.workspace.fs.writeFile(entityUri, entityBefore);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+
+    const tableUri = vscode.Uri.file(path.join(workspacePath, "TableSemanticProject", "Tables", "Skills_A.csv"));
+    const tableBefore = await vscode.workspace.fs.readFile(tableUri);
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", tableUri, "visualbridge.tableEditor");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", tableUri),
+        (ready) => ready === true,
+        20_000,
+        "Table editor did not become ready for the revision stamping test.",
+      );
+      const revisionBefore = (await vscode.commands.executeCommand(
+        "visualbridge.test.getTableEditorState",
+        tableUri,
+      )).revision;
+      await vscode.commands.executeCommand("visualbridge.test.applyTableOperations", tableUri, [{
+        type: "table.setCell",
+        sheetId: "skills:Skills_A",
+        rowId: "Skills_A:key-101",
+        columnId: "name",
+        value: "Stamped Table",
+      }]);
+      const stateAfter = await vscode.commands.executeCommand("visualbridge.test.getTableEditorState", tableUri);
+      const completed = await vscode.commands.executeCommand(
+        "visualbridge.test.getTableLastOperationCompleted",
+        tableUri,
+      );
+      assert.equal(completed?.changed, true);
+      assert.equal(completed?.revision, stateAfter.revision);
+      assert.ok(stateAfter.revision > revisionBefore);
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeAllGroups").catch(() => undefined);
+      await vscode.workspace.fs.writeFile(tableUri, tableBefore);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("keeps multi-source diagnostics unique when a partition warning is present", async () => {
+    const uri = vscode.Uri.file(path.join(workspacePath, "TableSemanticProject", "Tables", "Skills_A.csv"));
+    const before = await vscode.workspace.fs.readFile(uri);
+    const uniquenessHolds = (diagnostics) => {
+      const keys = diagnostics.map((diagnostic) => [
+        diagnostic.code,
+        diagnostic.message,
+        diagnostic.range.start.line,
+        diagnostic.range.start.character,
+      ].join("\u0000"));
+      return new Set(keys).size === keys.length;
+    };
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", uri, "visualbridge.tableEditor");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", uri),
+        (ready) => ready === true,
+        20_000,
+        "Table editor did not become ready for the diagnostics test.",
+      );
+      const opened = vscode.languages.getDiagnostics(uri).filter(
+        (diagnostic) => diagnostic.source === "VisualBridge",
+      );
+      // 夹具的 Skills_A + Skills_B 各有一行 key 101，keepFirst 策略产出一条分区去重告警。
+      assert.equal(
+        opened.filter((diagnostic) => diagnostic.code === "table.partitionDuplicateResolved").length,
+        1,
+        "The partition warning must be published exactly once.",
+      );
+      assert.ok(uniquenessHolds(opened), "Opening a multi-source document must not publish duplicate diagnostics.");
+
+      await vscode.commands.executeCommand("visualbridge.test.applyTableOperations", uri, [{
+        type: "table.setCell",
+        sheetId: "skills:Skills_A",
+        rowId: "Skills_A:key-101",
+        columnId: "name",
+        value: "Diagnostics Probe",
+      }]);
+      const afterApply = vscode.languages.getDiagnostics(uri).filter(
+        (diagnostic) => diagnostic.source === "VisualBridge",
+      );
+      assert.ok(uniquenessHolds(afterApply), "Applying an operation must not publish duplicate diagnostics.");
+      assert.equal(
+        afterApply.filter((diagnostic) => diagnostic.code === "table.partitionDuplicateResolved").length,
+        1,
+      );
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeAllGroups").catch(() => undefined);
+      await vscode.workspace.fs.writeFile(uri, before);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("restores a Table backup as dirty when the disk source is unparseable", async () => {
+    const uri = vscode.Uri.file(path.join(workspacePath, "TableSemanticProject", "Tables", "Skills_A.csv"));
+    const backupUri = vscode.Uri.file(path.join(workspacePath, "TableSemanticProject", "Tables", "Skills_A.crashbak"));
+    const before = await vscode.workspace.fs.readFile(uri);
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", uri, "visualbridge.tableEditor");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", uri),
+        (ready) => ready === true,
+        20_000,
+        "Table editor did not become ready for the damaged-source backup test.",
+      );
+      await vscode.commands.executeCommand("visualbridge.test.applyTableOperations", uri, [{
+        type: "table.setCell",
+        sheetId: "skills:Skills_A",
+        rowId: "Skills_A:key-101",
+        columnId: "name",
+        value: "Crashprobe",
+      }]);
+      await vscode.commands.executeCommand("visualbridge.test.backupTableDocument", uri, backupUri);
+      await vscode.commands.executeCommand("workbench.action.closeAllGroups");
+
+      // 模拟崩溃后磁盘源损坏：只留 name-key 行，缺少 dataStartRow，解析必然失败。
+      await vscode.workspace.fs.writeFile(
+        uri,
+        Buffer.from("技能名\t技能编号\t标签\t奖励\t颜色\n", "utf8"),
+      );
+      const restored = await vscode.commands.executeCommand(
+        "visualbridge.test.restoreTableDocumentFromBackup",
+        uri,
+        backupUri,
+      );
+      // 没有可比较的磁盘基线时必须强制为脏，不能把备份当成已保存内容。
+      assert.equal(restored.restoredDirty, true, "A backup restored over an unparseable source must be dirty.");
+      assert.equal(restored.isDirty, true);
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeAllGroups").catch(() => undefined);
+      await vscode.workspace.fs.writeFile(uri, before);
+      await vscode.workspace.fs.delete(backupUri).catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
   await test("jumps to Graph nodes and Entity components through real Webview acknowledgements", async () => {
     const graphUri = vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "Graph", "SemanticSample.vbgraph"));
     const entityUri = vscode.Uri.file(path.join(workspacePath, "EntitySemanticProject", "Config", "Entities", "Player.herojson"));
