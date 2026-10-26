@@ -1,0 +1,80 @@
+{
+  "formatVersion": 2,
+  "projectId": "visualbridge.module-loader-fixture",
+  "documentRoots": [
+    "Docs"
+  ],
+  "modules": [
+    {
+      "id": "visualbridge.fixture.good",
+      "entry": "Modules/good.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.fixture.builtin",
+      "entry": "Modules/builtin.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.fixture.conflict",
+      "entry": "Modules/conflict.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.fixture.reference-conflict",
+      "entry": "Modules/reference-conflict.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.fixture.debug-conflict",
+      "entry": "Modules/debug-conflict.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.fixture.hash",
+      "entry": "Modules/hash.vbmodule.js",
+      "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "id": "visualbridge.fixture.require",
+      "entry": "Modules/require.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.fixture.activate",
+      "entry": "Modules/activate.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.fixture.api",
+      "entry": "Modules/api.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.fixture.id",
+      "entry": "Modules/id.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.fixture.manifest",
+      "entry": "Modules/manifest.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.fixture.registration",
+      "entry": "Modules/registration.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.fixture.options",
+      "entry": "Modules/options.vbmodule.js",
+      "options": {
+        "bad": true
+      }
+    },
+    {
+      "id": "visualbridge.fixture.call",
+      "entry": "Modules/call.vbmodule.js"
+    }
+  ],
+  "documentTypes": [
+    {
+      "id": "fixture.documents",
+      "editor": "fixture",
+      "include": [
+        "Docs/*.fixture"
+      ],
+      "exclude": [],
+      "catalogs": []
+    }
+  ]
+}

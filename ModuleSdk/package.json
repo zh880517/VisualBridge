@@ -1,0 +1,50 @@
+{
+  "name": "@visualbridge/module-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "description": "VisualBridge 模块作者 SDK：模块契约、Webview 骨架与 esbuild 打包入口。",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "visualbridge-build-module": "dist/build/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./webview": {
+      "types": "./dist/webview/index.d.ts",
+      "default": "./dist/webview/index.js"
+    },
+    "./build": {
+      "types": "./dist/build/index.d.ts",
+      "default": "./dist/build/index.js"
+    },
+    "./tsconfig/*.json": "./tsconfig/*.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "tsconfig",
+    "README.md"
+  ],
+  "engines": {
+    "node": "22.22.1"
+  },
+  "scripts": {
+    "build": "node scripts/clean.mjs && tsc -p tsconfig.json && node scripts/assemble.mjs",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/webview.test.mjs test/pack.test.mjs"
+  },
+  "dependencies": {
+    "esbuild": "0.28.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "@visualbridge/core": "*"
+  }
+}
