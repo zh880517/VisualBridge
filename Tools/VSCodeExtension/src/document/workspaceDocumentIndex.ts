@@ -12,6 +12,7 @@ import {
   type ReferenceLocation,
 } from "@visualbridge/core";
 import type { ProjectRegistry } from "../project/projectRegistry";
+import type { HostModuleRegistry } from "../modules/hostModuleRegistry";
 import type { WorkspaceProjectProviderService } from "../provider/workspaceProjectProviderService";
 import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
 import {
@@ -79,6 +80,7 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
 
   public constructor(
     private readonly projects: ProjectRegistry,
+    private readonly modules: HostModuleRegistry,
     private readonly references: WorkspaceReferenceService,
     private readonly diagnostics: vscode.DiagnosticCollection,
     private readonly output: vscode.OutputChannel,
@@ -213,7 +215,15 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
     this.changeEmitter.fire();
     try {
       this.progressEmitter.fire({ epoch: refreshVersion, phase: "discover", completed: 0, total: 0, loaded: 0, reused: 0 });
-      const planned = await planWorkspaceSemanticSources(this.projects.projects, controller.signal);
+      const planned = await planWorkspaceSemanticSources(
+        this.projects.projects,
+        controller.signal,
+        // 模块未加载（Restricted Mode / failed / disabled）的 editor 不解析任何文档：
+        // 没有模块就没有语义能力（附录 D.6）。
+        (project, documentType) => (
+          this.modules.editorAvailability(project, documentType.editor).kind === "available"
+        ),
+      );
       throwIfAborted(controller.signal);
       const semantic = await this.semanticStore.rebuild(planned, {
         signal: controller.signal,

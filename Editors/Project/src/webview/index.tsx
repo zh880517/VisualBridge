@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { DragDropProvider } from "@dnd-kit/react";
 import { isSortable, useSortable } from "@dnd-kit/react/sortable";
@@ -25,6 +25,8 @@ import {
   createProvider,
   initialProjectEditorState,
   moduleOptionsText,
+  moduleDraftResetKey,
+  moduleStatusLabel,
   move,
   parseModuleOptions,
   reduceProjectHostMessage,
@@ -33,6 +35,7 @@ import {
   withWebviewToken,
   type ProjectEditorState,
   type ProjectHostMessage,
+  type ProjectModuleRuntime,
 } from "../projectEditorLogic";
 import "../styles.css";
 
@@ -133,7 +136,14 @@ function ProjectEditorApp(): ReactElement {
           }
         }}>
           <div className="card-list">
-            {project.modules.map((module, index) => <ModuleCard key={module.id} module={module} index={index} disabled={pending} submit={submit} />)}
+            {project.modules.map((module, index) => <ModuleCard
+              key={module.id}
+              module={module}
+              index={index}
+              runtime={state.modules?.find((entry) => entry.id === module.id)}
+              disabled={pending}
+              submit={submit}
+            />)}
             {moduleDraft !== undefined && <ModuleDraftCard
               module={moduleDraft}
               disabled={pending}
@@ -224,17 +234,24 @@ function DocumentTypeCard(props: {
 function ModuleCard(props: {
   readonly module: ProjectModuleDefinition;
   readonly index: number;
+  readonly runtime: ProjectModuleRuntime | undefined;
   readonly disabled: boolean;
   readonly submit: (operations: readonly ProjectOperation[]) => void;
 }): ReactElement {
   const [draft, setDraft] = useState(props.module);
   const [optionsText, setOptionsText] = useState(() => moduleOptionsText(props.module));
   const [optionsInvalid, setOptionsInvalid] = useState(false);
+  // projectState 会因模块状态变化而重发（notifyModulesChanged）；只有持久化字段真的变了才重置
+  // 本地草稿，否则正在编辑入口/options 的内容会被状态刷新吞掉。
+  const persistedKey = moduleDraftResetKey(props.module);
+  const persistedKeyRef = useRef(persistedKey);
   useEffect(() => {
+    if (persistedKeyRef.current === persistedKey) return;
+    persistedKeyRef.current = persistedKey;
     setDraft(props.module);
     setOptionsText(moduleOptionsText(props.module));
     setOptionsInvalid(false);
-  }, [props.module]);
+  }, [persistedKey, props.module]);
   const { ref, handleRef, isDragging, isDropTarget } = useSortable({
     id: props.module.id,
     index: props.index,
@@ -273,6 +290,20 @@ function ModuleCard(props: {
         <LabeledInput label="入口 (.vbmodule.js)" value={draft.entry} disabled={props.disabled} onChange={(entry) => setDraft({ ...draft, entry })} onCommit={commitEntry} />
       </div>
       <JsonTextArea label="options (JSON)" value={optionsText} disabled={props.disabled} invalid={optionsInvalid} onChange={setOptionsText} onCommit={commitOptions} />
+      <div className="grid two">
+        <ReadonlyField
+          label="状态"
+          value={moduleStatusLabel(props.runtime?.status)}
+          hint={props.runtime?.diagnostics.map((diagnostic) => `${diagnostic.code}: ${diagnostic.message}`).join("\n")}
+        />
+        <ReadonlyField
+          label="Hash（前 12 位）"
+          value={props.runtime === undefined || props.runtime.hashShort.length === 0 ? "未声明" : props.runtime.hashShort}
+          hint={props.runtime?.hash === undefined
+            ? "Project File 未声明 hash；模块加载时只记录。"
+            : `${props.runtime.hash}`}
+        />
+      </div>
     </div>
   </article>;
 }
@@ -433,7 +464,7 @@ function LabeledInput(props: { readonly label: string; readonly value: string; r
   return <label className="field"><span>{props.label}</span><input value={value} list={props.list} disabled={props.disabled} onChange={(event) => { setValue(event.currentTarget.value); props.onChange?.(event.currentTarget.value); }} onBlur={() => { if (value !== props.value) props.onCommit(value); }} /></label>;
 }
 
-function ReadonlyField(props: { readonly label: string; readonly value: string; readonly hint?: string }): ReactElement {
+function ReadonlyField(props: { readonly label: string; readonly value: string; readonly hint?: string | undefined }): ReactElement {
   return <label className="field"><span>{props.label}</span><input value={props.value} readOnly title={props.hint} /></label>;
 }
 

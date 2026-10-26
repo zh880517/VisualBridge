@@ -8,15 +8,32 @@ import { readGraphRevealTarget, type GraphRevealTarget } from "@visualbridge/gra
 import { STRUCTURED_EDITOR_ID } from "@visualbridge/structured";
 import { TABLE_EDITOR_ID } from "@visualbridge/table";
 import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry";
+import type { HostModuleRegistry } from "../modules/hostModuleRegistry";
+import type { ModuleEditorAvailability, ModuleEditorFallbackReason } from "../modules/moduleRegistration";
 import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
 import type { GraphExecutionDebugTestState } from "./graphExecutionDebugController";
 import { EntityEditorSession } from "./entityEditorSession";
 import { GraphEditorSession } from "./graphEditorSession";
 import { StructuredEditorSession } from "./structuredEditorSession";
 import { TABLE_EDITOR_VIEW_TYPE } from "./tableEditorProvider";
+import { createReadonlyShellHtml, readonlyShellTitle } from "./readonlyShell";
 
 export const DEFAULT_EDITOR_VIEW_TYPE = "visualbridge.documentEditor";
 export const OPTIONAL_EDITOR_VIEW_TYPE = "visualbridge.documentEditor.option";
+
+interface ReadonlyShellState {
+  readonly reason: ModuleEditorFallbackReason;
+  readonly message: string;
+  readonly moduleId?: string;
+}
+
+interface ReadonlyShell {
+  readonly documentUri: vscode.Uri;
+  readonly panel: vscode.WebviewPanel;
+  readonly match: DocumentMatch;
+  state: ReadonlyShellState;
+  text: string;
+}
 
 export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
   private readonly graphSessions = new Map<string, Set<GraphEditorSession>>();
@@ -25,10 +42,19 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
   private readonly pendingEntityReveals = new Map<string, EntityRevealTarget>();
   private readonly structuredSessions = new Map<string, Set<StructuredEditorSession>>();
   private readonly initializedPanels = new Map<string, Set<vscode.WebviewPanel>>();
+  /** 同一文档可以开多个只读 Shell（split），每个面板各自维护原因文案。 */
+  private readonly readonlyShells = new Map<string, Set<ReadonlyShell>>();
+  private readonly pendingReopens = new Set<string>();
+  /** 领域会话面板 → 它所属的文档；模块转 failed/stale 时据此关闭会话。 */
+  private readonly sessionPanels = new Map<
+    vscode.WebviewPanel,
+    { readonly documentUri: vscode.Uri; readonly match: DocumentMatch }
+  >();
   private readonly sessionDiagnostics = new Map<
     string,
     Map<symbol, readonly vscode.Diagnostic[]>
   >();
+  private refreshingShells = false;
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -36,6 +62,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     private readonly references: WorkspaceReferenceService,
     private readonly diagnostics: vscode.DiagnosticCollection,
     private readonly output: vscode.OutputChannel,
+    private readonly modules: HostModuleRegistry,
   ) {}
 
   public async resolveCustomTextEditor(
@@ -46,6 +73,15 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     if (match === undefined) {
       webviewPanel.dispose();
       await vscode.commands.executeCommand("vscode.openWith", document.uri, "default");
+      return;
+    }
+
+    // 模块未装载（未信任 / 加载失败 / 已停用 / 未声明）时回退只读 Shell：不进入领域会话，
+    // 也不把文档交给 Table 编辑器，从而保证 Restricted Mode 下不执行任何模块代码。
+    await this.modules.ensureProject(match.project);
+    const availability = this.modules.editorAvailability(match.project, match.documentType.editor);
+    if (availability.kind === "unavailable") {
+      this.showReadonlyShell(document, webviewPanel, match, availability);
       return;
     }
 
@@ -75,7 +111,9 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         this.graphSessions.set(uriKey, sessions);
       }
       sessions.add(session);
+      this.sessionPanels.set(webviewPanel, { documentUri: document.uri, match });
       const panelSubscription = webviewPanel.onDidDispose(() => {
+        this.sessionPanels.delete(webviewPanel);
         diagnosticsOwner.dispose();
         this.removeGraphSession(uriKey, session);
       });
@@ -88,6 +126,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         }
       } catch (error) {
         panelSubscription.dispose();
+        this.sessionPanels.delete(webviewPanel);
         diagnosticsOwner.dispose();
         this.removeGraphSession(uriKey, session);
         throw error;
@@ -115,7 +154,9 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         this.entitySessions.set(uriKey, sessions);
       }
       sessions.add(session);
+      this.sessionPanels.set(webviewPanel, { documentUri: document.uri, match });
       const panelSubscription = webviewPanel.onDidDispose(() => {
+        this.sessionPanels.delete(webviewPanel);
         diagnosticsOwner.dispose();
         this.removeEntitySession(uriKey, session);
       });
@@ -128,6 +169,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         }
       } catch (error) {
         panelSubscription.dispose();
+        this.sessionPanels.delete(webviewPanel);
         diagnosticsOwner.dispose();
         this.removeEntitySession(uriKey, session);
         throw error;
@@ -155,7 +197,9 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         this.structuredSessions.set(uriKey, sessions);
       }
       sessions.add(session);
+      this.sessionPanels.set(webviewPanel, { documentUri: document.uri, match });
       const panelSubscription = webviewPanel.onDidDispose(() => {
+        this.sessionPanels.delete(webviewPanel);
         diagnosticsOwner.dispose();
         this.removeStructuredSession(uriKey, session);
       });
@@ -163,6 +207,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         await session.open();
       } catch (error) {
         panelSubscription.dispose();
+        this.sessionPanels.delete(webviewPanel);
         diagnosticsOwner.dispose();
         this.removeStructuredSession(uriKey, session);
         throw error;
@@ -203,6 +248,152 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
       || [...this.entitySessions.get(uriKey) ?? []].some((session) => session.isReady)
       || [...this.structuredSessions.get(uriKey) ?? []].some((session) => session.isReady)
       || (this.initializedPanels.get(uriKey)?.size ?? 0) > 0;
+  }
+
+  /** 只读 Shell 的当前状态（宿主测试断言用）。 */
+  public getReadonlyShellState(uri: vscode.Uri): {
+    readonly active: boolean;
+    readonly reason?: ModuleEditorFallbackReason;
+    readonly message?: string;
+    readonly moduleId?: string;
+  } {
+    const shells = this.readonlyShells.get(uri.toString());
+    const shell = shells === undefined ? undefined : [...shells][0];
+    if (shell === undefined) return { active: false };
+    return {
+      active: true,
+      reason: shell.state.reason,
+      message: shell.state.message,
+      ...(shell.state.moduleId === undefined ? {} : { moduleId: shell.state.moduleId }),
+    };
+  }
+
+  /**
+   * 模块状态变化后重算：
+   * - 领域会话（Graph/Entity/Structured）失去模块时关闭，避免继续跑领域代码；
+   * - 已可用的只读 Shell 重新按正常路径打开，其余只更新提示文案。
+   * 模块装载完成（例如授予 Trust）后无需重载窗口。
+   */
+  public refreshModuleAvailability(): void {
+    this.closeUnavailableSessions();
+    if (this.refreshingShells || this.readonlyShells.size === 0) return;
+    this.refreshingShells = true;
+    const reopen: vscode.Uri[] = [];
+    try {
+      for (const [uriKey, shells] of [...this.readonlyShells]) {
+        for (const shell of [...shells]) {
+          if (this.readonlyShells.get(uriKey) !== shells) continue;
+          const availability = this.modules.editorAvailability(shell.match.project, shell.match.documentType.editor);
+          if (availability.kind === "available") {
+            shell.panel.dispose();
+            reopen.push(shell.documentUri);
+            continue;
+          }
+          this.updateReadonlyShell(shell, availability);
+        }
+      }
+    } finally {
+      this.refreshingShells = false;
+    }
+    for (const uri of reopen) this.scheduleEditorReopen(uri);
+  }
+
+  private closeUnavailableSessions(): void {
+    for (const [panel, owner] of [...this.sessionPanels]) {
+      const availability = this.modules.editorAvailability(owner.match.project, owner.match.documentType.editor);
+      // `stale` 只是模块定义变化→重载的瞬态；等重载落定再决定是否关闭。
+      if (availability.kind === "available" || availability.reason === "stale") continue;
+      panel.dispose();
+      this.scheduleEditorReopen(owner.documentUri);
+    }
+  }
+
+  /**
+   * 面板 dispose 与重新打开不能在同一拍：VS Code 会聚焦正在关闭的标签页，
+   * 最终没有编辑器被真正打开（Restricted Mode 授予 Trust 后的自动装载路径）。
+   */
+  private scheduleEditorReopen(uri: vscode.Uri): void {
+    const key = uri.toString();
+    if (this.pendingReopens.has(key)) return;
+    this.pendingReopens.add(key);
+    setTimeout(() => {
+      this.pendingReopens.delete(key);
+      void vscode.commands.executeCommand("vscode.openWith", uri, OPTIONAL_EDITOR_VIEW_TYPE).then(
+        undefined,
+        (errorValue: unknown) => {
+          this.output.appendLine(`[modules] Reopening '${key}' failed: ${String(errorValue)}`);
+        },
+      );
+    }, 50);
+  }
+
+  private showReadonlyShell(
+    document: vscode.TextDocument,
+    webviewPanel: vscode.WebviewPanel,
+    match: DocumentMatch,
+    availability: Extract<ModuleEditorAvailability, { readonly kind: "unavailable" }>,
+  ): void {
+    const uriKey = document.uri.toString();
+    webviewPanel.webview.options = { enableScripts: false, localResourceRoots: [] };
+    webviewPanel.title = readonlyShellTitle(match, document.uri);
+    webviewPanel.webview.html = createReadonlyShellHtml(webviewPanel.webview, match, document.getText(), availability.message);
+
+    const shell: ReadonlyShell = {
+      documentUri: document.uri,
+      panel: webviewPanel,
+      match,
+      state: {
+        reason: availability.reason,
+        message: availability.message,
+        ...(availability.moduleId === undefined ? {} : { moduleId: availability.moduleId }),
+      },
+      text: document.getText(),
+    };
+    let shells = this.readonlyShells.get(uriKey);
+    if (shells === undefined) {
+      shells = new Set();
+      this.readonlyShells.set(uriKey, shells);
+    }
+    shells.add(shell);
+
+    const documentSubscription = vscode.workspace.onDidChangeTextDocument((event) => {
+      if (event.document.uri.toString() !== uriKey) return;
+      shell.text = event.document.getText();
+      webviewPanel.webview.html = createReadonlyShellHtml(webviewPanel.webview, match, shell.text, shell.state.message);
+    });
+    const projectSubscription = this.projects.onDidChange(() => {
+      if (this.projects.resolveDocument(document.uri) === undefined) {
+        webviewPanel.dispose();
+        void vscode.commands.executeCommand("vscode.openWith", document.uri, "default");
+        return;
+      }
+      this.refreshModuleAvailability();
+    });
+    webviewPanel.onDidDispose(() => {
+      documentSubscription.dispose();
+      projectSubscription.dispose();
+      shell.text = "";
+      shells?.delete(shell);
+      if (shells !== undefined && shells.size === 0) this.readonlyShells.delete(uriKey);
+      this.removeInitializedPanel(uriKey, webviewPanel);
+    });
+    this.addInitializedPanel(uriKey, webviewPanel);
+    this.output.appendLine(
+      `[modules] '${match.relativePath}' uses the read-only shell (${availability.reason}).`,
+    );
+  }
+
+  private updateReadonlyShell(
+    shell: ReadonlyShell,
+    availability: Extract<ModuleEditorAvailability, { readonly kind: "unavailable" }>,
+  ): void {
+    if (shell.state.reason === availability.reason && shell.state.message === availability.message) return;
+    shell.state = {
+      reason: availability.reason,
+      message: availability.message,
+      ...(availability.moduleId === undefined ? {} : { moduleId: availability.moduleId }),
+    };
+    shell.panel.webview.html = createReadonlyShellHtml(shell.panel.webview, shell.match, shell.text, availability.message);
   }
 
   public getGraphEditorTestState(uri: vscode.Uri): {

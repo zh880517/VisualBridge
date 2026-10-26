@@ -11,6 +11,7 @@ import { compareUtf16CodeUnits } from "@visualbridge/core";
 import { createDocument } from "../commands/createDocument";
 import type { CreateDocumentSelection } from "../commands/createDocumentSupport";
 import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
+import type { HostModuleRegistry } from "../modules/hostModuleRegistry";
 import {
   REVEAL_REFERENCE_COMMAND,
   type WorkspaceReferenceService,
@@ -76,6 +77,7 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
     private readonly references: WorkspaceReferenceService,
     private readonly refactors: WorkspaceReferenceRefactor,
     private readonly lifecycle: WorkspaceDocumentLifecycle,
+    private readonly modules: HostModuleRegistry,
   ) {
     this.tree = vscode.window.createTreeView(DOCUMENT_BROWSER_VIEW_ID, {
       treeDataProvider: this,
@@ -108,7 +110,9 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
         await this.open(node);
       }),
       vscode.commands.registerCommand("visualbridge.documentBrowser.create", async (node?: DocumentBrowserNode) => {
-        await createDocument(this.projects, this.lifecycle, this.creationSelection(node));
+        await createDocument(this.projects, this.lifecycle, this.creationSelection(node), (project, editor) => (
+          this.modules.editorAvailability(project, editor).kind === "available"
+        ));
       }),
       vscode.commands.registerCommand("visualbridge.documentBrowser.copy", async (node?: DocumentBrowserNode) => {
         await this.copyDocument(node);
@@ -151,15 +155,21 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
     }
     if (node.kind === "documentType") {
       const documents = this.documentsForType(node.project, node.documentType);
+      const moduleMessage = this.unavailableModuleMessage(node.project, node.documentType.editor);
       const item = new vscode.TreeItem(node.documentType.id, vscode.TreeItemCollapsibleState.Expanded);
       item.contextValue = "visualbridge.documentType";
-      item.iconPath = editorIcon(node.documentType.editor);
-      item.description = `${editorTitle(node.documentType.editor)} · ${documents.length}`;
+      item.iconPath = moduleMessage === undefined
+        ? editorIcon(node.documentType.editor)
+        : new vscode.ThemeIcon("lock");
+      item.description = moduleMessage === undefined
+        ? `${editorTitle(node.documentType.editor)} · ${documents.length}`
+        : "未加载（只读 Shell）";
       item.tooltip = new vscode.MarkdownString([
         `**${node.documentType.id}**`,
         "",
         `Editor: ${editorTitle(node.documentType.editor)}`,
         `Include: ${node.documentType.include.join(", ")}`,
+        ...(moduleMessage === undefined ? [] : ["", `Module: ${moduleMessage}`]),
       ].join("\n"));
       return item;
     }
@@ -207,6 +217,11 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
       return types;
     }
     if (node.kind === "documentType") {
+      const moduleMessage = this.unavailableModuleMessage(node.project, node.documentType.editor);
+      if (moduleMessage !== undefined) {
+        // 模块未加载时不列出文档：语义索引本就没有解析它们，这里给出原因而不是空列表。
+        return [{ kind: "empty", label: moduleMessage }];
+      }
       const documents = this.documentsForType(node.project, node.documentType);
       return documents.length === 0
         ? [{ kind: "empty", label: this.documents.loading ? "Indexing…" : "No documents" }]
@@ -416,6 +431,7 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
     if (project === undefined) {
       return;
     }
+    if (!this.assertEditorLoaded(project, node.document.editor, "Reveal Reference")) return;
     await this.references.reveal(
       project,
       node.reference.occurrence.definition,
@@ -431,6 +447,9 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
     if (source === undefined) {
       return;
     }
+    const project = this.projects.projects.find((entry) => entry.definition.projectId === source.projectId);
+    if (project === undefined) return;
+    if (!this.assertEditorLoaded(project, source.editor, "Rename Reference Target")) return;
     await this.refactors.rename(source, node.reference);
   }
 
@@ -449,6 +468,7 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
     if (node?.kind !== "document") return;
     const project = this.projects.projects.find((entry) => entry.definition.projectId === node.document.projectId);
     if (project === undefined) return;
+    if (!this.assertEditorLoaded(project, node.document.editor, title)) return;
     const current = vscode.Uri.joinPath(project.rootUri, ...node.document.path.split("/"));
     const target = await vscode.window.showSaveDialog({
       title: `${title} — stable IDs and references remain unchanged`,
@@ -477,6 +497,7 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
     if (node?.kind !== "document") return;
     const project = this.projects.projects.find((entry) => entry.definition.projectId === node.document.projectId);
     if (project === undefined) return;
+    if (!this.assertEditorLoaded(project, node.document.editor, "Copy Document")) return;
     const current = vscode.Uri.joinPath(project.rootUri, ...node.document.path.split("/"));
     try {
       const target = await vscode.window.showSaveDialog({
@@ -511,6 +532,9 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
 
   private async safeDelete(node: DocumentBrowserNode | undefined): Promise<void> {
     if (node?.kind !== "document") return;
+    const project = this.projects.projects.find((entry) => entry.definition.projectId === node.document.projectId);
+    if (project === undefined) return;
+    if (!this.assertEditorLoaded(project, node.document.editor, "Safe Delete")) return;
     try {
       const preview = await this.lifecycle.previewDelete(node.document);
       if (this.showPreviewBlockers(preview.preview.plan.blockers)) return;
@@ -524,6 +548,20 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
     } catch (errorValue) {
       this.showLifecycleError(errorValue);
     }
+  }
+
+  /** editor 的模块未加载时返回原因文案；Restricted Mode 的文档树用它显示"未授权"而不是空列表。 */
+  private unavailableModuleMessage(project: ProjectContext, editor: string): string | undefined {
+    const availability = this.modules.editorAvailability(project, editor);
+    return availability.kind === "available" ? undefined : availability.message;
+  }
+
+  /** 生命周期/引用命令执行前确认该 editor 的模块已加载；否则只提示，不跑领域代码。 */
+  private assertEditorLoaded(project: ProjectContext, editor: string, action: string): boolean {
+    const availability = this.modules.editorAvailability(project, editor);
+    if (availability.kind === "available") return true;
+    void vscode.window.showWarningMessage(`${action} 需要模块已加载：${availability.message}`);
+    return false;
   }
 
   private showLifecycleError(errorValue: unknown): void {

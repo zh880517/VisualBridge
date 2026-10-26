@@ -15,6 +15,7 @@ import {
 } from "@visualbridge/structured";
 import { resolveTableType, type TableCatalog, type TableCatalogRegistry } from "@visualbridge/table";
 import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
+import type { HostModuleRegistry } from "../modules/hostModuleRegistry";
 import { catalogDiagnosticSourceIndex, type CatalogRegistryLoadResult } from "./catalogRegistryLoader";
 import { loadEntityCatalogRegistry } from "./entityCatalogLoader";
 import { loadGraphCatalogRegistry } from "./graphCatalogLoader";
@@ -60,6 +61,7 @@ export class CatalogBrowser implements vscode.TreeDataProvider<CatalogBrowserNod
 
   public constructor(
     private readonly projects: ProjectRegistry,
+    private readonly modules: HostModuleRegistry,
     private readonly diagnostics: vscode.DiagnosticCollection,
     private readonly output: vscode.OutputChannel,
   ) {
@@ -112,6 +114,8 @@ export class CatalogBrowser implements vscode.TreeDataProvider<CatalogBrowserNod
       right.definition.projectId,
     ))) {
       for (const documentType of [...project.definition.documentTypes].sort((left, right) => compareUtf16CodeUnits(left.id, right.id))) {
+        // 没有已加载的模块就没有该 editor 的 Catalog 解析能力（Restricted Mode 不解析）。
+        if (this.modules.editorAvailability(project, documentType.editor).kind !== "available") continue;
         const snapshot = await loadSnapshot(project, documentType);
         if (snapshot !== undefined) snapshots.push(snapshot);
       }
@@ -153,9 +157,19 @@ export class CatalogBrowser implements vscode.TreeDataProvider<CatalogBrowserNod
   }
 }
 
-export async function validateCatalogBindings(project: ProjectContext): Promise<readonly ProjectFileIssue[]> {
+/**
+ * 校验工程里 Catalog 绑定是否可解析。
+ *
+ * `isEditorAvailable` 必须由调用方按模块注册表提供：模块未加载（Restricted Mode / failed /
+ * disabled）时不得解析领域 Catalog——没有模块就没有 Catalog 能力（附录 D.6）。
+ */
+export async function validateCatalogBindings(
+  project: ProjectContext,
+  isEditorAvailable?: (project: ProjectContext, documentType: DocumentTypeDefinition) => boolean,
+): Promise<readonly ProjectFileIssue[]> {
   const issues: ProjectFileIssue[] = [];
   for (const [documentTypeIndex, documentType] of project.definition.documentTypes.entries()) {
+    if (isEditorAvailable !== undefined && !isEditorAvailable(project, documentType)) continue;
     const loaded = await loadSnapshot(project, documentType);
     if (loaded === undefined) continue;
     for (const diagnostic of loaded.diagnostics) {

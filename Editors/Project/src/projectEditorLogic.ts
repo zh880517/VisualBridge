@@ -1,3 +1,4 @@
+import { canonicalJsonStringify } from "@visualbridge/core";
 import type {
   DocumentTypeDefinition,
   JsonValue,
@@ -15,6 +16,31 @@ export interface ProjectStateMessage {
   readonly project: VisualBridgeProjectDefinition;
   readonly isDirty: boolean;
   readonly issues: readonly ProjectFileIssue[];
+  /** 宿主侧模块注册表的只读快照；旧宿主/测试构造的消息可以省略。 */
+  readonly modules?: readonly ProjectModuleRuntime[];
+}
+
+/** 宿主模块状态机（附录 D.2）；编辑器只展示，不自行推断。 */
+export type ProjectModuleRuntimeStatus = "loaded" | "failed" | "untrusted" | "disabled" | "stale";
+
+export interface ProjectModuleRuntimeDiagnostic {
+  readonly code: string;
+  readonly severity: "error" | "warning";
+  readonly message: string;
+  readonly path: string;
+}
+
+/** 一个模块在"模块"区的运行时信息：状态与 hash 前 12 位（B1）。 */
+export interface ProjectModuleRuntime {
+  readonly id: string;
+  readonly index: number;
+  readonly status: ProjectModuleRuntimeStatus;
+  /** Project File 声明的 `sha256:<hex>`；未声明时为 undefined。 */
+  readonly hash?: string;
+  /** hash 去前缀后的前 12 位；未声明时为空字符串。 */
+  readonly hashShort: string;
+  readonly editors: readonly string[];
+  readonly diagnostics: readonly ProjectModuleRuntimeDiagnostic[];
 }
 
 export interface ProjectInvalidMessage {
@@ -115,6 +141,42 @@ export function createModule(project: VisualBridgeProjectDefinition): ProjectMod
 /** 模块 options 的编辑文本；未声明时显示空对象。 */
 export function moduleOptionsText(module: ProjectModuleDefinition): string {
   return `${JSON.stringify(module.options ?? {}, undefined, 2)}`;
+}
+
+/**
+ * ModuleCard 本地草稿的重置键。
+ *
+ * 模块状态刷新会重发 `projectState`；只有持久化字段（entry/options）真的变化时
+ * 才允许丢弃用户尚未提交的编辑，否则正在输入的入口/options 会被状态刷新吞掉。
+ */
+export function moduleDraftResetKey(module: ProjectModuleDefinition): string {
+  // options 的键顺序不应触发重置，用 Core 的规范化 JSON 作为稳定指纹。
+  return `${module.entry}\u0000${canonicalJsonStringify(module.options ?? {})}`;
+}
+
+/** "模块"区的状态文案；未知状态（旧宿主未上报）显示为"状态未知"。 */
+export function moduleStatusLabel(status: ProjectModuleRuntimeStatus | undefined): string {
+  switch (status) {
+    case "loaded":
+      return "已加载";
+    case "failed":
+      return "加载失败";
+    case "untrusted":
+      return "未授权（需要信任工作区）";
+    case "disabled":
+      return "已停用";
+    case "stale":
+      return "待重新装载";
+    case undefined:
+      return "状态未知";
+  }
+}
+
+/** 展示用的短 hash：去掉 `sha256:` 前缀后取前 12 位；未声明时返回空字符串。 */
+export function moduleHashShort(hash: string | undefined): string {
+  if (hash === undefined || hash.length === 0) return "";
+  const hex = hash.startsWith("sha256:") ? hash.slice("sha256:".length) : hash;
+  return hex.slice(0, 12);
 }
 
 /**

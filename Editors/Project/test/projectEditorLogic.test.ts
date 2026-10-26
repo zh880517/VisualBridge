@@ -11,7 +11,10 @@ import {
   createProvider,
   initialProjectEditorState,
   moduleDraftIsPersisted,
+  moduleDraftResetKey,
+  moduleHashShort,
   moduleOptionsText,
+  moduleStatusLabel,
   move,
   parseModuleOptions,
   providerDraftIsPersisted,
@@ -20,6 +23,7 @@ import {
   withValidatorTypes,
   withWebviewToken,
   type ProjectEditorState,
+  type ProjectModuleRuntime,
   type ProjectStateMessage,
 } from "../src/projectEditorLogic";
 
@@ -153,6 +157,54 @@ test("Module options text round-trips as a JSON object only", () => {
   assert.equal(parseModuleOptions("[]"), undefined);
   assert.equal(parseModuleOptions("42"), undefined);
   assert.equal(parseModuleOptions("{"), undefined);
+});
+
+test("Module runtime status labels and hash prefix feed the Modules section", () => {  assert.equal(moduleStatusLabel("loaded"), "已加载");
+  assert.equal(moduleStatusLabel("failed"), "加载失败");
+  assert.equal(moduleStatusLabel("untrusted"), "未授权（需要信任工作区）");
+  assert.equal(moduleStatusLabel("disabled"), "已停用");
+  assert.equal(moduleStatusLabel("stale"), "待重新装载");
+  assert.equal(moduleStatusLabel(undefined), "状态未知");
+
+  assert.equal(moduleHashShort(undefined), "");
+  assert.equal(moduleHashShort(""), "");
+  assert.equal(moduleHashShort(`sha256:${"0123456789ab".repeat(5)}cdef`), "0123456789ab");
+  assert.equal(moduleHashShort("abcdef"), "abcdef");
+});
+
+test("Module draft reset key only tracks persisted entry and options", () => {
+  const base = { id: "visualbridge.table", entry: "Modules/table.vbmodule.js" };
+  const withOptions = { ...base, options: { tableLayout: { nameKeyRow: 2, dataStartRow: 3 } } };
+
+  assert.equal(moduleDraftResetKey(base), moduleDraftResetKey({ ...base }));
+  assert.notEqual(moduleDraftResetKey(base), moduleDraftResetKey(withOptions));
+  assert.equal(moduleDraftResetKey(withOptions), moduleDraftResetKey({
+    ...withOptions,
+    options: { tableLayout: { dataStartRow: 3, nameKeyRow: 2 } },
+  }));
+  assert.notEqual(
+    moduleDraftResetKey(base),
+    moduleDraftResetKey({ ...base, entry: "Modules/renamed.vbmodule.js" }),
+  );
+});
+
+test("projectState carries module runtime snapshots without touching drafts", () => {
+  const runtime: ProjectModuleRuntime = {
+    id: "visualbridge.table",
+    index: 0,
+    status: "untrusted",
+    hashShort: "",
+    editors: ["table"],
+    diagnostics: [{ code: "module.untrusted", severity: "warning", message: "需要信任工作区才能加载模块。", path: "modules[0]" }],
+  };
+  const message: ProjectStateMessage = {
+    ...projectState(emptyProject()),
+    modules: [runtime],
+  };
+
+  const next = reduceProjectHostMessage(initialProjectEditorState, message);
+  assert.deepEqual(next.state?.modules, [runtime]);
+  assert.equal(next.status, "配置有效");
 });
 
 test("Module drafts survive projectState until the module is persisted", () => {

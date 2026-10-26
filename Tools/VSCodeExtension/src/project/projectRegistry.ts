@@ -27,6 +27,15 @@ export interface DocumentMatch {
 export class ProjectRegistry implements vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   private readonly disposables: vscode.Disposable[] = [];
+  private readonly markerDiagnostics = new Map<
+    string,
+    { readonly uri: vscode.Uri; readonly items: readonly vscode.Diagnostic[] }
+  >();
+  /** 模块注册表写入的诊断；与 Project File 结构诊断合并到同一个集合。 */
+  private readonly moduleDiagnostics = new Map<
+    string,
+    { readonly uri: vscode.Uri; readonly items: readonly vscode.Diagnostic[] }
+  >();
   private projectsValue: readonly ProjectContext[] = [];
   private refreshTimer: NodeJS.Timeout | undefined;
   private refreshVersion = 0;
@@ -143,9 +152,21 @@ export class ProjectRegistry implements vscode.Disposable {
       return;
     }
 
+    this.markerDiagnostics.clear();
+    for (const [key, entry] of nextDiagnostics) {
+      this.markerDiagnostics.set(key, entry);
+    }
+    const activeMarkers = new Set<string>([
+      ...nextDiagnostics.keys(),
+      ...nextProjects.map((project) => project.markerUri.toString()),
+    ]);
+    for (const key of [...this.moduleDiagnostics.keys()]) {
+      if (!activeMarkers.has(key)) this.moduleDiagnostics.delete(key);
+    }
     this.diagnostics.clear();
-    for (const diagnostic of nextDiagnostics.values()) {
-      this.diagnostics.set(diagnostic.uri, diagnostic.items);
+    const publishedMarkers = new Set([...this.markerDiagnostics.keys(), ...this.moduleDiagnostics.keys()]);
+    for (const key of publishedMarkers) {
+      this.publishDiagnosticsForKey(key);
     }
 
     this.projectsValue = nextProjects
@@ -190,6 +211,36 @@ export class ProjectRegistry implements vscode.Disposable {
     return undefined;
   }
 
+  /**
+   * 模块注册表写入的诊断。
+   *
+   * 与 Project File 的结构诊断合并进同一个集合（附录 D.2 要求"诊断合并进 Project File 诊断"）；
+   * 传空数组表示清除该 Project 的模块诊断。
+   */
+  public setModuleDiagnostics(markerUri: vscode.Uri, items: readonly vscode.Diagnostic[]): void {
+    const key = markerUri.toString();
+    if (items.length === 0) {
+      this.moduleDiagnostics.delete(key);
+    } else {
+      this.moduleDiagnostics.set(key, { uri: markerUri, items });
+    }
+    // 清空时 Map 里已经取不到 URI，必须把 markerUri 作为兜底，否则旧诊断会留在集合里。
+    this.publishDiagnosticsForKey(key, markerUri);
+  }
+
+  private publishDiagnosticsForKey(key: string, fallbackUri?: vscode.Uri): void {
+    const structural = this.markerDiagnostics.get(key);
+    const modules = this.moduleDiagnostics.get(key);
+    const uri = structural?.uri ?? modules?.uri ?? fallbackUri;
+    if (uri === undefined) return;
+    const items = [...structural?.items ?? [], ...modules?.items ?? []];
+    if (items.length === 0) {
+      this.diagnostics.delete(uri);
+    } else {
+      this.diagnostics.set(uri, items);
+    }
+  }
+
   public async listAuthoringSourcePaths(project: ProjectContext): Promise<readonly string[]> {
     const paths = new Set<string>([
       nodePath.posix.basename(project.markerUri.path),
@@ -229,6 +280,8 @@ export class ProjectRegistry implements vscode.Disposable {
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
+    this.markerDiagnostics.clear();
+    this.moduleDiagnostics.clear();
     this.changeEmitter.dispose();
   }
 

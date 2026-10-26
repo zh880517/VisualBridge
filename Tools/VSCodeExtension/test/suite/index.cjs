@@ -2153,6 +2153,349 @@ exports.run = async function run() {
     assert.deepEqual(await vscode.workspace.fs.readFile(uri), before);
   });
 
+  await test("loads declared modules per Project and keeps domain editors available", async () => {
+    const state = await vscode.commands.executeCommand("visualbridge.test.getModuleRegistryState");
+    assert.equal(state.trusted, true);
+    assert.ok(state.activationCount > 0, "No module activation was observed in the trusted workspace.");
+    // 已信任时注册源 activate 了四个模块（只观测注册源路径；bundle 级静态 init 不在观测范围，
+    // 归 C1/C2 把领域代码移出宿主，Restricted Mode 下这个列表必须为空）。
+    assert.deepEqual(
+      [...state.evaluatedModuleIds].sort(),
+      ["visualbridge.entity", "visualbridge.graph", "visualbridge.structured", "visualbridge.table"],
+    );
+    const expectLoaded = (projectId, modules) => {
+      const project = state.projects.find((entry) => entry.projectId === projectId);
+      assert.ok(project, `Project '${projectId}' is missing from the module registry snapshot.`);
+      assert.deepEqual(
+        project.modules.map((module) => [module.id, module.status]),
+        modules,
+        `Unexpected module states for '${projectId}'.`,
+      );
+      for (const module of project.modules) {
+        assert.ok(module.editors.length > 0, `Module '${module.id}' did not expose editors.`);
+        assert.deepEqual(module.diagnostics, [], `Module '${module.id}' reported diagnostics while loaded.`);
+      }
+    };
+    expectLoaded("visualbridge.entity-semantics", [["visualbridge.entity", "loaded"], ["visualbridge.table", "loaded"]]);
+    expectLoaded("GraphSemanticProject", [["visualbridge.graph", "loaded"], ["visualbridge.table", "loaded"]]);
+    expectLoaded("visualbridge.structured-semantics", [["visualbridge.structured", "loaded"], ["visualbridge.table", "loaded"]]);
+    expectLoaded("visualbridge.table-semantics", [["visualbridge.table", "loaded"]]);
+    expectLoaded("visualbridge.provider-semantics", [["visualbridge.structured", "loaded"]]);
+
+    // 已加载时不出现只读回退：行为与改造前一致。
+    const entityUri = vscode.Uri.file(path.join(
+      workspacePath,
+      "EntitySemanticProject",
+      "Config",
+      "Entities",
+      "Player.herojson",
+    ));
+    await vscode.commands.executeCommand("visualbridge.openDocument", entityUri);
+    await waitForAsync(
+      () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", entityUri),
+      (ready) => ready === true,
+      20_000,
+      "The Entity editor did not become ready while its module is loaded.",
+    );
+    const shell = await vscode.commands.executeCommand("visualbridge.test.getReadonlyShellState", entityUri);
+    assert.equal(shell.active, false);
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+
+    // 直接 openWith Table 编辑器（绕过 openDocument）也必须走真实编辑器，而不是只读 Shell。
+    const tableUri = vscode.Uri.file(path.join(
+      workspacePath,
+      "TableSemanticProject",
+      "Tables",
+      "Skills_A.csv",
+    ));
+    await withTimeout(
+      vscode.commands.executeCommand("vscode.openWith", tableUri, "visualbridge.tableEditor"),
+      20_000,
+      "The standalone Table editor did not open.",
+    );
+    await waitForAsync(
+      () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", tableUri),
+      (ready) => ready === true,
+      20_000,
+      "The standalone Table editor did not become ready.",
+    );
+    const tableShell = await vscode.commands.executeCommand("visualbridge.test.getTableReadonlyShellState", tableUri);
+    assert.equal(tableShell.active, false);
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  });
+
+  await test("isolates a failed module and reports module.activateFailed at modules[i]", async () => {
+    const projectRoot = path.join(workspacePath, "EntitySemanticProject");
+    const markerUri = vscode.Uri.file(path.join(projectRoot, "VisualBridge.project.vbjson"));
+    const entityUri = vscode.Uri.file(path.join(projectRoot, "Config", "Entities", "Player.herojson"));
+    const epochBefore = (await vscode.commands.executeCommand("visualbridge.test.getDocumentIndexSnapshot")).stats.epoch;
+    try {
+      // 先在模块可用时打开真实编辑器，验证"模块转 failed 后已有会话被关闭并回退只读"。
+      await vscode.commands.executeCommand("visualbridge.openDocument", entityUri);
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", entityUri),
+        (ready) => ready === true,
+        20_000,
+        "The Entity editor did not open before the injected failure.",
+      );
+      assert.equal(
+        (await vscode.commands.executeCommand("visualbridge.test.getReadonlyShellState", entityUri)).active,
+        false,
+      );
+
+      await vscode.commands.executeCommand("visualbridge.test.setModuleActivationFailure", "visualbridge.entity");
+      const state = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getModuleRegistryState"),
+        (value) => {
+          const project = value.projects.find((entry) => entry.projectId === "visualbridge.entity-semantics");
+          return project?.modules[0]?.status === "failed" && project?.modules[1]?.status === "loaded";
+        },
+        20_000,
+        "The injected activation failure did not isolate the entity module.",
+      );
+      const failed = state.projects
+        .find((entry) => entry.projectId === "visualbridge.entity-semantics")
+        .modules[0];
+      assert.equal(failed.id, "visualbridge.entity");
+      assert.equal(failed.diagnostics[0].path, "modules[0]");
+      assert.ok(failed.diagnostics.some((diagnostic) => diagnostic.code === "module.activateFailed"));
+
+      // 模块状态变化主动重建索引（P1），不依赖下一次编辑。
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getDocumentIndexSnapshot"),
+        (snapshot) => snapshot.stats.epoch > epochBefore,
+        20_000,
+        "A module state change did not rebuild the Document Index.",
+      );
+
+      // Problems 里定位到 modules[0] 条目，而不是整个文件第 0 行。
+      const diagnostics = vscode.languages.getDiagnostics(markerUri);
+      const activation = diagnostics.find((entry) => entry.code === "module.activateFailed");
+      assert.ok(activation, "No module.activateFailed diagnostic was published on the Project File.");
+      assert.match(activation.message, /^modules\[0\]: /u);
+      const lines = (await readFile(markerUri.fsPath, "utf8")).split(/\r?\n/u);
+      const located = lines.slice(activation.range.start.line, activation.range.end.line + 1).join("\n");
+      assert.ok(
+        located.includes("\"visualbridge.entity\""),
+        `module.activateFailed was not located at modules[0]: ${located}`,
+      );
+
+      // 已有领域会话被关闭，同一文档回退只读 Shell；不建立领域会话（只读证据）。
+      const shell = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getReadonlyShellState", entityUri),
+        (value) => value?.active === true,
+        20_000,
+        "The Entity session was not replaced by the read-only shell after the module failed.",
+      );
+      assert.equal(shell.reason, "failed");
+      assert.match(shell.message, /visualbridge\.entity/u);
+      const entityState = await vscode.commands.executeCommand("visualbridge.test.getEntityEditorState", entityUri);
+      assert.equal(entityState.sessionCount, 0);
+      await assert.rejects(
+        vscode.commands.executeCommand("visualbridge.test.applyDocumentOperations", entityUri, "entity", []),
+        /No active entity editor session/u,
+      );
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+
+      // 同一 Project 的 table 模块不受影响。
+      await assertEditorRoute(
+        workspacePath,
+        ["EntitySemanticProject", "Tables", "Skills_Main.skillstable"],
+        "visualbridge.tableEditor",
+        "visualbridge.openDocument",
+      );
+    } finally {
+      await vscode.commands.executeCommand("visualbridge.test.setModuleActivationFailure", undefined);
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getModuleRegistryState"),
+        (value) => value.projects
+          .find((entry) => entry.projectId === "visualbridge.entity-semantics")
+          ?.modules.every((module) => module.status === "loaded") === true,
+        20_000,
+        "The entity module did not recover after clearing the injected failure.",
+      );
+    }
+  });
+
+  await test("keeps a dirty Table editor open when its module becomes unavailable", async () => {
+    const tableUri = vscode.Uri.file(path.join(
+      workspacePath,
+      "TableSemanticProject",
+      "Tables",
+      "Skills_A.csv",
+    ));
+    try {
+      await withTimeout(
+        vscode.commands.executeCommand("visualbridge.openDocument", tableUri),
+        20_000,
+        "The Table editor did not open.",
+      );
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", tableUri),
+        (ready) => ready === true,
+        20_000,
+        "The Table editor did not become ready.",
+      );
+      await vscode.commands.executeCommand("visualbridge.test.applyTableOperations", tableUri, [{
+        type: "table.setCell",
+        sheetId: "skills:Skills_A",
+        rowId: "Skills_A:key-101",
+        columnId: "name",
+        value: "Dirty Before Module Failure",
+      }]);
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getTableEditorState", tableUri),
+        (state) => state?.dirty === true && state.panelCount === 1,
+        20_000,
+        "The Table edit did not mark the custom document dirty.",
+      );
+
+      await vscode.commands.executeCommand("visualbridge.test.setModuleActivationFailure", "visualbridge.table");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getModuleRegistryState"),
+        (value) => value.projects
+          .find((entry) => entry.projectId === "visualbridge.table-semantics")
+          ?.modules.every((module) => module.status === "failed") === true,
+        20_000,
+        "The Table module was not marked failed.",
+      );
+
+      // dirty 的自定义文档没有 backup-on-dispose：模块失效时面板必须保留，不能静默丢编辑。
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const kept = await vscode.commands.executeCommand("visualbridge.test.getTableEditorState", tableUri);
+      assert.equal(kept.panelCount, 1, "The dirty Table panel was disposed after its module failed.");
+      assert.equal(kept.dirty, true);
+      const shell = await vscode.commands.executeCommand("visualbridge.test.getTableReadonlyShellState", tableUri);
+      assert.equal(shell.active, false, "The dirty Table panel was replaced by a read-only shell.");
+    } finally {
+      await vscode.commands.executeCommand("visualbridge.test.setModuleActivationFailure", undefined);
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getModuleRegistryState"),
+        (value) => value.projects
+          .find((entry) => entry.projectId === "visualbridge.table-semantics")
+          ?.modules.every((module) => module.status === "loaded") === true,
+        20_000,
+        "The Table module did not recover after clearing the injected failure.",
+      );
+      await vscode.commands.executeCommand("workbench.action.files.revert").catch(() => undefined);
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+    }
+  });
+
+  await test("falls back to a read-only shell when no module declares the editor", async () => {
+    const projectRoot = vscode.Uri.file(path.join(workspacePath, "UncoveredShellProject"));
+    const markerUri = vscode.Uri.joinPath(projectRoot, "VisualBridge.project.vbjson");
+    const documentUri = vscode.Uri.joinPath(projectRoot, "Config", "Sample.fixtureconfig");
+    try {
+      await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(projectRoot, "Config"));
+      await vscode.workspace.fs.writeFile(markerUri, new TextEncoder().encode(`${JSON.stringify({
+        formatVersion: 2,
+        projectId: "visualbridge.b1.shell-fixture",
+        documentRoots: ["Config"],
+        modules: [],
+        documentTypes: [{
+          id: "shell.fixture",
+          editor: "structured",
+          include: ["Config/**/*.fixtureconfig"],
+          exclude: [],
+          catalogs: [],
+        }],
+      }, undefined, 2)}\n`));
+      await vscode.workspace.fs.writeFile(
+        documentUri,
+        new TextEncoder().encode("{\n  \"formatVersion\": 1\n}\n"),
+      );
+      await vscode.commands.executeCommand("visualbridge.refreshProjects");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getModuleRegistryState"),
+        (value) => value.projects.some((entry) => entry.projectId === "visualbridge.b1.shell-fixture"),
+        20_000,
+        "The shell fixture project was not discovered.",
+      );
+      await vscode.commands.executeCommand("visualbridge.openDocument", documentUri);
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", documentUri),
+        (ready) => ready === true,
+        20_000,
+        "The undeclared-module shell did not become ready.",
+      );
+      const shell = await vscode.commands.executeCommand("visualbridge.test.getReadonlyShellState", documentUri);
+      assert.equal(shell.active, true);
+      assert.equal(shell.reason, "undeclared");
+      assert.match(shell.message, /未声明/u);
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+
+      const diagnostics = vscode.languages.getDiagnostics(markerUri);
+      const undeclared = diagnostics.find((entry) => entry.code === "module.notFound");
+      assert.ok(undeclared, "No documentTypes[].editor diagnostic was published for the undeclared editor.");
+      assert.match(undeclared.message, /^documentTypes\[0\]\.editor: /u);
+    } finally {
+      // 先移除文档与 Project File，等文件监视器收敛后再删目录，避免 VS Code 对已删目录的 scandir 噪声。
+      await vscode.workspace.fs.delete(documentUri, { useTrash: false }).then(undefined, () => undefined);
+      await vscode.workspace.fs.delete(markerUri, { useTrash: false }).then(undefined, () => undefined);
+      await vscode.commands.executeCommand("visualbridge.refreshProjects");
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await vscode.workspace.fs.delete(projectRoot, { recursive: true, useTrash: false }).then(undefined, () => undefined);
+      await vscode.commands.executeCommand("visualbridge.refreshProjects");
+    }
+  });
+
+  await test("shows module status and the first 12 hash characters in Project Settings", async () => {
+    const markerUri = vscode.Uri.file(path.join(
+      workspacePath,
+      "StructuredSemanticProject",
+      "VisualBridge.project.vbjson",
+    ));
+    const before = await vscode.workspace.fs.readFile(markerUri);
+    const tableHash = `sha256:${"ab12cd34ef56".repeat(5)}7890`;
+    try {
+      const definition = JSON.parse(new TextDecoder().decode(before));
+      definition.modules.find((module) => module.id === "visualbridge.table").hash = tableHash;
+      await vscode.workspace.fs.writeFile(markerUri, new TextEncoder().encode(`${JSON.stringify(definition, undefined, 2)}\n`));
+      await vscode.commands.executeCommand("visualbridge.refreshProjects");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getModuleRegistryState"),
+        (value) => value.projects
+          .find((entry) => entry.projectId === "visualbridge.structured-semantics")
+          ?.modules.find((module) => module.id === "visualbridge.table")?.hash === tableHash,
+        20_000,
+        "The declared module hash was not recorded by the registry.",
+      );
+      await vscode.commands.executeCommand("vscode.openWith", markerUri, "visualbridge.projectSettingsEditor");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", markerUri),
+        (ready) => ready === true,
+        20_000,
+        "Project Settings did not become ready.",
+      );
+      const settings = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getProjectSettingsState", markerUri),
+        (state) => state?.modules?.length === 2,
+        20_000,
+        "Project Settings did not expose module runtime state.",
+      );
+      const table = settings.modules.find((module) => module.id === "visualbridge.table");
+      assert.equal(table.status, "loaded");
+      // B1 没有 bundle 字节，hash 只记录并展示、不做比对（module.hashMismatch 由 C2 补）；
+      // 这里显式固定这个过渡行为，避免以后误把它当"已实现 hash 校验"。
+      assert.equal(table.hash, tableHash);
+      assert.equal(table.hashShort, "ab12cd34ef56");
+      assert.equal(
+        vscode.languages.getDiagnostics(markerUri).filter((entry) => entry.code === "module.hashMismatch").length,
+        0,
+        "B1 must not report module.hashMismatch without bundle bytes.",
+      );
+      const structured = settings.modules.find((module) => module.id === "visualbridge.structured");
+      assert.equal(structured.hash, undefined);
+      assert.equal(structured.hashShort, "");
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    } finally {
+      await vscode.workspace.fs.writeFile(markerUri, before);
+      await vscode.commands.executeCommand("visualbridge.refreshProjects");
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  });
+
   await test("shares the Editor Bridge parity fixture with the schema and Unity validators", async () => {
     const fixturePath = path.join(__dirname, "..", "..", "..", "..",
       "Packages", "com.kyle.visualbridge", "Tests", "Fixtures", "visualbridge-editor-bridge-cases.json");

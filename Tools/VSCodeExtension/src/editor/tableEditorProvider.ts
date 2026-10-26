@@ -351,13 +351,15 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
     readonly panelCount: number;
     readonly activeReadyPanelCount: number;
     readonly pendingRevealCount: number;
+    /** 是否有匹配的 Table 自定义文档处于未保存状态（B1 模块门禁用它决定是否保留面板）。 */
+    readonly dirty: boolean;
     readonly lastRevealResult?: TableRevealResult;
     readonly lastRevealTarget?: TableRevealTarget;
   } {
     const uriKey = uri.toString();
-    const matchingPanels = [...this.panels]
-      .filter(([document]) => document.sources.some((source) => source.uri.toString() === uriKey))
-      .flatMap(([, panels]) => [...panels]);
+    const matchingDocuments = [...this.panels]
+      .filter(([document]) => document.sources.some((source) => source.uri.toString() === uriKey));
+    const matchingPanels = matchingDocuments.flatMap(([, panels]) => [...panels]);
     const base = {
       panelCount: matchingPanels.length,
       activeReadyPanelCount: matchingPanels.filter((panel) => {
@@ -366,6 +368,7 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
       }).length,
       pendingRevealCount: (this.pendingReveals.has(uriKey) ? 1 : 0)
         + matchingPanels.filter((panel) => this.panelRevealStates.get(panel)?.mailbox.pendingTarget !== undefined).length,
+      dirty: matchingDocuments.some(([document]) => document.isDirty),
     };
     const lastReveal = matchingPanels
       .map((panel) => this.panelRevealStates.get(panel)?.lastReveal)

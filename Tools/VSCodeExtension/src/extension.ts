@@ -4,8 +4,10 @@ import type {
   ProjectProviderDocumentSnapshot,
   ReferenceLocation,
 } from "@visualbridge/core";
+import { ENTITY_EDITOR_ID } from "@visualbridge/entity";
 import { TABLE_EDITOR_ID } from "@visualbridge/table";
-import { parseGraphCatalog } from "@visualbridge/graph";
+import { GRAPH_EDITOR_ID, parseGraphCatalog } from "@visualbridge/graph";
+import { STRUCTURED_EDITOR_ID } from "@visualbridge/structured";
 import { RuntimeBridgeService } from "./bridge/runtimeBridgeService";
 import { parseRuntimeBridgeDiscoveryRecord, parseRuntimeBridgeMessage, RuntimeBridgeProtocolError } from "./bridge/runtimeBridgeProtocol";
 import { CatalogBrowser } from "./catalog/catalogBrowser";
@@ -28,11 +30,14 @@ import {
   OPTIONAL_EDITOR_VIEW_TYPE,
 } from "./editor/documentEditorProvider";
 import { TABLE_EDITOR_VIEW_TYPE, TableEditorProvider } from "./editor/tableEditorProvider";
+import { TableEditorGate } from "./editor/tableEditorGate";
 import { ProjectRegistry } from "./project/projectRegistry";
 import {
   PROJECT_SETTINGS_EDITOR_VIEW_TYPE,
   ProjectSettingsEditorProvider,
 } from "./project/projectSettingsEditorProvider";
+import { HostModuleRegistry } from "./modules/hostModuleRegistry";
+import { createInProcessModuleSource } from "./modules/inProcessModuleSource";
 import { WorkspaceProjectProviderService } from "./provider/workspaceProjectProviderService";
 import {
   REVEAL_REFERENCE_COMMAND,
@@ -58,10 +63,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const workspaceDiagnostics = vscode.languages.createDiagnosticCollection("visualbridge-workspace");
   const catalogDiagnostics = vscode.languages.createDiagnosticCollection("visualbridge-catalog");
   const projects = new ProjectRegistry(projectDiagnostics, output);
+  // 宿主模块注册表：B1 用进程内注册源（C2 换成 ModuleLoader）；装载受 Workspace Trust 门禁。
+  const modules = new HostModuleRegistry(projects, createInProcessModuleSource(), output);
   const projectProviders = new WorkspaceProjectProviderService(projects, output);
   const references = new WorkspaceReferenceService(projects, output, projectProviders);
   const documents = new WorkspaceDocumentIndex(
     projects,
+    modules,
     references,
     workspaceDiagnostics,
     output,
@@ -73,8 +81,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     references,
     documentDiagnostics,
     output,
+    modules,
   );
-  const projectSettingsEditor = new ProjectSettingsEditorProvider(context.extensionUri, projects, output);
+  const projectSettingsEditor = new ProjectSettingsEditorProvider(
+    context.extensionUri,
+    projects,
+    modules,
+    output,
+  );
   const tableEditorProvider = new TableEditorProvider(
     context.extensionUri,
     projects,
@@ -82,6 +96,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     documentDiagnostics,
     output,
   );
+  // Table 编辑器入口统一走模块门禁：未受信任/模块失败时只给只读 Shell（P0）。
+  const tableEditorGate = new TableEditorGate(tableEditorProvider, projects, modules, output);
   const refactors = new WorkspaceReferenceRefactor(
     projects,
     documents,
@@ -97,12 +113,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     tableEditorProvider,
     output,
   );
-  const browser = new DocumentBrowser(projects, documents, references, refactors, lifecycle);
-  const catalogBrowser = new CatalogBrowser(projects, catalogDiagnostics, output);
+  const browser = new DocumentBrowser(projects, documents, references, refactors, lifecycle, modules);
+  const catalogBrowser = new CatalogBrowser(projects, modules, catalogDiagnostics, output);
   // 在注册任何编辑器/命令之前完成项目加载：窗口重启恢复编辑器标签页时，
   // VS Code 会在提供器注册后立刻调用 openCustomDocument，此时若 Project Registry
   // 尚未完成首次刷新，文档解析会失败并留下无法恢复的死标签页。
   await projects.initialize();
+  // 模块首次装载也必须在注册 Custom Editor 之前完成，否则首批文档会错误回退只读 Shell。
+  await modules.initialize();
   const catalogTree = vscode.window.createTreeView("visualbridge.catalogs", {
     treeDataProvider: catalogBrowser,
     showCollapseAll: true,
@@ -167,17 +185,65 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     };
   };
 
+  /**
+   * 命令级模块门禁：模块未加载（未信任 / 失败 / 停用 / 未声明）时不得执行领域代码。
+   * 返回 true 表示至少有一个工程已加载该 editor，命令可以继续。
+   */
+  const requireAvailableEditor = async (editor: string): Promise<boolean> => {
+    let reason: string | undefined;
+    for (const project of projects.projects) {
+      if (!project.definition.documentTypes.some((documentType) => documentType.editor === editor)) continue;
+      await modules.ensureProject(project);
+      const availability = modules.editorAvailability(project, editor);
+      if (availability.kind === "available") return true;
+      reason ??= availability.message;
+    }
+    void vscode.window.showWarningMessage(
+      reason ?? `没有工程声明编辑器 '${editor}'。`,
+    );
+    return false;
+  };
+
   if (context.extensionMode !== vscode.ExtensionMode.Production) {
     context.subscriptions.push(
       vscode.commands.registerCommand(
         "visualbridge.test.isEditorReady",
         (uri: vscode.Uri) => editorProvider.isEditorReady(uri)
           || tableEditorProvider.isEditorReady(uri)
+          || tableEditorGate.isReadonlyShellActive(uri)
           || projectSettingsEditor.isReady(uri),
       ),
       vscode.commands.registerCommand(
         "visualbridge.test.getProjectSettingsState",
         (uri: vscode.Uri) => projectSettingsEditor.getTestState(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.getModuleRegistryState",
+        () => modules.testState,
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.getReadonlyShellState",
+        (uri: vscode.Uri) => editorProvider.getReadonlyShellState(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.getTableReadonlyShellState",
+        (uri: vscode.Uri) => tableEditorGate.getReadonlyShellState(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.assertTableShellReadonly",
+        (uri: vscode.Uri) => tableEditorGate.assertReadonlyShellRejectsWritesForTest(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.setModuleActivationFailure",
+        (moduleId: string | undefined) => modules.setActivationFailureForTest(moduleId ?? undefined),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.setModuleTrustOverride",
+        (trusted: boolean | undefined) => modules.setTrustOverrideForTest(trusted ?? undefined),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.simulateWorkspaceTrustGranted",
+        () => modules.simulateGrantedTrustForTest(),
       ),
       vscode.commands.registerCommand(
         "visualbridge.test.applyProjectOperations",
@@ -518,6 +584,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     workspaceDiagnostics,
     catalogDiagnostics,
     projects,
+    modules,
     projectProviders,
     references,
     documents,
@@ -550,6 +617,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
 
+      // 模块未装载时不把文档交给领域编辑器：Table 一律走 TableEditorGate（不可用时给只读 Shell，
+      // 二进制 XLSX 也不会落到 CustomTextEditorProvider 的文本 Shell），其余走通用只读 Shell。
+      await modules.ensureProject(match.project);
       await vscode.commands.executeCommand(
         "vscode.openWith",
         uri,
@@ -573,19 +643,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (uri !== undefined) await vscode.window.showTextDocument(uri, { preview: true });
     }),
     vscode.commands.registerCommand("visualbridge.createGraphDocument", async () => {
+      if (!await requireAvailableEditor(GRAPH_EDITOR_ID)) return;
       await createGraphDocument(projects, lifecycle);
     }),
     vscode.commands.registerCommand("visualbridge.createEntityDocument", async () => {
+      if (!await requireAvailableEditor(ENTITY_EDITOR_ID)) return;
       await createEntityDocument(projects, lifecycle);
     }),
     vscode.commands.registerCommand("visualbridge.createStructuredDocument", async () => {
+      if (!await requireAvailableEditor(STRUCTURED_EDITOR_ID)) return;
       await createStructuredDocument(projects, lifecycle);
     }),
     vscode.commands.registerCommand("visualbridge.createTableDocument", async () => {
+      if (!await requireAvailableEditor(TABLE_EDITOR_ID)) return;
       await createTableDocument(projects, lifecycle);
     }),
     vscode.commands.registerCommand("visualbridge.createDocument", async () => {
-      await createDocument(projects, lifecycle);
+      // 候选 Document Type 只保留模块已加载的 editor。
+      await createDocument(projects, lifecycle, undefined, (project, editor) => (
+        modules.editorAvailability(project, editor).kind === "available"
+      ));
     }),
     vscode.commands.registerCommand("visualbridge.safeDeleteElement", async (request?: LifecycleElementDeleteRequest) => {
       if (request === undefined) {
@@ -636,6 +713,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand(REVEAL_REFERENCE_COMMAND, async (location) => {
       if (isTableReferenceLocation(location)) {
+        // Table 模块未加载时只打开只读 Shell，不执行表格领域代码。
+        const tableProject = projects.projects.find(
+          (candidate) => candidate.definition.projectId === location.projectId,
+        );
+        if (tableProject === undefined) throw new Error(`VisualBridge Project '${location.projectId}' is not open.`);
+        await modules.ensureProject(tableProject);
+        if (modules.editorAvailability(tableProject, TABLE_EDITOR_ID).kind !== "available") {
+          const shellUri = vscode.Uri.joinPath(tableProject.rootUri, ...location.path.split("/"));
+          // 表格一律走 TableEditorGate：模块不可用时它渲染只读 Shell（二进制 XLSX 也适用）。
+          await vscode.commands.executeCommand("vscode.openWith", shellUri, TABLE_EDITOR_VIEW_TYPE);
+          return;
+        }
         await tableEditorProvider.revealReference(location);
         return;
       }
@@ -677,7 +766,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       webviewOptions: { retainContextWhenHidden: false },
     }),
     tableEditorProvider,
-    vscode.window.registerCustomEditorProvider(TABLE_EDITOR_VIEW_TYPE, tableEditorProvider, {
+    tableEditorGate,
+    vscode.window.registerCustomEditorProvider(TABLE_EDITOR_VIEW_TYPE, tableEditorGate, {
       supportsMultipleEditorsPerDocument: true,
       webviewOptions: { retainContextWhenHidden: false },
     }),
@@ -686,6 +776,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // projects.initialize 已在注册块之前完成（见上）；documents 索引在注册后初始化。
   await documents.initialize();
   await catalogBrowser.refresh();
+
+  // 模块状态变化（装载/失败/授权变化）必须主动重建索引与只读回退，而不是等下一次编辑（P1）。
+  context.subscriptions.push(
+    modules.onDidChange(() => {
+      editorProvider.refreshModuleAvailability();
+      tableEditorGate.refreshModuleAvailability();
+      projectSettingsEditor.notifyModulesChanged();
+      void documents.refresh().catch((errorValue: unknown) => {
+        output.appendLine(`[modules] Document Index refresh failed after a module state change: ${String(errorValue)}`);
+      });
+      void catalogBrowser.refresh();
+    }),
+  );
 
   // "未保存的文档"树视图的自动刷新：文本编辑、保存/打开/关闭、项目变化与 Table 编辑器状态。
   let unsavedRefreshTimer: NodeJS.Timeout | undefined;

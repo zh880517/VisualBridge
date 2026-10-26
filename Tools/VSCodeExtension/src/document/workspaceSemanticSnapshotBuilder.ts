@@ -85,12 +85,14 @@ interface CapturedBytes {
 export async function planWorkspaceSemanticSources(
   projects: readonly ProjectContext[],
   signal: AbortSignal,
+  isEditorAvailable?: (project: ProjectContext, documentType: DocumentTypeDefinition) => boolean,
 ): Promise<readonly SemanticSnapshotSource<PreparedWorkspaceDocument>[]> {
   const sources: SemanticSnapshotSource<PreparedWorkspaceDocument>[] = [];
   for (const project of projects) {
     throwIfAborted(signal);
     for (const documentType of project.definition.documentTypes.filter((entry) => SUPPORTED_EDITORS.has(entry.editor))) {
       throwIfAborted(signal);
+      if (isEditorAvailable !== undefined && !isEditorAvailable(project, documentType)) continue;
       const uris = await findDocumentUris(project, documentType);
       throwIfAborted(signal);
       if (documentType.editor === "graph") {

@@ -5,8 +5,10 @@ import {
   parseProjectFile,
   type ProjectFileIssue,
 } from "@visualbridge/core";
-import { createProjectEditorHtml } from "@visualbridge/project-editor";
+import { createProjectEditorHtml, moduleHashShort } from "@visualbridge/project-editor";
+import type { ProjectModuleRuntime } from "@visualbridge/project-editor";
 import { validateCatalogBindings } from "../catalog/catalogBrowser";
+import type { HostModuleRegistry } from "../modules/hostModuleRegistry";
 import { WebviewEpoch } from "../editor/webviewEpoch";
 import type { ProjectRegistry } from "./projectRegistry";
 
@@ -28,6 +30,7 @@ export class ProjectSettingsEditorProvider implements vscode.CustomTextEditorPro
   public constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly projects: ProjectRegistry,
+    private readonly modules: HostModuleRegistry,
     private readonly output: vscode.OutputChannel,
   ) {}
 
@@ -40,6 +43,7 @@ export class ProjectSettingsEditorProvider implements vscode.CustomTextEditorPro
       document,
       panel,
       this.projects,
+      this.modules,
       this.output,
       (mutation) => this.enqueueMutation(document.uri, mutation),
       () => this.removeSession(document.uri, session),
@@ -57,6 +61,13 @@ export class ProjectSettingsEditorProvider implements vscode.CustomTextEditorPro
 
   public getTestState(uri: vscode.Uri): ProjectSettingsTestState | undefined {
     return [...this.sessions.get(uri.toString()) ?? []][0]?.testState;
+  }
+
+  /** 模块状态变化后把"模块"区的状态与 hash 推回已打开的设置页。 */
+  public notifyModulesChanged(): void {
+    for (const sessions of this.sessions.values()) {
+      sessions.forEach((session) => session.refreshModuleState());
+    }
   }
 
   public async applyOperationsForTest(
@@ -100,6 +111,7 @@ interface ProjectSettingsTestState {
   readonly isDirty: boolean;
   readonly projectId?: string;
   readonly issues: readonly ProjectFileIssue[];
+  readonly modules: readonly ProjectModuleRuntime[];
 }
 
 class ProjectSettingsEditorSession {
@@ -114,6 +126,7 @@ class ProjectSettingsEditorSession {
     private readonly document: vscode.TextDocument,
     private readonly panel: vscode.WebviewPanel,
     private readonly projects: ProjectRegistry,
+    private readonly modules: HostModuleRegistry,
     private readonly output: vscode.OutputChannel,
     private readonly runExclusive: (mutation: () => Promise<void>) => Promise<void>,
     private readonly onDispose: () => void,
@@ -164,8 +177,14 @@ class ProjectSettingsEditorSession {
       documentVersion: this.document.version,
       sourceHash: hashText(this.document.getText()),
       isDirty: this.document.isDirty,
+      modules: this.projectModuleRuntime(),
       ...(parsed.success ? { projectId: parsed.value.projectId, issues: [] } : { issues: parsed.issues }),
     };
+  }
+
+  /** 模块状态变化后重发 projectState；Webview 不重建，只更新"模块"区。 */
+  public refreshModuleState(): void {
+    void this.sendState();
   }
 
   public async applyOperations(sourceHash: string, operations: unknown): Promise<void> {
@@ -188,11 +207,17 @@ class ProjectSettingsEditorSession {
     if (duplicate !== undefined) throw new Error(`Project ID '${result.document.projectId}' already exists in the workspace.`);
     const workspaceIssues = await this.projects.validateDefinition(this.document.uri, result.document);
     if (workspaceIssues.length > 0) throw new Error(workspaceIssues.join("\n"));
-    const catalogIssues = await validateCatalogBindings({
+    // 模块未加载（Restricted Mode / failed / disabled）时不得解析领域 Catalog：
+    // 与 Catalog Browser、语义索引使用同一条"没有模块就没有 Catalog 能力"门禁（附录 D.6）。
+    const candidateProject = {
       markerUri: this.document.uri,
       rootUri: this.document.uri.with({ path: this.document.uri.path.replace(/\/[^/]+$/, "") }),
       definition: result.document,
-    });
+    };
+    const currentProject = this.projects.projects.find((candidate) => sameUri(candidate.markerUri, this.document.uri));
+    const catalogIssues = await validateCatalogBindings(candidateProject, (_project, documentType) => (
+      this.modules.editorAvailability(currentProject ?? candidateProject, documentType.editor).kind === "available"
+    ));
     if (catalogIssues.length > 0) throw new Error(formatIssues(catalogIssues));
     if (hashText(this.document.getText()) !== sourceHash) {
       throw new Error("Project Settings sourceHash conflict; the document changed during validation.");
@@ -251,6 +276,7 @@ class ProjectSettingsEditorSession {
       project: parsed.value,
       isDirty: this.document.isDirty,
       issues: [],
+      modules: this.projectModuleRuntime(),
     } : {
       type: "projectInvalid",
       documentVersion: this.document.version,
@@ -258,6 +284,26 @@ class ProjectSettingsEditorSession {
       isDirty: this.document.isDirty,
       issues: parsed.issues,
     });
+  }
+
+  /** 宿主注册表里该 Project 的模块快照；Project 尚未解析成功时为空。 */
+  private projectModuleRuntime(): readonly ProjectModuleRuntime[] {
+    const project = this.projects.projects.find((candidate) => sameUri(candidate.markerUri, this.document.uri));
+    if (project === undefined) return [];
+    return this.modules.modulesFor(project).map((module) => ({
+      id: module.id,
+      index: module.index,
+      status: module.status,
+      ...(module.declaredHash === undefined ? {} : { hash: module.declaredHash }),
+      hashShort: moduleHashShort(module.declaredHash),
+      editors: module.registration?.editors.map((editor) => editor.editor) ?? module.manifest?.editors ?? [],
+      diagnostics: module.diagnostics.map((diagnostic) => ({
+        code: diagnostic.code,
+        severity: diagnostic.severity,
+        message: diagnostic.message,
+        path: diagnostic.path,
+      })),
+    }));
   }
 
   private async rejectOperation(message: string): Promise<void> {

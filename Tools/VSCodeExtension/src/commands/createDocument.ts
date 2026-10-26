@@ -22,9 +22,16 @@ export async function createDocument(
   projects: ProjectRegistry,
   lifecycle: WorkspaceDocumentLifecycle,
   requestedSelection?: CreateDocumentSelection,
+  isEditorAvailable?: (project: CreateDocumentSelection["project"], editor: string) => boolean,
 ): Promise<void> {
-  const selection = requestedSelection ?? await selectCreationTarget(projects);
+  const selection = requestedSelection ?? await selectCreationTarget(projects, isEditorAvailable);
   if (selection === undefined) {
+    return;
+  }
+  if (isEditorAvailable !== undefined && !isEditorAvailable(selection.project, selection.documentType.editor)) {
+    void vscode.window.showWarningMessage(
+      `创建 '${selection.documentType.id}' 需要编辑器模块已加载；请先信任工作区。`,
+    );
     return;
   }
   if (selection.documentType.editor === GRAPH_EDITOR_ID) {
@@ -38,9 +45,13 @@ export async function createDocument(
   }
 }
 
-async function selectCreationTarget(projects: ProjectRegistry): Promise<CreateDocumentSelection | undefined> {
+async function selectCreationTarget(
+  projects: ProjectRegistry,
+  isEditorAvailable?: (project: CreateDocumentSelection["project"], editor: string) => boolean,
+): Promise<CreateDocumentSelection | undefined> {
   const candidates = projects.projects.flatMap((project) => project.definition.documentTypes
     .filter((documentType) => SUPPORTED_EDITORS.has(documentType.editor))
+    .filter((documentType) => isEditorAvailable === undefined || isEditorAvailable(project, documentType.editor))
     .map((documentType) => ({
       label: documentType.id,
       description: `${editorTitle(documentType.editor)} · ${project.definition.projectId}`,
