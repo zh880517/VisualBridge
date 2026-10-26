@@ -68,10 +68,27 @@ namespace VisualBridge.Editor
         private const string ManifestKind = "visualbridge.table.compileManifest";
         // 独立于 Structured/Entity 的 manifest，各编译器不得互相覆盖托管清单。
         private const string ManifestFileName = "manifest.table.json";
+        // Project File v2 把工程级行布局放在该模块的 options 里，Table Compiler 是它的唯一读者。
+        private const string TableModuleId = "visualbridge.table";
+        private const string TableLayoutOption = "tableLayout";
 
         private static readonly UTF8Encoding StrictUtf8 = new UTF8Encoding(false, true);
         private static readonly JObject ScalarEncoding = new JObject { ["kind"] = "scalar" };
         private static readonly JObject JsonEncoding = new JObject { ["kind"] = "json" };
+
+        // Table 文档的 CSV 行布局；缺省表示 'visualbridge.table' 模块未声明 options.tableLayout。
+        private sealed class VisualBridgeAuthoringTableLayout
+        {
+            public VisualBridgeAuthoringTableLayout(int nameKeyRow, int dataStartRow)
+            {
+                NameKeyRow = nameKeyRow;
+                DataStartRow = dataStartRow;
+            }
+
+            public int NameKeyRow { get; }
+
+            public int DataStartRow { get; }
+        }
 
         public static VisualBridgeTableCompileResult Compile(string unityProjectRoot, VisualBridgeTableCompileMode mode)
         {
@@ -162,14 +179,91 @@ namespace VisualBridge.Editor
             return new VisualBridgeTableCompileResult(mode, outputs, stalePaths);
         }
 
+        /// <summary>
+        /// Table 模块 row layout 的唯一读取与语义校验点：来自 'visualbridge.table' 模块的 options.tableLayout。
+        /// 未声明返回 null；声明但形状非法直接抛 compile.projectInvalidTableLayout。
+        /// </summary>
+        private static VisualBridgeAuthoringTableLayout ResolveTableLayout(VisualBridgeAuthoringProject project)
+        {
+            var module = project.Modules.FirstOrDefault(value => string.Equals(value.Id, TableModuleId, StringComparison.Ordinal));
+            if (module?.Options == null)
+            {
+                return null;
+            }
+
+            var path = "$.modules[" + TableModuleId + "].options." + TableLayoutOption;
+            var token = module.Options[TableLayoutOption];
+            if (token == null)
+            {
+                return null;
+            }
+
+            // 「声明了 tableLayout 但不是对象」是非法声明而不是缺失：后者报 tableLayoutMissing，
+            // 这里必须报 projectInvalidTableLayout，与文档约定一致。
+            if (!(token is JObject value))
+            {
+                throw Error("compile.projectInvalidTableLayout", path, "Expected an object.");
+            }
+
+            foreach (var property in value.Properties())
+            {
+                if (!string.Equals(property.Name, "nameKeyRow", StringComparison.Ordinal)
+                    && !string.Equals(property.Name, "dataStartRow", StringComparison.Ordinal))
+                {
+                    throw Error(
+                        "compile.projectInvalidTableLayout",
+                        path + "." + property.Name,
+                        $"Unknown property '{property.Name}'.");
+                }
+            }
+
+            var nameKeyRow = RequireLayoutInteger(value["nameKeyRow"], path + ".nameKeyRow", 1);
+            var dataStartRow = RequireLayoutInteger(value["dataStartRow"], path + ".dataStartRow", 2);
+            if (nameKeyRow >= dataStartRow)
+            {
+                throw Error("compile.projectInvalidTableLayout", path, "nameKeyRow must be before dataStartRow.");
+            }
+
+            return new VisualBridgeAuthoringTableLayout(nameKeyRow, dataStartRow);
+        }
+
+        private static int RequireLayoutInteger(JToken token, string path, int minimum)
+        {
+            if (token == null || token.Type != JTokenType.Integer)
+            {
+                throw Error("compile.projectInvalidTableLayout", path, "Expected an integer.");
+            }
+
+            try
+            {
+                var value = token.Value<int>();
+                if (value < minimum)
+                {
+                    throw Error(
+                        "compile.projectInvalidTableLayout",
+                        path,
+                        $"Expected an integer greater than or equal to {minimum}.");
+                }
+
+                return value;
+            }
+            catch (OverflowException)
+            {
+                throw Error("compile.projectInvalidTableLayout", path, "Integer is outside the supported range.");
+            }
+        }
+
         private static Registry BuildRegistry(
             VisualBridgeAuthoringProject project,
             IDictionary<string, VisualBridgeStructuredCompiler.InputSnapshot> inputs)
         {
             var tableDocumentTypes = project.DocumentTypes.Where(value => value.Editor == "table").ToArray();
-            if (tableDocumentTypes.Length != 0 && project.TableLayout == null)
+            if (tableDocumentTypes.Length != 0 && ResolveTableLayout(project) == null)
             {
-                throw Error("compile.tableLayoutMissing", "$.tableLayout", "Authoring Project must declare tableLayout for Table Document Types.");
+                throw Error(
+                    "compile.tableLayoutMissing",
+                    "$.modules[" + TableModuleId + "].options." + TableLayoutOption,
+                    "Authoring Project must declare the tableLayout option of the 'visualbridge.table' module for Table Document Types.");
             }
 
             // Table 无 Exporter：catalog 不在 profile 导出闭包中，以提交文件为准（严格解析 + 校验）。
@@ -309,7 +403,10 @@ namespace VisualBridge.Editor
             IReadOnlyList<RoutedFile> files,
             IReadOnlyDictionary<string, VisualBridgeStructuredCompiler.InputSnapshot> inputs)
         {
-            var layout = project.TableLayout;
+            var layout = ResolveTableLayout(project) ?? throw Error(
+                "compile.tableLayoutMissing",
+                "$.modules[" + TableModuleId + "].options." + TableLayoutOption,
+                "Authoring Project must declare the tableLayout option of the 'visualbridge.table' module for Table Document Types.");
             var delimiter = route.TableType["csv"] is JObject csv ? csv.Value<string>("delimiter") : ",";
             var physicalSheets = new List<PhysicalSheet>();
             foreach (var file in files)

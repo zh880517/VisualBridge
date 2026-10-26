@@ -1,7 +1,8 @@
-import type { DocumentDiagnostic, DocumentParseResult, JsonValue, TableLayoutDefinition } from "@visualbridge/core";
+import type { DocumentDiagnostic, DocumentParseResult, JsonValue } from "@visualbridge/core";
 import { cloneJsonValue } from "@visualbridge/core";
 import type ExcelJS = require("exceljs");
 import { decodeTableCell, encodeTableCell } from "./cellCodec";
+import type { TableLayoutDefinition } from "./projectTableLayout";
 import type { TableColumnDefinition, TableSheetDefinition, TableTypeDefinition } from "./tableCatalog";
 import { matchTableSheetDefinitions } from "./tableCatalog";
 import { createRowId, type TableDocument, type TableRow, type TableSheet } from "./tableDocument";

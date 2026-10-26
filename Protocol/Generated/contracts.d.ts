@@ -256,11 +256,13 @@ export namespace VisualBridgeProjectProvider {
 // 来源：Protocol/Schema/visualbridge-project.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-project.schema.json
 export namespace VisualBridgeProject {
-  export type Root = { readonly "documentRoots": readonly string[]; readonly "documentTypes": readonly ({ readonly "catalogs"?: readonly string[]; readonly "editor": string; readonly "exclude"?: readonly ((SafeGlob) & (string))[]; readonly "id": string; readonly "include": readonly ((SafeGlob) & (string))[] })[]; readonly "formatVersion": 1; readonly "projectId": string; readonly "providers"?: readonly Provider[]; readonly "tableLayout"?: { readonly "dataStartRow": number; readonly "nameKeyRow": number } };
+  export type Root = { readonly "documentRoots": readonly string[]; readonly "documentTypes": readonly ({ readonly "catalogs"?: readonly string[]; readonly "editor": string; readonly "exclude"?: readonly ((SafeGlob) & (string))[]; readonly "id": string; readonly "include": readonly ((SafeGlob) & (string))[] })[]; readonly "formatVersion": 2; readonly "modules": readonly Module[]; readonly "projectId": string; readonly "providers"?: readonly Provider[] };
   export type Identifier = string;
+  export type Module = { readonly "entry": string; readonly "hash"?: string; readonly "id": Identifier; readonly "options"?: { readonly [key: string]: unknown } };
   export type Provider = { readonly "args": readonly string[]; readonly "capabilities": ProviderCapabilities; readonly "entry": string; readonly "id": Identifier };
   export type ProviderCapabilities = ({ readonly "reference": { readonly "kinds": readonly Identifier[] }; readonly "validator"?: { readonly "documentTypes": readonly Identifier[] } }) | ({ readonly "reference"?: { readonly "kinds": readonly Identifier[] }; readonly "validator": { readonly "documentTypes": readonly Identifier[] } });
   export type SafeGlob = string;
+  export type TableLayout = { readonly "dataStartRow": number; readonly "nameKeyRow": number };
 }
 
 // 来源：Protocol/Schema/visualbridge-runtime-bridge.schema.json

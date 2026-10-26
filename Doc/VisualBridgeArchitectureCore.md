@@ -163,7 +163,7 @@ Authoring Project 是平台自己的工程边界，与 Unity Project 和 VS Code
 - Unity Integration Profile V1 固定为每个 Unity Project 关联一个位于该 Unity Project 内的 Authoring Project；VS Code Registry 仍只根据工作区中的 Project File 建立边界，不读取 Unity 工程状态。未来多 Project 关联需要先升级 Profile contract。
 - 一个 VS Code 窗口可以加载多个 Authoring Project。
 - 一个 Authoring Project 可以声明多个 Project 相对文档根目录。
-- VS Code 使用的 Project File 可以位于本地工作区内任意工程目录；Unity slice 通过独立的 `ProjectSettings/VisualBridgeIntegration.json` 指向 Unity Project 内的 Project File，不向 Project V1 增加 Unity 字段。
+- VS Code 使用的 Project File 可以位于本地工作区内任意工程目录；Unity slice 通过独立的 `ProjectSettings/VisualBridgeIntegration.json` 指向 Unity Project 内的 Project File，不向 Project File v2 增加 Unity 字段。
 
 可编辑根目录由固定的 `VisualBridge.project.vbjson` 标识。该文件使用 VisualBridge 专属文件名和 `.vbjson` 后缀，内容为 JSON。VS Code 插件只有在工作区中发现并成功解析该文件后，才启用 VisualBridge 工程功能。
 
@@ -201,14 +201,14 @@ VisualBridge Project File 当前声明：
 - `projectId` 和 `formatVersion`。
 - `documentRoots` 与每个 Document Type 的 `include` / `exclude`。
 - Document Type 的稳定 `id`、可扩展稳定 `editor` Adapter ID 和 Catalog 路径。
-- 全 Project 的 Table 行布局。
+- `modules` 模块声明及其自有 `options`（Table 行布局位于 `visualbridge.table` 的 `options.tableLayout`）。
 - 可选 Project Provider V2 的入口、参数和能力上限。
 
 当前 Schema 不包含项目 Webview Manifest、Unity Profile、生成范围或工具版本字段。未来需要这些能力时必须先扩展正式 Schema、Core Parser、Project Settings 和 Host 验证，不能把未登记键写进 Project File。
 
 VisualBridge Project File 不保存编辑器窗口状态、连接端口、当前调试会话和其他临时信息。
 
-当前路由核心由 `formatVersion`、`projectId`、`documentRoots` 和 `documentTypes` 构成，并可带 `tableLayout` 与 `providers`。每个 Document Type 至少声明稳定 `id`、可扩展稳定 Adapter ID `editor`、包含规则 `include`，并可声明排除规则 `exclude` 和工程相对 `catalogs` 数组。Schema 与 Core 接受任意合法稳定 `editor` ID；当前注册并提供完整语义的值为 `graph`、`entity`、`structured` 和 `table`。未注册 ID 仍可被 Project Registry 唯一匹配，VS Code 只为其打开显示元数据和当前源码的通用只读 Document Shell，不建立领域编辑、Catalog 语义、语义索引、Reference 或 Lifecycle；MCP Project 读取/清单保留该声明并报告 `adapterAvailable: false`，其他依赖领域 Adapter 的语义操作不可用。`id` 表示项目在该 Adapter 下扩展的业务子类；文件扩展名完全由 `include` / `exclude` 决定，不参与 Adapter 判断。同一个实际文件必须只匹配一个 Document Type，业务子类不得依赖声明顺序解决 Glob 重叠。路径和 Glob 统一使用 `/` 分隔，所有文档根目录和 Catalog 必须位于 Project File 所在目录内。
+当前路由核心由 `formatVersion`、`projectId`、`documentRoots`、`modules` 和 `documentTypes` 构成，并可带 `providers`。`modules` 从 v2 起必填，声明要装载的模块 bundle 与其自有 `options`；`formatVersion: 1` 会被拒收且不自动升级。每个 Document Type 至少声明稳定 `id`、可扩展稳定 Adapter ID `editor`、包含规则 `include`，并可声明排除规则 `exclude` 和工程相对 `catalogs` 数组。Schema 与 Core 接受任意合法稳定 `editor` ID；当前注册并提供完整语义的值为 `graph`、`entity`、`structured` 和 `table`。未注册 ID 仍可被 Project Registry 唯一匹配，VS Code 只为其打开显示元数据和当前源码的通用只读 Document Shell，不建立领域编辑、Catalog 语义、语义索引、Reference 或 Lifecycle；MCP Project 读取/清单保留该声明并报告 `adapterAvailable: false`，其他依赖领域 Adapter 的语义操作不可用。`id` 表示项目在该 Adapter 下扩展的业务子类；文件扩展名完全由 `include` / `exclude` 决定，不参与 Adapter 判断。同一个实际文件必须只匹配一个 Document Type，业务子类不得依赖声明顺序解决 Glob 重叠。路径和 Glob 统一使用 `/` 分隔，所有文档根目录和 Catalog 必须位于 Project File 所在目录内。
 
 ### 工程发现和索引
 

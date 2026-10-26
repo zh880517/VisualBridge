@@ -130,7 +130,7 @@ Table 文件也可以使用 **Open With... / VisualBridge Table Editor**。无�
 Project File 成功发现后：
 
 1. 运行 **VisualBridge: Open Project Settings**。
-2. 配置 Document Roots、Document Type 的稳定 `id` 与可扩展稳定 `editor` ID、include/exclude、Catalog、Table Layout 和可选 Provider；当前四个内置 ID 才提供完整领域能力。
+2. 配置 Document Roots、Document Type 的稳定 `id` 与可扩展稳定 `editor` ID、include/exclude、Catalog、模块（`modules`，含 Table 的 `options.tableLayout`）和可选 Provider；当前四个内置 ID 才提供完整领域能力。
 3. 页面显示配置有效后使用普通 VS Code Save 保存。
 4. 运行 **VisualBridge: Refresh Projects**，在 **Problems** 中消除归属、Catalog 和来源状态问题。
 5. 使用 **VisualBridge: Create Document** 选择业务 Document Type；也可以使用四个领域创建命令。

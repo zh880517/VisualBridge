@@ -564,9 +564,11 @@ namespace VisualBridge.Editor.Tests
             {
                 File.WriteAllText(
                     Path.Combine(Root, "Authoring", "VisualBridge.project.vbjson"),
-                    "{\n  \"formatVersion\": 1,\n  \"projectId\": \"" + ProjectId + "\",\n  \"documentRoots\": [\"Graphs\"],\n  \"documentTypes\": [\n"
-                    + "    {\"id\": \"tests.root\", \"editor\": \"graph\", \"include\": [\"Graphs/**/*.vbflow\"], \"exclude\": [], \"catalogs\": [\"Catalog/Test.vbgraphcatalog\"]}\n"
-                    + "  ]\n}\n",
+                    VisualBridgeProjectFixture.Project(
+                        ProjectId,
+                        "\"Graphs\"",
+                        "{\"id\": \"tests.root\", \"editor\": \"graph\", \"include\": [\"Graphs/**/*.vbflow\"], \"exclude\": [], \"catalogs\": [\"Catalog/Test.vbgraphcatalog\"]}",
+                        new[] { VisualBridgeProjectFixture.Module("visualbridge.graph", "Modules/graph.vbmodule.js") }),
                     Utf8WithoutBom);
             }
 

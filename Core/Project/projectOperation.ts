@@ -1,22 +1,27 @@
 import type {
   DocumentTypeDefinition,
   ProjectFileIssue,
+  ProjectModuleDefinition,
+  ProjectModuleOptions,
   ProjectProviderDefinition,
-  TableLayoutDefinition,
   VisualBridgeProjectDefinition,
 } from "./projectFile";
 import { parseProjectFile, serializeProjectFile } from "./projectFile";
 import { compareUtf16CodeUnits } from "../Ordering/ordinal";
+import { cloneJsonValue, isJsonValue } from "../Form/field";
 
 export type ProjectOperation =
   | { readonly type: "project.setProjectId"; readonly projectId: string }
   | { readonly type: "project.setDocumentRoots"; readonly documentRoots: readonly string[] }
+  | { readonly type: "project.addModule"; readonly module: ProjectModuleDefinition; readonly index?: number }
+  | { readonly type: "project.upsertModule"; readonly module: ProjectModuleDefinition; readonly index?: number }
+  | { readonly type: "project.removeModule"; readonly moduleId: string }
+  | { readonly type: "project.moveModule"; readonly moduleId: string; readonly toIndex: number }
+  | { readonly type: "project.setModuleOptions"; readonly moduleId: string; readonly options?: ProjectModuleOptions }
   | { readonly type: "project.upsertDocumentType"; readonly documentType: DocumentTypeDefinition; readonly index?: number }
   | { readonly type: "project.renameDocumentType"; readonly documentTypeId: string; readonly newId: string }
   | { readonly type: "project.removeDocumentType"; readonly documentTypeId: string }
   | { readonly type: "project.moveDocumentType"; readonly documentTypeId: string; readonly toIndex: number }
-  | { readonly type: "project.setTableLayout"; readonly tableLayout: TableLayoutDefinition }
-  | { readonly type: "project.clearTableLayout" }
   | { readonly type: "project.addProvider"; readonly provider: ProjectProviderDefinition; readonly index?: number }
   | { readonly type: "project.upsertProvider"; readonly provider: ProjectProviderDefinition; readonly index?: number }
   | { readonly type: "project.renameProvider"; readonly providerId: string; readonly newId: string }
@@ -44,8 +49,8 @@ export function applyProjectOperations(
   }
   let projectId = document.projectId;
   let documentRoots = [...document.documentRoots];
+  const modules = document.modules.map(cloneModule);
   const documentTypes = document.documentTypes.map(cloneDocumentType);
-  let tableLayout = document.tableLayout === undefined ? undefined : { ...document.tableLayout };
   const providers = document.providers.map(cloneProvider);
 
   for (const [operationIndex, operation] of parsed.operations.entries()) {
@@ -56,6 +61,61 @@ export function applyProjectOperations(
       case "project.setDocumentRoots":
         documentRoots = [...operation.documentRoots];
         break;
+      case "project.addModule": {
+        if (modules.some((entry) => entry.id === operation.module.id)) {
+          return operationFailure(operationIndex, "module.id", `Module '${operation.module.id}' already exists.`);
+        }
+        const insertionIndex = operation.index ?? modules.length;
+        if (!isInsertionIndex(insertionIndex, modules.length)) {
+          return operationFailure(operationIndex, "index", "Module insertion index is out of range.");
+        }
+        modules.splice(insertionIndex, 0, cloneModule(operation.module));
+        break;
+      }
+      case "project.upsertModule": {
+        const existingIndex = modules.findIndex((entry) => entry.id === operation.module.id);
+        if (existingIndex >= 0) {
+          modules[existingIndex] = cloneModule(operation.module);
+        } else {
+          const insertionIndex = operation.index ?? modules.length;
+          if (!isInsertionIndex(insertionIndex, modules.length)) {
+            return operationFailure(operationIndex, "index", "Module insertion index is out of range.");
+          }
+          modules.splice(insertionIndex, 0, cloneModule(operation.module));
+        }
+        break;
+      }
+      case "project.removeModule": {
+        const index = modules.findIndex((entry) => entry.id === operation.moduleId);
+        if (index < 0) {
+          return operationFailure(operationIndex, "moduleId", `Unknown module '${operation.moduleId}'.`);
+        }
+        modules.splice(index, 1);
+        break;
+      }
+      case "project.moveModule": {
+        const index = modules.findIndex((entry) => entry.id === operation.moduleId);
+        if (index < 0) {
+          return operationFailure(operationIndex, "moduleId", `Unknown module '${operation.moduleId}'.`);
+        }
+        if (!isMoveIndex(operation.toIndex, modules.length)) {
+          return operationFailure(operationIndex, "toIndex", "Module destination index is out of range.");
+        }
+        const [entry] = modules.splice(index, 1);
+        modules.splice(operation.toIndex, 0, entry!);
+        break;
+      }
+      case "project.setModuleOptions": {
+        const index = modules.findIndex((entry) => entry.id === operation.moduleId);
+        if (index < 0) {
+          return operationFailure(operationIndex, "moduleId", `Unknown module '${operation.moduleId}'.`);
+        }
+        const { options: _options, ...rest } = modules[index]!;
+        modules[index] = operation.options === undefined
+          ? rest
+          : { ...rest, options: cloneJsonValue(operation.options) };
+        break;
+      }
       case "project.upsertDocumentType": {
         const existingIndex = documentTypes.findIndex((entry) => entry.id === operation.documentType.id);
         if (existingIndex >= 0) {
@@ -112,12 +172,6 @@ export function applyProjectOperations(
         documentTypes.splice(operation.toIndex, 0, entry!);
         break;
       }
-      case "project.setTableLayout":
-        tableLayout = { ...operation.tableLayout };
-        break;
-      case "project.clearTableLayout":
-        tableLayout = undefined;
-        break;
       case "project.addProvider": {
         if (providers.some((entry) => entry.id === operation.provider.id)) {
           return operationFailure(operationIndex, "provider.id", `Provider '${operation.provider.id}' already exists.`);
@@ -177,8 +231,8 @@ export function applyProjectOperations(
     formatVersion: document.formatVersion,
     projectId,
     documentRoots,
+    modules,
     documentTypes,
-    ...(tableLayout === undefined ? {} : { tableLayout }),
     providers,
   };
   const text = serializeProjectFile(candidate);
@@ -224,6 +278,39 @@ function readOperation(
       return isStringArray(entry.documentRoots)
         ? { type: entry.type, documentRoots: entry.documentRoots }
         : invalidField(path, "documentRoots", "Expected a string array.", issues);
+    case "project.addModule":
+    case "project.upsertModule": {
+      checkKeys(entry, ["type", "module", "index"], path, issues);
+      if (!isModule(entry.module, `${path}.module`, issues)) {
+        return invalidField(path, "module", "Expected a Module object.", issues);
+      }
+      if (entry.index !== undefined && !isNonNegativeInteger(entry.index)) return invalidField(path, "index", "Expected a non-negative integer.", issues);
+      return { type: entry.type, module: entry.module, ...(entry.index === undefined ? {} : { index: entry.index }) };
+    }
+    case "project.removeModule":
+      checkKeys(entry, ["type", "moduleId"], path, issues);
+      return typeof entry.moduleId === "string"
+        ? { type: entry.type, moduleId: entry.moduleId }
+        : invalidField(path, "moduleId", "Expected a string.", issues);
+    case "project.moveModule":
+      checkKeys(entry, ["type", "moduleId", "toIndex"], path, issues);
+      return typeof entry.moduleId === "string" && isNonNegativeInteger(entry.toIndex)
+        ? { type: entry.type, moduleId: entry.moduleId, toIndex: entry.toIndex }
+        : invalidField(path, "moduleId/toIndex", "Expected a string ID and non-negative destination index.", issues);
+    case "project.setModuleOptions": {
+      checkKeys(entry, ["type", "moduleId", "options"], path, issues);
+      if (typeof entry.moduleId !== "string") {
+        return invalidField(path, "moduleId", "Expected a string.", issues);
+      }
+      if (entry.options !== undefined && !isModuleOptions(entry.options)) {
+        return invalidField(path, "options", "Expected a JSON object.", issues);
+      }
+      return {
+        type: entry.type,
+        moduleId: entry.moduleId,
+        ...(entry.options === undefined ? {} : { options: entry.options }),
+      };
+    }
     case "project.upsertDocumentType": {
       checkKeys(entry, ["type", "documentType", "index"], path, issues);
       if (!isDocumentType(entry.documentType, `${path}.documentType`, issues)) {
@@ -248,13 +335,12 @@ function readOperation(
         ? { type: entry.type, documentTypeId: entry.documentTypeId, toIndex: entry.toIndex }
         : invalidField(path, "documentTypeId/toIndex", "Expected a string ID and non-negative destination index.", issues);
     case "project.setTableLayout":
-      checkKeys(entry, ["type", "tableLayout"], path, issues);
-      return isTableLayout(entry.tableLayout, `${path}.tableLayout`, issues)
-        ? { type: entry.type, tableLayout: entry.tableLayout }
-        : invalidField(path, "tableLayout", "Expected a Table Layout object.", issues);
     case "project.clearTableLayout":
-      checkKeys(entry, ["type"], path, issues);
-      return { type: entry.type };
+      issues.push({
+        path: `${path}.type`,
+        message: `'${entry.type}' was removed; declare the Table layout in the 'visualbridge.table' module's 'options.tableLayout'.`,
+      });
+      return undefined;
     case "project.addProvider":
     case "project.upsertProvider": {
       checkKeys(entry, ["type", "provider", "index"], path, issues);
@@ -285,6 +371,15 @@ function readOperation(
   }
 }
 
+function cloneModule(value: ProjectModuleDefinition): ProjectModuleDefinition {
+  return {
+    id: value.id,
+    entry: value.entry,
+    ...(value.options === undefined ? {} : { options: cloneJsonValue(value.options) }),
+    ...(value.hash === undefined ? {} : { hash: value.hash }),
+  };
+}
+
 function cloneDocumentType(value: DocumentTypeDefinition): DocumentTypeDefinition {
   return {
     id: value.id,
@@ -311,6 +406,23 @@ function cloneProvider(value: ProjectProviderDefinition): ProjectProviderDefinit
   };
 }
 
+function isModule(
+  value: unknown,
+  path: string,
+  issues: ProjectFileIssue[],
+): value is ProjectModuleDefinition {
+  if (!isRecord(value)) return false;
+  checkKeys(value, ["id", "entry", "options", "hash"], path, issues);
+  return typeof value.id === "string"
+    && typeof value.entry === "string"
+    && (value.options === undefined || isModuleOptions(value.options))
+    && (value.hash === undefined || typeof value.hash === "string");
+}
+
+function isModuleOptions(value: unknown): value is ProjectModuleOptions {
+  return isRecord(value) && isJsonValue(value);
+}
+
 function isDocumentType(
   value: unknown,
   path: string,
@@ -323,17 +435,6 @@ function isDocumentType(
     && isStringArray(value.include)
     && isStringArray(value.exclude)
     && isStringArray(value.catalogs);
-}
-
-function isTableLayout(
-  value: unknown,
-  path: string,
-  issues: ProjectFileIssue[],
-): value is TableLayoutDefinition {
-  if (!isRecord(value)) return false;
-  checkKeys(value, ["nameKeyRow", "dataStartRow"], path, issues);
-  return typeof value.nameKeyRow === "number"
-    && typeof value.dataStartRow === "number";
 }
 
 function isProvider(

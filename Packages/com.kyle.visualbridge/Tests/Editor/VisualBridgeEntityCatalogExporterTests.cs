@@ -344,7 +344,15 @@ namespace VisualBridge.Editor.Tests
 
                 File.WriteAllText(
                     Path.Combine(Root, "Authoring", "VisualBridge.project.vbjson"),
-                    "{\n  \"formatVersion\": 1,\n  \"projectId\": \"tests.project\",\n  \"documentRoots\": [\"Config\", \"Entities\"],\n  \"documentTypes\": [" + string.Join(",", documentTypes) + "]\n}\n",
+                    VisualBridgeProjectFixture.Project(
+                        "tests.project",
+                        "\"Config\", \"Entities\"",
+                        string.Join(",", documentTypes),
+                        new[]
+                        {
+                            VisualBridgeProjectFixture.Module("visualbridge.entity", "Modules/entity.vbmodule.js"),
+                            VisualBridgeProjectFixture.Module("visualbridge.structured", "Modules/structured.vbmodule.js"),
+                        }),
                     Utf8WithoutBom);
 
                 var serializedTypes = string.Join(", ", registeredTypes.Select(JsonConvert.ToString));

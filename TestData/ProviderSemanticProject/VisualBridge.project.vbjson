@@ -1,8 +1,14 @@
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "projectId": "visualbridge.provider-semantics",
   "documentRoots": [
     "Config"
+  ],
+  "modules": [
+    {
+      "id": "visualbridge.structured",
+      "entry": "Modules/structured.vbmodule.js"
+    }
   ],
   "documentTypes": [
     {

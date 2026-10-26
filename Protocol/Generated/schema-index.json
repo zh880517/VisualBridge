@@ -267,12 +267,14 @@
     {
       "file": "Schema/visualbridge-project.schema.json",
       "id": "https://visualbridge.dev/schema/visualbridge-project.schema.json",
-      "sha256": "dde9d43f3fdc09ca0978fe0e8650a731726f6490ad1fda2e62023db69b01c3e9",
+      "sha256": "570524000c45fb85e1d6c134a2b1dcee2fd8821521d797bd5c3843de45b65cb9",
       "definitions": [
         "identifier",
+        "module",
         "provider",
         "providerCapabilities",
-        "safeGlob"
+        "safeGlob",
+        "tableLayout"
       ]
     },
     {

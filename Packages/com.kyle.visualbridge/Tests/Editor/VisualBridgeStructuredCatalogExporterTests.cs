@@ -520,7 +520,11 @@ namespace VisualBridge.Editor.Tests
                         + ".json\"], \"catalogs\": [\"Catalog/Test.vbstructuredcatalog\"]}"));
                 File.WriteAllText(
                     Path.Combine(Root, "Authoring", "VisualBridge.project.vbjson"),
-                    "{\n  \"formatVersion\": 1,\n  \"projectId\": \"tests.project\",\n  \"documentRoots\": [\"Config\"],\n  \"documentTypes\": [" + documentTypes + "]\n}\n",
+                    VisualBridgeProjectFixture.Project(
+                        "tests.project",
+                        "\"Config\"",
+                        documentTypes,
+                        new[] { VisualBridgeProjectFixture.Module("visualbridge.structured", "Modules/structured.vbmodule.js") }),
                     Utf8WithoutBom);
                 var serializedTypes = string.Join(", ", registeredTypes.Select(JsonConvert.ToString));
                 var escapedProject = authoringProject.Replace("\\", "\\\\").Replace("\"", "\\\"");

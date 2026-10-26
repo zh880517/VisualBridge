@@ -1,14 +1,26 @@
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "projectId": "visualbridge.entity-semantics",
   "documentRoots": [
     "Config",
     "Tables"
   ],
-  "tableLayout": {
-    "nameKeyRow": 2,
-    "dataStartRow": 3
-  },
+  "modules": [
+    {
+      "id": "visualbridge.entity",
+      "entry": "Modules/entity.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.table",
+      "entry": "Modules/table.vbmodule.js",
+      "options": {
+        "tableLayout": {
+          "nameKeyRow": 2,
+          "dataStartRow": 3
+        }
+      }
+    }
+  ],
   "documentTypes": [
     {
       "id": "hero-config",

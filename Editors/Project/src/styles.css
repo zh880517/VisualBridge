@@ -121,6 +121,32 @@ h2 {
   border-color: var(--vscode-contrastActiveBorder, var(--vb-color-focus));
 }
 
+.project-app input[readonly] {
+  color: var(--vb-color-muted);
+}
+
+.project-app textarea {
+  width: 100%;
+  min-height: 96px;
+  padding: 6px 8px;
+  color: var(--vb-control-foreground);
+  background: var(--vb-control-background);
+  border: 1px solid var(--vb-control-border);
+  border-radius: var(--vb-radius-small);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+  outline: none;
+  resize: vertical;
+}
+
+.project-app textarea:focus {
+  border-color: var(--vscode-contrastActiveBorder, var(--vb-color-focus));
+}
+
+.project-app .field.invalid textarea {
+  border-color: var(--vscode-inputValidation-errorBorder);
+}
+
 .string-list {
   display: grid;
   gap: 6px;

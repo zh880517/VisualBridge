@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { writeTestProject } from "../../../TestData/projectFixture.js";
 import {
   isRealDirectoryEntry,
   isRealFileEntry,
@@ -97,22 +98,17 @@ async function withWorkspace(action) {
   const workspaceRoot = await mkdtemp(path.join(tmpdir(), "visualbridge-mcp-workspace-"));
   try {
     await mkdir(path.join(workspaceRoot, "Documents"));
-    await writeFile(
-      path.join(workspaceRoot, PROJECT_FILE_NAME),
-      `${JSON.stringify({
-        formatVersion: 1,
-        projectId: "sample.workspace",
-        documentRoots: ["Documents"],
-        documentTypes: [{
-          id: "sample.entity",
-          editor: "entity",
-          include: ["Documents/**/*.vbentity"],
-          exclude: [],
-          catalogs: [],
-        }],
-      }, undefined, 2)}\n`,
-      "utf8",
-    );
+    await writeTestProject(workspaceRoot, {
+      projectId: "sample.workspace",
+      documentRoots: ["Documents"],
+      documentTypes: [{
+        id: "sample.entity",
+        editor: "entity",
+        include: ["Documents/**/*.vbentity"],
+        exclude: [],
+        catalogs: [],
+      }],
+    });
     await action(workspaceRoot);
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });

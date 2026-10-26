@@ -1,14 +1,26 @@
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "projectId": "GraphSemanticProject",
   "documentRoots": [
     "Graph",
     "Tables"
   ],
-  "tableLayout": {
-    "nameKeyRow": 2,
-    "dataStartRow": 3
-  },
+  "modules": [
+    {
+      "id": "visualbridge.graph",
+      "entry": "Modules/graph.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.table",
+      "entry": "Modules/table.vbmodule.js",
+      "options": {
+        "tableLayout": {
+          "nameKeyRow": 2,
+          "dataStartRow": 3
+        }
+      }
+    }
+  ],
   "documentTypes": [
     {
       "id": "logicGraph",

@@ -1,6 +1,9 @@
 import type {
   DocumentTypeDefinition,
+  JsonValue,
   ProjectFileIssue,
+  ProjectModuleDefinition,
+  ProjectModuleOptions,
   ProjectProviderDefinition,
   VisualBridgeProjectDefinition,
 } from "@visualbridge/core";
@@ -32,6 +35,7 @@ export interface ProjectEditorState {
   readonly pending: boolean;
   readonly status: string;
   readonly providerDraft?: ProjectProviderDefinition;
+  readonly moduleDraft?: ProjectModuleDefinition;
 }
 
 export const initialProjectEditorState: ProjectEditorState = {
@@ -51,11 +55,16 @@ export function reduceProjectHostMessage(
         && !providerDraftIsPersisted(message.project, current.providerDraft)
         ? current.providerDraft
         : undefined;
+      const moduleDraft = current.moduleDraft !== undefined
+        && !moduleDraftIsPersisted(message.project, current.moduleDraft)
+        ? current.moduleDraft
+        : undefined;
       return {
         state: message,
         pending: false,
         status: "配置有效",
         ...(providerDraft === undefined ? {} : { providerDraft }),
+        ...(moduleDraft === undefined ? {} : { moduleDraft }),
       };
     }
     case "projectInvalid":
@@ -79,6 +88,49 @@ export function providerDraftIsPersisted(
 export function clearProviderDraft(state: ProjectEditorState): ProjectEditorState {
   const { providerDraft: _draft, ...rest } = state;
   return rest;
+}
+
+export function moduleDraftIsPersisted(
+  project: VisualBridgeProjectDefinition,
+  draft: ProjectModuleDefinition | undefined,
+): boolean {
+  return draft !== undefined && project.modules.some((module) => module.id === draft.id);
+}
+
+export function clearModuleDraft(state: ProjectEditorState): ProjectEditorState {
+  const { moduleDraft: _draft, ...rest } = state;
+  return rest;
+}
+
+/**
+ * 新建模块的默认条目。模块 ID 必须与 bundle manifest 一致，因此编辑器不提供既有模块的重命名，
+ * 只在草稿阶段允许编辑 ID。
+ */
+export function createModule(project: VisualBridgeProjectDefinition): ProjectModuleDefinition {
+  let index = project.modules.length + 1;
+  while (project.modules.some((entry) => entry.id === `project.module.${index}`)) index += 1;
+  return { id: `project.module.${index}`, entry: `Modules/module-${index}.vbmodule.js` };
+}
+
+/** 模块 options 的编辑文本；未声明时显示空对象。 */
+export function moduleOptionsText(module: ProjectModuleDefinition): string {
+  return `${JSON.stringify(module.options ?? {}, undefined, 2)}`;
+}
+
+/**
+ * 解析编辑器里的 options JSON。返回 undefined 表示不是 JSON 对象，调用方应保留草稿并提示。
+ * 空对象表示清空 options（Project Operation 省略 options 字段）。
+ */
+export function parseModuleOptions(text: string): ProjectModuleOptions | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Readonly<Record<string, JsonValue>>
+    : undefined;
 }
 
 export function createDocumentType(project: VisualBridgeProjectDefinition): DocumentTypeDefinition {

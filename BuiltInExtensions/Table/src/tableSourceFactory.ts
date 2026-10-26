@@ -1,6 +1,7 @@
-import type { DocumentDiagnostic, TableLayoutDefinition } from "@visualbridge/core";
+import type { DocumentDiagnostic } from "@visualbridge/core";
 import { stringify } from "csv-stringify/sync";
 import type ExcelJS = require("exceljs");
+import type { TableLayoutDefinition } from "./projectTableLayout";
 import {
   matchTableSheetDefinitions,
   type TableSheetDefinition,

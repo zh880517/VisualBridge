@@ -12,7 +12,6 @@ import type {
   JsonValue,
   ReferenceDefinition,
   ReferenceLocation,
-  TableLayoutDefinition,
 } from "@visualbridge/core";
 import {
   TABLE_EDITOR_ID,
@@ -21,6 +20,7 @@ import {
   matchTableSheetDefinitions,
   parseCsvTable,
   parseXlsxTable,
+  resolveProjectTableLayout,
   resolveTableColumn,
   resolveTableSheet,
   resolveTableType,
@@ -28,6 +28,7 @@ import {
   serializeXlsxTable,
   validateTableDocument,
   type TableDocument,
+  type TableLayoutDefinition,
   type TableSheet,
   type TableTypeDefinition,
 } from "@visualbridge/table";
@@ -194,7 +195,7 @@ export class TableEditorProvider implements vscode.CustomEditorProvider<TableCus
         + " check the Project document type include patterns or wait for the Project to load.",
       );
     }
-    const layout = match.project.definition.tableLayout;
+    const layout = resolveProjectTableLayout(match.project.definition);
     if (layout === undefined) {
       throw new Error("VisualBridge Project must configure tableLayout.nameKeyRow and tableLayout.dataStartRow.");
     }

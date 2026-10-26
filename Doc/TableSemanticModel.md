@@ -24,14 +24,26 @@ Catalog 载体是一个 `.vbtablecatalog` JSON 文件。Authoring 数据不依�
 
 表格列复用全项目共享的 Core Field 模型和共享 Form Editor。因此数值、布尔、文本、颜色、下拉选择、List 和递归嵌套的普通结构在 Entity、Structured、Table 和 Graph 编辑器中行为一致。
 
-## 3. Project 级行布局
+## 3. 模块级行布局
 
-`VisualBridge.project.vbjson` 为整个项目一次性声明物理表头布局。行号从 1 开始：
+`VisualBridge.project.vbjson` 的 `visualbridge.table` 模块为整个项目一次性声明物理表头布局。行号从 1 开始：
 
-```json visualbridge-schema=visualbridge-project.schema.json#/properties/tableLayout
+```json visualbridge-schema=visualbridge-project.schema.json#/$defs/tableLayout
 {
   "nameKeyRow": 2,
   "dataStartRow": 3
+}
+```
+
+该对象是模块条目 `options.tableLayout` 的值：
+
+```json visualbridge-schema=visualbridge-project.schema.json#/$defs/module
+{
+  "id": "visualbridge.table",
+  "entry": "Modules/table.vbmodule.js",
+  "options": {
+    "tableLayout": { "nameKeyRow": 2, "dataStartRow": 3 }
+  }
 }
 ```
 

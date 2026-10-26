@@ -1,9 +1,25 @@
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "projectId": "visualbridge.structured-semantics",
   "documentRoots": [
     "Config",
     "Tables"
+  ],
+  "modules": [
+    {
+      "id": "visualbridge.structured",
+      "entry": "Modules/structured.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.table",
+      "entry": "Modules/table.vbmodule.js",
+      "options": {
+        "tableLayout": {
+          "nameKeyRow": 2,
+          "dataStartRow": 3
+        }
+      }
+    }
   ],
   "documentTypes": [
     {
@@ -30,9 +46,5 @@
         "Catalog/Skills.vbtablecatalog"
       ]
     }
-  ],
-  "tableLayout": {
-    "nameKeyRow": 2,
-    "dataStartRow": 3
-  }
+  ]
 }

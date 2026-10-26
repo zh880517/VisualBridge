@@ -41,7 +41,7 @@ Protocol/contract-manifest.json
 | Schema | 对外契约与权威实现 |
 | --- | --- |
 | `visualbridge-primitives` | Stable ID、路径、Hash、JSON value 等跨域 primitive。 |
-| `visualbridge-project` | Project V1、Document Type 与任意后缀路由；语义权威在 Core Project Registry。 |
+| `visualbridge-project` | Project File v2（`modules`、Document Type 与任意后缀路由）；语义权威在 Core Project Registry。 |
 | `visualbridge-project-provider` | 受信 Project Provider V2 JSON-RPC 请求、响应与分页。 |
 | `visualbridge-catalog-source` | Catalog Source、source hash 和来源清单。 |
 | `visualbridge-graph-catalog` / `visualbridge-graph` | Graph Catalog V4、Graph Document V3 与 GraphOperation。 |

@@ -97,7 +97,7 @@ Table 分表在树中只显示一个逻辑文档。展开 `Sources` 可以看到
 - Graph：选择允许作为根图的 Graph Type 并创建默认节点；
 - Entity：选择 Entity Type 并物化全部根字段默认值；
 - Structured：以 Project Document Type ID 绑定 Config Type 并物化全部字段默认值；
-- Table：以 Table Type 和 Project `tableLayout` 创建空表头。
+- Table：以 Table Type 和 `visualbridge.table` 模块的 `options.tableLayout` 创建空表头。
 
 Table 创建先显式选择 `csv` 或 `xlsx`，格式不从文件扩展名推断；Project 可以为任一格式声明自定义后缀。`csv` 使用显式 `physicalName`，`xlsx` 不接受该字段。描述行写入 Column 标题，配置的 `nameKeyRow` 写入 C# 导出的 `nameKey`，数据从 `dataStartRow` 开始。分表初始 `{part}` 使用 `Main`。创建后仍通过 Project Registry 验证目标路径，不允许绕过 `include` / `exclude`。
 

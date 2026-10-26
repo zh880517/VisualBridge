@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 import type { VisualBridgeProjectDefinition } from "@visualbridge/core";
+import type * as ProjectFixture from "../../../TestData/projectFixture.js";
 import {
+  clearModuleDraft,
   clearProviderDraft,
   createDocumentType,
+  createModule,
   createProvider,
   initialProjectEditorState,
+  moduleDraftIsPersisted,
+  moduleOptionsText,
   move,
+  parseModuleOptions,
   providerDraftIsPersisted,
   reduceProjectHostMessage,
   withReferenceKinds,
@@ -16,13 +23,21 @@ import {
   type ProjectStateMessage,
 } from "../src/projectEditorLogic";
 
+// .test-dist 比源码深一层，运行时按编译输出定位仓库根的共享 fixture；类型走源码路径。
+const { createTestProject } = require(path.resolve(
+  __dirname,
+  "../../../..",
+  "TestData",
+  "projectFixture.js",
+)) as typeof ProjectFixture;
+
 function emptyProject(overrides: Partial<VisualBridgeProjectDefinition> = {}): VisualBridgeProjectDefinition {
   return {
-    formatVersion: 1,
-    projectId: "sample",
-    documentRoots: ["Config"],
-    documentTypes: [],
-    providers: [],
+    ...createTestProject<VisualBridgeProjectDefinition>({
+      projectId: "sample",
+      documentRoots: ["Config"],
+      providers: [],
+    }),
     ...overrides,
   };
 }
@@ -109,6 +124,50 @@ test("string list moves follow drag direction and tolerate out-of-range indexes"
   assert.deepEqual(move(["a", "b"], 1, 1), ["a", "b"]);
   assert.deepEqual(move(["a"], 4, 0), ["a"]);
   assert.deepEqual(move([], 0, 0), []);
+});
+
+test("default Module skips IDs already present and uses the bundle entry suffix", () => {
+  const project = emptyProject({
+    modules: [{ id: "project.module.2", entry: "Modules/custom.vbmodule.js" }],
+  });
+
+  assert.deepEqual(createModule(project), {
+    id: "project.module.3",
+    entry: "Modules/module-3.vbmodule.js",
+  });
+});
+
+test("Module options text round-trips as a JSON object only", () => {
+  assert.equal(moduleOptionsText({ id: "visualbridge.table", entry: "Modules/table.vbmodule.js" }), "{}");
+  assert.equal(
+    moduleOptionsText({
+      id: "visualbridge.table",
+      entry: "Modules/table.vbmodule.js",
+      options: { tableLayout: { nameKeyRow: 2, dataStartRow: 3 } },
+    }),
+    '{\n  "tableLayout": {\n    "nameKeyRow": 2,\n    "dataStartRow": 3\n  }\n}',
+  );
+  assert.deepEqual(parseModuleOptions('{"nested":{"value":[1,true,null]}}'), {
+    nested: { value: [1, true, null] },
+  });
+  assert.equal(parseModuleOptions("[]"), undefined);
+  assert.equal(parseModuleOptions("42"), undefined);
+  assert.equal(parseModuleOptions("{"), undefined);
+});
+
+test("Module drafts survive projectState until the module is persisted", () => {
+  const draft = createModule(emptyProject());
+  const project = emptyProject({ modules: [draft] });
+
+  assert.equal(moduleDraftIsPersisted(project, draft), true);
+  assert.equal(moduleDraftIsPersisted(emptyProject(), draft), false);
+
+  const kept = reduceProjectHostMessage(
+    { ...initialProjectEditorState, moduleDraft: draft },
+    projectState(emptyProject()),
+  );
+  assert.deepEqual(kept.moduleDraft, draft);
+  assert.equal(clearModuleDraft(kept).moduleDraft, undefined);
 });
 
 test("projectState resets pending/status and clears a draft once the Provider is persisted", () => {

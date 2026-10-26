@@ -1,11 +1,35 @@
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "projectId": "visualbridge.sample.pre-unity-authoring",
   "documentRoots": [
     "Logic",
     "Entities",
     "Config",
     "Tables"
+  ],
+  "modules": [
+    {
+      "id": "visualbridge.graph",
+      "entry": "Modules/graph.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.entity",
+      "entry": "Modules/entity.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.structured",
+      "entry": "Modules/structured.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.table",
+      "entry": "Modules/table.vbmodule.js",
+      "options": {
+        "tableLayout": {
+          "nameKeyRow": 2,
+          "dataStartRow": 3
+        }
+      }
+    }
   ],
   "documentTypes": [
     {
@@ -53,10 +77,6 @@
       ]
     }
   ],
-  "tableLayout": {
-    "nameKeyRow": 2,
-    "dataStartRow": 3
-  },
   "providers": [
     {
       "id": "sample.assets",

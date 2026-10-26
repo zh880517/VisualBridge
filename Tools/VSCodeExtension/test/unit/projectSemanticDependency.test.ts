@@ -1,15 +1,23 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 import type { VisualBridgeProjectDefinition } from "@visualbridge/core";
+import type * as ProjectFixture from "../../../../TestData/projectFixture.js";
 import { projectSemanticSnapshotDependencyKey } from "../../src/document/projectSemanticDependency";
 
-const emptyProject: VisualBridgeProjectDefinition = {
-  formatVersion: 1,
+// .test-dist 比源码深一层，运行时按编译输出深度解析仓库根的共享 fixture；类型走源码路径。
+const { createTestProject } = require(path.resolve(
+  __dirname,
+  "../../../../..",
+  "TestData",
+  "projectFixture.js",
+)) as typeof ProjectFixture;
+
+const emptyProject: VisualBridgeProjectDefinition = createTestProject<VisualBridgeProjectDefinition>({
   projectId: "sample.empty",
   documentRoots: [],
-  documentTypes: [],
   providers: [],
-};
+});
 
 test("empty Project snapshot dependencies include the current Project definition", () => {
   const baseline = projectSemanticSnapshotDependencyKey(emptyProject, []);

@@ -40,16 +40,18 @@ Catalog、Parser、Validator、Operation、Reference 和 Serializer 只在 Core 
 
 | 字段 | 约束 |
 | --- | --- |
-| `formatVersion` | 当前固定为 `1`。 |
+| `formatVersion` | 当前固定为 `2`；`1` 会被拒收且不自动升级。 |
 | `projectId` | Project 的稳定身份；不能使用目录名代替。 |
 | `documentRoots` | Project 内规范化相对目录；用于限制 Authoring 来源范围。 |
+| `modules` | 必填的模块声明数组；每项声明稳定 `id`、`.vbmodule.js` 入口、可选 `options` 与可选 `hash`。 |
 | `documentTypes` | 业务子类清单；每项声明稳定 `id`、`editor`、`include`、`exclude` 和 Catalog。 |
-| `tableLayout` | 全 Project 共用的 1-based `nameKeyRow` 与 `dataStartRow`。 |
 | `providers` | 可选的受信任 Provider V2 入口、参数与能力上限。 |
+
+工程级 Table 行布局不再位于顶层，而是 `id` 为 `visualbridge.table` 的模块的 1-based `options.tableLayout.nameKeyRow` 与 `options.tableLayout.dataStartRow`。
 
 `editor` 是可扩展的稳定 Adapter ID；Schema 与 Core 接受任意合法稳定 ID，当前内置并可操作的 ID 为 `graph`、`entity`、`structured` 和 `table`。未注册 ID 仍是有效 Project 声明：VS Code 可以用通用只读 Document Shell 显示匹配文件的 Project、Document Type、Adapter ID、路径和当前源码，但不提供领域编辑、Catalog 语义、语义索引、Reference、Lifecycle 或其他领域操作；MCP 的 Project 读取与文档清单返回 `adapterAvailable: false`，需要语义 Adapter 的工具操作返回不支持。Host 和 MCP 都不能把未知 ID 猜成四个内置 ID 之一。业务文件后缀不属于编辑器协议：例如样例把 `.encounter` 路由到 Graph、`.character` 路由到 Entity、`.settingsdata` 路由到 Structured。Table 可以使用 CSV、XLSX 或项目约定的扩展名，但载体格式由创建参数或已解析载体决定，不靠后缀猜测。
 
-文件匹配顺序为 Project 发现、规范路径检查、Document Root 限制、include / exclude 匹配、唯一 Document Type 归属、editor 适配。零匹配文件不是 VisualBridge Document；多匹配是配置错误，不会任选一个类型打开。Project Settings 会拒绝路径越界、不安全 glob、重叠归属、重复 ID、无效 Catalog 绑定和不合法的 Table 行布局。
+文件匹配顺序为 Project 发现、规范路径检查、Document Root 限制、include / exclude 匹配、唯一 Document Type 归属、editor 适配。零匹配文件不是 VisualBridge Document；多匹配是配置错误，不会任选一个类型打开。Project Settings 会拒绝路径越界、不安全 glob、重叠归属、重复 ID、无效 Catalog 绑定和不合法的模块声明（重复模块 ID、`.vbmodule.js` 入口不规范、`hash` 格式非法）；Table 行布局属于 `visualbridge.table` 模块的 `options.tableLayout`，由 Table 模块校验。
 
 修改 Project File 后执行 `VisualBridge: Refresh Projects`。不要同时手工编辑 Project JSON 和在 Project Settings 中保存；外部字节变化会触发 Hash 冲突，必须刷新后重做编辑。
 

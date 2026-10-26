@@ -2,6 +2,7 @@ import * as nodePath from "node:path";
 import * as vscode from "vscode";
 import {
   TABLE_EDITOR_ID,
+  resolveProjectTableLayout,
   resolveTableType,
   type TableTypeDefinition,
 } from "@visualbridge/table";
@@ -28,7 +29,7 @@ export async function createTableDocument(
   if (project === undefined) {
     return;
   }
-  const layout = project.definition.tableLayout;
+  const layout = resolveProjectTableLayout(project.definition);
   if (layout === undefined) {
     void vscode.window.showWarningMessage(
       `Project '${project.definition.projectId}' must configure tableLayout before a Table can be created.`,

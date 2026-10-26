@@ -10,7 +10,6 @@ import {
   type SemanticDocumentAdapter,
   type StableIdentityValue,
   type StableIdentityRemap,
-  type TableLayoutDefinition,
 } from "@visualbridge/core";
 import {
   createEmptyEntityDocument,
@@ -41,12 +40,14 @@ import {
   createEmptyXlsxTableSource,
   parseCsvTable,
   parseXlsxTable,
+  resolveProjectTableLayout,
   resolveTableType,
   serializeCsvTable,
   serializeXlsxTable,
   tableDocumentAdapter,
   type TableDocument,
   type TableDocumentAdapterContext,
+  type TableLayoutDefinition,
   type TableTypeDefinition,
 } from "@visualbridge/table";
 import { loadEntityCatalogRegistry } from "../catalog/entityCatalogLoader";
@@ -157,7 +158,7 @@ export async function createWorkspaceLifecycleDocument(
   }
   if (documentType.editor === "table") {
     assertParameterKeys(parameters, ["format", "physicalName"]);
-    const layout = project.definition.tableLayout;
+    const layout = resolveProjectTableLayout(project.definition);
     if (layout === undefined) throw new Error("The Project does not configure tableLayout.");
     const catalog = await loadTableCatalogRegistry(project, documentType.catalogs);
     if (!catalog.ready) throw diagnosticsError("Table Catalog", catalog.diagnostics);
@@ -222,7 +223,7 @@ export async function loadWorkspaceLifecycleDocument(
     );
   }
   if (indexed.editor === "table") {
-    const layout = project.definition.tableLayout;
+    const layout = resolveProjectTableLayout(project.definition);
     if (layout === undefined) throw new Error("The Project does not configure tableLayout.");
     const catalog = await loadTableCatalogRegistry(project, documentType.catalogs);
     if (!catalog.ready) throw diagnosticsError("Table Catalog", catalog.diagnostics);

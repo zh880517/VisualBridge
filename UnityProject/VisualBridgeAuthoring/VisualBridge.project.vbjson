@@ -1,11 +1,35 @@
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "projectId": "visualbridge.unity-sample",
   "documentRoots": [
     "Config",
     "Entities",
     "Tables",
     "Graphs"
+  ],
+  "modules": [
+    {
+      "id": "visualbridge.structured",
+      "entry": "Modules/structured.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.entity",
+      "entry": "Modules/entity.vbmodule.js"
+    },
+    {
+      "id": "visualbridge.table",
+      "entry": "Modules/table.vbmodule.js",
+      "options": {
+        "tableLayout": {
+          "nameKeyRow": 2,
+          "dataStartRow": 3
+        }
+      }
+    },
+    {
+      "id": "visualbridge.graph",
+      "entry": "Modules/graph.vbmodule.js"
+    }
   ],
   "documentTypes": [
     {
@@ -52,9 +76,5 @@
         "Catalog/Gameplay.vbgraphcatalog"
       ]
     }
-  ],
-  "tableLayout": {
-    "nameKeyRow": 2,
-    "dataStartRow": 3
-  }
+  ]
 }

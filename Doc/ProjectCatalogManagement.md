@@ -8,21 +8,36 @@ Project Settings 是 `VisualBridge.project.vbjson` 的结构化编辑入口，Ca
 
 ## 2. Project File
 
-Project 根目录用固定文件名 `VisualBridge.project.vbjson` 标识。格式版本为 `1`，字段含义如下：
+Project 根目录用固定文件名 `VisualBridge.project.vbjson` 标识。格式版本为 `2`，字段含义如下：
 
 - `projectId`：Workspace 内无重复的稳定 Project ID。
 - `documentRoots`：Project 相对的可编辑根目录；`.` 表示 Project 根本身。
+- `modules`：必填的模块数组（可为空）。每项包含稳定 `id`、Project 相对的 `.vbmodule.js` 入口，可选的 `options` JSON 对象与可选的 `hash`（`sha256:<hex>`）。领域配置（例如 Table 的行布局）放在对应模块的 `options` 里。
 - `documentTypes`：文件路由与编辑器大类。每项包含稳定 `id`、`editor`、`include`、`exclude` 和零到多个 `catalogs`。
-- `tableLayout`：可选的工程级 1-based `nameKeyRow` 与 `dataStartRow`。
 - `providers`：可选的 Project Provider 数组；每项包含 `.mjs` 入口、参数数组和显式 Reference/Validator 能力。
+
+`formatVersion: 1` 不再被接受：升级时把 `modules` 补成必填数组，并把旧的顶层 `tableLayout` 移入 `id` 为 `visualbridge.table` 的模块的 `options.tableLayout`。解析器不会自动升级。
 
 示例：
 
 ```json visualbridge-schema=visualbridge-project.schema.json visualbridge-parser=project
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "projectId": "sample.game",
   "documentRoots": ["Config", "Tables"],
+  "modules": [
+    { "id": "visualbridge.entity", "entry": "Modules/entity.vbmodule.js" },
+    {
+      "id": "visualbridge.table",
+      "entry": "Modules/table.vbmodule.js",
+      "options": {
+        "tableLayout": {
+          "nameKeyRow": 2,
+          "dataStartRow": 3
+        }
+      }
+    }
+  ],
   "documentTypes": [
     {
       "id": "sample.hero",
@@ -31,11 +46,7 @@ Project 根目录用固定文件名 `VisualBridge.project.vbjson` 标识。格�
       "exclude": ["Config/Heroes/**/Generated/**"],
       "catalogs": ["Catalog/Hero.vbentitycatalog"]
     }
-  ],
-  "tableLayout": {
-    "nameKeyRow": 2,
-    "dataStartRow": 3
-  }
+  ]
 }
 ```
 
@@ -43,7 +54,7 @@ Project 根目录用固定文件名 `VisualBridge.project.vbjson` 标识。格�
 
 ## 3. 文件归属与绑定校验
 
-Project File Parser 负责结构、未知字段、重复 ID、重复路径、重复 glob、Provider 能力冲突和路径规范。VS Code Project Registry 再依据实际 Workspace 执行以下校验：
+Project File Parser 负责结构、未知字段、重复 ID、重复路径、重复 glob、Provider 能力冲突、模块声明（重复模块 ID、`.vbmodule.js` 入口规范、可选 `hash` 格式）和路径规范；模块 `options` 只校验是 JSON 对象，内容由模块自己的 `validateOptions` 校验。VS Code Project Registry 再依据实际 Workspace 执行以下校验：
 
 - 相同 include glob 被多个 Document Type 声明，或不同 glob 可构造出共同匹配样例；
 - 实际文件同时匹配多个 Document Type；
@@ -77,11 +88,11 @@ Project Settings 页面不直接拼接 JSON。Webview 发送有类型的 `Projec
 Operation 覆盖：
 
 - 修改 Project ID 与 Document Roots；
+- 新增、更新、删除和移动模块，以及设置或清除模块的 `options`；模块 `id` 必须与 bundle 的 `manifest.id` 一致，因此不提供模块重命名；
 - 新增、更新、重命名、删除和移动 Document Type；
-- 设置或清除 Table Layout；
 - 新增、更新、重命名、删除和移动 Provider。
 
-Document Type 重命名会在同一批次更新 Provider Validator 的 `documentTypes` 绑定。列表顺序是显式作者顺序，页面使用共享图标和拖动排序；序列化固定对象字段顺序、两空格缩进和末尾换行。新增 Provider 先在页面内创建未写入的 Draft，用户可以填写真实的现有 `.mjs` 入口和能力后再按保存图标提交；提交使用只允许新增的 `project.addProvider`，若 ID 已存在会拒绝而不会覆盖，取消 Draft 也不会修改 Project File。
+Document Type 重命名会在同一批次更新 Provider Validator 的 `documentTypes` 绑定。列表顺序是显式作者顺序，页面使用共享图标和拖动排序；序列化固定对象字段顺序、两空格缩进和末尾换行。新增 Provider 先在页面内创建未写入的 Draft，用户可以填写真实的现有 `.mjs` 入口和能力后再按保存图标提交；提交使用只允许新增的 `project.addProvider`，若 ID 已存在会拒绝而不会覆盖，取消 Draft 也不会修改 Project File。新增模块同样使用 Draft：在 Draft 里填写 `id`、`.vbmodule.js` 入口与 `options` JSON，保存后以 `project.addModule` 提交；既有模块的 `options` 在卡片的 JSON 编辑区修改，Table 的工程级行布局就是 `visualbridge.table` 模块的 `options.tableLayout`。
 
 每次页面状态包含当前 `documentVersion` 和实际文本 SHA-256 `sourceHash`。同一 Project File 的多个分屏会共享 Host 侧串行修改队列；Apply 前后 Host 都检查页面 Hash、当前 TextDocument 和磁盘基线，并执行 Project/Catalog 校验。陈旧页面、验证期间发生的文本变化、外部磁盘修改或验证失败均拒绝覆盖。成功修改通过 `WorkspaceEdit` 进入 VS Code Undo/Redo 与保存流程。
 
@@ -170,7 +181,7 @@ flowchart LR
 
 1. 打开包含 `VisualBridge.project.vbjson` 的 Workspace。
 2. 运行 **VisualBridge: Open Project Settings**，或在 Catalogs 视图点击齿轮按钮。
-3. 编辑 Project ID、根目录、Document Type、glob、Catalog、Table Layout 或 Provider；列表可拖动排序，功能按钮使用统一图标。新增 Provider 时先完成 Draft 的入口与能力配置，再按勾选图标提交。
+3. 编辑 Project ID、根目录、Document Type、glob、Catalog、模块（含 `visualbridge.table` 的 `options.tableLayout`，以 JSON 编辑）或 Provider；列表可拖动排序，功能按钮使用统一图标。新增 Provider/模块时先完成 Draft 的入口与配置，再按勾选图标提交。
 4. 页面显示“配置有效”后使用普通 VS Code 保存；若报告归属、路径或 Catalog 错误，权威文本不会被无效 Operation 改写。
 5. 打开 **VisualBridge / Catalogs**，检查 Registry、来源状态、类型与 alias；使用刷新按钮重新读取。
 6. 在 Problems 中处理 Catalog 不可用、冲突或 `catalog.sourceStale`。Catalog 需要由它的外部维护者重新生成，不能在 Browser 中直接修补。

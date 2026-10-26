@@ -1,8 +1,9 @@
-import type { DocumentDiagnostic, DocumentParseResult, JsonValue, TableLayoutDefinition } from "@visualbridge/core";
+import type { DocumentDiagnostic, DocumentParseResult, JsonValue } from "@visualbridge/core";
 import { cloneJsonValue } from "@visualbridge/core";
 import { parse } from "csv-parse/sync";
 import { stringify } from "csv-stringify/sync";
 import { decodeTableCell, encodeTableCell } from "./cellCodec";
+import type { TableLayoutDefinition } from "./projectTableLayout";
 import type { TableSheetDefinition, TableTypeDefinition } from "./tableCatalog";
 import { matchTableSheetDefinitions } from "./tableCatalog";
 import { createRowId, type TableDocument, type TableRow } from "./tableDocument";

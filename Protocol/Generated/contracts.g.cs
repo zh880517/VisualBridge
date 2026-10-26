@@ -30,7 +30,7 @@ namespace VisualBridge.Protocol.Generated
         public const string VisualBridgeEntityCatalogSha256 = "9d9501dca2b2e62946a42368b3406f8ae8b9f8154b94f5311b429d3160bec593";
         public const string VisualBridgeGraphCatalogSha256 = "b7fb04d60a986b1ba4c1cf95ec3d9655341af0ff24d8ab215052ae172709d0d2";
         public const string VisualBridgePrimitivesSha256 = "23c83a69a9d557916a9e2a0a120c0664fb09fbc86dc96703aa7bc036030dc639";
-        public const string VisualBridgeProjectSha256 = "dde9d43f3fdc09ca0978fe0e8650a731726f6490ad1fda2e62023db69b01c3e9";
+        public const string VisualBridgeProjectSha256 = "570524000c45fb85e1d6c134a2b1dcee2fd8821521d797bd5c3843de45b65cb9";
         public const string VisualBridgeRuntimeBridgeSha256 = "881c79751d9c450f576bc4c8a5c43960d86e9e01c35e905e3dd1d719c2ecaefc";
         public const string VisualBridgeStructuredCatalogSha256 = "0cae8ab7b7a9aa1159669f0939f7178e5e310056366fe0713165cd87687942fe";
         public const string VisualBridgeStructuredSha256 = "24af3e3ecd5f5481c76ad4e1377d5441d09a238faa37b220dfbc1f6fffc0baf8";
@@ -948,14 +948,35 @@ namespace VisualBridge.Protocol.Generated.VisualBridgeProject
         [DataMember(Name = "formatVersion", IsRequired = true, EmitDefaultValue = true, Order = 2)]
         public int FormatVersion { get; set; }
 
-        [DataMember(Name = "projectId", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        [DataMember(Name = "modules", IsRequired = true, EmitDefaultValue = true, Order = 3)]
+        public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeProject.Module> Modules { get; set; } = Array.Empty<VisualBridge.Protocol.Generated.VisualBridgeProject.Module>();
+
+        [DataMember(Name = "projectId", IsRequired = true, EmitDefaultValue = true, Order = 4)]
         public string ProjectId { get; set; } = null!;
 
-        [DataMember(Name = "providers", IsRequired = false, EmitDefaultValue = false, Order = 4)]
+        [DataMember(Name = "providers", IsRequired = false, EmitDefaultValue = false, Order = 5)]
         public IReadOnlyList<VisualBridge.Protocol.Generated.VisualBridgeProject.Provider>? Providers { get; set; }
+    }
 
-        [DataMember(Name = "tableLayout", IsRequired = false, EmitDefaultValue = false, Order = 5)]
-        public VisualBridge.Protocol.Generated.VisualBridgeProject.RootTableLayout? TableLayout { get; set; }
+    [DataContract]
+    public sealed class Module
+    {
+        [DataMember(Name = "entry", IsRequired = true, EmitDefaultValue = true, Order = 0)]
+        public string Entry { get; set; } = null!;
+
+        [DataMember(Name = "hash", IsRequired = false, EmitDefaultValue = false, Order = 1)]
+        public string? Hash { get; set; }
+
+        [DataMember(Name = "id", IsRequired = true, EmitDefaultValue = true, Order = 2)]
+        public string Id { get; set; } = null!;
+
+        [DataMember(Name = "options", IsRequired = false, EmitDefaultValue = false, Order = 3)]
+        public VisualBridge.Protocol.Generated.VisualBridgeProject.ModuleOptions? Options { get; set; }
+    }
+
+    [DataContract]
+    public sealed class ModuleOptions
+    {
     }
 
     [DataContract]
@@ -1018,7 +1039,7 @@ namespace VisualBridge.Protocol.Generated.VisualBridgeProject
     }
 
     [DataContract]
-    public sealed class RootTableLayout
+    public sealed class TableLayout
     {
         [DataMember(Name = "dataStartRow", IsRequired = true, EmitDefaultValue = true, Order = 0)]
         public int DataStartRow { get; set; }

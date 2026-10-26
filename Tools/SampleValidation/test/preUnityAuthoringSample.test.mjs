@@ -134,9 +134,11 @@ test("PreUnityAuthoring sample passes official project, catalog, document, and P
   const tableRegistry = buildOrThrow("Table Catalog Registry", table.buildTableCatalogRegistry([tableCatalog]));
   const tableType = table.resolveTableType(tableRegistry, "sample.skills");
   assert.notEqual(tableType, undefined);
+  const tableLayout = table.resolveProjectTableLayout(project);
+  assert.notEqual(tableLayout, undefined, "Sample Project must declare the Table module tableLayout option.");
   const tableDocument = parseOrThrow(
     "Table Document",
-    table.parseCsvTable(await read("Tables/Skills_A.csv"), tableType, project.tableLayout, "Skills_A"),
+    table.parseCsvTable(await read("Tables/Skills_A.csv"), tableType, tableLayout, "Skills_A"),
   );
   assertNoErrors("Table Document", table.validateTableDocument(tableDocument, tableType));
   assert.deepEqual(tableDocument.sheets[0].rows.map((row) => row.cells.id), [101, 102]);

@@ -28,6 +28,7 @@ import {
   createTableRowReferenceProvider,
   parseCsvTable,
   parseXlsxTable,
+  resolveProjectTableLayout,
   resolveTableType,
   type TableDocument,
   type TableReferenceDocument,
@@ -453,7 +454,7 @@ async function loadProjectTableDocuments(
   project: ProjectContext,
   output: vscode.OutputChannel,
 ): Promise<readonly TableReferenceDocument[]> {
-  const layout = project.definition.tableLayout;
+  const layout = resolveProjectTableLayout(project.definition);
   if (layout === undefined) {
     return [];
   }

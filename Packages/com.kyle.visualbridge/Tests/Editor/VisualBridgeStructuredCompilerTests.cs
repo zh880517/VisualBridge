@@ -241,7 +241,10 @@ namespace VisualBridge.Editor.Tests
             using (var fixture = new CompilerFixture())
             {
                 var encodedRoot = documentRoot.Replace("\\", "\\\\").Replace("\"", "\\\"");
-                fixture.WriteRawProject("{\n  \"formatVersion\": 1,\n  \"projectId\": \"tests.compiler.project\",\n  \"documentRoots\": [\"" + encodedRoot + "\"],\n  \"documentTypes\": []\n}\n");
+                fixture.WriteRawProject(VisualBridgeProjectFixture.Project(
+                    "tests.compiler.project",
+                    "\"" + encodedRoot + "\"",
+                    string.Empty));
 
                 Assert.That(
                     Assert.Throws<VisualBridgeIntegrationException>(() =>
@@ -255,17 +258,214 @@ namespace VisualBridge.Editor.Tests
         {
             using (var fixture = new CompilerFixture())
             {
-                fixture.WriteRawProject("{\n  \"formatVersion\": 1,\n  \"projectId\": \"tests.compiler.project\",\n  \"documentRoots\": [\"Config\"],\n  \"documentTypes\": [{\"id\":\"tests.compiler.settings\",\"editor\":\"structured\",\"include\":[\" Config/**/*.json\"]}]\n}\n");
+                fixture.WriteRawProject(VisualBridgeProjectFixture.Project(
+                    "tests.compiler.project",
+                    "\"Config\"",
+                    "{\"id\":\"tests.compiler.settings\",\"editor\":\"structured\",\"include\":[\" Config/**/*.json\"]}"));
                 Assert.That(
                     Assert.Throws<VisualBridgeIntegrationException>(() =>
                         VisualBridgeAuthoringProjectParser.Parse(Path.Combine(fixture.Root, "Authoring", "VisualBridge.project.vbjson"))).Code,
                     Is.EqualTo("compile.projectInvalidGlob"));
 
-                fixture.WriteRawProject("{\n  \"formatVersion\": 1,\n  \"projectId\": \"tests.compiler.project\",\n  \"documentRoots\": [\"Config\"],\n  \"documentTypes\": [{\"id\":\"tests.compiler.settings\",\"editor\":\"structured\",\"include\":[\"Config/**/*.json\"]}],\n  \"providers\": [{\"id\":\"tests.provider\",\"entry\":\"Providers/test.mjs\",\"args\":[],\"capabilities\":{\"reference\":{\"kinds\":[\"document\"]}}}]\n}\n");
+                fixture.WriteRawProject(VisualBridgeProjectFixture.Project(
+                    "tests.compiler.project",
+                    "\"Config\"",
+                    "{\"id\":\"tests.compiler.settings\",\"editor\":\"structured\",\"include\":[\"Config/**/*.json\"]}",
+                    providersJson: "{\"id\":\"tests.provider\",\"entry\":\"Providers/test.mjs\",\"args\":[],\"capabilities\":{\"reference\":{\"kinds\":[\"document\"]}}}"));
                 Assert.That(
                     Assert.Throws<VisualBridgeIntegrationException>(() =>
                         VisualBridgeAuthoringProjectParser.Parse(Path.Combine(fixture.Root, "Authoring", "VisualBridge.project.vbjson"))).Code,
                     Is.EqualTo("compile.projectReferenceKindConflict"));
+            }
+        }
+
+        [Test]
+        public void ProjectV1IsRejectedWithMigrationHint()
+        {
+            using (var fixture = new CompilerFixture())
+            {
+                var projectPath = Path.Combine(fixture.Root, "Authoring", "VisualBridge.project.vbjson");
+
+                fixture.WriteRawProject(
+                    "{\n  \"formatVersion\": 1,\n  \"projectId\": \"tests.compiler.project\",\n  \"documentRoots\": [\"Config\"],\n"
+                    + "  \"documentTypes\": [],\n  \"tableLayout\": { \"nameKeyRow\": 2, \"dataStartRow\": 3 }\n}\n");
+
+                var exception = Assert.Throws<VisualBridgeIntegrationException>(() =>
+                    VisualBridgeAuthoringProjectParser.Parse(projectPath));
+
+                Assert.That(exception.Code, Is.EqualTo("compile.projectUnsupportedVersion"));
+                Assert.That(exception.JsonPath, Is.EqualTo("$.formatVersion"));
+                Assert.That(exception.Message, Does.Contain("modules"));
+                Assert.That(exception.Message, Does.Contain("visualbridge.table"));
+
+                // v1 且同时缺 modules 时也必须先报版本，不能被 missingProperty 抢先。
+                fixture.WriteRawProject(
+                    "{\n  \"formatVersion\": 1,\n  \"projectId\": \"tests.compiler.project\",\n  \"documentRoots\": [\"Config\"],\n"
+                    + "  \"documentTypes\": []\n}\n");
+
+                var missingModules = Assert.Throws<VisualBridgeIntegrationException>(() =>
+                    VisualBridgeAuthoringProjectParser.Parse(projectPath));
+
+                Assert.That(missingModules.Code, Is.EqualTo("compile.projectUnsupportedVersion"));
+                Assert.That(missingModules.JsonPath, Is.EqualTo("$.formatVersion"));
+                Assert.That(missingModules.Message, Does.Contain("visualbridge.table"));
+            }
+        }
+
+        [Test]
+        public void FormatVersionAcceptsIntegralFloatsLikeCore()
+        {
+            using (var fixture = new CompilerFixture())
+            {
+                var projectPath = Path.Combine(fixture.Root, "Authoring", "VisualBridge.project.vbjson");
+
+                // Core 经 JSON.parse 后 2 与 2.0 都是 number，Newtonsoft 则区分；
+                // 必须接受整值浮点，避免同一文件两侧结论不同。
+                fixture.WriteRawProject(
+                    "{\n  \"formatVersion\": 2.0,\n  \"projectId\": \"tests.compiler.project\",\n  \"documentRoots\": [\"Config\"],\n"
+                    + "  \"modules\": [],\n  \"documentTypes\": []\n}\n");
+                var project = VisualBridgeAuthoringProjectParser.Parse(projectPath);
+                Assert.That(project.ProjectId, Is.EqualTo("tests.compiler.project"));
+
+                fixture.WriteRawProject(
+                    "{\n  \"formatVersion\": 2.5,\n  \"projectId\": \"tests.compiler.project\",\n  \"documentRoots\": [\"Config\"],\n"
+                    + "  \"modules\": [],\n  \"documentTypes\": []\n}\n");
+                var exception = Assert.Throws<VisualBridgeIntegrationException>(() =>
+                    VisualBridgeAuthoringProjectParser.Parse(projectPath));
+                Assert.That(exception.Code, Is.EqualTo("compile.projectUnsupportedVersion"));
+            }
+        }
+
+        [Test]
+        public void ProjectV2RequiresModulesAndNoTopLevelTableLayout()
+        {
+            using (var fixture = new CompilerFixture())
+            {
+                fixture.WriteRawProject("{\n  \"formatVersion\": 2,\n  \"projectId\": \"tests.compiler.project\",\n"
+                    + "  \"documentRoots\": [\"Config\"],\n  \"documentTypes\": []\n}\n");
+                Assert.That(
+                    Assert.Throws<VisualBridgeIntegrationException>(() =>
+                        VisualBridgeAuthoringProjectParser.Parse(Path.Combine(fixture.Root, "Authoring", "VisualBridge.project.vbjson"))).Code,
+                    Is.EqualTo("compile.projectMissingProperty"));
+
+                fixture.WriteRawProject("{\n  \"formatVersion\": 2,\n  \"projectId\": \"tests.compiler.project\",\n"
+                    + "  \"documentRoots\": [\"Config\"],\n  \"modules\": [],\n  \"documentTypes\": [],\n"
+                    + "  \"tableLayout\": { \"nameKeyRow\": 2, \"dataStartRow\": 3 }\n}\n");
+                var unknown = Assert.Throws<VisualBridgeIntegrationException>(() =>
+                    VisualBridgeAuthoringProjectParser.Parse(Path.Combine(fixture.Root, "Authoring", "VisualBridge.project.vbjson")));
+                Assert.That(unknown.Code, Is.EqualTo("compile.projectUnknownProperty"));
+                Assert.That(unknown.JsonPath, Is.EqualTo("$.tableLayout"));
+            }
+        }
+
+        [Test]
+        public void ProjectModuleStructureAndOptionalHashAreValidated()
+        {
+            using (var fixture = new CompilerFixture())
+            {
+                var validHash = "sha256:" + new string('a', 64);
+                fixture.WriteRawProject(VisualBridgeProjectFixture.Project(
+                    "tests.compiler.project",
+                    "\"Config\"",
+                    string.Empty,
+                    new[]
+                    {
+                        VisualBridgeProjectFixture.Module("visualbridge.structured", "Modules/structured.vbmodule.js"),
+                        VisualBridgeProjectFixture.Module(
+                            "visualbridge.table",
+                            VisualBridgeProjectFixture.TableModuleEntry,
+                            "{ \"tableLayout\": " + VisualBridgeProjectFixture.DefaultTableLayoutJson + " }",
+                            validHash),
+                    }));
+                var project = VisualBridgeAuthoringProjectParser.Parse(
+                    Path.Combine(fixture.Root, "Authoring", "VisualBridge.project.vbjson"));
+                Assert.That(project.Modules.Count, Is.EqualTo(2));
+                Assert.That(project.Modules[1].Id, Is.EqualTo("visualbridge.table"));
+                Assert.That(project.Modules[1].Hash, Is.EqualTo(validHash));
+                Assert.That(project.Modules[1].Options["tableLayout"]["nameKeyRow"].Value<int>(), Is.EqualTo(2));
+
+                fixture.WriteRawProject(VisualBridgeProjectFixture.Project(
+                    "tests.compiler.project",
+                    "\"Config\"",
+                    string.Empty,
+                    new[]
+                    {
+                        VisualBridgeProjectFixture.Module("duplicate", "Modules/one.vbmodule.js"),
+                        VisualBridgeProjectFixture.Module("duplicate", "Modules/two.vbmodule.js"),
+                    }));
+                Assert.That(
+                    Assert.Throws<VisualBridgeIntegrationException>(() =>
+                        VisualBridgeAuthoringProjectParser.Parse(Path.Combine(fixture.Root, "Authoring", "VisualBridge.project.vbjson"))).Code,
+                    Is.EqualTo("compile.projectDuplicateModule"));
+
+                fixture.WriteRawProject(VisualBridgeProjectFixture.Project(
+                    "tests.compiler.project",
+                    "\"Config\"",
+                    string.Empty,
+                    new[] { VisualBridgeProjectFixture.Module("visualbridge.table", "Modules/table.vbmodule.bundle.js") }));
+                Assert.That(
+                    Assert.Throws<VisualBridgeIntegrationException>(() =>
+                        VisualBridgeAuthoringProjectParser.Parse(Path.Combine(fixture.Root, "Authoring", "VisualBridge.project.vbjson"))).Code,
+                    Is.EqualTo("compile.projectInvalidModule"));
+
+                fixture.WriteRawProject(VisualBridgeProjectFixture.Project(
+                    "tests.compiler.project",
+                    "\"Config\"",
+                    string.Empty,
+                    new[] { VisualBridgeProjectFixture.Module("visualbridge.table", "Modules/table.vbmodule.js", "[]") }));
+                Assert.That(
+                    Assert.Throws<VisualBridgeIntegrationException>(() =>
+                        VisualBridgeAuthoringProjectParser.Parse(Path.Combine(fixture.Root, "Authoring", "VisualBridge.project.vbjson"))).Code,
+                    Is.EqualTo("compile.projectInvalidModule"));
+
+                // entry 的盘符与控制字符由路径校验拒绝（与 Core/Schema 同构）。
+                foreach (var invalidEntry in new[] { "C:/outside.vbmodule.js", "Modules/bad\\u0001d.vbmodule.js" })
+                {
+                    fixture.WriteRawProject(VisualBridgeProjectFixture.Project(
+                        "tests.compiler.project",
+                        "\"Config\"",
+                        string.Empty,
+                        new[] { VisualBridgeProjectFixture.Module("visualbridge.table", invalidEntry) }));
+                    var invalidPath = Assert.Throws<VisualBridgeIntegrationException>(() =>
+                        VisualBridgeAuthoringProjectParser.Parse(Path.Combine(fixture.Root, "Authoring", "VisualBridge.project.vbjson")));
+                    Assert.That(invalidPath.Code, Is.EqualTo("compile.projectInvalidPath"));
+                    Assert.That(invalidPath.JsonPath, Is.EqualTo("$.modules[0].entry"));
+                }
+
+                fixture.WriteRawProject(VisualBridgeProjectFixture.Project(
+                    "tests.compiler.project",
+                    "\"Config\"",
+                    string.Empty,
+                    new[]
+                    {
+                        VisualBridgeProjectFixture.Module(
+                            "visualbridge.table",
+                            "Modules/table.vbmodule.js",
+                            null,
+                            "sha256:ABC"),
+                    }));
+                Assert.That(
+                    Assert.Throws<VisualBridgeIntegrationException>(() =>
+                        VisualBridgeAuthoringProjectParser.Parse(Path.Combine(fixture.Root, "Authoring", "VisualBridge.project.vbjson"))).Code,
+                    Is.EqualTo("compile.projectInvalidModuleHash"));
+
+                // .NET 的 '$' 允许末尾换行，hash 必须用 \z 才与 Core/Schema 同构。
+                fixture.WriteRawProject(VisualBridgeProjectFixture.Project(
+                    "tests.compiler.project",
+                    "\"Config\"",
+                    string.Empty,
+                    new[]
+                    {
+                        VisualBridgeProjectFixture.Module(
+                            "visualbridge.table",
+                            "Modules/table.vbmodule.js",
+                            null,
+                            validHash + "\\n"),
+                    }));
+                Assert.That(
+                    Assert.Throws<VisualBridgeIntegrationException>(() =>
+                        VisualBridgeAuthoringProjectParser.Parse(Path.Combine(fixture.Root, "Authoring", "VisualBridge.project.vbjson"))).Code,
+                    Is.EqualTo("compile.projectInvalidModuleHash"));
             }
         }
 
@@ -422,7 +622,11 @@ namespace VisualBridge.Editor.Tests
 
             public void WriteProject(IEnumerable<string> documentTypes)
             {
-                WriteRawProject("{\n  \"formatVersion\": 1,\n  \"projectId\": \"tests.compiler.project\",\n  \"documentRoots\": [\"Config\"],\n  \"documentTypes\": [" + string.Join(",", documentTypes) + "]\n}\n");
+                WriteRawProject(VisualBridgeProjectFixture.Project(
+                    "tests.compiler.project",
+                    "\"Config\"",
+                    string.Join(",", documentTypes),
+                    new[] { VisualBridgeProjectFixture.Module("visualbridge.structured", "Modules/structured.vbmodule.js") }));
             }
 
             public void WriteRawProject(string text)

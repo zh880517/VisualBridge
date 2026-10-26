@@ -399,7 +399,11 @@ namespace VisualBridge.Editor.Tests
                 var roots = includeConfigRoot ? "\"Config\", \"Entities\"" : "\"Entities\"";
                 File.WriteAllText(
                     Path.Combine(Root, "Authoring", "VisualBridge.project.vbjson"),
-                    "{\n  \"formatVersion\": 1,\n  \"projectId\": \"" + ProjectId + "\",\n  \"documentRoots\": [" + roots + "],\n  \"documentTypes\": [" + string.Join(",", documentTypes) + "]\n}\n",
+                    VisualBridgeProjectFixture.Project(
+                        ProjectId,
+                        roots,
+                        string.Join(",", documentTypes),
+                        new[] { VisualBridgeProjectFixture.Module("visualbridge.entity", "Modules/entity.vbmodule.js") }),
                     Utf8WithoutBom);
             }
 

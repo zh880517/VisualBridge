@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { TableLayoutDefinition } from "@visualbridge/core";
 import {
   createEmptyCsvTableSource,
   createEmptyXlsxTableSource,
   parseCsvTable,
   parseXlsxTable,
+  type TableLayoutDefinition,
   type TableTypeDefinition,
 } from "../index";
 

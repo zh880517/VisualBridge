@@ -549,7 +549,11 @@ namespace VisualBridge.Editor.Tests
 
                 File.WriteAllText(
                     Path.Combine(Root, "Authoring", "VisualBridge.project.vbjson"),
-                    "{\n  \"formatVersion\": 1,\n  \"projectId\": \"tests.project\",\n  \"documentRoots\": [\"Graph\"],\n  \"documentTypes\": [\n    {\"id\": \"tests.graphs\", \"editor\": \"graph\", \"include\": [\"Graph/**/*.vbgraph\"], \"catalogs\": [\"Catalog/Test.vbgraphcatalog\"]}\n  ]\n}\n",
+                    VisualBridgeProjectFixture.Project(
+                        "tests.project",
+                        "\"Graph\"",
+                        "{\"id\": \"tests.graphs\", \"editor\": \"graph\", \"include\": [\"Graph/**/*.vbgraph\"], \"catalogs\": [\"Catalog/Test.vbgraphcatalog\"]}",
+                        new[] { VisualBridgeProjectFixture.Module("visualbridge.graph", "Modules/graph.vbmodule.js") }),
                     Utf8WithoutBom);
 
                 var serializedTypes = string.Join(", ", registeredTypes.Select(JsonConvert.ToString));

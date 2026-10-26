@@ -37,9 +37,12 @@ VisualBridge 插件按少量稳定的编辑器大类注册能力。当前已落�
 
 ```json visualbridge-schema=visualbridge-project.schema.json visualbridge-parser=project
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "projectId": "game.authoring",
   "documentRoots": ["Config"],
+  "modules": [
+    { "id": "visualbridge.entity", "entry": "Modules/entity.vbmodule.js" }
+  ],
   "documentTypes": [
     {
       "id": "hero-config",

@@ -36,9 +36,11 @@ import {
   matchTableSheetDefinitions,
   parseCsvTable,
   parseXlsxTable,
+  resolveProjectTableLayout,
   resolveTableType,
   validateTableDocument,
   type TableDocument,
+  type TableLayoutDefinition,
   type TableReferenceDocument,
   type TableSheet,
   type TableTypeDefinition,
@@ -175,7 +177,7 @@ function source(
   const dependencyKey = hashText(canonicalJsonStringify({
     project: project.definition,
     documentType,
-    tableLayout: documentType.editor === "table" ? project.definition.tableLayout : undefined,
+    tableLayout: documentType.editor === "table" ? resolveProjectTableLayout(project.definition) : undefined,
     catalogKey,
     sources: sourcePaths.map((sourcePath, index) => ({ path: sourcePath, hash: sourceHashes[index] })),
   }));
@@ -316,7 +318,7 @@ async function planTableSources(
   catalogKey: string,
   signal: AbortSignal,
 ): Promise<readonly SemanticSnapshotSource<PreparedWorkspaceDocument>[]> {
-  const layout = project.definition.tableLayout;
+  const layout = resolveProjectTableLayout(project.definition);
   const tableType = catalog.ready ? resolveTableType(catalog.registry, documentType.id) : undefined;
   const captures = new Map<string, CapturedBytes>();
   for (const uri of uris) {
@@ -380,7 +382,7 @@ async function prepareXlsx(
   path: string,
   captured: CapturedBytes,
   tableType: TableTypeDefinition,
-  layout: NonNullable<ProjectContext["definition"]["tableLayout"]>,
+  layout: TableLayoutDefinition,
   catalogDiagnostics: readonly DocumentDiagnostic[],
   dependencyKey: string,
   signal: AbortSignal,
@@ -408,7 +410,7 @@ async function prepareCsv(
   documentType: DocumentTypeDefinition,
   entries: readonly { readonly uri: vscode.Uri; readonly captured: CapturedBytes }[],
   tableType: TableTypeDefinition,
-  layout: NonNullable<ProjectContext["definition"]["tableLayout"]>,
+  layout: TableLayoutDefinition,
   catalogDiagnostics: readonly DocumentDiagnostic[],
   dependencyKey: string,
   signal: AbortSignal,

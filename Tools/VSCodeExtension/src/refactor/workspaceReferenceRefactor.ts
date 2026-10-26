@@ -63,6 +63,7 @@ import {
   parseCsvTable,
   parseXlsxTable,
   replaceTableReferenceValues,
+  resolveProjectTableLayout,
   resolveTableSheet,
   resolveTableType,
   serializeCsvTable,
@@ -476,7 +477,7 @@ export class WorkspaceReferenceRefactor {
       throw new Error(`Reference target '${targetPlan.kind}' cannot be stored in a Table document.`);
     }
     const documentType = project.definition.documentTypes.find((candidate) => candidate.id === indexed.documentTypeId)!;
-    const layout = project.definition.tableLayout;
+    const layout = resolveProjectTableLayout(project.definition);
     if (layout === undefined) throw new Error("The project does not configure tableLayout.");
     const catalog = await loadTableCatalogRegistry(project, documentType.catalogs);
     if (!catalog.ready) throw new Error(firstDiagnostic(catalog.diagnostics, "Table Catalog is unavailable."));

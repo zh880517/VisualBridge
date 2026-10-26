@@ -7,11 +7,12 @@
     "formatVersion",
     "projectId",
     "documentRoots",
+    "modules",
     "documentTypes"
   ],
   "properties": {
     "formatVersion": {
-      "const": 1
+      "const": 2
     },
     "projectId": {
       "type": "string",
@@ -25,6 +26,13 @@
         "type": "string",
         "description": "A forward-slash relative path inside the editable root. Use '.' for the root itself.",
         "pattern": "^(?:\\.|(?!/)(?![A-Za-z]:/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*\\\\)(?!.*//).+)$"
+      }
+    },
+    "modules": {
+      "type": "array",
+      "description": "Authoring modules this Project declares. Empty is allowed; each entry is loaded from a single '.vbmodule.js' bundle.",
+      "items": {
+        "$ref": "#/$defs/module"
       }
     },
     "documentTypes": {
@@ -76,25 +84,6 @@
         "additionalProperties": false
       }
     },
-    "tableLayout": {
-      "type": "object",
-      "description": "Project-wide 1-based row layout used by every CSV and XLSX table sheet.",
-      "required": [
-        "nameKeyRow",
-        "dataStartRow"
-      ],
-      "properties": {
-        "nameKeyRow": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "dataStartRow": {
-          "type": "integer",
-          "minimum": 2
-        }
-      },
-      "additionalProperties": false
-    },
     "providers": {
       "type": "array",
       "minItems": 1,
@@ -107,6 +96,47 @@
     "required": ["provider"]
   },
   "$defs": {
+    "module": {
+      "type": "object",
+      "description": "A single Authoring module declared by the Project. The optional 'options' object belongs to that module.",
+      "required": ["id", "entry"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "entry": {
+          "type": "string",
+          "description": "Normalized project-relative built module bundle using '/' separators; the suffix must be '.vbmodule.js'. Drive prefixes and control characters are rejected.",
+          "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*[\\u0000-\\u001f\\u007f-\\u009f])(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*\\\\)(?!.*//).+\\.vbmodule\\.js$"
+        },
+        "options": {
+          "type": "object",
+          "description": "Module-owned JSON object. Core only requires an object; the module's validateOptions validates the content."
+        },
+        "hash": {
+          "type": "string",
+          "description": "Optional lowercase-hex SHA-256 of the module bundle bytes. Declared values are compared at load time.",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "tableLayout": {
+      "type": "object",
+      "description": "Shape of the 'options.tableLayout' object declared by the 'visualbridge.table' module: 1-based rows for every CSV and XLSX table sheet.",
+      "required": ["nameKeyRow", "dataStartRow"],
+      "properties": {
+        "nameKeyRow": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "dataStartRow": {
+          "type": "integer",
+          "minimum": 2
+        }
+      },
+      "additionalProperties": false
+    },
     "identifier": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"

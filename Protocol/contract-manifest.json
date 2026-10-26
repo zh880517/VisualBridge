@@ -26,7 +26,7 @@
   "hashEncoding": "lowercase-hex-64",
   "versions": {
     "protocolContracts": 1,
-    "project": 1,
+    "project": 2,
     "graphDocument": 3,
     "graphCatalog": 4,
     "entityDocument": 1,

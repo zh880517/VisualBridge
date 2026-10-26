@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
 
 namespace VisualBridge.Editor
@@ -12,14 +13,14 @@ namespace VisualBridge.Editor
             string rootPath,
             string projectId,
             IReadOnlyList<string> documentRoots,
-            IReadOnlyList<VisualBridgeAuthoringDocumentType> documentTypes,
-            VisualBridgeAuthoringTableLayout tableLayout)
+            IReadOnlyList<VisualBridgeAuthoringModule> modules,
+            IReadOnlyList<VisualBridgeAuthoringDocumentType> documentTypes)
         {
             RootPath = rootPath;
             ProjectId = projectId;
             DocumentRoots = documentRoots;
+            Modules = modules;
             DocumentTypes = documentTypes;
-            TableLayout = tableLayout;
         }
 
         public string RootPath { get; }
@@ -28,23 +29,31 @@ namespace VisualBridge.Editor
 
         public IReadOnlyList<string> DocumentRoots { get; }
 
-        public IReadOnlyList<VisualBridgeAuthoringDocumentType> DocumentTypes { get; }
+        // 只做结构校验；documentTypes[].editor 与已加载模块的一致性校验延后到模块装载。
+        public IReadOnlyList<VisualBridgeAuthoringModule> Modules { get; }
 
-        public VisualBridgeAuthoringTableLayout TableLayout { get; }
+        public IReadOnlyList<VisualBridgeAuthoringDocumentType> DocumentTypes { get; }
     }
 
-    // Table 文档的 CSV 行布局；缺省表示 Authoring Project 未声明 tableLayout。
-    internal sealed class VisualBridgeAuthoringTableLayout
+    // Project File v2 的模块条目。options 归模块所有，域配置（如 Table 行布局）从这里读取。
+    internal sealed class VisualBridgeAuthoringModule
     {
-        public VisualBridgeAuthoringTableLayout(int nameKeyRow, int dataStartRow)
+        public VisualBridgeAuthoringModule(string id, string entry, JObject options, string hash)
         {
-            NameKeyRow = nameKeyRow;
-            DataStartRow = dataStartRow;
+            Id = id;
+            Entry = entry;
+            Options = options;
+            Hash = hash;
         }
 
-        public int NameKeyRow { get; }
+        public string Id { get; }
 
-        public int DataStartRow { get; }
+        public string Entry { get; }
+
+        public JObject Options { get; }
+
+        // 可选的 'sha256:<hex>'。解析器只校验格式，声明值是否与 bundle 字节一致由模块加载比对。
+        public string Hash { get; }
     }
 
     internal sealed class VisualBridgeAuthoringDocumentType
@@ -76,21 +85,31 @@ namespace VisualBridge.Editor
 
     internal static class VisualBridgeAuthoringProjectParser
     {
+        internal const string ModuleEntrySuffix = ".vbmodule.js";
+
+        // 与 Core/Protocol Schema 同构：sha256 后接 64 位小写十六进制。
+        // 用 \A...\z 而不是 ^...$：.NET 的 '$' 允许末尾换行，会让 "sha256:<hex>\n" 通过。
+        private static readonly Regex ModuleHashPattern = new Regex(
+            @"\Asha256:[0-9a-f]{64}\z",
+            RegexOptions.CultureInvariant);
+
         private static readonly char[] ForbiddenGlobCharacters = { '?', '[', ']', '{', '}', '(', ')', '!' };
 
         public static VisualBridgeAuthoringProject Parse(string projectPath)
         {
             var root = VisualBridgeIntegrationProfileLoader.ReadStrictObject(projectPath, "compile.projectInvalidJson");
+            // 先版本后结构：v1 文件的主要失败原因是版本，必须报出 unsupportedVersion 与迁移要点，
+            // 不能被「未知的 tableLayout」或「缺 modules」抢先（与 Core 的解析顺序对齐）。
+            RequireVersion(root["formatVersion"], "$.formatVersion");
             RequireKeys(
                 root,
                 "$",
-                new[] { "formatVersion", "projectId", "documentRoots", "documentTypes" },
-                new[] { "tableLayout", "providers" });
-            RequireVersion(root["formatVersion"], "$.formatVersion");
+                new[] { "formatVersion", "projectId", "documentRoots", "modules", "documentTypes" },
+                new[] { "providers" });
             var projectId = RequireIdentifier(root["projectId"], "$.projectId");
             var documentRoots = ReadRelativePaths(root["documentRoots"], "$.documentRoots", true, true);
+            var modules = ReadModules(root["modules"]);
             var documentTypes = ReadDocumentTypes(root["documentTypes"]);
-            var tableLayout = root["tableLayout"] == null ? null : ReadTableLayout(root["tableLayout"]);
 
             if (root["providers"] != null)
             {
@@ -101,8 +120,8 @@ namespace VisualBridge.Editor
                 Path.GetDirectoryName(Path.GetFullPath(projectPath)),
                 projectId,
                 documentRoots,
-                documentTypes,
-                tableLayout);
+                modules,
+                documentTypes);
         }
 
         public static string ResolveInsideProject(VisualBridgeAuthoringProject project, string relativePath, string jsonPath)
@@ -138,6 +157,70 @@ namespace VisualBridge.Editor
             var pathSegments = relativePath.Split('/');
             var memo = new Dictionary<long, bool>();
             return MatchSegments(patternSegments, 0, pathSegments, 0, memo);
+        }
+
+        private static IReadOnlyList<VisualBridgeAuthoringModule> ReadModules(JToken token)
+        {
+            if (!(token is JArray array))
+            {
+                throw Error("compile.projectInvalidModules", "$.modules", "Expected an array.");
+            }
+
+            var result = new List<VisualBridgeAuthoringModule>(array.Count);
+            var ids = new HashSet<string>(StringComparer.Ordinal);
+            for (var index = 0; index < array.Count; index++)
+            {
+                var path = $"$.modules[{index}]";
+                if (!(array[index] is JObject value))
+                {
+                    throw Error("compile.projectInvalidModule", path, "Expected an object.");
+                }
+
+                RequireKeys(value, path, new[] { "id", "entry" }, new[] { "options", "hash" });
+                var id = RequireIdentifier(value["id"], path + ".id");
+                if (!ids.Add(id))
+                {
+                    throw Error("compile.projectDuplicateModule", path + ".id", $"Duplicate module ID '{id}'.");
+                }
+
+                var entry = RequireString(value["entry"], path + ".entry");
+                ValidateRelativePath(entry, path + ".entry", false);
+                if (!entry.EndsWith(ModuleEntrySuffix, StringComparison.Ordinal))
+                {
+                    throw Error(
+                        "compile.projectInvalidModule",
+                        path + ".entry",
+                        $"Module entry must end with '{ModuleEntrySuffix}'.");
+                }
+
+                JObject options = null;
+                if (value["options"] != null)
+                {
+                    if (!(value["options"] is JObject optionsValue))
+                    {
+                        throw Error("compile.projectInvalidModule", path + ".options", "Expected an object.");
+                    }
+
+                    options = optionsValue;
+                }
+
+                string hash = null;
+                if (value["hash"] != null)
+                {
+                    hash = RequireString(value["hash"], path + ".hash");
+                    if (!ModuleHashPattern.IsMatch(hash))
+                    {
+                        throw Error(
+                            "compile.projectInvalidModuleHash",
+                            path + ".hash",
+                            "Expected a module hash of the form 'sha256:<lowercase hex>'.");
+                    }
+                }
+
+                result.Add(new VisualBridgeAuthoringModule(id, entry, options, hash));
+            }
+
+            return result;
         }
 
         private static IReadOnlyList<VisualBridgeAuthoringDocumentType> ReadDocumentTypes(JToken token)
@@ -236,24 +319,6 @@ namespace VisualBridge.Editor
             }
 
             return result;
-        }
-
-        private static VisualBridgeAuthoringTableLayout ReadTableLayout(JToken token)
-        {
-            if (!(token is JObject value))
-            {
-                throw Error("compile.projectInvalidTableLayout", "$.tableLayout", "Expected an object.");
-            }
-
-            RequireKeys(value, "$.tableLayout", new[] { "nameKeyRow", "dataStartRow" }, Array.Empty<string>());
-            var nameKeyRow = RequirePositiveInteger(value["nameKeyRow"], "$.tableLayout.nameKeyRow", 1);
-            var dataStartRow = RequirePositiveInteger(value["dataStartRow"], "$.tableLayout.dataStartRow", 2);
-            if (nameKeyRow >= dataStartRow)
-            {
-                throw Error("compile.projectInvalidTableLayout", "$.tableLayout", "nameKeyRow must be before dataStartRow.");
-            }
-
-            return new VisualBridgeAuthoringTableLayout(nameKeyRow, dataStartRow);
         }
 
         private static void ValidateProviders(JToken token, IReadOnlyList<VisualBridgeAuthoringDocumentType> documentTypes)
@@ -499,33 +564,52 @@ namespace VisualBridge.Editor
 
         private static void RequireVersion(JToken token, string path)
         {
-            if (token == null || token.Type != JTokenType.Integer || token.Value<long>() != 1)
+            if (!TryReadFormatVersion(token, out var version) || version != 2)
             {
-                throw Error("compile.projectUnsupportedVersion", path, "Expected integer formatVersion 1.");
+                throw Error(
+                    "compile.projectUnsupportedVersion",
+                    path,
+                    "Expected integer formatVersion 2. Projects using formatVersion 1 must add the required 'modules' array "
+                    + "and move the top-level 'tableLayout' into the 'visualbridge.table' module's 'options.tableLayout'.");
             }
         }
 
-        private static int RequirePositiveInteger(JToken token, string path, int minimum)
+        // Core 侧经 JSON.parse 后无法区分 2 与 2.0（JS 只有 number），因此 Newtonsoft 解析出的
+        // 整值浮点（如 2.0）也必须接受，避免同一文件在两侧得到不同的 formatVersion 结论。
+        private static bool TryReadFormatVersion(JToken token, out long version)
         {
-            if (token == null || token.Type != JTokenType.Integer)
+            version = 0;
+            if (token == null)
             {
-                throw Error("compile.projectInvalidInteger", path, "Expected an integer.");
+                return false;
             }
 
-            try
+            if (token.Type == JTokenType.Integer)
             {
-                var value = token.Value<int>();
-                if (value < minimum)
+                try
                 {
-                    throw Error("compile.projectInvalidInteger", path, $"Expected an integer greater than or equal to {minimum}.");
+                    version = token.Value<long>();
+                    return true;
                 }
+                catch (OverflowException)
+                {
+                    return false;
+                }
+            }
 
-                return value;
-            }
-            catch (OverflowException)
+            if (token.Type != JTokenType.Float)
             {
-                throw Error("compile.projectInvalidInteger", path, "Integer is outside the supported range.");
+                return false;
             }
+
+            var value = token.Value<double>();
+            if (!double.IsFinite(value) || value != Math.Truncate(value) || value < long.MinValue || value > long.MaxValue)
+            {
+                return false;
+            }
+
+            version = (long)value;
+            return true;
         }
 
         private static string RequireIdentifier(JToken token, string path)

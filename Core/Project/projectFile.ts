@@ -1,9 +1,26 @@
 import { BUILT_IN_REFERENCE_KINDS } from "../Reference/reference";
 import { compareUtf16CodeUnits } from "../Ordering/ordinal";
+import { cloneJsonValue, isJsonValue, type JsonValue } from "../Form/field";
 
 export const PROJECT_FILE_NAME = "VisualBridge.project.vbjson";
 export const PROJECT_FILE_GLOB = `**/${PROJECT_FILE_NAME}`;
-export const PROJECT_FORMAT_VERSION = 1;
+export const PROJECT_FORMAT_VERSION = 2;
+/** 模块条目 entry 的固定后缀；entry 本身是 Project 内规范化的相对路径。 */
+export const PROJECT_MODULE_ENTRY_SUFFIX = ".vbmodule.js";
+/** 模块条目可选 hash 的形状；只校验格式，不校验值（值与 bundle 字节的比对属于模块加载）。 */
+export const PROJECT_MODULE_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+/** formatVersion 不受支持时的诊断码；v1 不自动升级。 */
+export const PROJECT_FORMAT_VERSION_UNSUPPORTED = "project.formatVersionUnsupported";
+
+/** 模块自有 options 的共享形状；Core 只保证它是 JSON 对象，内容由模块 validateOptions 校验。 */
+export type ProjectModuleOptions = Readonly<Record<string, JsonValue>>;
+
+export interface ProjectModuleDefinition {
+  readonly id: string;
+  readonly entry: string;
+  readonly options?: ProjectModuleOptions;
+  readonly hash?: string;
+}
 
 export interface DocumentTypeDefinition {
   readonly id: string;
@@ -11,11 +28,6 @@ export interface DocumentTypeDefinition {
   readonly include: readonly string[];
   readonly exclude: readonly string[];
   readonly catalogs: readonly string[];
-}
-
-export interface TableLayoutDefinition {
-  readonly nameKeyRow: number;
-  readonly dataStartRow: number;
 }
 
 export interface ProjectProviderReferenceCapability {
@@ -42,12 +54,18 @@ export interface VisualBridgeProjectDefinition {
   readonly formatVersion: typeof PROJECT_FORMAT_VERSION;
   readonly projectId: string;
   readonly documentRoots: readonly string[];
+  /**
+   * 模块声明只做结构校验；documentTypes[].editor 与已加载模块提供者的一致性校验延后到模块装载，
+   * 本层不加载模块。
+   */
+  readonly modules: readonly ProjectModuleDefinition[];
   readonly documentTypes: readonly DocumentTypeDefinition[];
-  readonly tableLayout?: TableLayoutDefinition;
   readonly providers: readonly ProjectProviderDefinition[];
 }
 
 export interface ProjectFileIssue {
+  /** 可选诊断码；只有需要跨宿主对齐的稳定失败（如 formatVersion 不受支持）才带码。 */
+  readonly code?: string;
   readonly path: string;
   readonly message: string;
 }
@@ -71,25 +89,28 @@ export function parseProjectFile(text: string): ProjectFileParseResult {
   }
 
   const issues: ProjectFileIssue[] = [];
-  rejectUnknownKeys(
-    value,
-    ["formatVersion", "projectId", "documentRoots", "documentTypes", "tableLayout", "providers"],
-    "$",
-    issues,
-  );
+  // 先报版本，再报结构：v1 文件的主要失败原因是版本，迁移要点必须排在未知键之前。
   if (value.formatVersion !== PROJECT_FORMAT_VERSION) {
     issues.push({
+      code: PROJECT_FORMAT_VERSION_UNSUPPORTED,
       path: "formatVersion",
-      message: `Expected formatVersion ${PROJECT_FORMAT_VERSION}.`,
+      message: value.formatVersion === 1
+        ? "Project File formatVersion 1 is not supported. Migrate to formatVersion 2 by adding the required 'modules' array and moving the top-level 'tableLayout' into the 'visualbridge.table' module's 'options.tableLayout'."
+        : `Expected formatVersion ${PROJECT_FORMAT_VERSION}.`,
     });
   }
 
+  rejectUnknownKeys(
+    value,
+    ["formatVersion", "projectId", "documentRoots", "modules", "documentTypes", "providers"],
+    "$",
+    issues,
+  );
+
   const projectId = readIdentifier(value.projectId, "projectId", issues);
   const documentRoots = readRelativePaths(value.documentRoots, "documentRoots", issues);
+  const modules = readModules(value.modules, issues);
   const documentTypes = readDocumentTypes(value.documentTypes, issues);
-  const tableLayout = value.tableLayout === undefined
-    ? undefined
-    : readTableLayout(value.tableLayout, issues);
   if (value.provider !== undefined) {
     issues.push({
       path: "provider",
@@ -110,8 +131,8 @@ export function parseProjectFile(text: string): ProjectFileParseResult {
       formatVersion: PROJECT_FORMAT_VERSION,
       projectId,
       documentRoots,
+      modules,
       documentTypes,
-      ...(tableLayout === undefined ? {} : { tableLayout }),
       providers,
     },
   };
@@ -122,6 +143,12 @@ export function serializeProjectFile(project: VisualBridgeProjectDefinition): st
     formatVersion: PROJECT_FORMAT_VERSION,
     projectId: project.projectId,
     documentRoots: [...project.documentRoots],
+    modules: project.modules.map((module) => ({
+      id: module.id,
+      entry: module.entry,
+      ...(module.options === undefined ? {} : { options: cloneJsonValue(module.options) }),
+      ...(module.hash === undefined ? {} : { hash: module.hash }),
+    })),
     documentTypes: project.documentTypes.map((documentType) => ({
       id: documentType.id,
       editor: documentType.editor,
@@ -129,12 +156,6 @@ export function serializeProjectFile(project: VisualBridgeProjectDefinition): st
       exclude: [...documentType.exclude],
       catalogs: [...documentType.catalogs],
     })),
-    ...(project.tableLayout === undefined ? {} : {
-      tableLayout: {
-        nameKeyRow: project.tableLayout.nameKeyRow,
-        dataStartRow: project.tableLayout.dataStartRow,
-      },
-    }),
     ...(project.providers.length === 0 ? {} : {
       providers: project.providers.map((provider) => ({
         id: provider.id,
@@ -151,6 +172,108 @@ export function serializeProjectFile(project: VisualBridgeProjectDefinition): st
       })),
     }),
   }, undefined, 2)}\n`;
+}
+
+function readModules(
+  value: unknown,
+  issues: ProjectFileIssue[],
+): readonly ProjectModuleDefinition[] {
+  if (!Array.isArray(value)) {
+    issues.push({ path: "modules", message: "Expected an array." });
+    return [];
+  }
+
+  const result: ProjectModuleDefinition[] = [];
+  const seenIds = new Set<string>();
+  value.forEach((entry, index) => {
+    const basePath = `modules[${index}]`;
+    if (!isRecord(entry)) {
+      issues.push({ path: basePath, message: "Expected an object." });
+      return;
+    }
+
+    rejectUnknownKeys(entry, ["id", "entry", "options", "hash"], basePath, issues);
+
+    const id = readIdentifier(entry.id, `${basePath}.id`, issues);
+    const moduleEntry = readModuleEntry(entry.entry, `${basePath}.entry`, issues);
+    const options = entry.options === undefined
+      ? undefined
+      : readModuleOptions(entry.options, `${basePath}.options`, issues);
+    const hash = entry.hash === undefined
+      ? undefined
+      : readModuleHash(entry.hash, `${basePath}.hash`, issues);
+
+    if (id !== undefined && seenIds.has(id)) {
+      issues.push({ path: `${basePath}.id`, message: `Duplicate module id '${id}'.` });
+    }
+    if (id !== undefined) {
+      seenIds.add(id);
+    }
+
+    const optionsValid = entry.options === undefined || options !== undefined;
+    const hashValid = entry.hash === undefined || hash !== undefined;
+    if (id !== undefined && moduleEntry !== undefined && optionsValid && hashValid) {
+      result.push({
+        id,
+        entry: moduleEntry,
+        ...(options === undefined ? {} : { options }),
+        ...(hash === undefined ? {} : { hash }),
+      });
+    }
+  });
+  return result;
+}
+
+function readModuleEntry(
+  value: unknown,
+  path: string,
+  issues: ProjectFileIssue[],
+): string | undefined {
+  if (typeof value !== "string" || !isSafeModuleEntry(value)) {
+    issues.push({
+      path,
+      message: `Expected a normalized project-relative '${PROJECT_MODULE_ENTRY_SUFFIX}' entry using '/' separators.`,
+    });
+    return undefined;
+  }
+  return value;
+}
+
+/**
+ * 模块 entry 的安全判定。除相对路径段规则外还必须拒绝盘符前缀与控制字符：
+ * Schema `$defs/module.entry` 与 Unity `ValidateRelativePath` 都拒绝这两类输入，
+ * 否则 Core/VS Code 会接受 Unity 编译期拒收的 Project File。
+ */
+function isSafeModuleEntry(value: string): boolean {
+  return value !== "."
+    && isSafeRelativePath(value)
+    && !/^[A-Za-z]:\//u.test(value)
+    && !/[\u0000-\u001f\u007f-\u009f]/u.test(value)
+    && value.endsWith(PROJECT_MODULE_ENTRY_SUFFIX);
+}
+
+function readModuleOptions(
+  value: unknown,
+  path: string,
+  issues: ProjectFileIssue[],
+): ProjectModuleOptions | undefined {
+  if (!isRecord(value) || !isJsonValue(value)) {
+    issues.push({ path, message: "Expected a JSON object." });
+    return undefined;
+  }
+  return value as ProjectModuleOptions;
+}
+
+function readModuleHash(
+  value: unknown,
+  path: string,
+  issues: ProjectFileIssue[],
+): string | undefined {
+  if (typeof value !== "string" || !PROJECT_MODULE_HASH_PATTERN.test(value)) {
+    issues.push({ path, message: "Expected a module hash of the form 'sha256:<lowercase hex>'." });
+    return undefined;
+  }
+  return value;
 }
 
 function readProviders(
@@ -347,40 +470,6 @@ function rejectUnknownKeys(
   }
 }
 
-function readTableLayout(
-  value: unknown,
-  issues: ProjectFileIssue[],
-): TableLayoutDefinition | undefined {
-  if (!isRecord(value)) {
-    issues.push({ path: "tableLayout", message: "Expected an object." });
-    return undefined;
-  }
-  rejectUnknownKeys(value, ["nameKeyRow", "dataStartRow"], "tableLayout", issues);
-  const nameKeyRow = readPositiveInteger(value.nameKeyRow, "tableLayout.nameKeyRow", issues);
-  const dataStartRow = readPositiveInteger(value.dataStartRow, "tableLayout.dataStartRow", issues);
-  if (nameKeyRow !== undefined && dataStartRow !== undefined && dataStartRow <= nameKeyRow) {
-    issues.push({
-      path: "tableLayout.dataStartRow",
-      message: "Data start row must be after the name-key row.",
-    });
-  }
-  return nameKeyRow === undefined || dataStartRow === undefined || dataStartRow <= nameKeyRow
-    ? undefined
-    : { nameKeyRow, dataStartRow };
-}
-
-function readPositiveInteger(
-  value: unknown,
-  path: string,
-  issues: ProjectFileIssue[],
-): number | undefined {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    issues.push({ path, message: "Expected a positive 1-based row number." });
-    return undefined;
-  }
-  return value;
-}
-
 function readDocumentTypes(
   value: unknown,
   issues: ProjectFileIssue[],
@@ -480,21 +569,6 @@ function readRelativePaths(
   });
 
   return result;
-}
-
-function readRelativePath(
-  value: unknown,
-  path: string,
-  issues: ProjectFileIssue[],
-): string | undefined {
-  if (typeof value !== "string" || !isSafeRelativePath(value)) {
-    issues.push({
-      path,
-      message: "Expected a normalized relative path that stays inside the project root.",
-    });
-    return undefined;
-  }
-  return normalizeRelativePath(value);
 }
 
 function readGlobPatterns(

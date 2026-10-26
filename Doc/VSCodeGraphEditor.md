@@ -8,9 +8,12 @@ Graph Document V3 与 Graph Catalog V4 为语义编辑器带来了多 Catalog �
 
 ```json visualbridge-schema=visualbridge-project.schema.json visualbridge-parser=project
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "projectId": "ExampleGame",
   "documentRoots": ["Graph"],
+  "modules": [
+    { "id": "visualbridge.graph", "entry": "Modules/graph.vbmodule.js" }
+  ],
   "documentTypes": [
     {
       "id": "logicGraph",

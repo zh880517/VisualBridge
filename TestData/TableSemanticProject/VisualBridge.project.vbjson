@@ -1,13 +1,21 @@
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "projectId": "visualbridge.table-semantics",
   "documentRoots": [
     "Tables"
   ],
-  "tableLayout": {
-    "nameKeyRow": 2,
-    "dataStartRow": 3
-  },
+  "modules": [
+    {
+      "id": "visualbridge.table",
+      "entry": "Modules/table.vbmodule.js",
+      "options": {
+        "tableLayout": {
+          "nameKeyRow": 2,
+          "dataStartRow": 3
+        }
+      }
+    }
+  ],
   "documentTypes": [
     {
       "id": "game.table.skills",

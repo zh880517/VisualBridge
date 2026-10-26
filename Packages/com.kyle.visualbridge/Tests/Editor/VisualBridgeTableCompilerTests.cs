@@ -235,6 +235,56 @@ namespace VisualBridge.Editor.Tests
                     VisualBridgeTableCompiler.Compile(fixture.Root, VisualBridgeTableCompileMode.Check));
 
                 Assert.That(exception.Code, Is.EqualTo("compile.tableLayoutMissing"));
+                Assert.That(exception.JsonPath, Does.Contain("visualbridge.table"));
+            }
+        }
+
+        [Test]
+        public void TableLayoutComesFromTheTableModuleOptions()
+        {
+            using (var fixture = new TableCompilerFixture(layoutJson: "{ \"nameKeyRow\": 3, \"dataStartRow\": 4 }"))
+            {
+                fixture.WriteCsv("Skills_Main.csv", "Skill List\nDescription\nId\tName\tPower\n101\tFireball\t20\n");
+
+                VisualBridgeTableCompiler.Compile(fixture.Root, VisualBridgeTableCompileMode.Generate);
+
+                var artifact = JObject.Parse(File.ReadAllText(fixture.ArtifactPath));
+                var rows = ((JArray)artifact["data"]["sheets"][0]["rows"]).Cast<JObject>().ToList();
+                Assert.That(rows.Count, Is.EqualTo(1));
+                Assert.That(rows[0].Value<string>("rowId"), Is.EqualTo("skills:Skills_Main:key-101"));
+            }
+        }
+
+        [Test]
+        public void InvalidTableModuleOptionsFailClosed()
+        {
+            using (var fixture = new TableCompilerFixture(layoutJson: "{ \"nameKeyRow\": 4, \"dataStartRow\": 2 }"))
+            {
+                fixture.WriteCsv("Skills_Main.csv", "Skill List\nId\tName\tPower\n101\tFireball\n");
+
+                var exception = Assert.Throws<VisualBridgeIntegrationException>(() =>
+                    VisualBridgeTableCompiler.Compile(fixture.Root, VisualBridgeTableCompileMode.Check));
+
+                Assert.That(exception.Code, Is.EqualTo("compile.projectInvalidTableLayout"));
+            }
+        }
+
+        [TestCase("\"rows\"")]
+        [TestCase("[]")]
+        [TestCase("3")]
+        public void NonObjectTableLayoutIsInvalidRatherThanMissing(string layoutJson)
+        {
+            // 「声明了 tableLayout 但不是对象」必须报 projectInvalidTableLayout；
+            // 只有 module/options/键整体缺失才报 tableLayoutMissing。
+            using (var fixture = new TableCompilerFixture(layoutJson: layoutJson))
+            {
+                fixture.WriteCsv("Skills_Main.csv", "Skill List\nId\tName\tPower\n101\tFireball\n");
+
+                var exception = Assert.Throws<VisualBridgeIntegrationException>(() =>
+                    VisualBridgeTableCompiler.Compile(fixture.Root, VisualBridgeTableCompileMode.Check));
+
+                Assert.That(exception.Code, Is.EqualTo("compile.projectInvalidTableLayout"));
+                Assert.That(exception.JsonPath, Does.Contain("visualbridge.table"));
             }
         }
 
@@ -307,14 +357,15 @@ namespace VisualBridge.Editor.Tests
                 string documentTypeId = DocumentTypeId,
                 bool includeTableLayout = true,
                 bool withTags = false,
-                string include = "Tables/**/*.csv")
+                string include = "Tables/**/*.csv",
+                string layoutJson = null)
             {
                 Root = Path.Combine(Path.GetTempPath(), "VisualBridgeTableCompilerTests", Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(Path.Combine(Root, "ProjectSettings"));
                 Directory.CreateDirectory(Path.Combine(Root, "Authoring", "Catalog"));
                 Directory.CreateDirectory(Path.Combine(Root, "Authoring", "Tables"));
                 WriteProfile();
-                WriteProject(documentTypeId, include, includeTableLayout);
+                WriteProject(documentTypeId, include, includeTableLayout, layoutJson);
                 File.WriteAllText(CatalogPath, BuildCatalog(duplicatePolicy, withTags), Utf8WithoutBom);
             }
 
@@ -340,17 +391,22 @@ namespace VisualBridge.Editor.Tests
                 File.WriteAllText(CsvPath(fileName), text, Utf8WithoutBom);
             }
 
-            public void WriteProject(string documentTypeId, string include, bool includeTableLayout)
+            public void WriteProject(string documentTypeId, string include, bool includeTableLayout, string layoutJson = null)
             {
-                var tableLayout = includeTableLayout
-                    ? "  \"tableLayout\": { \"nameKeyRow\": 2, \"dataStartRow\": 3 },\n"
-                    : string.Empty;
                 File.WriteAllText(
                     Path.Combine(Root, "Authoring", "VisualBridge.project.vbjson"),
-                    "{\n  \"formatVersion\": 1,\n  \"projectId\": \"" + ProjectId + "\",\n  \"documentRoots\": [\"Tables\"],\n"
-                    + tableLayout
-                    + "  \"documentTypes\": [\n    { \"id\": \"" + documentTypeId + "\", \"editor\": \"table\", \"include\": [\""
-                    + include + "\"], \"exclude\": [], \"catalogs\": [\"Catalog/Test.vbtablecatalog\"] }\n  ]\n}\n",
+                    VisualBridgeProjectFixture.Project(
+                        ProjectId,
+                        "\"Tables\"",
+                        "{ \"id\": \"" + documentTypeId + "\", \"editor\": \"table\", \"include\": [\""
+                            + include + "\"], \"exclude\": [], \"catalogs\": [\"Catalog/Test.vbtablecatalog\"] }",
+                        new[]
+                        {
+                            VisualBridgeProjectFixture.TableModule(
+                                includeTableLayout
+                                    ? layoutJson ?? VisualBridgeProjectFixture.DefaultTableLayoutJson
+                                    : null),
+                        }),
                     Utf8WithoutBom);
             }
 

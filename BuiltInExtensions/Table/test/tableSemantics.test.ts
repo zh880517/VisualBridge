@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { parseProjectFile } from "@visualbridge/core";
+import type * as ProjectFixture from "../../../TestData/projectFixture.js";
 import ExcelJS = require("exceljs");
 import {
   applyTableOperations,
@@ -16,6 +17,7 @@ import {
   parseCsvTable,
   parseTableCatalog,
   parseXlsxTable,
+  resolveProjectTableLayout,
   resolveTableType,
   remapTableOwnedIdentities,
   resolveEffectiveTableRows,
@@ -28,6 +30,14 @@ import {
 
 const fixtureRoot = path.resolve(__dirname, "../../../../TestData/TableSemanticProject");
 
+// dist 布局比源码多一层，运行时按编译输出深度解析仓库根的共享 fixture；类型走源码路径。
+const { createTestProject } = require(path.resolve(
+  __dirname,
+  "../../../..",
+  "TestData",
+  "projectFixture.js",
+)) as typeof ProjectFixture;
+
 async function loadFixture(): Promise<{
   readonly tableType: TableTypeDefinition;
   readonly layout: { readonly nameKeyRow: number; readonly dataStartRow: number };
@@ -35,7 +45,11 @@ async function loadFixture(): Promise<{
 }> {
   const projectResult = parseProjectFile(await readFile(path.join(fixtureRoot, "VisualBridge.project.vbjson"), "utf8"));
   assert.equal(projectResult.success, true);
-  if (!projectResult.success || projectResult.value.tableLayout === undefined) {
+  if (!projectResult.success) {
+    throw new Error("Fixture project is unavailable.");
+  }
+  const layout = resolveProjectTableLayout(projectResult.value);
+  if (layout === undefined) {
     throw new Error("Fixture project table layout is unavailable.");
   }
   const catalogResult = parseTableCatalog(await readFile(
@@ -55,10 +69,42 @@ async function loadFixture(): Promise<{
   assert.notEqual(tableType, undefined);
   return {
     tableType: tableType!,
-    layout: projectResult.value.tableLayout,
+    layout,
     csv: await readFile(path.join(fixtureRoot, "Tables", "Skills_A.csv"), "utf8"),
   };
 }
+
+test("Project File v2 reads the Table layout from the visualbridge.table module options", () => {
+  const project = (layout: unknown): string => JSON.stringify(createTestProject({
+    projectId: "sample.table",
+    documentRoots: ["Tables"],
+    modules: [{
+      id: "visualbridge.table",
+      entry: "Modules/table.vbmodule.js",
+      options: { tableLayout: layout },
+    }],
+  }));
+
+  const valid = parseProjectFile(project({ nameKeyRow: 3, dataStartRow: 5 }));
+  assert.equal(valid.success, true);
+  if (!valid.success) return;
+  assert.deepEqual(resolveProjectTableLayout(valid.value), { nameKeyRow: 3, dataStartRow: 5 });
+
+  // 形状非法时视为未配置：校验归 Table 模块，宿主按各自错误契约上报。
+  for (const invalidLayout of [
+    { nameKeyRow: 4, dataStartRow: 2 },
+    { nameKeyRow: 0, dataStartRow: 2 },
+    { nameKeyRow: 2.5, dataStartRow: 3 },
+    { nameKeyRow: 2, dataStartRow: 3, unknown: true },
+    "rows",
+    [],
+  ]) {
+    const parsed = parseProjectFile(project(invalidLayout));
+    assert.equal(parsed.success, true);
+    if (!parsed.success) continue;
+    assert.equal(resolveProjectTableLayout(parsed.value), undefined);
+  }
+});
 
 test("Table semantic adapter retains the multi-source document operation contract", async () => {
   const { tableType, layout, csv } = await loadFixture();

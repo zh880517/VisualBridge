@@ -140,7 +140,7 @@ Create 继续使用各领域现有 factory 和 Catalog 默认值，不允许 Hos
 - Graph 选择 root-compatible Graph Type，创建 root Graph 和声明的初始节点；
 - Entity 选择 Entity Type，物化根字段默认值；
 - Structured 以 Project Document Type ID 解析唯一 Config Type，物化全部字段；
-- Table 根据 Table Type、`tableLayout` 和目标 carrier 创建真实 XLSX 或 UTF-8 CSV-compatible 来源。
+- Table 根据 Table Type、`visualbridge.table` 模块的 `options.tableLayout` 和目标 carrier 创建真实 XLSX 或 UTF-8 CSV-compatible 来源。
 
 目标路径必须匹配所选 Project Document Type 且在 preview 与 apply 时都不存在。Create 使用 Project Transaction 的 `create` mutation，并在 mutation 中保存 `targetMustBeAbsent: true`；普通 `writeFile` 覆盖不是生命周期创建。Document ID 和初始内部 ID 由 strict `parameters` 显式提供，必须在各自作用域唯一，apply 不重新生成。
 

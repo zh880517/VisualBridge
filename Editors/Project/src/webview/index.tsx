@@ -5,6 +5,7 @@ import { isSortable, useSortable } from "@dnd-kit/react/sortable";
 import type {
   DocumentTypeDefinition,
   ProjectFileIssue,
+  ProjectModuleDefinition,
   ProjectOperation,
   ProjectProviderDefinition,
 } from "@visualbridge/core";
@@ -17,11 +18,15 @@ import {
   ToolbarSpacer,
 } from "@visualbridge/editor-ui";
 import {
+  clearModuleDraft,
   clearProviderDraft,
   createDocumentType,
+  createModule,
   createProvider,
   initialProjectEditorState,
+  moduleOptionsText,
   move,
+  parseModuleOptions,
   reduceProjectHostMessage,
   withReferenceKinds,
   withValidatorTypes,
@@ -48,7 +53,7 @@ createRoot(rootElement).render(<ProjectEditorApp />);
 
 function ProjectEditorApp(): ReactElement {
   const [editorState, setEditorState] = useState<ProjectEditorState>(initialProjectEditorState);
-  const { state, invalid, status, pending, providerDraft } = editorState;
+  const { state, invalid, status, pending, providerDraft, moduleDraft } = editorState;
 
   useEffect(() => {
     const listener = (event: MessageEvent<ProjectHostMessage>): void => {
@@ -113,14 +118,31 @@ function ProjectEditorApp(): ReactElement {
       </section>
 
       <section className="settings-section">
-        <SectionTitle title="表格布局" />
-        <label className="toggle"><input type="checkbox" checked={project.tableLayout !== undefined} disabled={pending} onChange={(event) => submit([event.currentTarget.checked
-          ? { type: "project.setTableLayout", tableLayout: { nameKeyRow: 2, dataStartRow: 3 } }
-          : { type: "project.clearTableLayout" }])} />启用工程级表头布局</label>
-        {project.tableLayout !== undefined && <div className="grid two">
-          <NumberInput label="名称键行" value={project.tableLayout.nameKeyRow} disabled={pending} onCommit={(nameKeyRow) => submit([{ type: "project.setTableLayout", tableLayout: { ...project.tableLayout!, nameKeyRow } }])} />
-          <NumberInput label="数据起始行" value={project.tableLayout.dataStartRow} disabled={pending} onCommit={(dataStartRow) => submit([{ type: "project.setTableLayout", tableLayout: { ...project.tableLayout!, dataStartRow } }])} />
-        </div>}
+        <SectionTitle
+          title="模块"
+          count={project.modules.length + (moduleDraft === undefined ? 0 : 1)}
+          onAdd={() => setEditorState((current) => ({ ...current, moduleDraft: createModule(project) }))}
+          disabled={pending || moduleDraft !== undefined}
+        />
+        <DragDropProvider onDragEnd={(event) => {
+          if (event.canceled) return;
+          const { source } = event.operation;
+          if (isSortable(source) && source.initialIndex !== source.index) {
+            const item = project.modules[source.initialIndex];
+            if (item !== undefined) submit([{ type: "project.moveModule", moduleId: item.id, toIndex: source.index }]);
+          }
+        }}>
+          <div className="card-list">
+            {project.modules.map((module, index) => <ModuleCard key={module.id} module={module} index={index} disabled={pending} submit={submit} />)}
+            {moduleDraft !== undefined && <ModuleDraftCard
+              module={moduleDraft}
+              disabled={pending}
+              onChange={(next) => setEditorState((current) => ({ ...current, moduleDraft: next }))}
+              onCancel={() => setEditorState(clearModuleDraft)}
+              onSave={(module) => submit([{ type: "project.addModule", module }])}
+            />}
+          </div>
+        </DragDropProvider>
       </section>
 
       <section className="settings-section">
@@ -195,6 +217,101 @@ function DocumentTypeCard(props: {
       <StringList label="排除" values={draft.exclude} disabled={props.disabled} group={`${props.documentType.id}-exclude`} placeholder="Config/**/Generated/**" allowEmpty onCommit={(exclude) => { const next = { ...draft, exclude }; setDraft(next); commit(next); }} />
       <StringList label="目录" values={draft.catalogs} disabled={props.disabled} group={`${props.documentType.id}-catalogs`} placeholder="Catalog/Game.vbcatalog" allowEmpty onCommit={(catalogs) => { const next = { ...draft, catalogs }; setDraft(next); commit(next); }} />
       <datalist id="visualbridge-editors"><option value="graph" /><option value="entity" /><option value="structured" /><option value="table" /></datalist>
+    </div>
+  </article>;
+}
+
+function ModuleCard(props: {
+  readonly module: ProjectModuleDefinition;
+  readonly index: number;
+  readonly disabled: boolean;
+  readonly submit: (operations: readonly ProjectOperation[]) => void;
+}): ReactElement {
+  const [draft, setDraft] = useState(props.module);
+  const [optionsText, setOptionsText] = useState(() => moduleOptionsText(props.module));
+  const [optionsInvalid, setOptionsInvalid] = useState(false);
+  useEffect(() => {
+    setDraft(props.module);
+    setOptionsText(moduleOptionsText(props.module));
+    setOptionsInvalid(false);
+  }, [props.module]);
+  const { ref, handleRef, isDragging, isDropTarget } = useSortable({
+    id: props.module.id,
+    index: props.index,
+    group: "project-modules",
+    type: "project-module",
+    accept: "project-module",
+    disabled: props.disabled,
+  });
+  const commitEntry = (entry: string): void => {
+    const next = { ...draft, entry };
+    setDraft(next);
+    props.submit([{ type: "project.upsertModule", module: next }]);
+  };
+  const commitOptions = (): void => {
+    const options = parseModuleOptions(optionsText);
+    if (options === undefined) {
+      setOptionsInvalid(true);
+      return;
+    }
+    setOptionsInvalid(false);
+    props.submit([{
+      type: "project.setModuleOptions",
+      moduleId: props.module.id,
+      ...(Object.keys(options).length === 0 ? {} : { options }),
+    }]);
+  };
+  return <article ref={ref} className={`settings-card${isDragging ? " dragging" : ""}${isDropTarget ? " drop-target" : ""}`}>
+    <header className="card-header">
+      <button ref={handleRef} className="icon secondary drag" title="拖动排序" aria-label="拖动模块"><CommonIcon name="drag" /></button>
+      <strong>{props.module.id}</strong><span className="spacer" />
+      <button className="icon danger" title="删除模块" aria-label="删除模块" disabled={props.disabled} onClick={() => props.submit([{ type: "project.removeModule", moduleId: props.module.id }])}><CommonIcon name="delete" /></button>
+    </header>
+    <div className="card-body">
+      <div className="grid two">
+        <ReadonlyField label="ID" value={props.module.id} hint="模块 ID 必须与 bundle 的 manifest.id 一致，因此不支持重命名。" />
+        <LabeledInput label="入口 (.vbmodule.js)" value={draft.entry} disabled={props.disabled} onChange={(entry) => setDraft({ ...draft, entry })} onCommit={commitEntry} />
+      </div>
+      <JsonTextArea label="options (JSON)" value={optionsText} disabled={props.disabled} invalid={optionsInvalid} onChange={setOptionsText} onCommit={commitOptions} />
+    </div>
+  </article>;
+}
+
+function ModuleDraftCard(props: {
+  readonly module: ProjectModuleDefinition;
+  readonly disabled: boolean;
+  readonly onChange: (module: ProjectModuleDefinition) => void;
+  readonly onCancel: () => void;
+  readonly onSave: (module: ProjectModuleDefinition) => void;
+}): ReactElement {
+  const draft = props.module;
+  const [optionsText, setOptionsText] = useState(() => moduleOptionsText(props.module));
+  const [optionsInvalid, setOptionsInvalid] = useState(false);
+  const save = (): void => {
+    const options = parseModuleOptions(optionsText);
+    if (options === undefined) {
+      setOptionsInvalid(true);
+      return;
+    }
+    props.onSave({
+      id: draft.id,
+      entry: draft.entry,
+      ...(Object.keys(options).length === 0 ? {} : { options }),
+    });
+  };
+  return <article className="settings-card draft-card">
+    <header className="card-header">
+      <span className="draft-spacer" aria-hidden="true" />
+      <strong>新建模块</strong><span className="tag">草稿</span><span className="spacer" />
+      <button className="icon secondary" title="保存模块" aria-label="保存模块" disabled={props.disabled} onClick={save}><CommonIcon name="check" /></button>
+      <button className="icon ghost" title="取消新增模块" aria-label="取消新增模块" disabled={props.disabled} onClick={props.onCancel}><CommonIcon name="close" /></button>
+    </header>
+    <div className="card-body">
+      <div className="grid two">
+        <LabeledInput label="ID" value={draft.id} disabled={props.disabled} onChange={(id) => props.onChange({ ...draft, id })} onCommit={() => undefined} />
+        <LabeledInput label="入口 (.vbmodule.js)" value={draft.entry} disabled={props.disabled} onChange={(entry) => props.onChange({ ...draft, entry })} onCommit={() => undefined} />
+      </div>
+      <JsonTextArea label="options (JSON)" value={optionsText} disabled={props.disabled} invalid={optionsInvalid} onChange={setOptionsText} onCommit={() => undefined} />
     </div>
   </article>;
 }
@@ -316,8 +433,22 @@ function LabeledInput(props: { readonly label: string; readonly value: string; r
   return <label className="field"><span>{props.label}</span><input value={value} list={props.list} disabled={props.disabled} onChange={(event) => { setValue(event.currentTarget.value); props.onChange?.(event.currentTarget.value); }} onBlur={() => { if (value !== props.value) props.onCommit(value); }} /></label>;
 }
 
-function NumberInput(props: { readonly label: string; readonly value: number; readonly disabled: boolean; readonly onCommit: (value: number) => void }): ReactElement {
-  return <label className="field"><span>{props.label}</span><input type="number" min={1} value={props.value} disabled={props.disabled} onChange={(event) => props.onCommit(Number(event.currentTarget.value))} /></label>;
+function ReadonlyField(props: { readonly label: string; readonly value: string; readonly hint?: string }): ReactElement {
+  return <label className="field"><span>{props.label}</span><input value={props.value} readOnly title={props.hint} /></label>;
+}
+
+function JsonTextArea(props: {
+  readonly label: string;
+  readonly value: string;
+  readonly disabled: boolean;
+  readonly invalid: boolean;
+  readonly onChange: (value: string) => void;
+  readonly onCommit: () => void;
+}): ReactElement {
+  return <label className={`field${props.invalid ? " invalid" : ""}`}>
+    <span>{props.label}{props.invalid ? "（必须是 JSON 对象，未保存）" : ""}</span>
+    <textarea value={props.value} rows={5} spellCheck={false} disabled={props.disabled} onChange={(event) => props.onChange(event.currentTarget.value)} onBlur={props.onCommit} />
+  </label>;
 }
 
 function IssueList(props: { readonly issues: readonly ProjectFileIssue[] }): ReactElement {

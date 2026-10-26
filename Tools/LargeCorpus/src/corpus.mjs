@@ -157,6 +157,10 @@ export async function loadCorpusValidation(rootPath, manifest) {
   if (tableType === undefined) {
     throw new Error("Generated Table Catalog Registry does not contain 'corpus.records'.");
   }
+  const tableLayout = table.resolveProjectTableLayout(project);
+  if (tableLayout === undefined) {
+    throw new Error("Generated VisualBridge Project does not declare the Table module tableLayout option.");
+  }
   return Object.freeze({
     rootPath,
     manifest,
@@ -171,6 +175,7 @@ export async function loadCorpusValidation(rootPath, manifest) {
     structuredRegistry,
     tableRegistry,
     tableType,
+    tableLayout,
   });
 }
 
@@ -228,7 +233,7 @@ export function createCorpusSemanticSources(validation, loadCounts = new Map()) 
         const physicalName = basename(entry.path, ".tsv");
         const document = parseOrThrow(
           entry.path,
-          validation.table.parseCsvTable(text, validation.tableType, validation.project.tableLayout, physicalName),
+          validation.table.parseCsvTable(text, validation.tableType, validation.tableLayout, physicalName),
         );
         assertNoErrors(entry.path, validation.table.validateTableDocument(document, validation.tableType));
         return freezeSummary(entry, kind, document.sheets[0]?.id ?? physicalName, document.sheets[0]?.rows.length ?? 0);
@@ -383,9 +388,19 @@ function createCatalogFiles() {
 
 function createProjectFile() {
   return {
-    formatVersion: 1,
+    formatVersion: 2,
     projectId: "visualbridge.large-corpus",
     documentRoots: ["Graph", "Entity", "Structured", "Table"],
+    modules: [
+      { id: "visualbridge.graph", entry: "Modules/graph.vbmodule.js" },
+      { id: "visualbridge.entity", entry: "Modules/entity.vbmodule.js" },
+      { id: "visualbridge.structured", entry: "Modules/structured.vbmodule.js" },
+      {
+        id: "visualbridge.table",
+        entry: "Modules/table.vbmodule.js",
+        options: { tableLayout: { nameKeyRow: 2, dataStartRow: 3 } },
+      },
+    ],
     documentTypes: [
       {
         id: "corpus.graph",
@@ -416,7 +431,6 @@ function createProjectFile() {
         catalogs: ["Catalog/TablePrimary.vbtablecatalog", "Catalog/TableAuxiliary.vbtablecatalog"],
       },
     ],
-    tableLayout: { nameKeyRow: 2, dataStartRow: 3 },
   };
 }
 

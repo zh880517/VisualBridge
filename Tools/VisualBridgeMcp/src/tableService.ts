@@ -8,7 +8,6 @@ import {
   type JsonValue,
   type ReferenceLocation,
   type ReferenceOccurrence,
-  type TableLayoutDefinition,
 } from "@visualbridge/core";
 import {
   applyTableOperations,
@@ -27,6 +26,7 @@ import {
   replaceTableReferenceValues,
   resolveTableColumn,
   resolveEffectiveTableRows,
+  resolveProjectTableLayout,
   resolveTableSheet,
   resolveTableType,
   serializeCsvTable,
@@ -37,6 +37,7 @@ import {
   type TableCatalog,
   type TableCatalogRegistry,
   type TableDocument,
+  type TableLayoutDefinition,
   type TableRow,
   type TableReferenceDocument,
   type TableSheet,
@@ -562,7 +563,7 @@ export class TableService {
       readonly physicalName?: string;
     },
   ): Promise<readonly PreparedTableLifecycleSource[]> {
-    const layout = context.project.definition.tableLayout;
+    const layout = resolveProjectTableLayout(context.project.definition);
     if (layout === undefined) {
       throw new VisualBridgeMcpError(
         "table.layoutNotConfigured",
@@ -616,7 +617,7 @@ export class TableService {
     documentTypeId?: string,
   ): Promise<LoadedTable> {
     const context = await this.workspace.resolveTableDocument(tablePath, projectFile, documentTypeId);
-    const layout = context.project.definition.tableLayout;
+    const layout = resolveProjectTableLayout(context.project.definition);
     if (layout === undefined) {
       throw new VisualBridgeMcpError(
         "table.layoutNotConfigured",
