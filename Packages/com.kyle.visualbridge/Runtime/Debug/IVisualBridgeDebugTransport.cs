@@ -3,7 +3,7 @@ using System;
 namespace VisualBridge.Diagnostics
 {
     /// <summary>
-    /// 调试契约与传输层之间的注入缝（附录 B.1：Debug.Bridge 把静态 API 的消息接到传输层）。
+    /// 调试契约与传输层之间的注入缝（附录 B.1.3：Debug.Bridge 把静态 API 的消息接到传输层）。
     /// 由 <c>VisualBridge.Debug.Bridge</c> 注入；运行时只按实例与槽位规则调用，不关心 socket、成帧与载荷格式。
     /// 实现约束：所有成员都可能在业务线程被同步调用，因此不得回调调试 API、不得阻塞、不得自行重试；
     /// 连接事件由宿主显式调用 <see cref="VisualBridgeDebug.Attach"/> / <see cref="VisualBridgeDebug.Detach"/> 表达。
@@ -30,13 +30,21 @@ namespace VisualBridge.Diagnostics
 
         /// <summary>
         /// 发送已编码的事件载荷。<paramref name="category"/> / <paramref name="iface"/> / <paramref name="method"/>
-        /// 供 JSON 降级与诊断使用，<paramref name="frame"/> 在消息构造时刻读取。
+        /// 供传输层诊断与路由，<paramref name="frame"/> 在消息构造时刻读取；<paramref name="message"/> 已包含
+        /// 完整载荷、载荷格式与数据队列目标，传输层不得二次编码。
         /// </summary>
         void SendEvent(ushort instanceSlot, ushort methodId, string category, string iface, string method, long frame,
-            ReadOnlyMemory<byte> payload);
+            VisualBridgeDebugEncodedMessage message);
 
         /// <summary>发送查询结果载荷；<paramref name="requestSeq"/> 是信封里的请求号。</summary>
-        void SendResult(uint requestSeq, ReadOnlyMemory<byte> payload);
+        void SendResult(uint requestSeq, VisualBridgeDebugEncodedMessage message);
+
+        /// <summary>
+        /// 发送通道 1 的控制消息（当前只有 debugFrame）：载荷是完整 JSON，目标队列为
+        /// <see cref="VisualBridgeDebugTargetQueue.Control"/>；传输层必须保证它先于之后的数据消息写出。
+        /// 注意它不是通道 0 的编辑器控制队列。
+        /// </summary>
+        void SendControl(VisualBridgeDebugEncodedMessage message);
 
         /// <summary>发送失败应答（通道 1 的 response），不进入调试流。</summary>
         void SendReject(uint requestSeq, string reason);

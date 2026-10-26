@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Threading;
 
 namespace VisualBridge.Diagnostics
@@ -40,6 +41,16 @@ namespace VisualBridge.Diagnostics
         private static readonly Dictionary<(string Category, string InterfaceId), Delegate> s_requestHandlers =
             new Dictionary<(string, string), Delegate>();
 
+        // 结果归属反查：category + methodId → (interfaceId, method)。
+        // D2 生成的 Dispatcher 在 Register 时已注册处理器；运行期用它的 TryGetMethodName 补齐 debugResult 的归属。
+        private static readonly Dictionary<(string Category, ushort MethodId), (string InterfaceId, string Method)>
+            s_requestTargets = new Dictionary<(string, ushort), (string, string)>();
+
+        private static readonly Dictionary<Type, MethodInfo> s_requestMethodLookups =
+            new Dictionary<Type, MethodInfo>();
+
+        private static bool s_requestReflectionWarned;
+
         // 在途消息：数据只写在 Start 线程的 ThreadStatic 槽位里，s_openThreadId 是跨线程可见的“所有权”标记。
         // 其它线程调用 PushParam/End 会被判为跨线程调用并忽略（附录 B.2 的同线程约束）。
         [ThreadStatic] private static VisualBridgeDebugMessage s_activeMessage;
@@ -47,12 +58,24 @@ namespace VisualBridge.Diagnostics
         private static bool s_crossThreadWarned;
 
         private static long s_droppedMessages;
+        private static long s_droppedOversizeMessages;
         private static long s_crossThreadCalls;
 
-        /// <summary>本次会话里因无连接 / 无编码器而丢弃的消息数（会话重置时归零）。</summary>
+        // 帧通知状态：帧号不进入数据包，只在「连接建立」与「帧值变化且确有数据要发」时发 debugFrame。
+        // s_frameSent 在会话重置/断连时清零，重连后必须重新发当前帧（允许 -1 与重复/回退）。
+        private static long s_lastFrameSent = NoFrame;
+        private static int s_frameSent;
+
+        /// <summary>本次会话里因无连接 / 无编码器 / 编码失败 / 连接换代而丢弃的消息数（会话重置时归零）。</summary>
         internal static long DroppedMessages
         {
             get { return Interlocked.Read(ref s_droppedMessages); }
+        }
+
+        /// <summary>本次会话里因单条载荷超过 1 MB 而丢弃的消息数（含二进制 u16 字符串长度溢出，会话重置时归零）。</summary>
+        internal static long DroppedOversizeMessages
+        {
+            get { return Interlocked.Read(ref s_droppedOversizeMessages); }
         }
 
         /// <summary>本次会话里跨线程调用 PushParam/End 的次数（会话重置时归零）。</summary>
@@ -206,7 +229,11 @@ namespace VisualBridge.Diagnostics
                 {
                     [instanceId] = instanceSlot,
                 };
-                PublishLocked(new VisualBridgeDebugSnapshot(instances, slots, snapshot.Connected));
+                var categories = new Dictionary<ushort, string>(snapshot.Categories)
+                {
+                    [instanceSlot] = category ?? string.Empty,
+                };
+                PublishLocked(new VisualBridgeDebugSnapshot(instances, slots, categories, snapshot.Connected));
 
                 var transport = Volatile.Read(ref s_transport);
                 if (snapshot.Connected && transport != null)
@@ -257,7 +284,13 @@ namespace VisualBridge.Diagnostics
                 instances.Remove(instanceId);
                 var slots = new Dictionary<string, ushort>(snapshot.Slots, StringComparer.Ordinal);
                 slots.Remove(instanceId);
-                PublishLocked(new VisualBridgeDebugSnapshot(instances, slots, snapshot.Connected));
+                var categories = new Dictionary<ushort, string>(snapshot.Categories);
+                if (snapshot.Slots.TryGetValue(instanceId, out ushort finishedSlot))
+                {
+                    categories.Remove(finishedSlot);
+                }
+
+                PublishLocked(new VisualBridgeDebugSnapshot(instances, slots, categories, snapshot.Connected));
 
                 // Create 还没 flush：直接撤销待发描述，避免向客户端制造“建了立刻结束”的实例。
                 bool createWasPending = RemovePendingLocked(instanceId) > 0;
@@ -332,7 +365,8 @@ namespace VisualBridge.Diagnostics
 
             try
             {
-                encoder.Begin(methodId, instanceSlot, 0u);
+                encoder.Begin(VisualBridgeDebugMessageKind.Debug, instanceId, category, iface, method, methodId,
+                    instanceSlot, 0u);
             }
             catch (Exception exception)
             {
@@ -343,8 +377,8 @@ namespace VisualBridge.Diagnostics
             }
 
             s_activeMessage = new VisualBridgeDebugMessage(
-                VisualBridgeDebugMessageKind.Event, instanceSlot, methodId, 0u, frame, generation, category, iface,
-                method, encoder);
+                VisualBridgeDebugMessageKind.Debug, instanceId, category, iface, method, instanceSlot, methodId, 0u,
+                frame, generation, encoder);
             return true;
         }
 
@@ -422,16 +456,22 @@ namespace VisualBridge.Diagnostics
                 return false;
             }
 
-            ReadOnlyMemory<byte> payload;
+            VisualBridgeDebugEncodedMessage encoded;
             try
             {
                 // 无论是否已断连都调用 End，保证编码器不会留下半条消息。
-                payload = encoder.End();
+                encoded = encoder.End();
             }
             catch (Exception exception)
             {
                 VisualBridgeDebugDiagnostics.Warning(
                     "VisualBridgeDebug 编码器 End 抛出异常，消息丢弃：" + exception.Message);
+                return false;
+            }
+
+            if (encoded.Status != VisualBridgeDebugEncodeStatus.Ok)
+            {
+                CountDropped(encoded.Status);
                 return false;
             }
 
@@ -454,14 +494,16 @@ namespace VisualBridge.Diagnostics
 
             try
             {
-                if (message.Kind == VisualBridgeDebugMessageKind.Result)
+                // 帧通知先于数据：帧号变化时补一条 debugFrame 控制消息；Create/Finish 不参与帧分组。
+                SendFrameBeforeData(transport, message.Frame);
+                if (message.Kind == VisualBridgeDebugMessageKind.DebugResult)
                 {
-                    transport.SendResult(message.RequestSeq, payload);
+                    transport.SendResult(message.RequestSeq, encoded);
                 }
                 else
                 {
                     transport.SendEvent(message.InstanceSlot, message.MethodId, message.Category, message.Iface,
-                        message.Method, message.Frame, payload);
+                        message.Method, message.Frame, encoded);
                 }
 
                 return true;
@@ -502,6 +544,31 @@ namespace VisualBridge.Diagnostics
             }
 
             long generation = SafeGeneration(transport);
+            var snapshot = Volatile.Read(ref s_snapshot);
+            string category = string.IsNullOrEmpty(request.Category)
+                ? snapshot.GetCategory(request.InstanceSlot)
+                : request.Category;
+            string iface = request.InterfaceId;
+            string method = request.Method;
+            if (string.IsNullOrEmpty(iface) || string.IsNullOrEmpty(method))
+            {
+                // 4 参句柄（D2 生成的 Dispatcher）不携带归属：从已注册的 Dispatcher 反查
+                // interfaceId + TryGetMethodName(methodId)，保证 JSON debugResult 仍可归属接口/方法。
+                if (TryResolveRequestTarget(category, request.MethodId, out var resolvedIface,
+                    out var resolvedMethod))
+                {
+                    if (string.IsNullOrEmpty(iface))
+                    {
+                        iface = resolvedIface;
+                    }
+
+                    if (string.IsNullOrEmpty(method))
+                    {
+                        method = resolvedMethod;
+                    }
+                }
+            }
+
             if (Interlocked.CompareExchange(ref s_openThreadId, Thread.CurrentThread.ManagedThreadId, 0) != 0)
             {
                 VisualBridgeDebugDiagnostics.Warning(
@@ -511,7 +578,8 @@ namespace VisualBridge.Diagnostics
 
             try
             {
-                encoder.Begin(request.MethodId, request.InstanceSlot, request.RequestId);
+                encoder.Begin(VisualBridgeDebugMessageKind.DebugResult, request.InstanceId, category, iface, method,
+                    request.MethodId, request.InstanceSlot, request.RequestId);
             }
             catch (Exception exception)
             {
@@ -522,8 +590,9 @@ namespace VisualBridge.Diagnostics
             }
 
             s_activeMessage = new VisualBridgeDebugMessage(
-                VisualBridgeDebugMessageKind.Result, request.InstanceSlot, request.MethodId, request.RequestId,
-                Volatile.Read(ref s_frame), generation, null, null, null, encoder);
+                VisualBridgeDebugMessageKind.DebugResult, request.InstanceId, category, iface, method,
+                request.InstanceSlot, request.MethodId, request.RequestId, Volatile.Read(ref s_frame), generation,
+                encoder);
             return true;
         }
 
@@ -553,9 +622,86 @@ namespace VisualBridge.Diagnostics
             }
         }
 
+        internal static VisualBridgeDebugDiagnosticsSnapshot GetDiagnostics()
+        {
+            return new VisualBridgeDebugDiagnosticsSnapshot(DroppedMessages, DroppedOversizeMessages, CrossThreadCalls);
+        }
+
         internal static void SetFrame(long frame)
         {
             Volatile.Write(ref s_frame, frame < 0 ? NoFrame : frame);
+        }
+
+        /// <summary>计数一次编码级丢弃；TooLarge/LengthOverflow 同时计入 oversize（E4 的 dropped 聚合读取）。</summary>
+        private static void CountDropped(VisualBridgeDebugEncodeStatus status)
+        {
+            Interlocked.Increment(ref s_droppedMessages);
+            if (status == VisualBridgeDebugEncodeStatus.TooLarge
+                || status == VisualBridgeDebugEncodeStatus.LengthOverflow)
+            {
+                Interlocked.Increment(ref s_droppedOversizeMessages);
+            }
+
+            switch (status)
+            {
+                case VisualBridgeDebugEncodeStatus.TooLarge:
+                    VisualBridgeDebugDiagnostics.Warning(
+                        "VisualBridgeDebug 单条载荷超过 1 MB，已丢弃并计数（不阻塞后续消息）。");
+                    break;
+                case VisualBridgeDebugEncodeStatus.LengthOverflow:
+                    VisualBridgeDebugDiagnostics.Warning(
+                        "VisualBridgeDebug 字符串超过二进制 u16 长度上限，已丢弃并计数。");
+                    break;
+                case VisualBridgeDebugEncodeStatus.UnsupportedValue:
+                    VisualBridgeDebugDiagnostics.Warning(
+                        "VisualBridgeDebug 编码器收到九种声明类型之外的参数值，整条消息已丢弃（收窄由生成代码显式转换）。");
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// 数据消息写出前检查帧号：只有「帧值变化且确有数据要发」才补一条 debugFrame。
+        /// 连接建立时已经发过当前帧，因此同一帧的后续数据不会再产生控制消息。
+        /// </summary>
+        private static void SendFrameBeforeData(IVisualBridgeDebugTransport transport, long frame)
+        {
+            long normalized = frame < 0 ? NoFrame : frame;
+            if (Volatile.Read(ref s_frameSent) != 0 && Interlocked.Read(ref s_lastFrameSent) == normalized)
+            {
+                return;
+            }
+
+            if (SendFrame(transport, normalized))
+            {
+                Interlocked.Exchange(ref s_lastFrameSent, normalized);
+                Volatile.Write(ref s_frameSent, 1);
+            }
+        }
+
+        /// <summary>连接建立后先发当前帧（含 -1 = 无帧）；失败时保持未发送状态，下一条数据消息会重试。</summary>
+        private static void SendCurrentFrameLocked(IVisualBridgeDebugTransport transport)
+        {
+            long frame = Volatile.Read(ref s_frame);
+            if (SendFrame(transport, frame))
+            {
+                Interlocked.Exchange(ref s_lastFrameSent, frame);
+                Volatile.Write(ref s_frameSent, 1);
+            }
+        }
+
+        private static bool SendFrame(IVisualBridgeDebugTransport transport, long frame)
+        {
+            try
+            {
+                transport.SendControl(VisualBridgeDebugControlMessages.CreateFrame(frame));
+                return true;
+            }
+            catch (Exception exception)
+            {
+                VisualBridgeDebugDiagnostics.Warning(
+                    "VisualBridgeDebug 发送 debugFrame 控制消息失败（不影响后续数据消息）：" + exception.Message);
+                return false;
+            }
         }
 
         internal static void SetEncoder(IDebugMessageEncoder encoder)
@@ -576,6 +722,9 @@ namespace VisualBridge.Diagnostics
                 {
                     s_requestHandlers[key] = handler;
                 }
+
+                // 处理器变化会让 methodId → 方法名的反查结果失效。
+                s_requestTargets.Clear();
             }
         }
 
@@ -587,6 +736,108 @@ namespace VisualBridge.Diagnostics
                 return s_requestHandlers.TryGetValue((category ?? string.Empty, interfaceId ?? string.Empty),
                     out handler);
             }
+        }
+
+        /// <summary>
+        /// 从已注册的生成 Dispatcher 反查 debugResult 的归属：category 内按 methodId 命中唯一的接口，
+        /// 再用 Dispatcher 的 <c>TryGetMethodName(ushort, out string)</c> 取方法名。
+        /// D2 的方法号在分类内唯一，因此正常只会有一个接口命中；未注册/非 D2 处理器时返回 false。
+        /// 只缓存在 Gate 内，处理器注册变化时整体清空。
+        /// </summary>
+        private static bool TryResolveRequestTarget(string category, ushort methodId, out string interfaceId,
+            out string method)
+        {
+            interfaceId = null;
+            method = null;
+            if (string.IsNullOrEmpty(category))
+            {
+                return false;
+            }
+
+            lock (Gate)
+            {
+                var key = (category, methodId);
+                if (s_requestTargets.TryGetValue(key, out var cached))
+                {
+                    interfaceId = cached.InterfaceId;
+                    method = cached.Method;
+                    return true;
+                }
+
+                foreach (var pair in s_requestHandlers)
+                {
+                    if (pair.Value == null
+                        || !string.Equals(pair.Key.Category, category, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    if (!TryReadMethodName(pair.Value, methodId, out var methodName))
+                    {
+                        continue;
+                    }
+
+                    interfaceId = pair.Key.InterfaceId;
+                    method = methodName;
+                    s_requestTargets[key] = (interfaceId, method);
+                    return true;
+                }
+
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 反射调用生成 Dispatcher 的公开静态 <c>TryGetMethodName(ushort, out string)</c>。
+        /// D3 不改 D2 生成器，因此复用 D2 已经生成的方法号→方法名入口；只用于结果归属补齐（低频），
+        /// 生成的 Dispatcher 由 handler 委托保持存活。
+        /// </summary>
+        private static bool TryReadMethodName(Delegate handler, ushort methodId, out string methodName)
+        {
+            methodName = null;
+            var dispatcherType = handler.Method.DeclaringType;
+            if (dispatcherType == null)
+            {
+                return false;
+            }
+
+            if (!s_requestMethodLookups.TryGetValue(dispatcherType, out var lookup))
+            {
+                lookup = dispatcherType.GetMethod(
+                    "TryGetMethodName",
+                    BindingFlags.Public | BindingFlags.Static,
+                    null,
+                    new[] { typeof(ushort), typeof(string).MakeByRefType() },
+                    null);
+                s_requestMethodLookups[dispatcherType] = lookup;
+            }
+
+            if (lookup == null || lookup.ReturnType != typeof(bool))
+            {
+                return false;
+            }
+
+            try
+            {
+                object[] arguments = { methodId, null };
+                if (lookup.Invoke(null, arguments) is bool found && found)
+                {
+                    methodName = arguments[1] as string;
+                    return !string.IsNullOrEmpty(methodName);
+                }
+            }
+            catch (Exception exception)
+            {
+                if (!s_requestReflectionWarned)
+                {
+                    s_requestReflectionWarned = true;
+                    VisualBridgeDebugDiagnostics.Warning(
+                        "VisualBridgeDebug 反查 debugResult 方法名失败（结果仍会发送，仅缺 iface/method）："
+                        + exception.Message);
+                }
+            }
+
+            return false;
         }
 
         /// <summary>检测连接态变化；必须在 Gate 内调用。断连时重置，建连后 flush 待发描述。</summary>
@@ -611,6 +862,8 @@ namespace VisualBridge.Diagnostics
                 s_disconnectApplied = false;
                 s_sessionGeneration = generation;
                 PublishLocked(s_snapshot.WithConnected(true));
+                // 附录 A.5：连接建立后先发一条当前帧；之后的数据消息只在帧值变化时补发。
+                SendCurrentFrameLocked(transport);
                 FlushPendingLocked(transport);
                 return;
             }
@@ -666,7 +919,11 @@ namespace VisualBridge.Diagnostics
             s_pendingCreates.Clear();
             s_instanceLimitWarned = false;
             Interlocked.Exchange(ref s_droppedMessages, 0);
+            Interlocked.Exchange(ref s_droppedOversizeMessages, 0);
             Interlocked.Exchange(ref s_crossThreadCalls, 0);
+            Interlocked.Exchange(ref s_lastFrameSent, NoFrame);
+            Volatile.Write(ref s_frameSent, 0);
+            s_requestTargets.Clear();
             s_crossThreadWarned = false;
             s_sessionGeneration = 0;
             s_activeMessage = default;

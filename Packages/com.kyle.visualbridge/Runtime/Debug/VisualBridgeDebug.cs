@@ -74,7 +74,7 @@ namespace VisualBridge.Diagnostics
 #endif
         }
 
-        /// <summary>设置当前帧号（默认 -1 表示无帧）；只写内部值，不产生消息。</summary>
+        /// <summary>设置当前帧号（默认 -1 表示无帧）；只写内部值，不立即产生消息。</summary>
         public static void SetFrame(long frame)
         {
 #if UNITY_EDITOR || VISUALBRIDGE_RUNTIME_BRIDGE
@@ -148,8 +148,8 @@ namespace VisualBridge.Diagnostics
         }
 
         /// <summary>
-        /// 结束当前消息并把完整载荷交给数据队列。返回 false 表示没有可结束的消息、
-        /// 调用线程不是 Start 线程、已断连，或连接在 Start/End 之间换了代（此时载荷按旧会话丢弃）。
+        /// 结束当前消息并把「完整载荷 + 目标队列」描述交给数据队列。返回 false 表示没有可结束的消息、
+        /// 调用线程不是 Start 线程、载荷编码失败/超限、已断连，或连接在 Start/End 之间换了代（此时载荷按旧会话丢弃）。
         /// </summary>
         public static bool End()
         {

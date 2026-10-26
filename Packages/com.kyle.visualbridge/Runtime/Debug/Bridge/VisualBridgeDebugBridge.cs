@@ -51,6 +51,15 @@ namespace VisualBridge.Diagnostics.Bridge
             VisualBridgeDebug.Detach();
         }
 
+        /// <summary>
+        /// 读取诊断计数（附录 B.3.3）：E4 的 dropped 聚合从这里取 DroppedMessages /
+        /// DroppedOversizeMessages；业务与生成代码不依赖它。
+        /// </summary>
+        public static VisualBridgeDebugDiagnosticsSnapshot GetDiagnostics()
+        {
+            return VisualBridgeDebugMetrics.GetSnapshot();
+        }
+
         // Debug 程序集是 noEngineReferences，告警在这里转成 Unity 控制台输出。
         private static void LogWarning(string message)
         {

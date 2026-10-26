@@ -731,6 +731,10 @@ namespace VisualBridge.Editor.Tests
 
             public List<(uint RequestSeq, string Reason)> Rejects { get; } = new List<(uint, string)>();
 
+            /// <summary>debugFrame 控制消息：按到达顺序记录完整描述，未参与事件断言。</summary>
+            public List<VisualBridgeDebugEncodedMessage> Controls { get; } =
+                new List<VisualBridgeDebugEncodedMessage>();
+
             public void SetConnected(bool connected)
             {
                 _connected = connected;
@@ -755,16 +759,22 @@ namespace VisualBridge.Editor.Tests
             }
 
             public void SendEvent(ushort instanceSlot, ushort methodId, string category, string iface, string method,
-                long frame, ReadOnlyMemory<byte> payload)
+                long frame, VisualBridgeDebugEncodedMessage message)
             {
                 EnsureConnected();
-                Events.Add((instanceSlot, methodId, category, iface, method, frame, payload.ToArray()));
+                Events.Add((instanceSlot, methodId, category, iface, method, frame, message.Payload.ToArray()));
             }
 
-            public void SendResult(uint requestSeq, ReadOnlyMemory<byte> payload)
+            public void SendResult(uint requestSeq, VisualBridgeDebugEncodedMessage message)
             {
                 EnsureConnected();
-                Results.Add((requestSeq, payload.ToArray()));
+                Results.Add((requestSeq, message.Payload.ToArray()));
+            }
+
+            public void SendControl(VisualBridgeDebugEncodedMessage message)
+            {
+                EnsureConnected();
+                Controls.Add(message);
             }
 
             public void SendReject(uint requestSeq, string reason)
@@ -785,17 +795,19 @@ namespace VisualBridge.Editor.Tests
         /// <summary>假编码器：记录 Begin/PushParam/End，用来断言默认值在编码前被跳过。</summary>
         private sealed class FakeEncoder : IDebugMessageEncoder
         {
-            public List<(ushort MethodId, ushort Slot, uint RequestSeq)> Begins { get; } =
-                new List<(ushort, ushort, uint)>();
+            public List<(VisualBridgeDebugMessageKind Kind, string InstanceId, string Category, string Iface,
+                string Method, ushort MethodId, ushort Slot, uint RequestSeq)> Begins { get; } =
+                new List<(VisualBridgeDebugMessageKind, string, string, string, string, ushort, ushort, uint)>();
 
             public List<(string Name, ushort Tag, object Value)> Parameters { get; } =
                 new List<(string, ushort, object)>();
 
             public int EndCount { get; private set; }
 
-            public void Begin(ushort methodId, ushort instanceSlot, uint requestSeq)
+            public void Begin(VisualBridgeDebugMessageKind kind, string instanceId, string category, string iface,
+                string method, ushort methodId, ushort instanceSlot, uint requestId)
             {
-                Begins.Add((methodId, instanceSlot, requestSeq));
+                Begins.Add((kind, instanceId, category, iface, method, methodId, instanceSlot, requestId));
             }
 
             public void PushParam(string name, ushort tag, object value)
@@ -803,10 +815,13 @@ namespace VisualBridge.Editor.Tests
                 Parameters.Add((name, tag, value));
             }
 
-            public ReadOnlyMemory<byte> End()
+            public VisualBridgeDebugEncodedMessage End()
             {
                 EndCount++;
-                return new byte[] { 0xCA, 0xFE };
+                return new VisualBridgeDebugEncodedMessage(
+                    VisualBridgeDebugPayloadFormat.Binary,
+                    VisualBridgeDebugTargetQueue.Data,
+                    new byte[] { 0xCA, 0xFE });
             }
         }
     }
