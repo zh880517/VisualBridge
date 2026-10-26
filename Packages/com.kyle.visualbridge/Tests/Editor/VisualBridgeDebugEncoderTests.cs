@@ -397,15 +397,14 @@ namespace VisualBridge.Editor.Tests
         }
 
         [Test]
-        public void JsonResultCarriesTypeRequestIdAndResolvedTarget()
+        public void JsonResultOmitsUnknownTargetAndKeepsRequestId()
         {
             var transport = InstallTransport();
             VisualBridgeDebug.SetEncoder(new VisualBridgeDebugJsonEncoder());
             Assert.That(VisualBridgeDebug.Create("inst-1", Category, "res", ""), Is.True);
 
-            // 模拟 D2 生成 Dispatcher 的 Register：4 参句柄不携带归属，运行期从 TryGetMethodName 反查。
-            VisualBridgeDebug.RegisterRequestHandler(Category, InterfaceId,
-                new FakeDispatchHandler(FakeDispatcher.Dispatch));
+            // 4 参句柄不携带归属（手写处理器路径）：按附录 A.5 省略 iface/method，消费端按 requestId 兜底。
+            // 生产路径是生成 Dispatcher 的 7 参句柄（见下一个用例），运行期不再反射补齐归属。
             var request = new VisualBridgeDebugRequest("inst-1", InstanceSlot, MethodId, 3u);
             Assert.That(VisualBridgeDebug.StartResult(request), Is.True);
             VisualBridgeDebug.PushParam("value", 1, 42);
@@ -417,8 +416,8 @@ namespace VisualBridge.Editor.Tests
             Assert.That((string)json["requestId"], Is.EqualTo("req-3"));
             Assert.That((string)json["instance"], Is.EqualTo("inst-1"));
             Assert.That((string)json["category"], Is.EqualTo(Category));
-            Assert.That((string)json["iface"], Is.EqualTo(InterfaceId));
-            Assert.That((string)json["method"], Is.EqualTo("IsVisible"));
+            Assert.That(json["iface"], Is.Null, "归属未知时按 A.5 省略 iface，消费端按 requestId 兜底");
+            Assert.That(json["method"], Is.Null, "归属未知时按 A.5 省略 method，消费端按 requestId 兜底");
         }
 
         [Test]
@@ -906,31 +905,6 @@ namespace VisualBridge.Editor.Tests
             Big = ulong.MaxValue,
         }
 
-        /// <summary>模拟 D2 生成的查询 Dispatcher：公开静态 TryGetMethodName 供运行期反查。</summary>
-        private delegate bool FakeDispatchHandler(ushort methodId, string instanceId, ushort instanceSlot,
-            uint requestSeq, object[] parameters);
-
-        private static class FakeDispatcher
-        {
-            public static bool Dispatch(ushort methodId, string instanceId, ushort instanceSlot, uint requestSeq,
-                object[] parameters)
-            {
-                return true;
-            }
-
-            public static bool TryGetMethodName(ushort methodId, out string methodName)
-            {
-                if (methodId == MethodId)
-                {
-                    methodName = "IsVisible";
-                    return true;
-                }
-
-                methodName = null;
-                return false;
-            }
-        }
-
         /// <summary>假传输：记录事件/结果/控制消息与统一时序日志，用来断言 debugFrame 先于数据写出。</summary>
         private sealed class FakeTransport : IVisualBridgeDebugTransport
         {
@@ -976,6 +950,10 @@ namespace VisualBridge.Editor.Tests
             } = new List<(uint, VisualBridgeDebugEncodedMessage)>();
 
             public List<(uint RequestSeq, string Reason)> Rejects { get; } = new List<(uint, string)>();
+
+            /// <summary>查询运行期产生的失败应答（附录 A.6 错误码 + detail）。</summary>
+            public List<(uint RequestSeq, string Code, string Detail)> QueryErrors { get; } =
+                new List<(uint, string, string)>();
 
             public List<VisualBridgeDebugEncodedMessage> Controls { get; } =
                 new List<VisualBridgeDebugEncodedMessage>();
@@ -1045,6 +1023,12 @@ namespace VisualBridge.Editor.Tests
             {
                 EnsureConnected();
                 Rejects.Add((requestSeq, reason));
+            }
+
+            public void SendQueryError(uint requestSeq, string code, string detail)
+            {
+                EnsureConnected();
+                QueryErrors.Add((requestSeq, code, detail));
             }
 
             private void EnsureConnected()

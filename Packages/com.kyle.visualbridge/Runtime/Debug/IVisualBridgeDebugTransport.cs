@@ -40,6 +40,14 @@ namespace VisualBridge.Diagnostics
         void SendResult(uint requestSeq, VisualBridgeDebugEncodedMessage message);
 
         /// <summary>
+        /// 发送查询失败应答（通道 1 的 <c>response</c>，不进调试流）：<paramref name="code"/> 取附录 A.6 的
+        /// <c>runtime.queryBusy</c> / <c>runtime.queryTimeout</c> / <c>runtime.queryUnregistered</c> /
+        /// <c>runtime.instanceNotFound</c> / <c>runtime.invalidArgument</c>，<paramref name="detail"/> 是诊断文本。
+        /// 与 <see cref="SendReject"/> 的区别：这个由查询运行期产生（含超时、队列满），<c>reason</c> 那条由业务拒绝产生。
+        /// </summary>
+        void SendQueryError(uint requestSeq, string code, string detail);
+
+        /// <summary>
         /// 发送通道 1 的控制消息（当前只有 debugFrame）：载荷是完整 JSON，目标队列为
         /// <see cref="VisualBridgeDebugTargetQueue.Control"/>；传输层必须保证它先于之后的数据消息写出。
         /// 注意它不是通道 0 的编辑器控制队列。

@@ -131,6 +131,19 @@ namespace VisualBridge.Diagnostics
 #endif
         }
 
+        /// <summary>
+        /// 注册查询处理器与它的参数声明表：生成 Dispatcher 的 <c>Register</c> 用这一组（D4）。
+        /// <paramref name="parameterDecoder"/> 给出「方法号 → 参数名/tag/类型」，运行期据此把请求 args
+        /// 按声明顺序解码；缺少它时只有无载荷参数的请求还能分发。
+        /// </summary>
+        public static void RegisterRequestHandler(string category, string interfaceId, Delegate handler,
+            Delegate parameterDecoder)
+        {
+#if UNITY_EDITOR || VISUALBRIDGE_RUNTIME_BRIDGE
+            VisualBridgeDebugSession.RegisterRequestHandler(category, interfaceId, handler, parameterDecoder);
+#endif
+        }
+
         /// <summary>显式挂接（Bridge 程序集）：重连后调用，按需 flush 待发描述。</summary>
         public static void Attach()
         {

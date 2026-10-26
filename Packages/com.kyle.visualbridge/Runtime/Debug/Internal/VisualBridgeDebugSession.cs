@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Reflection;
 using System.Threading;
 
 namespace VisualBridge.Diagnostics
@@ -38,18 +37,12 @@ namespace VisualBridge.Diagnostics
         private static long s_sessionGeneration;
         private static readonly List<VisualBridgeDebugPendingCreate> s_pendingCreates =
             new List<VisualBridgeDebugPendingCreate>();
-        private static readonly Dictionary<(string Category, string InterfaceId), Delegate> s_requestHandlers =
-            new Dictionary<(string, string), Delegate>();
 
-        // 结果归属反查：category + methodId → (interfaceId, method)。
-        // D2 生成的 Dispatcher 在 Register 时已注册处理器；运行期用它的 TryGetMethodName 补齐 debugResult 的归属。
-        private static readonly Dictionary<(string Category, ushort MethodId), (string InterfaceId, string Method)>
-            s_requestTargets = new Dictionary<(string, ushort), (string, string)>();
-
-        private static readonly Dictionary<Type, MethodInfo> s_requestMethodLookups =
-            new Dictionary<Type, MethodInfo>();
-
-        private static bool s_requestReflectionWarned;
+        // 查询处理器注册表：key 是 (category, interfaceId)。值里带 Dispatcher 与参数声明表两个委托，
+        // 生产路径（生成 Dispatcher）直接调用两个运行期委托，不反射生成成员，IL2CPP 裁剪不会让结果归属
+        // 静默失效（附录 B.2.3/B.5）；非标准签名的 Delegate 只作兼容适配。
+        private static readonly Dictionary<(string Category, string InterfaceId), VisualBridgeDebugRequestRegistration>
+            s_requestHandlers = new Dictionary<(string, string), VisualBridgeDebugRequestRegistration>();
 
         // 在途消息：数据只写在 Start 线程的 ThreadStatic 槽位里，s_openThreadId 是跨线程可见的“所有权”标记。
         // 其它线程调用 PushParam/End 会被判为跨线程调用并忽略（附录 B.2 的同线程约束）。
@@ -543,31 +536,32 @@ namespace VisualBridge.Diagnostics
                 return false;
             }
 
+            // 实例存活校验（附录 B.6 验收）：实例已 Finish 时句柄作废，不产生任何消息。
+            if (!IsInstanceAlive(request.InstanceId))
+            {
+                VisualBridgeDebugQueryQueue.Discard(request.RequestId);
+                Interlocked.Increment(ref s_droppedMessages);
+                return false;
+            }
+
+            // 超时/作废：晚到结果丢弃并计入 dropped，同时释放句柄（B.6，防长跑泄漏）。
+            if (VisualBridgeDebugQueryQueue.CompleteResult(request.RequestId)
+                == VisualBridgeDebugQueryCompletion.Expired)
+            {
+                Interlocked.Increment(ref s_droppedMessages);
+                return false;
+            }
+
             long generation = SafeGeneration(transport);
             var snapshot = Volatile.Read(ref s_snapshot);
             string category = string.IsNullOrEmpty(request.Category)
                 ? snapshot.GetCategory(request.InstanceSlot)
                 : request.Category;
+
+            // 归属只取 7 参句柄携带的值（生成的 Dispatcher 一次构造好）；缺失时按附录 A.5 省略
+            // iface/method，消费端按 requestId 兜底。不再反射生成成员（IL2CPP 裁剪安全）。
             string iface = request.InterfaceId;
             string method = request.Method;
-            if (string.IsNullOrEmpty(iface) || string.IsNullOrEmpty(method))
-            {
-                // 4 参句柄（D2 生成的 Dispatcher）不携带归属：从已注册的 Dispatcher 反查
-                // interfaceId + TryGetMethodName(methodId)，保证 JSON debugResult 仍可归属接口/方法。
-                if (TryResolveRequestTarget(category, request.MethodId, out var resolvedIface,
-                    out var resolvedMethod))
-                {
-                    if (string.IsNullOrEmpty(iface))
-                    {
-                        iface = resolvedIface;
-                    }
-
-                    if (string.IsNullOrEmpty(method))
-                    {
-                        method = resolvedMethod;
-                    }
-                }
-            }
 
             if (Interlocked.CompareExchange(ref s_openThreadId, Thread.CurrentThread.ManagedThreadId, 0) != 0)
             {
@@ -610,6 +604,14 @@ namespace VisualBridge.Diagnostics
                 return false;
             }
 
+            // 超时之后才到的拒绝不再回失败应答（超时应答已经发过），只释放句柄并计入 dropped。
+            if (VisualBridgeDebugQueryQueue.CompleteReject(request.RequestId)
+                == VisualBridgeDebugQueryCompletion.Expired)
+            {
+                Interlocked.Increment(ref s_droppedMessages);
+                return false;
+            }
+
             try
             {
                 transport.SendReject(request.RequestId, reason ?? string.Empty);
@@ -625,6 +627,79 @@ namespace VisualBridge.Diagnostics
         internal static VisualBridgeDebugDiagnosticsSnapshot GetDiagnostics()
         {
             return new VisualBridgeDebugDiagnosticsSnapshot(DroppedMessages, DroppedOversizeMessages, CrossThreadCalls);
+        }
+
+        /// <summary>已挂接且传输层报告已连接（查询运行期入队前的连接判定）。</summary>
+        internal static bool IsAttachedAndConnected
+        {
+            get
+            {
+                var transport = Volatile.Read(ref s_transport);
+                return Volatile.Read(ref s_attached) && transport != null && SafeIsConnected(transport);
+            }
+        }
+
+        /// <summary>实例是否存活（Create 加入、Finish 与断连移除）；一次 volatile 读快照。</summary>
+        internal static bool IsInstanceAlive(string instanceId)
+        {
+            return !string.IsNullOrEmpty(instanceId) && Volatile.Read(ref s_snapshot).Instances.Contains(instanceId);
+        }
+
+        /// <summary>实例 id → 槽位 + 槽位绑定的分类；未知实例返回 false。</summary>
+        internal static bool TryGetInstanceSlot(string instanceId, out ushort instanceSlot, out string category)
+        {
+            var snapshot = Volatile.Read(ref s_snapshot);
+            if (!string.IsNullOrEmpty(instanceId) && snapshot.Slots.TryGetValue(instanceId, out instanceSlot))
+            {
+                category = snapshot.GetCategory(instanceSlot);
+                return true;
+            }
+
+            instanceSlot = 0;
+            category = null;
+            return false;
+        }
+
+        /// <summary>查询失败应答（通道 1 的 response）：未连接时无处回应，只返回 false 不计数。</summary>
+        internal static bool SendQueryError(uint requestSeq, string code, string detail)
+        {
+            var transport = Volatile.Read(ref s_transport);
+            if (transport == null || !SafeIsConnected(transport))
+            {
+                return false;
+            }
+
+            try
+            {
+                transport.SendQueryError(requestSeq, code ?? string.Empty, detail ?? string.Empty);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                VisualBridgeDebugDiagnostics.Warning("VisualBridgeDebug 发送查询失败应答失败：" + exception.Message);
+                return false;
+            }
+        }
+
+        /// <summary>业务拒绝的失败应答（不含错误码，码由传输层按通道 1 的 response 补齐）。</summary>
+        internal static bool SendReject(uint requestSeq, string reason)
+        {
+            var transport = Volatile.Read(ref s_transport);
+            if (transport == null || !SafeIsConnected(transport))
+            {
+                return false;
+            }
+
+            try
+            {
+                transport.SendReject(requestSeq, reason ?? string.Empty);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                VisualBridgeDebugDiagnostics.Warning("VisualBridgeDebug 发送失败应答失败：" + exception.Message);
+                return false;
+            }
         }
 
         internal static void SetFrame(long frame)
@@ -711,129 +786,91 @@ namespace VisualBridge.Diagnostics
 
         internal static void RegisterRequestHandler(string category, string interfaceId, Delegate handler)
         {
+            RegisterRequestHandler(category, interfaceId, handler, null);
+        }
+
+        internal static void RegisterRequestHandler(string category, string interfaceId, Delegate handler,
+            Delegate parameterDecoder)
+        {
             lock (Gate)
             {
                 var key = (category ?? string.Empty, interfaceId ?? string.Empty);
                 if (handler == null)
                 {
                     s_requestHandlers.Remove(key);
-                }
-                else
-                {
-                    s_requestHandlers[key] = handler;
+                    return;
                 }
 
-                // 处理器变化会让 methodId → 方法名的反查结果失效。
-                s_requestTargets.Clear();
+                var dispatcher = handler as VisualBridgeDebugRequestDispatcher;
+                if (dispatcher == null)
+                {
+                    // 兼容非标准委托（手写处理器）：签名相同就按 DynamicInvoke 适配；
+                    // 生成代码一律用运行期委托类型，不走这条路径（附录 B.5）。
+                    var legacy = handler;
+                    dispatcher = (methodId, instanceId, instanceSlot, requestSeq, parameters) =>
+                        (bool)legacy.DynamicInvoke(new object[]
+                        {
+                            methodId, instanceId, instanceSlot, requestSeq, parameters,
+                        });
+                }
+
+                var decoder = parameterDecoder as VisualBridgeDebugRequestParameterDecoder;
+                s_requestHandlers[key] = new VisualBridgeDebugRequestRegistration(
+                    key.Item1, key.Item2, dispatcher, decoder);
             }
         }
 
-        /// <summary>供 D4 的请求分发取已注册的处理器。</summary>
-        internal static bool TryGetRequestHandler(string category, string interfaceId, out Delegate handler)
+        /// <summary>按 (category, interfaceId) 取注册项；查询运行期入队时用。</summary>
+        internal static bool TryGetRequestHandler(string category, string interfaceId,
+            out VisualBridgeDebugRequestRegistration registration)
         {
+            registration = null;
             lock (Gate)
             {
                 return s_requestHandlers.TryGetValue((category ?? string.Empty, interfaceId ?? string.Empty),
-                    out handler);
+                    out registration);
             }
         }
 
         /// <summary>
-        /// 从已注册的生成 Dispatcher 反查 debugResult 的归属：category 内按 methodId 命中唯一的接口，
-        /// 再用 Dispatcher 的 <c>TryGetMethodName(ushort, out string)</c> 取方法名。
-        /// D2 的方法号在分类内唯一，因此正常只会有一个接口命中；未注册/非 D2 处理器时返回 false。
-        /// 只缓存在 Gate 内，处理器注册变化时整体清空。
+        /// 分类内按方法号反查处理器：方法号在分类内唯一（附录 B.5），所以参数声明表能命中方法号即命中接口。
+        /// 用于二进制信封不带 iface 的请求；纯委托调用，不反射生成成员。
         /// </summary>
-        private static bool TryResolveRequestTarget(string category, ushort methodId, out string interfaceId,
-            out string method)
+        internal static bool TryFindRequestHandler(string category, ushort methodId,
+            out VisualBridgeDebugRequestRegistration registration)
         {
-            interfaceId = null;
-            method = null;
+            registration = null;
             if (string.IsNullOrEmpty(category))
             {
                 return false;
             }
 
+            VisualBridgeDebugRequestRegistration[] candidates;
             lock (Gate)
             {
-                var key = (category, methodId);
-                if (s_requestTargets.TryGetValue(key, out var cached))
+                if (s_requestHandlers.Count == 0)
                 {
-                    interfaceId = cached.InterfaceId;
-                    method = cached.Method;
-                    return true;
+                    return false;
                 }
 
+                var matches = new List<VisualBridgeDebugRequestRegistration>();
                 foreach (var pair in s_requestHandlers)
                 {
-                    if (pair.Value == null
-                        || !string.Equals(pair.Key.Category, category, StringComparison.Ordinal))
+                    if (pair.Value != null && string.Equals(pair.Key.Category, category, StringComparison.Ordinal))
                     {
-                        continue;
+                        matches.Add(pair.Value);
                     }
+                }
 
-                    if (!TryReadMethodName(pair.Value, methodId, out var methodName))
-                    {
-                        continue;
-                    }
+                candidates = matches.ToArray();
+            }
 
-                    interfaceId = pair.Key.InterfaceId;
-                    method = methodName;
-                    s_requestTargets[key] = (interfaceId, method);
+            for (int index = 0; index < candidates.Length; index++)
+            {
+                if (candidates[index].TryGetParameters(methodId, out _, out _, out _))
+                {
+                    registration = candidates[index];
                     return true;
-                }
-
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// 反射调用生成 Dispatcher 的公开静态 <c>TryGetMethodName(ushort, out string)</c>。
-        /// D3 不改 D2 生成器，因此复用 D2 已经生成的方法号→方法名入口；只用于结果归属补齐（低频），
-        /// 生成的 Dispatcher 由 handler 委托保持存活。
-        /// </summary>
-        private static bool TryReadMethodName(Delegate handler, ushort methodId, out string methodName)
-        {
-            methodName = null;
-            var dispatcherType = handler.Method.DeclaringType;
-            if (dispatcherType == null)
-            {
-                return false;
-            }
-
-            if (!s_requestMethodLookups.TryGetValue(dispatcherType, out var lookup))
-            {
-                lookup = dispatcherType.GetMethod(
-                    "TryGetMethodName",
-                    BindingFlags.Public | BindingFlags.Static,
-                    null,
-                    new[] { typeof(ushort), typeof(string).MakeByRefType() },
-                    null);
-                s_requestMethodLookups[dispatcherType] = lookup;
-            }
-
-            if (lookup == null || lookup.ReturnType != typeof(bool))
-            {
-                return false;
-            }
-
-            try
-            {
-                object[] arguments = { methodId, null };
-                if (lookup.Invoke(null, arguments) is bool found && found)
-                {
-                    methodName = arguments[1] as string;
-                    return !string.IsNullOrEmpty(methodName);
-                }
-            }
-            catch (Exception exception)
-            {
-                if (!s_requestReflectionWarned)
-                {
-                    s_requestReflectionWarned = true;
-                    VisualBridgeDebugDiagnostics.Warning(
-                        "VisualBridgeDebug 反查 debugResult 方法名失败（结果仍会发送，仅缺 iface/method）："
-                        + exception.Message);
                 }
             }
 
@@ -923,7 +960,8 @@ namespace VisualBridge.Diagnostics
             Interlocked.Exchange(ref s_crossThreadCalls, 0);
             Interlocked.Exchange(ref s_lastFrameSent, NoFrame);
             Volatile.Write(ref s_frameSent, 0);
-            s_requestTargets.Clear();
+            // 查询队列、在途与作废表同属本次会话：断连/重装时一起清空（附录 B.6）。
+            VisualBridgeDebugQueryQueue.ResetSession();
             s_crossThreadWarned = false;
             s_sessionGeneration = 0;
             s_activeMessage = default;

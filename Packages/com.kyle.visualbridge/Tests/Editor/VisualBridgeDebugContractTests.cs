@@ -417,6 +417,9 @@ namespace VisualBridge.Editor.Tests
             var encoder = new FakeEncoder();
             VisualBridgeDebug.SetEncoder(encoder);
 
+            // D4 起 StartResult 会校验实例存活（附录 B.6）：先把实例 Create 出来，句柄才有效。
+            Assert.That(VisualBridgeDebug.Create("inst-1", Category, "res", ""), Is.True);
+
             Assert.That(VisualBridgeDebug.StartResult(request), Is.True);
             Assert.That(encoder.Begins.Count, Is.EqualTo(1));
             Assert.That((int)encoder.Begins[0].MethodId, Is.EqualTo(10));
@@ -431,6 +434,11 @@ namespace VisualBridge.Editor.Tests
             Assert.That(transport.Rejects.Count, Is.EqualTo(1));
             Assert.That(transport.Rejects[0].RequestSeq, Is.EqualTo(3u));
             Assert.That(transport.Rejects[0].Reason, Is.EqualTo("no handler"));
+
+            // 实例结束后同一句柄作废：StartResult 返回 false 且不再产生结果。
+            Assert.That(VisualBridgeDebug.Finish("inst-1"), Is.True);
+            Assert.That(VisualBridgeDebug.StartResult(request), Is.False);
+            Assert.That(transport.Results.Count, Is.EqualTo(1));
         }
 
         [Test]
@@ -731,6 +739,10 @@ namespace VisualBridge.Editor.Tests
 
             public List<(uint RequestSeq, string Reason)> Rejects { get; } = new List<(uint, string)>();
 
+            /// <summary>查询运行期产生的失败应答（附录 A.6 错误码 + detail）。</summary>
+            public List<(uint RequestSeq, string Code, string Detail)> QueryErrors { get; } =
+                new List<(uint, string, string)>();
+
             /// <summary>debugFrame 控制消息：按到达顺序记录完整描述，未参与事件断言。</summary>
             public List<VisualBridgeDebugEncodedMessage> Controls { get; } =
                 new List<VisualBridgeDebugEncodedMessage>();
@@ -781,6 +793,12 @@ namespace VisualBridge.Editor.Tests
             {
                 EnsureConnected();
                 Rejects.Add((requestSeq, reason));
+            }
+
+            public void SendQueryError(uint requestSeq, string code, string detail)
+            {
+                EnsureConnected();
+                QueryErrors.Add((requestSeq, code, detail));
             }
 
             private void EnsureConnected()

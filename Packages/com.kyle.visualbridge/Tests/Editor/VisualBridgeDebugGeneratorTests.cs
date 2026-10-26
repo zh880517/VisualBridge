@@ -680,11 +680,22 @@ namespace VisualBridge.Editor.Tests
 
                 var dispatcher = File.ReadAllText(
                     Path.Combine(fixture.GeneratedDirectoryFullPath, "VisualBridgeGeneratedVisualBridgeTestQueryDebugerDispatcher.g.cs"));
+                // 附录 B.2.3：Dispatcher 用 7 参构造直接携带 category / iface / method，运行期不再反射补齐归属。
                 Assert.That(dispatcher, Does.Contain(
-                    "new global::VisualBridge.Diagnostics.VisualBridgeDebugRequest(instanceId, instanceSlot, methodId, requestSeq)"),
-                    "Dispatcher 必须构造请求句柄（附录 B.2.3）");
+                    "return DispatchIsVisible(CreateRequest(instanceId, instanceSlot, methodId, requestSeq, \"IsVisible\"), parameters);"),
+                    "Dispatcher 必须按方法号构造携带归属的请求句柄（附录 B.2.3）");
+                Assert.That(dispatcher, Does.Contain(
+                    "return new global::VisualBridge.Diagnostics.VisualBridgeDebugRequest(instanceId, instanceSlot, methodId, requestSeq,"));
+                Assert.That(dispatcher, Does.Contain("\"query\", \"IVisualBridgeTestQueryDebuger\", method);"));
                 Assert.That(dispatcher, Does.Contain("RegisterRequestHandler("));
-                Assert.That(dispatcher, Does.Contain("TryGetParameters"), "Dispatcher 应提供解码参数表");
+                Assert.That(dispatcher, Does.Contain("VisualBridgeDebugRequestDispatcher(Dispatch)"),
+                    "运行期用统一委托直接调用，避免 DynamicInvoke");
+                Assert.That(dispatcher, Does.Contain("VisualBridgeDebugRequestParameterDecoder(TryGetParameters)"),
+                    "Dispatcher 应提供解码参数表");
+                Assert.That(dispatcher, Does.Contain("public static bool TryGetMethodName(ushort methodId, out string methodName)"),
+                    "TryGetMethodName 是附录 B.5 登记的诊断产物，必须存在且不再被运行期依赖");
+                Assert.That(dispatcher, Does.Not.Contain("DispatchHandler"),
+                    "不应再生成各接口自带的委托类型（D4 改为运行期委托）");
                 Assert.That(dispatcher, Does.Contain("RejectRequest(request, \"handler-exception: \""));
                 Assert.That(dispatcher, Does.Contain("case 10:"), "方法号应从 10 起");
             }

@@ -13,8 +13,8 @@ namespace VisualBridge.Diagnostics
         }
 
         /// <summary>
-        /// 携带结果归属的可选构造函数：D4 的查询运行期从请求信封拿到 category / iface / method 时可直接传入；
-        /// 4 参路径（D2 生成的 Dispatcher）省略它们时，运行期会从已注册的 Dispatcher 反查方法名补齐。
+        /// 携带结果归属的构造（D4 生产路径）：生成的 Dispatcher 按方法号一次构造好 category / iface / method，
+        /// 运行期不再反查生成成员（IL2CPP 裁剪安全）。4 参构造只留给手写处理器，缺归属时按附录 A.5 省略。
         /// </summary>
         public VisualBridgeDebugRequest(string instanceId, ushort instanceSlot, ushort methodId, uint requestSeq,
             string category, string interfaceId, string method)

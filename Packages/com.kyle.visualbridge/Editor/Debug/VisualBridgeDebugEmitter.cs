@@ -312,30 +312,23 @@ namespace VisualBridge.Editor
             }
 
             code.Line("/// <summary>");
-            code.Line("/// Query 接口 <see cref=\"" + model.InterfaceFullName + "\"/> 的请求分发（附录 B.5）：Register 时挂载处理器，");
-            code.Line("/// 收到请求后构造 VisualBridgeDebugRequest 并调用业务实现，结果由门面 Send&lt;Method&gt;Result 回发。");
-            code.Line("/// 业务实现抛异常时回发 RejectRequest，并返回 false；请求解码由查询运行期按 TryGetParameters 完成。");
+            code.Line("/// Query 接口 <see cref=\"" + model.InterfaceFullName + "\"/> 的请求分发（附录 B.5）：Register 时挂载处理器与");
+            code.Line("/// 参数声明表，收到请求后构造携带 category / iface / method 的 VisualBridgeDebugRequest 并调用业务实现，");
+            code.Line("/// 结果由门面 Send&lt;Method&gt;Result 回发；业务实现抛异常时回发 RejectRequest 并返回 false。");
             code.Line("/// </summary>");
             code.Line("public static class " + DispatcherName(model));
             code.Open();
-            code.Line("/// <summary>挂载处理器的统一签名：查询运行期通过 Delegate.DynamicInvoke 调用，不依赖业务类型。</summary>");
-            code.Line("public delegate bool DispatchHandler(");
-            code.Line("    ushort methodId,");
-            code.Line("    string instanceId,");
-            code.Line("    ushort instanceSlot,");
-            code.Line("    uint requestSeq,");
-            code.Line("    object[] parameters);");
-            code.Blank();
             code.Line("private static " + model.CSharpReference + " s_implementation;");
             code.Blank();
-            code.Line("/// <summary>挂载业务实现并注册处理器。</summary>");
+            code.Line("/// <summary>挂载业务实现并注册处理器；解码表让运行期按声明顺序解出载荷参数。</summary>");
             code.Line("public static void Register(" + model.CSharpReference + " implementation)");
             code.Open();
             code.Line("s_implementation = implementation;");
             code.Line(DebugApi + ".RegisterRequestHandler(");
             code.Line("    " + Literal(model.Category) + ",");
             code.Line("    " + Literal(model.InterfaceName) + ",");
-            code.Line("    new DispatchHandler(Dispatch));");
+            code.Line("    new global::VisualBridge.Diagnostics.VisualBridgeDebugRequestDispatcher(Dispatch),");
+            code.Line("    new global::VisualBridge.Diagnostics.VisualBridgeDebugRequestParameterDecoder(TryGetParameters));");
             code.Close();
             code.Blank();
             code.Line("/// <summary>解除挂载；处理器随之从运行期移除。</summary>");
@@ -348,13 +341,13 @@ namespace VisualBridge.Editor
             code.Line("/// <summary>按方法号分发；false = 未知方法号、未挂载或业务实现抛异常（异常已回发 RejectRequest）。</summary>");
             code.Line("public static bool Dispatch(ushort methodId, string instanceId, ushort instanceSlot, uint requestSeq, object[] parameters)");
             code.Open();
-            code.Line("var request = new " + RequestType + "(instanceId, instanceSlot, methodId, requestSeq);");
             code.Line("switch (methodId)");
             code.Open();
             foreach (var method in model.Methods)
             {
                 code.Line("case " + method.MethodId + ":");
-                code.Line("    return Dispatch" + method.Name + "(request, parameters);");
+                code.Line("    return Dispatch" + method.Name + "(CreateRequest(instanceId, instanceSlot, methodId, requestSeq, "
+                    + Literal(method.Name) + "), parameters);");
             }
 
             code.Line("default:");
@@ -362,7 +355,18 @@ namespace VisualBridge.Editor
             code.Close();
             code.Close();
             code.Blank();
-            code.Line("/// <summary>方法号 → 方法名（诊断用）。</summary>");
+            code.Line("/// <summary>");
+            code.Line("/// 构造携带结果归属的请求句柄（附录 B.2.3 的 7 参构造）：运行期不再反射生成成员，");
+            code.Line("/// 因此 IL2CPP 裁剪也不会让 debugResult 的 iface / method 静默缺失。");
+            code.Line("/// </summary>");
+            code.Line("private static " + RequestType + " CreateRequest(string instanceId, ushort instanceSlot, ushort methodId,");
+            code.Line("    uint requestSeq, string method)");
+            code.Open();
+            code.Line("return new " + RequestType + "(instanceId, instanceSlot, methodId, requestSeq,");
+            code.Line("    " + Literal(model.Category) + ", " + Literal(model.InterfaceName) + ", method);");
+            code.Close();
+            code.Blank();
+            code.Line("/// <summary>方法号 → 方法名（诊断用；运行期不再依赖它来补齐结果归属，附录 B.5）。</summary>");
             code.Line("public static bool TryGetMethodName(ushort methodId, out string methodName)");
             code.Open();
             code.Line("switch (methodId)");
