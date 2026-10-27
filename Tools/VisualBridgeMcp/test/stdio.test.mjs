@@ -2356,6 +2356,49 @@ test("MCP rejects module entries that leave the workspace or are not readable fi
   });
 });
 
+test("MCP disables a module whose declared hash does not match the bundle bytes", async () => {
+  await withFixture("GraphSemanticProject", async ({ projectRoot, client }) => {
+    await mkdir(path.join(projectRoot, "Modules"), { recursive: true });
+    await writeFile(
+      path.join(projectRoot, "Modules", "graph.vbmodule.js"),
+      Buffer.from("module.exports = { manifest: { id: 'visualbridge.graph' } };\n", "utf8"),
+    );
+    const projectFilePath = path.join(projectRoot, "VisualBridge.project.vbjson");
+    const definition = JSON.parse(await readFile(projectFilePath, "utf8"));
+    const graphModule = definition.modules.find((entry) => entry.id === "visualbridge.graph");
+    assert.ok(graphModule, "fixture must declare the graph module");
+    // 声明一个格式合法但与 bundle 字节不符的 hash（附录 D.1）：只能停用该模块，
+    // 绝不能带着错误的字节继续提供 Graph 语义。
+    graphModule.hash = `sha256:${hash(Buffer.from("not the bundle bytes"))}`;
+    await writeFile(projectFilePath, `${JSON.stringify(definition, undefined, 2)}\n`, "utf8");
+
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const project = await call(client, "visualbridge_project", { action: "read", projectFile });
+    assert.deepEqual(project.modules.map((module) => [module.id, module.status]), [
+      ["visualbridge.graph", "failed"],
+      ["visualbridge.table", "loaded"],
+    ]);
+    const graph = project.modules.find((module) => module.id === "visualbridge.graph");
+    assert.ok(graph.diagnostics.some((diagnostic) => diagnostic.code === "module.hashMismatch"));
+    assert.equal(Object.hasOwn(graph, "sha256"), false);
+    assert.deepEqual(project.supportedEditors, ["table"]);
+
+    const document = await client.callTool({
+      name: "visualbridge_document",
+      arguments: {
+        action: "read",
+        projectFile,
+        documentTypeId: "logicGraph",
+        editor: "graph",
+        path: "Graph/SemanticSample.vbgraph",
+      },
+    });
+    assert.equal(document.isError, true);
+    assert.equal(document.structuredContent.error.code, "document.editorUnsupported");
+    assert.equal(document.structuredContent.error.details.reason, "moduleFailed");
+  });
+});
+
 test("MCP reports module sha256 and per-editor operationSchema for built entries", async () => {
   await withFixture("GraphSemanticProject", async ({ projectRoot, client }) => {
     const entries = new Map([

@@ -4,25 +4,19 @@
  * 只产出"问什么 / 默认文件名 / Lifecycle parameters"和新文档字节；Quick Pick、保存对话框与
  * preview/apply 都在宿主。宿主因此没有按 editor 分支的创建逻辑与 Entity Type 列表。
  */
-import type { JsonValue, OwnedStableIdentity } from "@visualbridge/core";
+import type {
+  CreateCatalogView as SharedCreateCatalogView,
+  CreateFacet,
+  CreateFacetInput as SharedCreateFacetInput,
+  JsonValue,
+  OwnedStableIdentity,
+} from "@visualbridge/core";
 import type { EntityCatalogRegistry } from "./entityCatalog";
 import { createEmptyEntityDocument, serializeEntityDocument } from "./entityDocument";
 import { entityDocumentAdapter } from "./entityDocumentAdapter";
 
-interface CreateCatalogView {
-  readonly ready: boolean;
-  readonly registry: unknown;
-  readonly diagnostics: readonly { readonly severity: string; readonly message: string }[];
-}
-
-interface CreateFacetInput {
-  readonly projectId: string;
-  readonly projectDefinition: unknown;
-  readonly documentType: { readonly id: string; readonly editor: string; readonly catalogs: readonly string[] };
-  readonly catalog: CreateCatalogView;
-  /** 宿主注入的稳定 ID 生成器；facet 不得依赖 Node 内建模块（C1 搬走后要在 Webview 侧复用类型）。 */
-  readonly newStableId: (prefix: string) => string;
-}
+type CreateCatalogView = SharedCreateCatalogView;
+type CreateFacetInput = SharedCreateFacetInput;
 
 export const entityCreateFacet = {
   prepare(input: CreateFacetInput) {
@@ -85,7 +79,7 @@ export const entityCreateFacet = {
       return { success: false as const, message: formatError(errorValue) };
     }
   },
-};
+} satisfies CreateFacet<CreateFacetInput>;
 
 function titleOf(registry: EntityCatalogRegistry, entityTypeId: string | undefined): string {
   const entityType = registry.entityTypes.find((entry) => entry.id === entityTypeId);

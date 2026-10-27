@@ -43,6 +43,17 @@ node_modules/
 **/.test-dist/
 **/artifacts/
 *.tsbuildinfo
+# Modules bundle outputs：只锚定 `Modules/` 根与 `build.targets.json` 的 7 个分发目标。
+# 不要写成无锚点的 `*.vbmodule.js`：那会连 `TestData/**/Modules/` 下将来新增的 fixture bundle
+# 一起静默忽略。新增分发目标时必须在这里逐个补一行，不允许回退成全局规则。
+/Modules/*.vbmodule.js
+/TestData/EntitySemanticProject/Modules/*.vbmodule.js
+/TestData/GraphSemanticProject/Modules/*.vbmodule.js
+/TestData/ProviderSemanticProject/Modules/*.vbmodule.js
+/TestData/StructuredSemanticProject/Modules/*.vbmodule.js
+/TestData/TableSemanticProject/Modules/*.vbmodule.js
+/Samples/PreUnityAuthoring/Modules/*.vbmodule.js
+/UnityProject/VisualBridgeAuthoring/Modules/*.vbmodule.js
 /.playwright-cli/
 /output/
 

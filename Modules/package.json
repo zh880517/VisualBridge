@@ -1,0 +1,29 @@
+{
+  "name": "visualbridge-modules",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "description": "VisualBridge 领域模块工作区：只依赖 @visualbridge/module-sdk（tgz）与 npm 包，可整体拷出仓库使用。",
+  "engines": {
+    "node": "22.22.1"
+  },
+  "workspaces": [
+    "Shared/Form",
+    "Shared/Ui",
+    "Graph",
+    "Entity",
+    "Structured",
+    "Table"
+  ],
+  "scripts": {
+    "check": "npm run check --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "build": "node scripts/build.mjs",
+    "check:targets": "node scripts/build.mjs --check",
+    "check:dependencies": "node scripts/check-dependencies.mjs"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}

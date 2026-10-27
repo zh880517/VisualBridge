@@ -1,0 +1,1332 @@
+button.secondary.active {
+  outline: 1px solid var(--vscode-contrastActiveBorder, var(--vb-color-focus));
+}
+
+button.danger {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-errorForeground);
+}
+
+button.full {
+  width: 100%;
+  margin-bottom: 12px;
+}
+
+button.link {
+  min-height: 22px;
+  padding: 1px 4px;
+  color: var(--vscode-textLink-foreground);
+  background: transparent;
+}
+
+.graph-app {
+  --vb-status-height: 24px;
+}
+
+.graph-toolbar {
+  gap: 8px;
+  padding: 7px 10px;
+}
+
+.graph-hint {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.graph-breadcrumb {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.graph-breadcrumb span {
+  display: flex;
+  align-items: center;
+}
+
+.graph-breadcrumb i {
+  padding: 0 2px;
+  color: var(--vscode-descriptionForeground);
+  font-style: normal;
+}
+
+.graph-toolbar-option {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.graph-toolbar-option input {
+  margin: 0;
+}
+
+.graph-metadata {
+  max-width: 46%;
+  overflow: hidden;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-content {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  min-height: 0;
+}
+
+.graph-content.inspector-collapsed {
+  grid-template-columns: minmax(0, 1fr) 34px;
+}
+
+.graph-canvas {
+  min-width: 0;
+  min-height: 0;
+}
+
+.graph-canvas.revealed {
+  animation: graph-reveal-canvas 2.4s ease-out;
+}
+
+.graph-node.revealed,
+.graph-interface-node.revealed,
+.graph-dynamic-port-row.revealed,
+.graph-interface-parameter.revealed,
+.graph-port.revealed {
+  animation: graph-reveal-element 2.4s ease-out;
+}
+
+@keyframes graph-reveal-canvas {
+  0%, 38% { box-shadow: inset 0 0 0 3px var(--vscode-focusBorder); }
+  100% { box-shadow: inset 0 0 0 3px transparent; }
+}
+
+@keyframes graph-reveal-element {
+  0%, 38% {
+    outline: 3px solid var(--vscode-focusBorder);
+    outline-offset: 4px;
+  }
+  100% {
+    outline: 3px solid transparent;
+    outline-offset: 7px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .graph-canvas.revealed {
+    animation: none;
+    box-shadow: inset 0 0 0 3px var(--vscode-focusBorder);
+  }
+
+  .graph-node.revealed,
+  .graph-interface-node.revealed,
+  .graph-dynamic-port-row.revealed,
+  .graph-interface-parameter.revealed,
+  .graph-port.revealed {
+    animation: none;
+    outline: 3px solid var(--vscode-focusBorder);
+    outline-offset: 4px;
+  }
+}
+
+/* 执行调试（§19.5）：当前执行节点持续高亮，实时态附加呼吸动画（回放态静止）。 */
+.graph-node.executing {
+  box-shadow:
+    0 0 0 2px var(--vscode-charts-green, #4ec94e),
+    0 3px 10px rgba(0, 0, 0, 0.22);
+}
+
+.graph-node.executing:not(.executing-replay) {
+  animation: graph-debug-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes graph-debug-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 2px var(--vscode-charts-green, #4ec94e),
+      0 3px 10px rgba(0, 0, 0, 0.22);
+  }
+
+  50% {
+    box-shadow:
+      0 0 0 4px var(--vscode-charts-green, #4ec94e),
+      0 4px 14px rgba(0, 0, 0, 0.28);
+  }
+}
+
+/* 刚经过的边短暂流光。 */
+.react-flow__edge.graph-edge-active .react-flow__edge-path {
+  stroke: var(--vscode-charts-green, #4ec94e);
+  stroke-width: 3.5;
+}
+
+/* 数据边最近值标签：小号弱化文字。 */
+.react-flow__edge-text {
+  font-size: 10px;
+  fill: var(--vscode-descriptionForeground);
+}
+
+.graph-debug-panel {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 360px;
+  max-height: 58%;
+  padding: 12px;
+  overflow: auto;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 5px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  color: var(--vscode-editorWidget-foreground);
+}
+
+.graph-debug-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.graph-debug-panel-title {
+  font-weight: 600;
+}
+
+.graph-debug-runtime {
+  flex: 1;
+  overflow: hidden;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-debug-runtime.connected::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  background: var(--vscode-testing-iconPassed, #73c991);
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.graph-debug-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.graph-debug-section-title {
+  color: var(--vscode-sideBarTitle-foreground);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.graph-debug-empty {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.graph-debug-instance {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.graph-debug-instance-key {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-debug-instance-state,
+.graph-debug-instance-frame {
+  color: var(--vscode-descriptionForeground);
+}
+
+.graph-debug-instance-node {
+  overflow: hidden;
+  max-width: 120px;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-debug-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.graph-debug-stopped {
+  color: var(--vscode-errorForeground);
+  font-weight: 600;
+}
+
+.graph-debug-switch {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.graph-debug-instance-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.graph-debug-panel input[type="range"] {
+  width: 100%;
+  margin: 0;
+}
+
+.graph-debug-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.graph-debug-steps button {
+  min-height: 24px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.graph-debug-event {
+  overflow: hidden;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .graph-node.executing:not(.executing-replay) {
+    animation: none;
+  }
+}
+
+.react-flow {
+  color: var(--vb-color-foreground);
+  background: var(--vb-color-background);
+  --vb-graph-node-background: color-mix(in srgb, var(--vb-color-surface) 94%, var(--vb-color-focus) 6%);
+  --vb-graph-node-header: color-mix(in srgb, var(--vb-color-sidebar) 91%, var(--vb-color-focus) 9%);
+  --vb-graph-grid: color-mix(in srgb, var(--vb-color-muted) 38%, transparent);
+  --vb-graph-shadow: color-mix(in srgb, var(--vb-color-foreground) 18%, transparent);
+  --xy-background-color: var(--vb-color-background);
+  --xy-edge-stroke: var(--vb-color-focus);
+  --xy-edge-stroke-selected: var(--vscode-charts-orange);
+  --xy-connectionline-stroke: var(--vscode-charts-green);
+  --xy-handle-background-color: var(--vb-color-focus);
+  --xy-handle-border-color: var(--vb-color-background);
+  --xy-minimap-background-color: var(--vb-color-surface);
+  --xy-controls-button-background-color: var(--vb-color-surface);
+  --xy-controls-button-background-color-hover: var(--vscode-list-hoverBackground);
+  --xy-controls-button-color: var(--vb-color-foreground);
+  --xy-controls-button-color-hover: var(--vb-color-foreground);
+  --xy-controls-button-border-color: var(--vb-color-border);
+}
+
+.react-flow__pane.selection {
+  cursor: default;
+}
+
+.react-flow__pane.selection.dragging {
+  cursor: grabbing;
+}
+
+.react-flow__background pattern circle {
+  fill: var(--vb-graph-grid);
+}
+
+.react-flow__edge-path {
+  stroke-width: 2;
+  transition: stroke-width 120ms ease, filter 120ms ease;
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke-width: 3;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, currentColor 45%, transparent));
+}
+
+.react-flow__edge.graph-edge-data .react-flow__edge-path {
+  stroke: var(--vscode-charts-blue);
+  stroke-dasharray: 7 5;
+}
+
+.react-flow__edge.graph-edge-flow .react-flow__edge-path {
+  stroke: var(--vscode-charts-orange);
+}
+
+.react-flow__node-visualBridgeNode {
+  width: 292px;
+  border-radius: 10px;
+}
+
+.react-flow__node-visualBridgeInterface {
+  width: 250px;
+  pointer-events: all !important;
+}
+
+.graph-node {
+  position: relative;
+  min-height: 112px;
+  overflow: visible;
+  color: var(--vscode-editorWidget-foreground, var(--vb-color-foreground));
+  background: var(--vb-graph-node-background);
+  border: 1px solid color-mix(in srgb, var(--vb-color-border) 76%, var(--vb-color-focus) 24%);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px var(--vb-graph-shadow);
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.graph-node.subgraph {
+  border-style: dashed;
+  border-width: 2px;
+}
+
+.graph-node.selected {
+  border-color: var(--vscode-contrastActiveBorder, var(--vb-color-focus));
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--vb-color-focus) 78%, transparent),
+    0 10px 28px var(--vb-graph-shadow);
+}
+
+.graph-node-header {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 9px 12px;
+  overflow: hidden;
+  color: var(--vscode-sideBarTitle-foreground);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--vb-graph-node-header);
+  border-bottom: 1px solid color-mix(in srgb, var(--vb-color-border) 72%, transparent);
+  border-radius: 9px 9px 0 0;
+}
+
+.graph-node-icon {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1;
+  place-items: center;
+}
+
+.graph-node-icon.empty {
+  visibility: hidden;
+}
+
+.graph-node-title-input {
+  width: 100%;
+  min-width: 0;
+  padding: 2px 4px;
+  color: inherit;
+  font-weight: inherit;
+  background: transparent;
+  border: 1px solid transparent;
+  outline: none;
+}
+
+.graph-node-title-display {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+}
+
+.graph-node-title-input:focus {
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border-color: var(--vscode-focusBorder);
+}
+
+.graph-node-type {
+  padding: 7px 12px 4px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.graph-node-type,
+.graph-node-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-node-properties {
+  display: grid;
+  gap: 6px;
+  padding: 6px 12px 8px;
+  border-top: 1px solid color-mix(in srgb, var(--vb-color-border) 72%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--vb-color-border) 72%, transparent);
+}
+
+.graph-node-property {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.8fr) minmax(0, 1.2fr);
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.graph-node-property-value {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.graph-node-property:has(> .graph-node-property-value > .vb-object-editor),
+.graph-node-property:has(> .graph-node-property-value > .vb-list-editor),
+.graph-node-property:has(> .graph-node-property-value > textarea) {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+
+.graph-node-property-value > *,
+.graph-node-property-value .vb-object-editor,
+.graph-node-property-value .vb-list-editor,
+.graph-node-property-value .vb-list-item {
+  min-width: 0;
+}
+
+.graph-node-property-value .vb-object-editor {
+  padding-left: 10px;
+}
+
+.graph-node-property-value .vb-object-editor .vb-object-editor {
+  margin-left: 0;
+  padding-left: 10px;
+}
+
+.graph-node-property-value .vb-object-editor .vb-field {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  min-width: 0;
+}
+
+.graph-node-property-value .vb-object-editor .vb-field-label {
+  padding-top: 0;
+}
+
+.graph-node-property-value .vb-list-item {
+  grid-template-columns: 28px 18px minmax(0, 1fr);
+  gap: 4px;
+  padding: 4px;
+}
+
+.graph-node-property-value .vb-field-label {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.graph-node-property-input {
+  position: relative;
+  min-width: 0;
+}
+
+.graph-node-property-input > .graph-handle {
+  left: -12px;
+}
+
+.graph-node-property-connected {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.8fr) minmax(0, 1.2fr);
+  align-items: center;
+  gap: 7px;
+  min-height: 27px;
+  padding: 4px 5px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  background: var(--vscode-editor-background);
+  border: 1px dashed var(--graph-data-color, var(--vscode-charts-blue));
+}
+
+.graph-node-property-connected span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-node-property-connected em {
+  color: var(--graph-data-color, var(--vscode-charts-blue));
+  font-style: normal;
+  text-align: right;
+}
+
+.graph-node-property > span,
+.graph-node-no-properties {
+  overflow: hidden;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-node-property input:not([type="checkbox"]),
+.graph-node-property select,
+.graph-node-property textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 5px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+  outline: none;
+}
+
+.graph-node-property-input.typed .graph-node-property input:not([type="checkbox"]),
+.graph-node-property-input.typed .graph-node-property select,
+.graph-node-property-input.typed .graph-node-property textarea {
+  border-left: 3px solid var(--graph-data-color);
+}
+
+.graph-node-property textarea {
+  resize: vertical;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 11px;
+}
+
+.graph-node-property input:focus,
+.graph-node-property select:focus,
+.graph-node-property textarea:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.graph-node-property.boolean input {
+  justify-self: start;
+}
+
+.graph-reference-value {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 3px;
+  align-items: center;
+  min-width: 0;
+}
+
+.graph-reference-value .icon {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0;
+}
+
+.graph-dynamic-port-groups {
+  display: grid;
+  gap: 8px;
+  padding: 7px 12px 9px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.graph-dynamic-port-group {
+  display: grid;
+  gap: 6px;
+}
+
+.graph-dynamic-port-group > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
+
+.graph-dynamic-port-group > header button {
+  min-width: 24px;
+  min-height: 22px;
+  padding: 1px 6px;
+}
+
+.graph-list-field-port {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.graph-list-field-port.enabled {
+  padding-left: 4px;
+  color: var(--graph-data-color, var(--vscode-descriptionForeground));
+}
+
+.graph-list-field-port > strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-list-field-port > .graph-list-handle {
+  left: -12px;
+}
+
+.graph-dynamic-port-group-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.graph-dynamic-port-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  padding: 6px;
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 3px;
+}
+
+.graph-dynamic-port-row.typed {
+  border-left: 3px solid var(--graph-data-color);
+}
+
+.graph-dynamic-port-row.selected {
+  background: var(--vscode-list-inactiveSelectionBackground);
+  border-color: var(--vscode-focusBorder);
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+}
+
+.graph-dynamic-port-row.dragging {
+  opacity: 0.45;
+}
+
+.graph-dynamic-port-row.drop-before {
+  box-shadow: inset 0 2px var(--vscode-charts-blue);
+}
+
+.graph-dynamic-port-row.drop-after {
+  box-shadow: inset 0 -2px var(--vscode-charts-blue);
+}
+
+.graph-list-connected,
+.graph-list-element-connected {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 27px;
+  padding: 4px 6px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  background: var(--vscode-editor-background);
+  border: 1px dashed var(--graph-data-color, var(--vscode-charts-blue));
+  border-radius: 3px;
+}
+
+.graph-list-connected em,
+.graph-list-element-connected em {
+  color: var(--graph-data-color, var(--vscode-charts-blue));
+  font-style: normal;
+}
+
+.graph-list-element-connected {
+  grid-row: 1;
+  grid-column: 2;
+}
+
+.graph-dynamic-port-row > select,
+.graph-dynamic-port-row > input[type="checkbox"],
+.graph-dynamic-port-row > .graph-node-property,
+.graph-dynamic-port-row > .vb-checkbox,
+.graph-dynamic-port-row > .vb-color-editor,
+.graph-dynamic-port-row > .vb-list-editor,
+.graph-dynamic-port-row > .vb-object-editor,
+.graph-dynamic-port-row > .vb-reference-editor,
+.graph-dynamic-port-row > textarea {
+  grid-row: 1;
+  grid-column: 2;
+  min-width: 0;
+}
+
+.graph-dynamic-port-row > input:not([type="checkbox"]),
+.graph-dynamic-port-row > select,
+.graph-dynamic-port-row > textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 5px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+  outline: none;
+}
+
+.graph-dynamic-port-row .vb-field-label {
+  font-size: 11px;
+}
+
+.graph-dynamic-port-drag,
+.graph-list-delete {
+  display: grid;
+  width: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 4px;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  place-items: center;
+}
+
+.graph-list-add {
+  display: grid;
+  place-items: center;
+}
+
+.graph-dynamic-port-drag {
+  align-self: stretch;
+  cursor: grab;
+}
+
+.graph-dynamic-port-row-actions,
+.graph-interface-parameter-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.graph-dynamic-port-row-actions {
+  grid-row: 1;
+  grid-column: 1;
+}
+
+.graph-dynamic-port-row-actions > button,
+.graph-interface-parameter-actions > button {
+  width: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 3px;
+}
+
+.graph-dynamic-port-drag:active {
+  cursor: grabbing;
+}
+
+.graph-list-delete {
+  color: var(--vscode-descriptionForeground);
+}
+
+.graph-dynamic-port-drag:hover:not(:disabled) {
+  color: var(--vscode-foreground);
+  background: var(--vscode-list-hoverBackground);
+}
+
+.graph-list-delete:hover:not(:disabled) {
+  color: var(--vscode-errorForeground);
+  background: var(--vscode-list-hoverBackground);
+}
+
+.graph-dynamic-port-drag svg,
+.graph-list-add svg,
+.graph-list-delete svg {
+  width: 14px;
+  height: 14px;
+}
+
+.graph-dynamic-port-row > .graph-handle-right {
+  right: -7px;
+}
+
+.graph-dynamic-port-row > .graph-handle-left {
+  left: -7px;
+}
+
+.graph-node-id {
+  padding: 5px 12px 8px;
+  opacity: 0.72;
+  font-family: var(--vscode-editor-font-family);
+}
+
+.graph-port-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  min-height: 26px;
+  padding: 2px 0;
+}
+
+.graph-port-column {
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  min-width: 0;
+}
+
+.graph-port-column.right {
+  text-align: right;
+}
+
+.graph-port {
+  position: relative;
+  min-height: 20px;
+  padding: 2px 12px;
+  overflow: visible;
+  color: var(--vscode-foreground);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.graph-port > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.graph-port.data {
+  color: var(--graph-data-color, var(--vscode-charts-blue));
+}
+
+.graph-port.flow {
+  color: var(--vscode-charts-orange);
+}
+
+.react-flow__handle.graph-handle {
+  z-index: 2;
+  width: 13px;
+  min-width: 13px;
+  height: 13px;
+  min-height: 13px;
+  background: var(--vb-color-focus);
+  border: 2px solid var(--vb-graph-node-background);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vb-color-border) 72%, transparent);
+}
+
+.react-flow__handle.graph-handle.data {
+  background: var(--graph-data-color, var(--vscode-charts-blue));
+  border-radius: 2px;
+}
+
+.react-flow__handle.graph-handle.flow {
+  background: var(--vscode-charts-orange);
+  border-radius: 50%;
+}
+
+.react-flow__handle.graph-handle:hover,
+.react-flow__handle.graph-handle.connectingto,
+.react-flow__handle.graph-handle.connectingfrom {
+  background: var(--vscode-charts-green);
+  transform: translateY(-50%) scale(1.2);
+}
+
+.graph-interface-node {
+  overflow: visible;
+  color: var(--vscode-editorWidget-foreground, var(--vb-color-foreground));
+  background: var(--vb-graph-node-background);
+  border: 1px dashed var(--vb-color-focus);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px var(--vb-graph-shadow);
+}
+
+.graph-interface-node header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.graph-interface-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.graph-interface-actions button {
+  width: 24px;
+  min-width: 24px;
+  min-height: 22px;
+  padding: 1px 5px;
+}
+
+.graph-interface-node .graph-port-column {
+  padding: 5px 0;
+}
+
+.graph-interface-parameter-list {
+  display: grid;
+  gap: 5px;
+  padding: 6px 8px 8px;
+  border-top: 1px solid var(--vscode-panel-border);
+}
+
+.graph-interface-parameter {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 4px 6px;
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-left: 3px solid var(--graph-data-color, var(--vscode-charts-blue));
+  border-radius: 3px;
+}
+
+.graph-interface-parameter.selected {
+  background: var(--vscode-list-inactiveSelectionBackground);
+  border-color: var(--vscode-focusBorder);
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+}
+
+.graph-interface-parameter.dragging {
+  opacity: 0.45;
+}
+
+.graph-interface-parameter.drop-before {
+  box-shadow: inset 0 2px var(--graph-data-color, var(--vscode-charts-blue));
+}
+
+.graph-interface-parameter.drop-after {
+  box-shadow: inset 0 -2px var(--graph-data-color, var(--vscode-charts-blue));
+}
+
+.graph-interface-parameter > input {
+  width: 100%;
+  min-width: 0;
+  padding: 3px 5px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+  outline: none;
+}
+
+.graph-interface-parameter > input:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.graph-interface-parameter-type {
+  max-width: 72px;
+  overflow: hidden;
+  color: var(--graph-data-color, var(--vscode-descriptionForeground));
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-interface-parameter-drag {
+  display: grid;
+  width: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 4px;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  cursor: grab;
+  place-items: center;
+  touch-action: none;
+}
+
+.graph-interface-parameter-drag:active {
+  cursor: grabbing;
+}
+
+.graph-interface-parameter-drag svg {
+  width: 12px;
+  height: 16px;
+}
+
+.graph-interface-parameter-actions {
+  grid-row: 1;
+  grid-column: 1;
+}
+
+.graph-inspector-shell {
+  position: relative;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  background: var(--vb-color-sidebar);
+  border-left: 1px solid var(--vb-color-border);
+}
+
+.graph-inspector-shell.collapsed {
+  grid-template-columns: 33px;
+}
+
+.graph-inspector-toggle {
+  width: 33px;
+  min-width: 33px;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  color: var(--vb-color-muted);
+  font-size: 20px;
+  border-radius: 0;
+  border-right: 1px solid var(--vb-color-border);
+}
+
+.graph-inspector {
+  min-width: 0;
+  overflow: auto;
+  padding: 16px;
+  background: var(--vb-color-sidebar);
+}
+
+.graph-inspector h2 {
+  margin: 0 0 14px;
+  font-size: 14px;
+}
+
+.graph-inspector h3 {
+  margin: 20px 0 10px;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.graph-empty {
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.5;
+}
+
+.graph-field {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 12px;
+}
+
+.graph-field > span {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.graph-field input,
+.graph-field textarea,
+.graph-field select,
+.graph-node-picker > input {
+  width: 100%;
+  padding: 6px 7px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+  outline: none;
+}
+
+.graph-field input:focus,
+.graph-field textarea:focus,
+.graph-field select:focus,
+.graph-node-picker > input:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.graph-inspector-note {
+  margin-top: 14px;
+  padding: 9px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  line-height: 1.5;
+  background: var(--vscode-textBlockQuote-background);
+  border-left: 2px solid var(--vscode-textBlockQuote-border);
+}
+
+.graph-error-text {
+  color: var(--vscode-errorForeground);
+}
+
+.graph-context-menu {
+  position: fixed;
+  z-index: 20;
+  display: grid;
+  min-width: 210px;
+  padding: 4px;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border));
+  border-radius: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.58);
+  opacity: 1;
+}
+
+.graph-context-menu button {
+  justify-content: flex-start;
+  color: var(--vscode-menu-foreground);
+  text-align: left;
+  background: transparent;
+}
+
+.graph-context-menu button:hover:not(:disabled) {
+  color: var(--vscode-menu-selectionForeground);
+  background: var(--vscode-menu-selectionBackground);
+}
+
+.graph-context-menu button:disabled {
+  color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground));
+  background: transparent;
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.graph-context-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--vscode-menu-separatorBackground, var(--vscode-menu-border, var(--vscode-editorWidget-border, #454545)));
+}
+
+.graph-modal-backdrop {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  inset: 0;
+  padding: 48px;
+  background: rgba(0, 0, 0, 0.48);
+  place-items: center;
+}
+
+.graph-node-picker {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 10px;
+  width: min(620px, 90vw);
+  max-height: min(680px, 82vh);
+  padding: 14px;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: 5px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+}
+
+.graph-node-picker > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.graph-node-picker h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.graph-node-type-list {
+  display: grid;
+  gap: 6px;
+  min-height: 120px;
+  overflow: auto;
+}
+
+.graph-node-type-branch {
+  border-left: 1px solid var(--vscode-tree-indentGuidesStroke, var(--vscode-panel-border));
+}
+
+.graph-node-type-branch > summary {
+  padding: 5px 8px;
+  color: var(--vscode-sideBarSectionHeader-foreground, var(--vscode-foreground));
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.graph-node-type-branch > div {
+  display: grid;
+  gap: 5px;
+  padding-left: 12px;
+}
+
+button.graph-node-type-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 12px;
+  padding: 9px 11px;
+  color: var(--vscode-foreground);
+  text-align: left;
+  background: var(--vscode-list-inactiveSelectionBackground);
+  border: 1px solid transparent;
+}
+
+button.graph-node-type-option:hover {
+  background: var(--vscode-list-hoverBackground);
+  border-color: var(--vscode-focusBorder);
+}
+
+.graph-node-type-option span,
+.graph-node-type-option code {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
+
+.graph-node-type-option code {
+  grid-column: 1 / -1;
+}
+
+.graph-field input:read-only {
+  opacity: 0.72;
+}
+
+.graph-field textarea {
+  min-height: 180px;
+  resize: vertical;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.graph-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.graph-invalid {
+  display: grid;
+  min-height: 0;
+  padding: 32px;
+  overflow: auto;
+  text-align: center;
+  place-content: center;
+}
+
+.graph-invalid section {
+  max-width: 760px;
+}
+
+.graph-invalid h2 {
+  margin: 0 0 8px;
+  color: var(--vscode-errorForeground);
+}
+
+.graph-invalid ul {
+  padding-left: 20px;
+  text-align: left;
+}
+
+@media (max-width: 760px) {
+  .graph-content {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .graph-inspector,
+  .graph-inspector-shell,
+  .graph-breadcrumb,
+  .graph-metadata {
+    display: none;
+  }
+}

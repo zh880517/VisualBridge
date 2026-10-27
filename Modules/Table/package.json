@@ -1,0 +1,35 @@
+{
+  "name": "@visualbridge/table",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "description": "Table 领域模块：语义、会话、create、MCP facet 与 Webview。",
+  "main": "index.ts",
+  "types": "index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.webview.json --noEmit",
+    "test": "npm run build && node --test dist/test/tableSemantics.test.js dist/test/tableReferences.test.js dist/test/tableSourceFactory.test.js dist/test/tableSession.test.js dist/test/tableRenderPreservation.test.js dist/test/tableRecordVirtualization.test.js dist/test/tableReveal.test.js && tsc -p tsconfig.test.json && node --test .test-dist/test/virtualizedTableRecordViewport.test.js"
+  },
+  "dependencies": {
+    "@base-ui/react": "1.7.0",
+    "@dnd-kit/react": "0.5.0",
+    "@tanstack/react-virtual": "3.14.10",
+    "@visualbridge/editor-ui": "*",
+    "@visualbridge/form-editor": "*",
+    "csv-parse": "7.0.2",
+    "csv-stringify": "6.8.3",
+    "exceljs": "4.4.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/jsdom": "30.0.0",
+    "@types/node": "22.20.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "@visualbridge/module-sdk": "file:../Sdk/visualbridge-module-sdk-0.1.0.tgz",
+    "jsdom": "29.1.1"
+  }
+}

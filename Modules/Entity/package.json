@@ -1,0 +1,29 @@
+{
+  "name": "@visualbridge/entity",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "description": "Entity 领域模块：语义、会话、create、MCP facet 与 Webview。",
+  "main": "index.ts",
+  "types": "index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.webview.json --noEmit",
+    "test": "npm run build && node --test dist/test/entitySemantics.test.js dist/test/entitySession.test.js dist/test/entityReveal.test.js"
+  },
+  "dependencies": {
+    "@base-ui/react": "1.7.0",
+    "@dnd-kit/react": "0.5.0",
+    "@visualbridge/editor-ui": "*",
+    "@visualbridge/form-editor": "*",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "@visualbridge/module-sdk": "file:../Sdk/visualbridge-module-sdk-0.1.0.tgz"
+  }
+}

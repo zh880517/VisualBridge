@@ -37,7 +37,7 @@
   },
   "scripts": {
     "build": "node scripts/clean.mjs && tsc -p tsconfig.json && node scripts/assemble.mjs",
-    "check": "tsc -p tsconfig.json --noEmit",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.typecheck.json",
     "test": "npm run build && node --test test/webview.test.mjs test/pack.test.mjs"
   },
   "dependencies": {

@@ -4,7 +4,13 @@
  * 只产出"问什么 / 默认文件名 / Lifecycle parameters"和新源文件字节；Quick Pick、保存对话框与
  * preview/apply 都在宿主。宿主因此没有按 editor 分支的创建逻辑与 Table Type 列表。
  */
-import type { JsonValue, VisualBridgeProjectDefinition } from "@visualbridge/core";
+import type {
+  CreateCatalogView as SharedCreateCatalogView,
+  CreateFacet,
+  CreateFacetInput as SharedCreateFacetInput,
+  JsonValue,
+  VisualBridgeProjectDefinition,
+} from "@visualbridge/core";
 import { resolveProjectTableLayout } from "./projectTableLayout";
 import {
   createEmptyCsvTableSource,
@@ -12,20 +18,8 @@ import {
 } from "./tableSourceFactory";
 import { resolveTableType, type TableCatalogRegistry, type TableTypeDefinition } from "./tableCatalog";
 
-interface CreateCatalogView {
-  readonly ready: boolean;
-  readonly registry: unknown;
-  readonly diagnostics: readonly { readonly severity: string; readonly message: string }[];
-}
-
-interface CreateFacetInput {
-  readonly projectId: string;
-  readonly projectDefinition: unknown;
-  readonly documentType: { readonly id: string; readonly editor: string; readonly catalogs: readonly string[] };
-  readonly catalog: CreateCatalogView;
-  /** 宿主注入的稳定 ID 生成器；facet 不得依赖 Node 内建模块。 */
-  readonly newStableId: (prefix: string) => string;
-}
+type CreateCatalogView = SharedCreateCatalogView;
+type CreateFacetInput = SharedCreateFacetInput;
 
 export const tableCreateFacet = {
   prepare(input: CreateFacetInput) {
@@ -109,7 +103,7 @@ export const tableCreateFacet = {
       return { success: false as const, message: formatError(errorValue) };
     }
   },
-};
+} satisfies CreateFacet<CreateFacetInput>;
 
 /** 用纯字符串切分替代 `node:path`，保持 facet 无 Node 内建依赖。 */
 function baseNameWithoutExtension(targetPath: string): string {

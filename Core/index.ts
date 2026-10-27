@@ -1,5 +1,6 @@
 export * from "./Catalog/catalogSource";
 export * from "./Document/catalogFacet";
+export * from "./Document/createFacet";
 export * from "./Document/document";
 export * from "./Document/documentAdapter";
 export * from "./Document/documentFacet";
@@ -7,6 +8,7 @@ export * from "./Document/documentIndex";
 export * from "./Document/incrementalSemanticSnapshot";
 export * from "./Document/documentLifecycle";
 export * from "./Document/mcpFacet";
+export * from "./Document/moduleSession";
 export * from "./Form/field";
 export * from "./Ordering/canonicalJson";
 export * from "./Ordering/ordinal";

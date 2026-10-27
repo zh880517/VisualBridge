@@ -906,8 +906,13 @@ function normalizeRegistration(
       fail("Editor registration must declare webviewTitle.", `editors[${editorIndex}].webviewTitle`);
     }
 
-    const storage = editorValue.storage;
-    if (!isRecord(storage)) {
+    // Core 的 DocumentFacet 把存储形态表成判别式字符串（storage），parse/render 由 semantic 承载；
+    // A2 的独立 codec 对象（storage.codec）仍接受，进程内注册源尚未迁移。
+    const storage = editorValue.storage
+      ?? (isRecord(editorValue.semantic) ? editorValue.semantic.storage : undefined);
+    if (storage === "text" || storage === "sources") {
+      // 判别式字符串即合格：DocumentFacet 自带 parse/render。
+    } else if (!isRecord(storage)) {
       fail("Editor registration must declare storage.", `editors[${editorIndex}].storage`);
     } else if (storage.kind === "sources" || (storage.kind === undefined && "planSources" in storage)) {
       if (
@@ -952,9 +957,18 @@ function normalizeRegistration(
       }
     }
 
+    // 会话面必填（§D.3）：createController（A2 SessionFacet）与真实
+    // ModuleSessionController（state/handle）两种形状都接受。
     const session = editorValue.session;
-    if (!isRecord(session) || typeof session.createController !== "function") {
-      fail("Editor registration must declare session.createController.", `editors[${editorIndex}].session`);
+    const isSessionFacet = isRecord(session) && typeof session.createController === "function";
+    const isSessionController = isRecord(session)
+      && typeof session.state === "function"
+      && typeof session.handle === "function";
+    if (!isSessionFacet && !isSessionController) {
+      fail(
+        "Editor registration must declare session.createController (or a session controller with state/handle).",
+        `editors[${editorIndex}].session`,
+      );
     }
 
     const references = readReferenceKinds(editorValue.references, `editors[${editorIndex}].references`, fail);
@@ -986,26 +1000,38 @@ function normalizeRegistration(
     }
 
     if (editorValue.catalog !== undefined) {
+      // 两种形状都接受：A2 的 dapter.parse/build（进程内注册源）与 Core CatalogFacet 的
+      // parse/build/createRegistry/definitions/registryDefinitions（bundle 用）。
+      const legacyCatalog = isRecord(editorValue.catalog)
+        && isRecord(editorValue.catalog.adapter)
+        && typeof editorValue.catalog.adapter.parse === "function"
+        && typeof editorValue.catalog.adapter.build === "function";
+      const facetCatalog = isRecord(editorValue.catalog)
+        && typeof editorValue.catalog.parse === "function"
+        && typeof editorValue.catalog.build === "function"
+        && typeof editorValue.catalog.createRegistry === "function"
+        && typeof editorValue.catalog.definitions === "function"
+        && typeof editorValue.catalog.registryDefinitions === "function";
       if (
         !isRecord(editorValue.catalog)
         || readStringArray(editorValue.catalog.extensions) === undefined
-        || !isRecord(editorValue.catalog.adapter)
-        || typeof editorValue.catalog.adapter.parse !== "function"
-        || typeof editorValue.catalog.adapter.build !== "function"
+        || (!legacyCatalog && !facetCatalog)
       ) {
         fail(
-          "catalog must declare extensions plus adapter.parse/build.",
+          "catalog must declare extensions plus either adapter.parse/build or a Core CatalogFacet (parse/build/createRegistry/definitions/registryDefinitions).",
           `editors[${editorIndex}].catalog`,
         );
       }
     }
     if (editorValue.create !== undefined) {
-      if (
-        !isRecord(editorValue.create)
-        || typeof editorValue.create.choices !== "function"
-        || typeof editorValue.create.render !== "function"
-      ) {
-        fail("create must declare choices/render.", `editors[${editorIndex}].create`);
+      // 两种形状都接受：SDK CreateFacet（choices/render）与四域真实的 prepare(input)。
+      const createFacet = isRecord(editorValue.create)
+        && typeof editorValue.create.choices === "function"
+        && typeof editorValue.create.render === "function";
+      const prepareFacet = isRecord(editorValue.create)
+        && typeof editorValue.create.prepare === "function";
+      if (!createFacet && !prepareFacet) {
+        fail("create must declare choices/render or prepare(input).", `editors[${editorIndex}].create`);
       }
     }
     if (editorValue.mcp !== undefined) {

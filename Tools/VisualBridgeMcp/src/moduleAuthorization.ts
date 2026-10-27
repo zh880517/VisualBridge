@@ -46,9 +46,14 @@ export type ModuleEntryVerification =
 /**
  * 校验模块 entry 的物理位置与可选 Hash。
  *
- * C1 之前模块以进程内 facet 形式登记，entry bundle 可能尚未生成；缺失 entry 视为"待构建"，
- * 不阻止装载，也不提供 `sha256`。一旦 entry 存在，就必须同时满足工作区包含与 Hash 一致：
- * 存在但不可读（例如 entry 是目录）是**失败**而不是"待构建"，否则"目录 junction 逃逸"
+ * 错误码按附录 D.1/D.2 的路径三段分：`module.invalidPath`（词法路径越出工作区）、
+ * `module.entryAlias`（真实路径经 junction/symlink 别名越出工作区）、`module.loadFailed`
+ * （存在但不可读）。
+ *
+ * C1 之前模块以进程内 facet 形式登记，entry bundle 可能尚未生成；缺失 entry 视为“待构建”，
+ * 不阻止装载，也不提供 `sha256`。一旦 C1 产出 bundle，缺失就必须改判 `module.notFound`
+ * ——那一步与 bundle 落地同批进行，否则五个 TestData 工程会集体从 `loaded` 翻成 `failed`。
+ * 存在但不可读（例如 entry 是目录）是**失败**而不是“待构建”，否则“目录 junction 逃逸”
  * 会被 readFile 的 EISDIR 掩盖成 `loaded`。
  */
 export async function verifyModuleEntry(
@@ -58,7 +63,7 @@ export async function verifyModuleEntry(
 ): Promise<ModuleEntryVerification> {
   const trustedRoot = await workspaceRealPath(workspaceRoot);
   const lexical = path.resolve(project.projectRoot, ...moduleDefinition.entry.split("/"));
-  const lexicalIssue = containmentIssue(project, moduleDefinition, trustedRoot, lexical, "entry");
+  const lexicalIssue = containmentIssue(project, moduleDefinition, trustedRoot, lexical, "entry", "module.invalidPath");
   if (lexicalIssue !== undefined) {
     return { status: "untrusted", diagnostics: [lexicalIssue] };
   }
@@ -67,13 +72,20 @@ export async function verifyModuleEntry(
     resolved = await realpath(lexical);
   } catch (errorValue) {
     if (isMissingPath(errorValue)) {
-      // entry 尚未生成（C1 才产出 bundle）：进程内 facet 仍可用，只报告"无 sha256"。
+      // entry 尚未生成（C1 才产出 bundle）：进程内 facet 仍可用，只报告“无 sha256”。
       return { status: "loaded", diagnostics: [] };
     }
     return { status: "failed", diagnostics: [entryUnreadable(moduleDefinition, lexical, errorValue)] };
   }
   // 别名判定必须与真实根比较：workspace 本身可能就是 junction（例如托管测试的工作区夹具）。
-  const resolvedIssue = containmentIssue(project, moduleDefinition, trustedRoot, resolved, "entryRealPath");
+  const resolvedIssue = containmentIssue(
+    project,
+    moduleDefinition,
+    trustedRoot,
+    resolved,
+    "entryRealPath",
+    "module.entryAlias",
+  );
   if (resolvedIssue !== undefined) {
     return { status: "untrusted", diagnostics: [resolvedIssue] };
   }
@@ -84,7 +96,9 @@ export async function verifyModuleEntry(
     return { status: "failed", diagnostics: [entryUnreadable(moduleDefinition, resolved, errorValue)] };
   }
   const sha256 = createHash("sha256").update(bytes).digest("hex");
-  if (moduleDefinition.hash !== undefined && moduleDefinition.hash !== sha256) {
+  // Project File 的 `hash` 是 `sha256:<hex>`（附录 D.1），比较必须用同一形态，
+  // 否则“声明值完全正确”也会被判成 `module.hashMismatch`。
+  if (moduleDefinition.hash !== undefined && moduleDefinition.hash !== `sha256:${sha256}`) {
     return {
       status: "failed",
       diagnostics: [{
@@ -132,11 +146,12 @@ function containmentIssue(
   workspaceRoot: string,
   candidate: string,
   field: string,
+  code: "module.invalidPath" | "module.entryAlias",
 ): DocumentDiagnostic | undefined {
   if (isInside(workspaceRoot, candidate)) return undefined;
   return {
     severity: "error",
-    code: "module.entryAlias",
+    code,
     path: `modules.${moduleDefinition.id}.${field}`,
     message: `Module '${moduleDefinition.id}' entry resolves outside the MCP workspace.`,
   };

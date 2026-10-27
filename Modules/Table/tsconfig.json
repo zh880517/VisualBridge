@@ -1,0 +1,18 @@
+{
+  "extends": "@visualbridge/module-sdk/tsconfig/module.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist",
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "index.ts",
+    "src/**/*.ts",
+    "test/**/*.ts"
+  ],
+  "exclude": [
+    "src/webview"
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "extends": "@visualbridge/module-sdk/tsconfig/webview.json",
+  "compilerOptions": {
+    "declaration": false,
+    "jsx": "react-jsx",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "noEmit": false,
+    "outDir": ".test-dist",
+    "rootDir": ".",
+    "sourceMap": false,
+    "types": [
+      "jsdom",
+      "node"
+    ]
+  },
+  "include": [
+    "src/tableRecordVirtualization.ts",
+    "src/virtualizedTableRecordViewport.tsx",
+    "test/**/*.ts",
+    "test/**/*.tsx"
+  ]
+}

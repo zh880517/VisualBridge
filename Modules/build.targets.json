@@ -1,0 +1,50 @@
+{
+  "sdkVersion": "0.1.0",
+  "modules": [
+    {
+      "id": "visualbridge.graph",
+      "editor": "graph",
+      "entry": "Graph/src/module.ts",
+      "outfile": "graph.vbmodule.js",
+      "webviews": {
+        "graph": "Graph/src/webview/index.tsx"
+      }
+    },
+    {
+      "id": "visualbridge.entity",
+      "editor": "entity",
+      "entry": "Entity/src/module.ts",
+      "outfile": "entity.vbmodule.js",
+      "webviews": {
+        "entity": "Entity/src/webview/index.tsx"
+      }
+    },
+    {
+      "id": "visualbridge.structured",
+      "editor": "structured",
+      "entry": "Structured/src/module.ts",
+      "outfile": "structured.vbmodule.js",
+      "webviews": {
+        "structured": "Structured/src/webview/index.tsx"
+      }
+    },
+    {
+      "id": "visualbridge.table",
+      "editor": "table",
+      "entry": "Table/src/module.ts",
+      "outfile": "table.vbmodule.js",
+      "webviews": {
+        "table": "Table/src/webview/index.tsx"
+      }
+    }
+  ],
+  "targets": [
+    "TestData/EntitySemanticProject",
+    "TestData/GraphSemanticProject",
+    "TestData/ProviderSemanticProject",
+    "TestData/StructuredSemanticProject",
+    "TestData/TableSemanticProject",
+    "Samples/PreUnityAuthoring",
+    "UnityProject/VisualBridgeAuthoring"
+  ]
+}

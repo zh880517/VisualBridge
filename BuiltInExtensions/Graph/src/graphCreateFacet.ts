@@ -4,25 +4,19 @@
  * 只产出"问什么 / 默认文件名 / Lifecycle parameters"和新文档字节；Quick Pick、保存对话框与
  * preview/apply 都在宿主。宿主因此没有按 editor 分支的创建逻辑与 Graph Type 列表。
  */
-import type { JsonValue, OwnedStableIdentity } from "@visualbridge/core";
+import type {
+  CreateCatalogView as SharedCreateCatalogView,
+  CreateFacet,
+  CreateFacetInput as SharedCreateFacetInput,
+  JsonValue,
+  OwnedStableIdentity,
+} from "@visualbridge/core";
 import { createEmptyGraphDocument, serializeGraphDocument } from "./graphDocument";
 import { graphDocumentAdapter } from "./graphDocumentAdapter";
 import type { GraphCatalogRegistry } from "./graphCatalog";
 
-interface CreateCatalogView {
-  readonly ready: boolean;
-  readonly registry: unknown;
-  readonly diagnostics: readonly { readonly severity: string; readonly message: string }[];
-}
-
-interface CreateFacetInput {
-  readonly projectId: string;
-  readonly projectDefinition: unknown;
-  readonly documentType: { readonly id: string; readonly editor: string; readonly catalogs: readonly string[] };
-  readonly catalog: CreateCatalogView;
-  /** 宿主注入的稳定 ID 生成器；facet 不得依赖 Node 内建模块。 */
-  readonly newStableId: (prefix: string) => string;
-}
+type CreateCatalogView = SharedCreateCatalogView;
+type CreateFacetInput = SharedCreateFacetInput;
 
 export const graphCreateFacet = {
   prepare(input: CreateFacetInput) {
@@ -114,7 +108,7 @@ export const graphCreateFacet = {
       return { success: false as const, message: formatError(errorValue) };
     }
   },
-};
+} satisfies CreateFacet<CreateFacetInput>;
 
 function firstCatalogError(catalog: CreateCatalogView): string {
   return catalog.diagnostics.find((diagnostic) => diagnostic.severity === "error")?.message ?? "未知错误";

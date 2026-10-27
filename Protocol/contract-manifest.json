@@ -202,6 +202,7 @@
       "lifecycle.projectMismatch",
       "lifecycle.selectorMismatch",
       "lifecycle.typeMismatch",
+      "module.callFailed",
       "path.invalid",
       "path.notFound",
       "path.outsideProject",

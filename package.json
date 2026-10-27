@@ -47,6 +47,7 @@
     "check:dependencies": "node Tools/DependencyPolicy/check-dependencies.mjs",
     "build:sdk": "npm run build --workspace @visualbridge/core && npm run build --workspace @visualbridge/module-sdk && node ModuleSdk/scripts/pack.mjs --update",
     "check:sdk": "npm run build --workspace @visualbridge/core && npm run build --workspace @visualbridge/module-sdk && node ModuleSdk/scripts/pack.mjs --check",
+    "build:modules": "npm ci --prefix Modules && npm run build --prefix Modules",
     "check:docs": "npm run test:samples && npm run build --workspace @visualbridge/mcp && npm run check --workspace @visualbridge/documentation && npm run check:mcp --workspace @visualbridge/protocol-contract",
     "audit:dependencies": "npm audit --audit-level=moderate",
     "generate:protocol": "npm run generate --workspace @visualbridge/protocol-contract",

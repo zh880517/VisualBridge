@@ -22,6 +22,7 @@ import {
   type ReferenceOccurrence,
 } from "@visualbridge/core";
 import type { DocumentCatalogRequest, DocumentRequest } from "./documentRequests.js";
+import { callModuleCode, callModuleCodeAsync } from "./moduleCall.js";
 import { facetRequestError } from "./mcpErrorCodes.js";
 import { hashPathManifest, hashSourceManifest } from "./sourceManifest.js";
 import type { ActiveModule, McpModuleRegistry } from "./moduleRegistry.js";
@@ -111,13 +112,13 @@ export class McpDocumentService {
     const module = await this.modules.requireModule(resolved.project, resolved.documentType.editor);
     const catalog = await this.loadCatalog(resolved.project, resolved.documentType.editor, resolved.documentType, module);
     const kind = request.kind ?? "summary";
-    const result = module.mcp.queryCatalog(catalog.registry, {
+    const result = callModuleCode(module.id, "queryCatalog", () => module.mcp.queryCatalog(catalog.registry, {
       action: request.action,
       documentTypeId: resolved.documentType.id,
       kind,
       query: request.query,
       selector: toJsonSelector(request.selector),
-    });
+    }));
     const base = {
       projectId: resolved.project.definition.projectId,
       projectFile: resolved.project.projectFile,
@@ -188,10 +189,10 @@ export class McpDocumentService {
     if (loaded.document === undefined) {
       return { ...documentIdentity(loaded), valid: false, diagnostics: loaded.diagnostics };
     }
-    const result = loaded.module.mcp.queryDocument("read", loaded.document, {
+    const result = callModuleCode(loaded.module.id, "queryDocument", () => loaded.module.mcp.queryDocument("read", loaded.document, {
       query: request.query,
       selector: toJsonSelector(request.selector),
-    }, loaded.context);
+    }, loaded.context));
     const read = requireDocumentQueryResult(result, "read");
     const page = read.page === undefined
       ? undefined
@@ -217,10 +218,10 @@ export class McpDocumentService {
   private searchDocument(loaded: LoadedDocument, request: DocumentRequest): Record<string, unknown> {
     const result = loaded.document === undefined
       ? { kind: "results" as const, results: [] }
-      : loaded.module.mcp.queryDocument("search", loaded.document, {
+      : callModuleCode(loaded.module.id, "queryDocument", () => loaded.module.mcp.queryDocument("search", loaded.document, {
         query: request.query,
         selector: toJsonSelector(request.selector),
-      }, loaded.context);
+      }, loaded.context));
     const search = requireDocumentQueryResult(result, "results");
     const page = pageItems(
       search.results,
@@ -342,21 +343,27 @@ export class McpDocumentService {
       return invalidResult(loaded, loaded.diagnostics);
     }
     const facet = loaded.module.facet;
-    const guard = facet.guardOperations?.(loaded.document, operations, loaded.context) ?? [];
+    const moduleId = loaded.module.id;
+    const document = loaded.document;
+    const guard = facet.guardOperations === undefined
+      ? []
+      : callModuleCode(moduleId, "guardOperations", () => facet.guardOperations!(document, operations, loaded.context));
     if (guard.length > 0) return invalidResult(loaded, guard);
-    const applied = facet.applyOperations(loaded.document, operations, loaded.context);
+    const applied = callModuleCode(moduleId, "applyOperations", () => facet.applyOperations(document, operations, loaded.context));
     if (!applied.success) return invalidResult(loaded, applied.diagnostics);
     if (applied.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
       return invalidResult(loaded, applied.diagnostics);
     }
-    const transition = facet.validateTransition?.(loaded.document, applied.document, loaded.context) ?? [];
+    const transition = facet.validateTransition === undefined
+      ? []
+      : callModuleCode(moduleId, "validateTransition", () => facet.validateTransition!(document, applied.document, loaded.context));
     if (transition.length > 0) return invalidResult(loaded, transition);
     const referenceResult = this.references === undefined
       ? { diagnostics: [], introducedErrors: [] }
       : await this.references.validateChange(
         loaded.project.projectFile,
         loaded.occurrences,
-        facet.collectReferences(applied.document, loaded.context),
+        callModuleCode(moduleId, "collectReferences", () => facet.collectReferences(applied.document, loaded.context)),
       );
     if (referenceResult.introducedErrors.length > 0) {
       return invalidResult(loaded, referenceResult.introducedErrors);
@@ -372,7 +379,7 @@ export class McpDocumentService {
     loaded: LoadedDocument,
     document: unknown,
   ): Promise<readonly RenderedSource[]> {
-    const files = await loaded.module.facet.renderSources(document, sourceFiles(loaded.sources), loaded.context);
+    const files = await callModuleCodeAsync(loaded.module.id, "renderSources", () => loaded.module.facet.renderSources(document, sourceFiles(loaded.sources), loaded.context));
     const byPath = new Map(files.map((file) => [file.path, file.bytes]));
     return loaded.sources.map((source) => {
       const bytes = byPath.get(source.path);
@@ -439,12 +446,12 @@ export class McpDocumentService {
     const context = facetContext(declared, module, catalog.registry);
     const { sources } = await this.loadSources(declared, module, context);
     const baseHash = hashSourceManifest(sources.map((source) => ({ path: source.path, hash: source.hash })));
-    const parsed = module.facet.storage === "sources"
-      ? await module.facet.parseSources!(sourceFiles(sources), context)
-      : await module.facet.parseText!(
+    const parsed = await callModuleCodeAsync(module.id, "parse", () => (module.facet.storage === "sources"
+      ? module.facet.parseSources!(sourceFiles(sources), context)
+      : module.facet.parseText!(
         decodeUtf8(sources[0]!.bytes, declared.path),
         context,
-      );
+      )));
     const document = parsed.success ? parsed.document : undefined;
     const parsedSheets = parsed.success ? parsed.sheetsBySource : undefined;
     const withSheets: readonly LoadedSourceFile[] = parsedSheets === undefined
@@ -452,9 +459,11 @@ export class McpDocumentService {
       : sources.map((source) => ({ ...source, sheetIds: parsedSheets[source.path] ?? [] }));
     const semantic = document === undefined || module.facet.storage === "sources"
       ? []
-      : module.facet.validate(document, context);
+      : callModuleCode(module.id, "validate", () => module.facet.validate(document, context));
     // sources 的 parse 已包含语义校验（Table 的现状），text 的 parse 只做结构解析。
-    const occurrences = document === undefined ? [] : module.facet.collectReferences(document, context);
+    const occurrences = document === undefined
+      ? []
+      : callModuleCode(module.id, "collectReferences", () => module.facet.collectReferences(document, context));
     const referenceDiagnostics = this.references === undefined || options.skipReferenceValidation === true
       ? []
       : await this.references.validate(declared.project.projectFile, occurrences);
@@ -652,11 +661,11 @@ export class McpDocumentService {
       };
     }
     const candidates = await this.candidateSiblingPaths(declared);
-    const planned = module.facet.planSources!(
+    const planned = callModuleCode(module.id, "planSources", () => module.facet.planSources!(
       { path: declared.path, bytes: activeBytes },
       candidates,
       context,
-    );
+    ));
     const sources: LoadedSourceFile[] = [];
     for (const sourcePath of planned) {
       const absolutePath = sourcePath === declared.path
