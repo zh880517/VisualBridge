@@ -114,11 +114,21 @@ namespace VisualBridge.Editor
     /// </summary>
     public static class VisualBridgeEditorBridgeValidator
     {
-        /// <summary>唯一连接层版本；Runtime 腿共用同一数值（附录 A.1/A.3）。</summary>
-        public const int ProtocolVersion = 4;
+        /// <summary>
+        /// 连接层版本：唯一来源是 Runtime 腿的
+        /// <see cref="VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ProtocolVersion"/>
+        /// （附录 A.1/A.3 只有一个 <c>protocolVersion</c>）；编辑器腿只别名，不再各写一份字面量。
+        /// </summary>
+        public const int ProtocolVersion = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ProtocolVersion;
 
         /// <summary>发现记录格式版本（附录 A.7）；旧格式视为无记录。</summary>
         public const int DiscoveryFormatVersion = 2;
+
+        /// <summary>
+        /// 附录 A.5：`reveal` 的数字 reference 必须是不越安全整数的整数（TS 用
+        /// <c>Number.isSafeInteger</c>）；越界值上线会被 TS 侧判 <c>bridge.invalidMessage</c> 并断连。
+        /// </summary>
+        private const long MaxSafeInteger = 9007199254740991L;
 
         private static readonly Regex RequestIdPattern = new Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", RegexOptions.Compiled);
         private static readonly Regex EndpointIdPattern = new Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", RegexOptions.Compiled);
@@ -563,11 +573,27 @@ namespace VisualBridge.Editor
 
             if (reference.Type == JTokenType.Integer)
             {
+                long integer;
+                try
+                {
+                    integer = reference.Value<long>();
+                }
+                catch (OverflowException)
+                {
+                    // 超出 long 的整数字面量（Newtonsoft 存为 BigInteger）同样不是安全整数。
+                    throw Error("bridge.invalidMessage", "$.reference", "Expected a safe integer reference value.");
+                }
+
+                if (integer < -MaxSafeInteger || integer > MaxSafeInteger)
+                {
+                    throw Error("bridge.invalidMessage", "$.reference", "Expected a safe integer reference value.");
+                }
+
                 return new VisualBridgeBridgeMessage
                 {
                     Type = VisualBridgeBridgeMessageType.Reveal,
                     RequestId = requestId,
-                    ReferenceValue = reference.Value<long>().ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ReferenceValue = integer.ToString(System.Globalization.CultureInfo.InvariantCulture),
                     ReferenceIsNumber = true,
                 };
             }
@@ -593,6 +619,13 @@ namespace VisualBridge.Editor
             var status = statusToken.Value<string>();
             if (status == "ok")
             {
+                // 附录 A.5：ok 分支不携带 error（schema 的 ok 分支 additionalProperties:false），
+                // 与 TS parseResponse 同判据——出现即按未知属性拒绝，避免双分支字段被静默忽略。
+                if (value.Property("error", StringComparison.Ordinal) != null)
+                {
+                    throw Error("bridge.unknownProperty", "$.error", "Unknown property 'error'.");
+                }
+
                 return new VisualBridgeBridgeMessage
                 {
                     Type = VisualBridgeBridgeMessageType.Response,

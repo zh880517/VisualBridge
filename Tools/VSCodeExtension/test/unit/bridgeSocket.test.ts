@@ -220,3 +220,40 @@ test("bridge socket graceful end flushes queued frames before the write side clo
   assert.equal(frames[1]?.channel, BridgeChannel.Debug);
   assert.deepEqual(frames[1]?.payload, Buffer.from([9]));
 });
+
+test("bridge socket keeps the final error frame when end() runs under backpressure", () => {
+  const socket = new FakeSocket();
+  socket.writeReturnsTrue = false; // 首次写即背压：后续控制帧滞留在队列，等待 drain。
+  const closed: Array<Error | undefined> = [];
+  const bridge = new BridgeSocket(socket as unknown as net.Socket, {
+    onControlPayload: () => undefined,
+    onDebugFrame: () => undefined,
+    onClosed: (error) => {
+      closed.push(error);
+    },
+  });
+
+  assert.equal(bridge.sendControlJson({ type: "debugFinish", category: "visualbridge.entity", instance: "hero-01" }), true);
+  // 背压中再入队错误帧，然后立刻要求优雅关闭（editorBridgeServer.sendErrorAndClose 的路径）。
+  assert.equal(bridge.sendControlJson({ type: "error", code: "bridge.invalidMessage", detail: "rejected" }), true);
+  bridge.end();
+
+  // 修复前 end() 无视 waitingDrain 直接 socket.end()，队列里的错误帧随写方向关闭被丢弃。
+  assert.equal(socket.ended, false, "end() must not close the write side while a drain is outstanding.");
+  const beforeDrain = new BridgeFrameDecoder().push(Buffer.concat(socket.writes));
+  assert.equal(beforeDrain.length, 1, "背压期间只能写出第一帧。");
+
+  socket.writeReturnsTrue = true;
+  socket.emit("drain");
+
+  assert.equal(socket.ended, true, "drain 写空队列后必须收尾关闭写方向。");
+  const frames = new BridgeFrameDecoder().push(Buffer.concat(socket.writes));
+  assert.equal(frames.length, 2, "背压解除后对端必须读到完整的最后一帧。");
+  assert.equal(frames[1]?.channel, BridgeChannel.Control);
+  assert.deepEqual(JSON.parse(frames[1]!.payload.toString("utf8")), {
+    type: "error",
+    code: "bridge.invalidMessage",
+    detail: "rejected",
+  });
+  assert.equal(closed.length, 1, "收尾只触发一次 onClosed。");
+});

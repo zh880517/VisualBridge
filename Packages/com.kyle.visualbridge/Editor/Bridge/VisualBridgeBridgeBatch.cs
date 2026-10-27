@@ -17,6 +17,9 @@ namespace VisualBridge.Editor
 
         private const int E2ETotalTimeoutMs = 180_000;
 
+        /// <summary>不存在资源探针的单次预算：可读错误必须远早于它会变成"静默超时"。</summary>
+        private const int E2EMissingProbeTimeoutMs = 5_000;
+
         [MenuItem("Tools/VisualBridge/Editor Bridge/Open Sample Document in VS Code")]
         private static void OpenSampleDocumentFromMenu()
         {
@@ -49,6 +52,20 @@ namespace VisualBridge.Editor
                     documentPath, null, E2ETotalTimeoutMs, message => UnityEngine.Debug.Log($"[bridge] open: {message}"));
                 result.Append($"open={(openResponse.IsOk ? "ok" : openResponse.ErrorCode)}\n");
                 if (!openResponse.IsOk)
+                {
+                    exitCode = FailureExitCode;
+                }
+
+                // 不存在的资源必须在请求级失败为可读错误码，而不是耗尽重试预算变成静默超时
+                // （这条探针同时覆盖"发现记录复用 + 会话续接"的重连路径）。
+                var missingDocumentPath = Environment.GetEnvironmentVariable("VISUALBRIDGE_BRIDGE_E2E_MISSING_DOCUMENT")
+                    ?? "Config/__visualbridge_missing__.gamesettings";
+                var missingWatch = System.Diagnostics.Stopwatch.StartNew();
+                var missingResponse = VisualBridgeEditorBridgeService.Instance.OpenDocumentWithRetry(
+                    missingDocumentPath, null, E2EMissingProbeTimeoutMs, message => UnityEngine.Debug.Log($"[bridge] missing: {message}"));
+                missingWatch.Stop();
+                result.Append($"missing={(missingResponse.IsOk ? "ok" : missingResponse.ErrorCode)};elapsedMs={missingWatch.ElapsedMilliseconds}\n");
+                if (missingResponse.IsOk)
                 {
                     exitCode = FailureExitCode;
                 }

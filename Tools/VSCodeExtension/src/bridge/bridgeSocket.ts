@@ -71,6 +71,18 @@ export class BridgeSocket {
     return !this.finished && !this.ending;
   }
 
+  /**
+   * 传输是否已不可用：本端已 end/close，或对端 FIN / 套接字销毁已**同步可见**
+   * （`destroyed` / `readableEnded` 由读回调设置，早于异步投递的 `close` 事件）。
+   *
+   * 与 {@link isOpen} 的区别：`isOpen` 只表达本端还能不能发；该值用于必须与关闭事件
+   * 解耦的判定（编辑器通道的一对一连接门，附录 A.6 `runtime.alreadyConnected`）——
+   * 只看 `close` 事件会让"对端已断但事件未派发"的连接继续占位并误拒重连。
+   */
+  public get isTerminated(): boolean {
+    return this.finished || this.ending || this.socket.destroyed || this.socket.readableEnded;
+  }
+
   public get sendCounters(): BridgeSendCounters {
     return this.queues.counterSnapshot;
   }
@@ -124,6 +136,10 @@ export class BridgeSocket {
   /**
    * 优雅关闭：不再接受新消息，把已入队内容写完再关闭写方向；
    * 用于「先回错误帧再断开」的错误路径。
+   *
+   * 背压下（{@link waitingDrain}）不能立即 `socket.end()`：队列里尚未写出的
+   * 最后一帧（典型是错误回复）会随写方向关闭被丢掉。此时只标记 `ending`，
+   * 由 `drain` 事件重入 {@link drain} 写空队列后再收尾。
    */
   public end(): void {
     if (this.finished || this.ending) {
@@ -133,9 +149,6 @@ export class BridgeSocket {
     this.ending = true;
     this.queues.stopAccepting();
     this.drain();
-    if (!this.finished) {
-      this.socket.end();
-    }
   }
 
   private receive(chunk: Buffer): void {

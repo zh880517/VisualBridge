@@ -300,7 +300,8 @@ namespace VisualBridge.Editor
                 {
                     if (frameReader.TryReadFrame(out frame))
                     {
-                        // 编辑器连接当前只消费控制通道；调试通道帧留给统一协议阶段。
+                        // 编辑器连接当前只消费控制通道（通道 0）；通道 1 的调试数据面由
+                        // E5/G1 接入，这里按帧头通道位跳过，绝不当作编辑器应答解析。
                         if (frame.Channel != VisualBridgeChannel.Editor)
                         {
                             continue;

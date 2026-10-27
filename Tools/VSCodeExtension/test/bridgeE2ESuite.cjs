@@ -4,6 +4,8 @@ const path = require("node:path");
 const vscode = require("vscode");
 
 const EXTENSION_ID = "kyl.visualbridge";
+/** 与 Unity 侧 `VisualBridgeBridgeBatch.E2EMissingProbeTimeoutMs` 对齐的失败预算。 */
+const MISSING_DOCUMENT_BUDGET_MS = 5_000;
 
 exports.run = async function run() {
   const workspacePath = requiredEnvironmentPath("VISUALBRIDGE_TEST_WORKSPACE");
@@ -41,9 +43,24 @@ exports.run = async function run() {
     );
     const lines = content.trim().split(/\r?\n/);
     const openLine = lines.find((line) => line.startsWith("open="));
+    const missingLine = lines.find((line) => line.startsWith("missing="));
     const revealLine = lines.find((line) => line.startsWith("reveal="));
     assert.equal(openLine, "open=ok", `Unity bridge open failed: ${content}`);
+    assert.ok(missingLine, `Unity bridge missing-document probe never ran: ${content}`);
     assert.equal(revealLine, "reveal=ok", `Unity bridge reveal failed: ${content}`);
+
+    // 不存在的资源必须得到可读错误码，且远早于请求超时——证明它没有退化成静默超时。
+    const [missingCode, missingElapsed] = missingLine.slice("missing=".length).split(";");
+    assert.equal(
+      missingCode,
+      "bridge.documentUnresolved",
+      `A missing document must produce a readable error instead of a silent timeout: ${content}`,
+    );
+    const elapsedMs = Number(missingElapsed?.replace("elapsedMs=", ""));
+    assert.ok(
+      Number.isFinite(elapsedMs) && elapsedMs < MISSING_DOCUMENT_BUDGET_MS,
+      `The missing-document response took ${missingElapsed}; it must fail fast: ${content}`,
+    );
 
     const documentUri = vscode.Uri.file(path.join(workspacePath, "VisualBridgeAuthoring", ...documentPath.split("/")));
     await waitForAsync(

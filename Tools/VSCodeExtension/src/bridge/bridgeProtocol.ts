@@ -482,6 +482,12 @@ function parseResponse(record: Record<string, unknown>): BridgeResponseMessage {
   const requestId = requireRequestId(record);
   const status = record.status;
   if (status === "ok") {
+    // 附录 A.5：ok 分支不携带 error（schema 的 ok 分支 additionalProperties:false），
+    // 出现即按未知属性拒绝，与 C# 校验器同判据——不得静默忽略。
+    if (Object.prototype.hasOwnProperty.call(record, "error")) {
+      throw protocolError("bridge.unknownProperty", "$.error", "Unknown property 'error'.");
+    }
+
     return { type: "response", requestId, status: "ok" };
   }
 

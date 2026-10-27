@@ -13,12 +13,12 @@ namespace VisualBridge.Editor
     /// <summary>
     /// 面向 Editor 的 bridge 服务。用 Integration Profile 的 authoring 项目
     /// 匹配已发布的发现记录；多个窗口匹配时要求显式选择，连接失败按退避重试。
-    /// 握手身份在进程内稳定（editor-&lt;pid&gt;），会话 id 用 SessionState 跨
-    /// Domain Reload 续接（附录 A.3 的 resumeSessionId）。
+    /// 握手身份在进程内稳定（editor-&lt;pid&gt;）。会话身份（sessionId / recordPath /
+    /// debugEnabled）由 <see cref="VisualBridgeSessionState"/> 经 SessionState 跨
+    /// Domain Reload 保存：重连时以 resumeSessionId 续接，并优先连回上次的发现记录。
     /// </summary>
     public sealed class VisualBridgeEditorBridgeService
     {
-        private const string ResumeSessionKey = "VisualBridge.EditorBridge.ResumeSessionId";
         private static readonly TimeSpan InitialBackoff = TimeSpan.FromSeconds(1);
         private static readonly TimeSpan MaximumBackoff = TimeSpan.FromSeconds(30);
 
@@ -31,6 +31,9 @@ namespace VisualBridge.Editor
         public VisualBridgeBridgeWindow ConnectedWindow { get; private set; }
 
         public bool IsConnected => client != null && client.State == VisualBridgeBridgeConnectionState.Connected;
+
+        /// <summary>已持久化的会话身份；没有会话时是 <see cref="VisualBridgeSessionState.Empty"/>。</summary>
+        public VisualBridgeSessionState Session => VisualBridgeSessionState.Load();
 
         /// <summary>Editor 进程内稳定的拨号方端点标识（Domain Reload 不改变）。</summary>
         public static string LocalEndpointId()
@@ -86,13 +89,13 @@ namespace VisualBridge.Editor
             }
 
             Disconnect();
-            var previousSessionId = LoadResumeSessionId();
+            var previousSession = Session;
             var contractHash = VisualBridgeDebugContractFingerprint.Read(UnityProjectRoot());
             var instance = new VisualBridgeEditorBridgeClient(
                 window,
                 LocalEndpointId(),
                 contractHash,
-                string.IsNullOrEmpty(previousSessionId) ? null : previousSessionId);
+                previousSession.HasSession ? previousSession.SessionId : null);
             try
             {
                 instance.Connect(timeoutMs);
@@ -103,9 +106,11 @@ namespace VisualBridge.Editor
                 throw;
             }
 
-            // 会话 id 跨 Domain Reload 保存：下次连接以 resumeSessionId 续接，
-            // 服务端据此返回 resumed（不匹配时安全起新会话）。
-            SaveResumeSessionId(instance.SessionId);
+            // 会话身份跨 Domain Reload 保存：下次连接以 resumeSessionId 续接，
+            // 服务端据此返回 resumed（不匹配时安全起新会话，并以新 sessionId 覆盖）。
+            previousSession
+                .WithConnection(instance.SessionId, window.RecordPath, instance.ServerDebugEnabled)
+                .Save();
             client = instance;
             ConnectedWindow = window;
             return client;
@@ -182,19 +187,32 @@ namespace VisualBridge.Editor
         {
             var stopwatch = Stopwatch.StartNew();
             var backoff = InitialBackoff;
+            var mayReuseRememberedWindow = true;
             VisualBridgeIntegrationException lastFailure = null;
             while (stopwatch.ElapsedMilliseconds < totalTimeoutMs)
             {
                 progress?.Invoke("discovering windows");
                 IReadOnlyList<VisualBridgeBridgeWindow> windows;
-                try
+                // 只有第一次尝试复用上次连接窗口：失败说明记录已不可用，后续一律重新枚举。
+                var remembered = mayReuseRememberedWindow
+                    ? TryReuseRememberedWindow(unityProjectRoot, discoveryDirectory, progress)
+                    : null;
+                mayReuseRememberedWindow = false;
+                if (remembered != null)
                 {
-                    windows = FindWindows(unityProjectRoot, discoveryDirectory);
+                    windows = new[] { remembered };
                 }
-                catch (VisualBridgeIntegrationException exception)
+                else
                 {
-                    lastFailure = exception;
-                    windows = new VisualBridgeBridgeWindow[0];
+                    try
+                    {
+                        windows = FindWindows(unityProjectRoot, discoveryDirectory);
+                    }
+                    catch (VisualBridgeIntegrationException exception)
+                    {
+                        lastFailure = exception;
+                        windows = new VisualBridgeBridgeWindow[0];
+                    }
                 }
 
                 if (windows.Count == 0)
@@ -253,28 +271,51 @@ namespace VisualBridge.Editor
             return "req-" + Guid.NewGuid().ToString("N");
         }
 
-        /// <summary>SessionState 在 Domain Reload 后仍在；后台线程上不可用时退化为不续接。</summary>
-        private static string LoadResumeSessionId()
+        /// <summary>
+        /// 复用上次连接窗口的发现记录：会话续接只对**同一个** VS Code 窗口有意义，
+        /// 凭记录路径直接复核比重新枚举更确定。记录已删除、心跳过期、发布进程已死或
+        /// 项目根不匹配时返回 null，调用方退回枚举（附录 A.7 的陈旧判定仍由 LoadRecord 执行）。
+        /// 显式指定发现目录（测试/手工）时不做复用，避免读到目录外的旧记录。
+        /// </summary>
+        private VisualBridgeBridgeWindow TryReuseRememberedWindow(
+            string unityProjectRoot,
+            string discoveryDirectory,
+            Action<string> progress)
         {
-            try
+            var recordPath = Session.RecordPath;
+            if (string.IsNullOrEmpty(recordPath) || discoveryDirectory != null || !File.Exists(recordPath))
             {
-                return SessionState.GetString(ResumeSessionKey, string.Empty);
+                return null;
             }
-            catch
-            {
-                return string.Empty;
-            }
-        }
 
-        private static void SaveResumeSessionId(string sessionId)
-        {
             try
             {
-                SessionState.SetString(ResumeSessionKey, sessionId ?? string.Empty);
+                var root = unityProjectRoot ?? UnityProjectRoot();
+                var profile = VisualBridgeIntegrationProfileLoader.Load(root);
+                var authoringRoot = Path.GetDirectoryName(profile.AuthoringProjectPath);
+                var window = VisualBridgeEditorBridgeDiscovery.LoadRecord(recordPath);
+                if (!string.Equals(window.Role, "vscode", StringComparison.Ordinal))
+                {
+                    return null;
+                }
+
+                if (!window.ProjectRoots.Any(projectRoot => VisualBridgeEditorBridgeDiscovery.IsSamePath(projectRoot, authoringRoot)))
+                {
+                    return null;
+                }
+
+                progress?.Invoke($"reusing the remembered window {window.WindowId}");
+                return window;
             }
-            catch
+            catch (VisualBridgeIntegrationException exception)
             {
-                // 会话续接是优化项：写不进去也不影响本次连接。
+                progress?.Invoke($"remembered window unusable: {exception.Code}");
+                return null;
+            }
+            catch (IOException exception)
+            {
+                progress?.Invoke($"remembered window unreadable: {exception.Message}");
+                return null;
             }
         }
     }

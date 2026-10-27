@@ -26,6 +26,10 @@ import {
   writeDiscoveryRecordAtomically,
 } from "./bridgeDiscovery";
 import { BridgeSocket } from "./bridgeSocket";
+import {
+  EditorBridgeConnectionGate,
+  EditorBridgeConnectionSlot,
+} from "./editorBridgeConnections";
 import type { BridgePayloadKind } from "./framing";
 
 export const OPEN_DOCUMENT_COMMAND = "visualbridge.openDocument";
@@ -45,10 +49,7 @@ export interface EditorBridgeServerState {
   readonly projectRoots: readonly string[];
 }
 
-interface BridgeConnection {
-  readonly bridge: BridgeSocket;
-  helloCompleted: boolean;
-}
+type BridgeConnection = EditorBridgeConnectionSlot<BridgeSocket>;
 
 /**
  * 本地 Editor Bridge 监听方（VS Code Extension Host）。
@@ -56,17 +57,23 @@ interface BridgeConnection {
  * 连接层为统一协议的 6 字节帧（控制通道承载 JSON）。本类负责：
  * - 发布发现记录 v2（原子写 + mtime 心跳），供 Unity Editor 拨号；
  * - 编辑器模式的 hello/welcome 握手（方向层、连接层、token、一对一、载荷协商）；
- * - open/reveal 请求的路由与应答。
+ * - open/reveal 请求的路由与应答（通道 0；通道 1 只属于调试数据面）。
  *
  * 指纹不一致时保留连接，只把 welcome.payloads 收敛为 ["json"]，并把两侧 hash
  * 写进日志与 UI 状态（E2 的 VS Code 侧尚无契约注册表，服务端指纹暂时为空串）。
+ *
+ * 重连语义（附录 A.3/A.6）：端点同一时刻只接纳一条**已完成握手且仍然存活**的连接
+ * （`runtime.alreadyConnected`）；"存活"按传输层的同步可观测状态判定，不等异步
+ * `close` 事件。对端断开或本端关闭后，下一条连接立即取得槽位，`resumed` 只由
+ * `resumeSessionId === sessionId` 决定，`generation` 每次传输 +1（不参与 `sessionId`）。
  */
 export class EditorBridgeServer implements vscode.Disposable {
   private readonly projects: ProjectRegistry;
   private readonly documents: WorkspaceDocumentIndex;
   private readonly output: vscode.LogOutputChannel;
   private readonly disposables: vscode.Disposable[] = [];
-  private readonly connections = new Set<BridgeConnection>();
+  // 一对一槽位由连接门同步维护（建立/关闭路径都释放，不依赖异步 close 事件）。
+  private readonly connections = new EditorBridgeConnectionGate<BridgeSocket>();
 
   private tcpServer: net.Server | undefined;
   private heartbeat: NodeJS.Timeout | undefined;
@@ -167,11 +174,11 @@ export class EditorBridgeServer implements vscode.Disposable {
       this.heartbeat = undefined;
     }
 
-    for (const connection of [...this.connections]) {
-      connection.bridge.close();
+    for (const connection of this.connections.snapshot()) {
+      connection.transport.close();
+      this.connections.retire(connection);
     }
 
-    this.connections.clear();
     this.tcpServer?.close();
     this.tcpServer = undefined;
     if (this.recordPath !== undefined) {
@@ -204,7 +211,8 @@ export class EditorBridgeServer implements vscode.Disposable {
         }
       },
       onDebugFrame: (payloadKind: BridgePayloadKind, payload: Buffer) => {
-        // 编辑器通道当前的业务消息全部走控制通道；调试载荷由 E4 接入。
+        // 通道按帧头分派（附录 A.2）：通道 0 的消息进 handlePayload，通道 1 的调试载荷
+        // 不属于本任务范围（E5/G1 接入数据面），这里只记录、绝不当作编辑器消息解析。
         this.output.appendLine(`[bridge] ignoring a ${payload.length}-byte debug payload (kind ${payloadKind}) on the editor connection.`);
       },
       onClosed: (error) => {
@@ -212,14 +220,15 @@ export class EditorBridgeServer implements vscode.Disposable {
           this.output.appendLine(`[bridge] connection closed: ${error.message}`);
         }
 
+        // 同步释放：BridgeSocket 在 finish() 里同步回调本方法。
         if (connection !== undefined) {
-          this.connections.delete(connection);
+          this.connections.retire(connection);
         }
       },
     }, { log: (message) => this.output.appendLine(message) });
 
-    connection = { bridge, helloCompleted: false };
-    this.connections.add(connection);
+    // 同步占位；accept 会先剔除已终止（对端已断）的连接，避免误拒重连。
+    connection = this.connections.accept(bridge);
   }
 
   private handlePayload(connection: BridgeConnection, payload: Buffer): void {
@@ -266,7 +275,7 @@ export class EditorBridgeServer implements vscode.Disposable {
     const rejection = evaluateHello(message, {
       role: "vscode",
       token: this.token!,
-      hasActiveConnection: this.hasActiveConnection(connection),
+      hasActiveConnection: this.connections.hasActiveConnection(connection),
       supportsBinary: true,
     });
     if (rejection !== undefined) {
@@ -297,8 +306,8 @@ export class EditorBridgeServer implements vscode.Disposable {
       debugEnabled: true,
       startedAt: this.startedAt,
     };
-    connection.helloCompleted = true;
-    connection.bridge.sendControlJson(welcome);
+    this.connections.markHandshaken(connection);
+    connection.transport.sendControlJson(welcome);
     this.output.appendLine(
       `[bridge] handshake complete endpoint='${message.clientEndpointId}' session=${welcome.sessionId} resumed=${welcome.resumed} payloads=[${payloads.join(",")}]`,
     );
@@ -312,7 +321,7 @@ export class EditorBridgeServer implements vscode.Disposable {
         await this.revealReference(message.reference);
       }
 
-      connection.bridge.sendControlJson({ type: "response", requestId: message.requestId, status: "ok" });
+      connection.transport.sendControlJson({ type: "response", requestId: message.requestId, status: "ok" });
       return;
     } catch (errorValue) {
       const code = errorValue instanceof BridgeProtocolError && isBridgeErrorCode(errorValue.code)
@@ -322,7 +331,7 @@ export class EditorBridgeServer implements vscode.Disposable {
         this.output.appendLine(`[bridge] request '${message.requestId}' failed: ${String(errorValue)}`);
       }
 
-      connection.bridge.sendControlJson({
+      connection.transport.sendControlJson({
         type: "response",
         requestId: message.requestId,
         status: "error",
@@ -410,22 +419,11 @@ export class EditorBridgeServer implements vscode.Disposable {
     return locations[0];
   }
 
-  /** 一对一约束：同端点上除自己以外已有完成握手的连接时拒绝新连接。 */
-  private hasActiveConnection(current: BridgeConnection): boolean {
-    for (const connection of this.connections) {
-      if (connection !== current && connection.helloCompleted) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
   private sendErrorAndClose(connection: BridgeConnection, code: BridgeErrorCode, detail: string): void {
     this.output.appendLine(`[bridge] connection error ${code}: ${detail}`);
-    connection.bridge.sendControlJson({ type: "error", code, detail });
+    connection.transport.sendControlJson({ type: "error", code, detail });
     // 先让已入队的错误帧写完，再断开发送方向。
-    connection.bridge.end();
+    connection.transport.end();
   }
 
   private currentProjectRoots(): readonly string[] {

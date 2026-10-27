@@ -163,7 +163,7 @@ namespace VisualBridge.Editor
                 AppendLog(
                     $"contract client='{client.ContractHash}' server='{client.ServerContractHash}' "
                     + $"payloads=[{string.Join(",", client.ServerPayloads ?? Array.Empty<string>())}] "
-                    + $"session={client.SessionId} resumed={client.Resumed}");
+                    + $"session={client.SessionId} resumed={client.Resumed} debugEnabled={client.ServerDebugEnabled}");
             }
             catch (Exception exception)
             {

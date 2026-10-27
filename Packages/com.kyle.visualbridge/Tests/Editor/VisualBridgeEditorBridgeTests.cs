@@ -227,6 +227,299 @@ namespace VisualBridge.Editor.Tests
         }
 
         [Test]
+        public void OpenRequestRejectsEveryUnnormalizedDocumentPath()
+        {
+            var invalidPaths = new[]
+            {
+                "",
+                "/Config/Game.gamesettings",
+                "C:/Config/Game.gamesettings",
+                "Config\\Game.gamesettings",
+                "Config/../Game.gamesettings",
+                "Config//Game.gamesettings",
+                "Config/Game.gamesettings/",
+                new string('a', 1025),
+            };
+
+            foreach (var documentPath in invalidPaths)
+            {
+                var value = new JObject
+                {
+                    ["type"] = "open",
+                    ["requestId"] = "req-open-invalid",
+                    ["documentPath"] = documentPath,
+                };
+                var exception = Assert.Throws<VisualBridgeIntegrationException>(
+                    () => VisualBridgeEditorBridgeValidator.ValidateMessage(value),
+                    $"documentPath '{documentPath}' must be rejected.");
+                Assert.That(exception.Code, Is.EqualTo("bridge.invalidMessage"), $"documentPath '{documentPath}'");
+                Assert.That(exception.JsonPath, Does.StartWith("$.documentPath"), $"documentPath '{documentPath}'");
+            }
+
+            // 合法路径：规范化、项目相对、正斜杠。
+            Assert.DoesNotThrow(() => VisualBridgeEditorBridgeValidator.ValidateMessage(new JObject
+            {
+                ["type"] = "open",
+                ["requestId"] = "req-open-valid",
+                ["documentPath"] = "Config/Game.gamesettings",
+            }));
+        }
+
+        [Test]
+        public void RevealRequestRejectsUnsupportedReferenceValues()
+        {
+            // 附录 A.5：数字 reference 必须不越安全整数（2^53-1），与 TS 的 Number.isSafeInteger 对齐。
+            var invalidReferences = new object[]
+            {
+                "", true, new JObject(), new JArray(), 1.5, null,
+                9007199254740992L, -9007199254740992L, long.MaxValue, long.MinValue,
+            };
+
+            foreach (var reference in invalidReferences)
+            {
+                var value = new JObject
+                {
+                    ["type"] = "reveal",
+                    ["requestId"] = "req-reveal-invalid",
+                    ["reference"] = reference == null ? JValue.CreateNull() : JToken.FromObject(reference),
+                };
+                var exception = Assert.Throws<VisualBridgeIntegrationException>(
+                    () => VisualBridgeEditorBridgeValidator.ValidateMessage(value),
+                    $"reference '{reference ?? "<null>"}' must be rejected.");
+                Assert.That(exception.Code, Is.EqualTo("bridge.invalidMessage"), $"reference '{reference ?? "<null>"}'");
+                Assert.That(exception.JsonPath, Does.StartWith("$.reference"));
+            }
+
+            // 定位目标只接受非空字符串与整数（附录 A.5 的 referenceValue）。
+            Assert.DoesNotThrow(() => VisualBridgeEditorBridgeValidator.ValidateMessage(new JObject
+            {
+                ["type"] = "reveal",
+                ["requestId"] = "req-reveal-text",
+                ["reference"] = "sample.unity.game.settings.default",
+            }));
+            var numeric = VisualBridgeEditorBridgeValidator.ValidateMessage(new JObject
+            {
+                ["type"] = "reveal",
+                ["requestId"] = "req-reveal-number",
+                ["reference"] = 101,
+            });
+            Assert.That(numeric.ReferenceIsNumber, Is.True);
+            Assert.That(numeric.ReferenceValue, Is.EqualTo("101"));
+
+            // 安全整数边界本身合法：2^53-1 必须通过，证明拒绝的是越界而不是所有大整数。
+            var boundary = VisualBridgeEditorBridgeValidator.ValidateMessage(new JObject
+            {
+                ["type"] = "reveal",
+                ["requestId"] = "req-reveal-boundary",
+                ["reference"] = 9007199254740991L,
+            });
+            Assert.That(boundary.ReferenceIsNumber, Is.True);
+            Assert.That(boundary.ReferenceValue, Is.EqualTo("9007199254740991"));
+        }
+
+        [Test]
+        public void EditorResponseCarriesBothOutcomesAndOnlyRegisteredErrorCodes()
+        {
+            var ok = VisualBridgeEditorBridgeValidator.ValidateMessage(new JObject
+            {
+                ["type"] = "response",
+                ["requestId"] = "req-ok",
+                ["status"] = "ok",
+            });
+            Assert.That(ok.Type, Is.EqualTo(VisualBridgeBridgeMessageType.Response));
+            Assert.That(ok.IsOk, Is.True);
+            Assert.That(ok.RequestId, Is.EqualTo("req-ok"));
+
+            // 资源不存在与"资源存在但无法定位/歧义"都是已登记的可读错误码。
+            foreach (var code in new[] { "bridge.documentUnresolved", "bridge.documentAmbiguous" })
+            {
+                var failure = VisualBridgeEditorBridgeValidator.ValidateMessage(new JObject
+                {
+                    ["type"] = "response",
+                    ["requestId"] = "req-error",
+                    ["status"] = "error",
+                    ["error"] = code,
+                });
+                Assert.That(failure.IsOk, Is.False);
+                Assert.That(failure.ErrorCode, Is.EqualTo(code));
+                // 应答必须能原样上线（序列化后再通过一次严格校验）。
+                Assert.That(failure.ToJson()["status"].Value<string>(), Is.EqualTo("error"));
+            }
+
+            Assert.Throws<VisualBridgeIntegrationException>(() => VisualBridgeEditorBridgeValidator.ValidateMessage(new JObject
+            {
+                ["type"] = "response",
+                ["requestId"] = "req-error",
+                ["status"] = "error",
+                ["error"] = "bridge.unregistered",
+            }));
+            Assert.Throws<VisualBridgeIntegrationException>(() => VisualBridgeEditorBridgeValidator.ValidateMessage(new JObject
+            {
+                ["type"] = "response",
+                ["requestId"] = "req-error",
+                ["status"] = "error",
+            }));
+            Assert.Throws<VisualBridgeIntegrationException>(() => VisualBridgeEditorBridgeValidator.ValidateMessage(new JObject
+            {
+                ["type"] = "response",
+                ["requestId"] = "req-error",
+                ["status"] = "maybe",
+            }));
+            Assert.Throws<VisualBridgeIntegrationException>(() => VisualBridgeEditorBridgeValidator.ValidateMessage(new JObject
+            {
+                ["type"] = "response",
+                ["status"] = "ok",
+            }));
+
+            // 附录 A.5：ok 分支不携带 error（schema 的 ok 分支 additionalProperties:false）。
+            foreach (var errorValue in new JToken[] { "bridge.documentUnresolved", JValue.CreateNull() })
+            {
+                var exception = Assert.Throws<VisualBridgeIntegrationException>(
+                    () => VisualBridgeEditorBridgeValidator.ValidateMessage(new JObject
+                    {
+                        ["type"] = "response",
+                        ["requestId"] = "req-ok",
+                        ["status"] = "ok",
+                        ["error"] = errorValue,
+                    }));
+                Assert.That(exception.Code, Is.EqualTo("bridge.unknownProperty"));
+                Assert.That(exception.JsonPath, Is.EqualTo("$.error"));
+            }
+        }
+
+        [Test]
+        public void ClientSurfacesServerRequestErrorInsteadOfWaitingForTheTimeout()
+        {
+            using (var server = BridgeTestServer.Start(Welcome(generation: 1)))
+            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port, generation: 1), "editor-1234", ""))
+            {
+                Assert.DoesNotThrow(() => client.Connect());
+                server.QueueResponse("{\"type\":\"response\",\"requestId\":\"req-missing-1\",\"status\":\"error\",\"error\":\"bridge.documentUnresolved\"}");
+
+                var stopwatch = Stopwatch.StartNew();
+                var response = client.SendRequest(
+                    VisualBridgeEditorBridgeValidator.CreateOpen("req-missing-1", "Config/DoesNotExist.gamesettings"),
+                    5000);
+                stopwatch.Stop();
+
+                Assert.That(response.IsOk, Is.False, "A missing document must come back as an error response.");
+                Assert.That(response.ErrorCode, Is.EqualTo("bridge.documentUnresolved"), "The error code must stay readable.");
+                Assert.That(stopwatch.ElapsedMilliseconds, Is.LessThan(2000), "The error must not degrade into a silent timeout.");
+                Assert.That(client.State, Is.EqualTo(VisualBridgeBridgeConnectionState.Connected), "A request-level error must not drop the connection.");
+            }
+        }
+
+        [Test]
+        public void ClientIgnoresDebugChannelFramesWhileWaitingForTheEditorResponse()
+        {
+            using (var server = BridgeTestServer.Start(Welcome(generation: 1)))
+            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port, generation: 1), "editor-1234", ""))
+            {
+                Assert.DoesNotThrow(() => client.Connect());
+                // 同一 requestId 在通道 1 上是调试查询的应答（附录 A.2/A.5）：
+                // 通道位不同就不属于编辑器请求空间，客户端不得把它当作本次请求的应答。
+                server.QueueDebugFrame("{\"type\":\"response\",\"requestId\":\"req-shared-1\",\"status\":\"ok\"}");
+                server.QueueResponse("{\"type\":\"response\",\"requestId\":\"req-shared-1\",\"status\":\"error\",\"error\":\"bridge.documentUnresolved\"}");
+
+                var response = client.SendRequest(
+                    VisualBridgeEditorBridgeValidator.CreateOpen("req-shared-1", "Config/Game.gamesettings"),
+                    5000);
+
+                Assert.That(response.ErrorCode, Is.EqualTo("bridge.documentUnresolved"),
+                    "The editor response must come from channel 0, never from a channel 1 debug response.");
+                Assert.That(server.GetReceivedRequests().Length, Is.EqualTo(1));
+            }
+        }
+
+        [Test]
+        public void SessionStateRestoresTheSameSessionIdAfterADomainReload()
+        {
+            VisualBridgeSessionState.Clear();
+            try
+            {
+                var persisted = VisualBridgeSessionState.Empty
+                    .WithConnection(SessionId, "D:/Temp/visualbridge-bridge/window.json", true);
+                persisted.Save();
+
+                // Domain Reload 后托管字段全部丢失，只剩 SessionState。
+                var restored = VisualBridgeSessionState.Load();
+                Assert.That(restored.SessionId, Is.EqualTo(SessionId));
+                Assert.That(restored.RecordPath, Is.EqualTo("D:/Temp/visualbridge-bridge/window.json"));
+                Assert.That(restored.DebugEnabled, Is.True);
+                Assert.That(restored.HasSession, Is.True);
+
+                VisualBridgeSessionState.Clear();
+                Assert.That(VisualBridgeSessionState.Load().HasSession, Is.False);
+                Assert.That(VisualBridgeSessionState.Load().SessionId, Is.Empty);
+            }
+            finally
+            {
+                VisualBridgeSessionState.Clear();
+            }
+        }
+
+        [Test]
+        public void SessionStateMigratesThePreUnificationResumeKey()
+        {
+            VisualBridgeSessionState.Clear();
+            try
+            {
+                SessionState.SetString("VisualBridge.EditorBridge.ResumeSessionId", SessionId);
+                Assert.That(VisualBridgeSessionState.Load().SessionId, Is.EqualTo(SessionId),
+                    "An editor that reloads during the upgrade must keep its session.");
+
+                VisualBridgeSessionState.Load().Save();
+                Assert.That(SessionState.GetString("VisualBridge.EditorBridge.ResumeSessionId", string.Empty), Is.Empty,
+                    "Saving must not leave a second session identity source behind.");
+            }
+            finally
+            {
+                VisualBridgeSessionState.Clear();
+            }
+        }
+
+        [Test]
+        public void ServiceResumesTheRememberedSessionOnReconnect()
+        {
+            VisualBridgeSessionState.Clear();
+            using (var firstServer = BridgeTestServer.Start(Welcome(generation: 1)))
+            using (var secondServer = BridgeTestServer.Start(Welcome(generation: 2, resumed: true)))
+            {
+                try
+                {
+                    var service = VisualBridgeEditorBridgeService.Instance;
+                    service.Disconnect();
+
+                    var firstWindow = TestWindow(firstServer.Port, generation: 1);
+                    service.Connect(firstWindow);
+                    Assert.That(service.Session.SessionId, Is.EqualTo(SessionId),
+                        "The connected session identity must be persisted for the next connect.");
+
+                    var firstHello = (JObject)JToken.Parse(firstServer.ReceivedHello);
+                    Assert.That(firstHello.Property("resumeSessionId"), Is.Null, "A fresh editor session must not resume.");
+
+                    service.Disconnect();
+                    // 模拟 Domain Reload：只有 SessionState 里的会话身份存活。
+                    Assert.That(VisualBridgeSessionState.Load().SessionId, Is.EqualTo(SessionId));
+
+                    var secondWindow = TestWindow(secondServer.Port, generation: 2);
+                    var client = service.Connect(secondWindow);
+                    Assert.That(client.Resumed, Is.True);
+
+                    var secondHello = (JObject)JToken.Parse(secondServer.ReceivedHello);
+                    Assert.That(secondHello["resumeSessionId"].Value<string>(), Is.EqualTo(SessionId),
+                        "A reconnect must resume the same sessionId.");
+                    Assert.That(service.Session.DebugEnabled, Is.True);
+                }
+                finally
+                {
+                    VisualBridgeEditorBridgeService.Instance.Disconnect();
+                    VisualBridgeSessionState.Clear();
+                }
+            }
+        }
+
+        [Test]
         public void DiscoveryFiltersStaleHeartbeatAndDeadPidRecords()
         {
             if (Environment.OSVersion.Platform != PlatformID.Win32NT)
@@ -417,6 +710,7 @@ namespace VisualBridge.Editor.Tests
             private readonly string thenSend;
             private readonly object gate = new object();
             private readonly Queue<string> pending = new Queue<string>();
+            private readonly Queue<string> pendingDebug = new Queue<string>();
             private readonly System.Collections.Concurrent.ConcurrentQueue<string> received = new System.Collections.Concurrent.ConcurrentQueue<string>();
             private readonly VisualBridge.Runtime.VisualBridgeFrameReader frameReader =
                 new VisualBridge.Runtime.VisualBridgeFrameReader();
@@ -457,6 +751,15 @@ namespace VisualBridge.Editor.Tests
                 }
             }
 
+            /// <summary>在下一个请求的应答之前插入一条通道 1 帧（模拟调试数据面）。</summary>
+            public void QueueDebugFrame(string line)
+            {
+                lock (gate)
+                {
+                    pendingDebug.Enqueue(line);
+                }
+            }
+
             public void CloseConnection()
             {
                 TcpClient connected;
@@ -493,6 +796,13 @@ namespace VisualBridge.Editor.Tests
                         received.Enqueue(line);
                         lock (gate)
                         {
+                            // 先回放通道 1 的调试帧，再回放通道 0 的编辑器应答：
+                            // 客户端必须只认后者（附录 A.2/A.5 的 requestId 空间隔离）。
+                            while (pendingDebug.Count > 0)
+                            {
+                                Send(pendingDebug.Dequeue(), VisualBridge.Runtime.VisualBridgeChannel.Debug);
+                            }
+
                             while (pending.Count > 0)
                             {
                                 Send(pending.Dequeue());
@@ -514,10 +824,12 @@ namespace VisualBridge.Editor.Tests
                 }
             }
 
-            private void Send(string line)
+            private void Send(
+                string line,
+                VisualBridge.Runtime.VisualBridgeChannel channel = VisualBridge.Runtime.VisualBridgeChannel.Editor)
             {
                 var frame = VisualBridge.Runtime.VisualBridgeFraming.EncodeFrame(
-                    VisualBridge.Runtime.VisualBridgeChannel.Editor,
+                    channel,
                     VisualBridge.Runtime.VisualBridgePayloadKind.Json,
                     Encoding.UTF8.GetBytes(line));
                 stream.Write(frame, 0, frame.Length);

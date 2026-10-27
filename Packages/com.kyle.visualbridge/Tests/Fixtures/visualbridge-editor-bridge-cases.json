@@ -385,6 +385,115 @@
         "generation": 1,
         "windowId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f"
       }
+    },
+    {
+      "label": "open request rejects a backslash path",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "type": "open",
+        "requestId": "req-open-2",
+        "documentPath": "Config\\Game.gamesettings"
+      }
+    },
+    {
+      "label": "open request rejects a parent segment",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "type": "open",
+        "requestId": "req-open-3",
+        "documentPath": "Config/../Game.gamesettings"
+      }
+    },
+    {
+      "label": "open request rejects an empty document path",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "type": "open",
+        "requestId": "req-open-4",
+        "documentPath": ""
+      }
+    },
+    {
+      "label": "open request rejects a drive-qualified path",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "type": "open",
+        "requestId": "req-open-5",
+        "documentPath": "C:/Config/Game.gamesettings"
+      }
+    },
+    {
+      "label": "open request rejects a trailing separator",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "type": "open",
+        "requestId": "req-open-6",
+        "documentPath": "Config/"
+      }
+    },
+    {
+      "label": "reveal request rejects a boolean reference",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "type": "reveal",
+        "requestId": "req-reveal-2",
+        "reference": true
+      }
+    },
+    {
+      "label": "reveal request rejects an object reference",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "type": "reveal",
+        "requestId": "req-reveal-3",
+        "reference": { "documentPath": "Config/Game.gamesettings" }
+      }
+    },
+    {
+      "label": "reveal request without a reference target is rejected",
+      "valid": false,
+      "loaderCode": "bridge.missingProperty",
+      "value": {
+        "type": "reveal",
+        "requestId": "req-reveal-4"
+      }
+    },
+    {
+      "label": "response without a request id is rejected",
+      "valid": false,
+      "loaderCode": "bridge.missingProperty",
+      "value": {
+        "type": "response",
+        "status": "ok"
+      }
+    },
+    {
+      "label": "response ok branch rejects an error key",
+      "valid": false,
+      "loaderCode": "bridge.unknownProperty",
+      "value": {
+        "type": "response",
+        "requestId": "req-response-1",
+        "status": "ok",
+        "error": "bridge.documentUnresolved"
+      }
+    },
+    {
+      "label": "response rejects an unknown status",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "type": "response",
+        "requestId": "req-response-2",
+        "status": "maybe"
+      }
     }
   ]
 }
