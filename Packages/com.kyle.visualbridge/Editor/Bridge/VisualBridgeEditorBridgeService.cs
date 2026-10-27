@@ -90,6 +90,15 @@ namespace VisualBridge.Editor
 
             Disconnect();
             var previousSession = Session;
+            if (previousSession.IsReconnectGraceExpired(DateTime.UtcNow))
+            {
+                // 超过 15 s 宽限（附录 A.8）：旧会话不可续接。先清空本地会话
+                // （sessionId / recordPath / debugEnabled / lastSeen），本次 hello 不带
+                // resumeSessionId，服务端会给出新 sessionId。
+                VisualBridgeSessionState.Clear();
+                previousSession = VisualBridgeSessionState.Empty;
+            }
+
             var contractHash = VisualBridgeDebugContractFingerprint.Read(UnityProjectRoot());
             var instance = new VisualBridgeEditorBridgeClient(
                 window,
@@ -114,6 +123,24 @@ namespace VisualBridge.Editor
             client = instance;
             ConnectedWindow = window;
             return client;
+        }
+
+        /// <summary>
+        /// 连接仍存活时刷新会话的最后存活时刻（供 <see cref="VisualBridgeEditorBridgeAutoConnect"/>
+        /// 的主线程节拍调用）。只写 SessionState，不改内存连接。
+        /// </summary>
+        internal void TouchSessionLiveness(DateTime utcNow)
+        {
+            if (!IsConnected)
+            {
+                return;
+            }
+
+            var session = Session;
+            if (session.HasSession)
+            {
+                session.WithLastSeen(utcNow).Save();
+            }
         }
 
         public void Disconnect()

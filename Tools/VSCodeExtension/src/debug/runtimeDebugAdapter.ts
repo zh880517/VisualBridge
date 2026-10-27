@@ -167,8 +167,9 @@ export class RuntimeDebugAdapter implements vscode.DebugAdapter {
     void (async () => {
       try {
         const welcome = await this.service.connect(this.instance);
-        if (!welcome.capabilities.includes("lease") || !welcome.capabilities.includes("snapshot")) {
-          throw new Error(`Runtime instance '${welcome.instanceId}' does not provide the lease and snapshot capabilities.`);
+        // 协议版本 4 隐含完整能力集（E5 起不再协商 capabilities）：只需确认载荷里有 json。
+        if (!welcome.payloads.includes("json")) {
+          throw new Error(`Runtime instance '${welcome.endpointId}' does not accept JSON payloads.`);
         }
 
         await this.service.acquireLease();

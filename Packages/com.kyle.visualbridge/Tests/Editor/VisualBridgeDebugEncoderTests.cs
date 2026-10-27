@@ -983,52 +983,59 @@ namespace VisualBridge.Editor.Tests
                 }
             }
 
-            public void SendCreate(string instanceId, string category, string resName, string debugInfo,
+            public bool SendCreate(string instanceId, string category, string resName, string debugInfo,
                 ushort instanceSlot)
             {
                 EnsureConnected();
                 Creates.Add((instanceId, category, resName, debugInfo, instanceSlot));
+                return true;
             }
 
-            public void SendFinish(string instanceId, ushort instanceSlot)
+            public bool SendFinish(string instanceId, ushort instanceSlot)
             {
                 EnsureConnected();
                 Finishes.Add((instanceId, instanceSlot));
+                return true;
             }
 
-            public void SendEvent(ushort instanceSlot, ushort methodId, string category, string iface, string method,
+            public bool SendEvent(ushort instanceSlot, ushort methodId, string category, string iface, string method,
                 long frame, VisualBridgeDebugEncodedMessage message)
             {
                 EnsureConnected();
                 Events.Add((instanceSlot, methodId, category, iface, method, frame, message));
                 Log.Add("event:" + methodId.ToString(CultureInfo.InvariantCulture));
+                return true;
             }
 
-            public void SendResult(uint requestSeq, VisualBridgeDebugEncodedMessage message)
+            public bool SendResult(uint requestSeq, VisualBridgeDebugEncodedMessage message)
             {
                 EnsureConnected();
                 Results.Add((requestSeq, message));
                 Log.Add("result:" + requestSeq.ToString(CultureInfo.InvariantCulture));
+                return true;
             }
 
-            public void SendControl(VisualBridgeDebugEncodedMessage message)
+            public bool SendControl(VisualBridgeDebugEncodedMessage message)
             {
                 EnsureConnected();
                 Controls.Add(message);
                 var json = JObject.Parse(Encoding.UTF8.GetString(message.Payload.ToArray()));
                 Log.Add("control:" + ((long)json["frame"]).ToString(CultureInfo.InvariantCulture));
+                return true;
             }
 
-            public void SendReject(uint requestSeq, string reason)
+            public bool SendReject(uint requestSeq, string reason)
             {
                 EnsureConnected();
                 Rejects.Add((requestSeq, reason));
+                return true;
             }
 
-            public void SendQueryError(uint requestSeq, string code, string detail)
+            public bool SendQueryError(uint requestSeq, string code, string detail)
             {
                 EnsureConnected();
                 QueryErrors.Add((requestSeq, code, detail));
+                return true;
             }
 
             private void EnsureConnected()

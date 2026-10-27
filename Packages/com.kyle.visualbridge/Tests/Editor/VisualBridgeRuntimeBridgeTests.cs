@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
@@ -10,6 +11,7 @@ using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
+using VisualBridge.Diagnostics.Bridge;
 
 namespace VisualBridge.Editor.Tests
 {
@@ -85,7 +87,8 @@ namespace VisualBridge.Editor.Tests
             Assert.That(fixtureAsset, Is.Not.Null);
             var root = ParseWithoutDateCoercion(fixtureAsset.text);
             var cases = (JArray)root["cases"];
-            Assert.That(cases.Count, Is.EqualTo(56));
+            // 57 = E5 的既有 56 条 + F2 的 runtime.alreadyConnected 连接级错误用例。
+            Assert.That(cases.Count, Is.EqualTo(57));
             foreach (var testCase in cases.Cast<JObject>())
             {
                 var value = testCase["value"] as JObject;
@@ -132,15 +135,19 @@ namespace VisualBridge.Editor.Tests
                 using (var server = StartServer(artifactsRoot, "editor-41001", generation: 3))
                 using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
                 {
-                    client.Send(HelloLine(ValidToken, new[] { "snapshot", "events" }));
+                    client.Send(HelloLine(ValidToken));
                     var welcome = client.ReadMessage();
                     Assert.That(welcome.Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
-                    Assert.That(welcome.InstanceId, Is.EqualTo("editor-41001"));
-                    Assert.That(welcome.Kind, Is.EqualTo("editor-play"));
+                    Assert.That(welcome.EndpointId, Is.EqualTo("editor-41001"));
+                    Assert.That(welcome.ConnectType, Is.EqualTo("editor-player"));
                     Assert.That(welcome.Generation, Is.EqualTo(3));
                     Assert.That(welcome.ProtocolVersion, Is.EqualTo(4));
-                    Assert.That(welcome.CoreVersion, Is.EqualTo(1));
-                    Assert.That(welcome.Capabilities, Is.EquivalentTo(new[] { "snapshot", "events", "lease", "sources", "graphExecution" }));
+                    // 会话身份：sessionId = endpointId#bootId，首次握手不算续接。
+                    Assert.That(welcome.SessionId, Is.EqualTo(server.SessionId));
+                    Assert.That(welcome.BootId, Is.EqualTo(server.BootId));
+                    Assert.That(welcome.Resumed, Is.False);
+                    Assert.That(welcome.ContractHash, Is.Empty);
+                    Assert.That(welcome.Payloads, Is.EquivalentTo(new[] { "json" }));
                     Assert.That(welcome.StartedAt, Is.Not.Null.And.Not.Empty);
 
                     client.Send(RequestLine("req-1", null));
@@ -178,7 +185,7 @@ namespace VisualBridge.Editor.Tests
                 using (var server = StartServer(artifactsRoot, "editor-41002"))
                 using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
                 {
-                    client.Send(HelloLine(ValidToken, new[] { "snapshot" }));
+                    client.Send(HelloLine(ValidToken));
                     Assert.That(client.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
 
                     // 未知 action 是请求级错误：response error，连接保持。
@@ -209,7 +216,7 @@ namespace VisualBridge.Editor.Tests
                 using (var server = StartServer(artifactsRoot, "editor-41003"))
                 using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
                 {
-                    client.Send(HelloLine(OtherToken, new[] { "snapshot" }));
+                    client.Send(HelloLine(OtherToken));
                     var error = client.ReadMessage();
                     Assert.That(error.Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Error));
                     Assert.That(error.ErrorCode, Is.EqualTo("runtime.invalidToken"));
@@ -220,6 +227,392 @@ namespace VisualBridge.Editor.Tests
             {
                 Directory.Delete(artifactsRoot, true);
             }
+        }
+
+        [Test]
+        public void RuntimeServerResumesOnlyMatchingSessionId()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-41010"))
+                using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                {
+                    // 同一会话身份再来一次：必须判 resumed，且 sessionId/bootId 不变。
+                    client.Send(HelloLine(ValidToken, null, server.SessionId));
+                    var resumed = client.ReadMessage();
+                    Assert.That(resumed.Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+                    Assert.That(resumed.Resumed, Is.True);
+                    Assert.That(resumed.SessionId, Is.EqualTo(server.SessionId));
+                    Assert.That(resumed.BootId, Is.EqualTo(server.BootId));
+                }
+
+                using (var server = StartServer(artifactsRoot, "editor-41011"))
+                using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                {
+                    // 伪造的 resumeSessionId 不得被当成续接（否则会复用陌生会话）。
+                    client.Send(HelloLine(ValidToken, null, "player-1#bogus"));
+                    var welcome = client.ReadMessage();
+                    Assert.That(welcome.Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+                    Assert.That(welcome.Resumed, Is.False);
+                    Assert.That(welcome.SessionId, Is.EqualTo(server.SessionId));
+                }
+            }
+            finally
+            {
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        [Test]
+        public void RuntimeServerExpiresTheReconnectGraceAndRotatesTheSession()
+        {
+            // 假时钟：14.9 s / 15.1 s 边界不真等 15 秒，注入 Func<DateTime> 即可。
+            var artifactsRoot = CreateTempArtifactsRoot();
+            var now = new DateTime(2026, 10, 27, 12, 0, 0, DateTimeKind.Utc);
+            try
+            {
+                // 14.9 s：仍在宽限内 → resumed=true，sessionId/bootId 不变。
+                using (var server = new VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer(
+                    "editor-43001", "editor-play", 0, ValidToken, artifactsRoot, 1, null, false, 0, 0, null, () => now))
+                {
+                    var sessionBefore = server.SessionId;
+                    var bootBefore = server.BootId;
+                    ConnectAndWaitForDisconnect(server, ValidToken);
+                    now += TimeSpan.FromMilliseconds(14900);
+
+                    using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                    {
+                        client.Send(HelloLine(ValidToken, null, sessionBefore));
+                        var welcome = client.ReadMessage();
+                        Assert.That(welcome.Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+                        Assert.That(welcome.Resumed, Is.True, "14.9 s is inside the 15 s reconnect grace.");
+                        Assert.That(welcome.SessionId, Is.EqualTo(sessionBefore), "The sessionId must not change inside the grace.");
+                        Assert.That(welcome.BootId, Is.EqualTo(bootBefore));
+                        Assert.That(server.SessionId, Is.EqualTo(sessionBefore));
+                    }
+                }
+
+                // 15.1 s：超过宽限 → resumed=false，且换发新的 sessionId（新旧不等）。
+                now = new DateTime(2026, 10, 27, 12, 0, 0, DateTimeKind.Utc);
+                using (var server = new VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer(
+                    "editor-43002", "editor-play", 0, ValidToken, artifactsRoot, 1, null, false, 0, 0, null, () => now))
+                {
+                    var sessionBefore = server.SessionId;
+                    ConnectAndWaitForDisconnect(server, ValidToken);
+                    now += TimeSpan.FromMilliseconds(15100);
+
+                    using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                    {
+                        client.Send(HelloLine(ValidToken, null, sessionBefore));
+                        var welcome = client.ReadMessage();
+                        Assert.That(welcome.Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+                        Assert.That(welcome.Resumed, Is.False, "15.1 s is past the 15 s reconnect grace.");
+                        Assert.That(welcome.SessionId, Is.Not.EqualTo(sessionBefore), "An expired grace must issue a new sessionId.");
+                        Assert.That(welcome.SessionId, Is.EqualTo(server.SessionId));
+                    }
+                }
+            }
+            finally
+            {
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        /// <summary>连一条、握手、断开，并等到服务端真的观察到断开（宽限起点就绪）。</summary>
+        private static void ConnectAndWaitForDisconnect(
+            VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer server, string token)
+        {
+            using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
+            {
+                client.Send(HelloLine(token));
+                Assert.That(client.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+            }
+
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline
+                && (server.HandshakenConnectionCount != 0 || !server.LastDisconnectedAtUtc.HasValue))
+            {
+                Thread.Sleep(10);
+            }
+
+            Assert.That(server.HandshakenConnectionCount, Is.EqualTo(0), "The server must see the disconnect.");
+            Assert.That(server.LastDisconnectedAtUtc, Is.Not.Null, "The grace must start from the observed disconnect.");
+        }
+
+        [Test]
+        public void RuntimeServerReturnsAnExplicitErrorForAnOversizedResponse()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                // 一份超过 MaxMessageBytes（1 MB）的合法产物：响应装不下时不得静默丢弃，
+                // 否则客户端会一直等到请求超时（F6）。
+                WriteArtifact(
+                    artifactsRoot,
+                    "manifest.json",
+                    "documents/p1/sample.test.big/sample.test.big.default.vbcompiled.json",
+                    "visualbridge.structured.compiled",
+                    "sample.test.big",
+                    "sample.test.big.default",
+                    "Config/big.gamesettings",
+                    new string('4', 64),
+                    new string('x', 1_200_000));
+
+                using (var server = StartServer(artifactsRoot, "editor-43003"))
+                using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                {
+                    client.Send(HelloLine(ValidToken));
+                    Assert.That(client.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+
+                    client.Send(RequestLine("req-big", null));
+                    var response = client.ReadMessage();
+                    Assert.That(response.IsOk, Is.False, "An oversized response must be answered with an explicit error.");
+                    Assert.That(response.ErrorCode, Is.EqualTo("runtime.internalError"));
+                    Assert.That(response.ErrorDetail, Does.Contain("MaxMessageBytes"));
+
+                    // 错误是请求级的：连接必须还能继续服务下一条请求（不是靠超时才发现断了）。
+                    client.Send(LeaseRequestLine("req-lease-after", "acquireLease"));
+                    var lease = client.ReadMessage();
+                    Assert.That(lease.IsOk, Is.True, "The connection must stay usable after an oversized response error.");
+                }
+            }
+            finally
+            {
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        [Test]
+        public void RuntimeServerPlayerAcceptsHelloWithoutToken()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                // Player 无认证（附录 E.3）：记录 token 为空，hello 不带 token 也必须接受。
+                using (var server = new VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer(
+                    "player-41012", "player", 0, null, artifactsRoot, 1))
+                using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                {
+                    client.Send(HelloLine(null));
+                    var welcome = client.ReadMessage();
+                    Assert.That(welcome.Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+                    Assert.That(welcome.ConnectType, Is.EqualTo("player"));
+                    Assert.That(welcome.EndpointId, Is.EqualTo("player-41012"));
+                }
+            }
+            finally
+            {
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        [Test]
+        public void PlayerBootstrapStartsAnUnauthenticatedListenerAndInstallsThePump()
+        {
+            // 只能证明"Player 引导这条代码路径"在进程内可运行：真正的 Player 构建 E2E
+            // 不在本任务验证范围内（报告里如实说明）。
+            var artifactsRoot = CreateTempArtifactsRoot();
+            var listeners = ReservePortBlock(1, out var firstPort);
+            var previousRange = Environment.GetEnvironmentVariable(
+                VisualBridgeRuntimeBridgePlayerBootstrap.PortRangeEnvironmentVariable);
+            var previousAutoListen = Environment.GetEnvironmentVariable(
+                VisualBridgeRuntimeBridgePlayerBootstrap.AutoListenEnvironmentVariable);
+            try
+            {
+                listeners[0].Stop();
+                Environment.SetEnvironmentVariable(
+                    VisualBridgeRuntimeBridgePlayerBootstrap.PortRangeEnvironmentVariable, $"{firstPort}-{firstPort}");
+                Environment.SetEnvironmentVariable(
+                    VisualBridgeRuntimeBridgePlayerBootstrap.AutoListenEnvironmentVariable, "1");
+
+                VisualBridgeRuntimeBridgePlayerBootstrap.ResolvePortRange(out var rangeStart, out var rangeEnd);
+                Assert.That(rangeStart, Is.EqualTo(firstPort));
+                Assert.That(rangeEnd, Is.EqualTo(firstPort));
+                Assert.That(VisualBridgeRuntimeBridgePlayerBootstrap.AutoListenInPlayer, Is.True);
+
+                Assert.That(
+                    VisualBridgeRuntimeBridgePlayerBootstrap.TryStart(0, out var detail, artifactsRoot),
+                    Is.True,
+                    detail);
+                var server = VisualBridgeRuntimeBridgePlayerBootstrap.CurrentServer;
+                Assert.That(server, Is.Not.Null);
+                Assert.That(server.InstanceId, Does.StartWith(VisualBridgeRuntimeBridgePlayerBootstrap.InstancePrefix));
+                Assert.That(server.Token, Is.Empty, "The player leg is unauthenticated (Appendix E.3).");
+                Assert.That(server.SessionId, Does.StartWith(server.InstanceId + "#"));
+                Assert.That(server.TcpPort, Is.EqualTo(firstPort));
+                Assert.That(VisualBridgeDebugQueryPump.IsPlayerLoopInstalled, Is.True,
+                    "The player bootstrap must install the debug query pump.");
+
+                // 无 token 的 hello 必须被接受，connectType 为 player。
+                using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                {
+                    client.Send(HelloLine(null));
+                    var welcome = client.ReadMessage();
+                    Assert.That(welcome.Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+                    Assert.That(welcome.ConnectType, Is.EqualTo("player"));
+                }
+            }
+            finally
+            {
+                VisualBridgeRuntimeBridgePlayerBootstrap.Stop();
+                Environment.SetEnvironmentVariable(
+                    VisualBridgeRuntimeBridgePlayerBootstrap.PortRangeEnvironmentVariable, previousRange);
+                Environment.SetEnvironmentVariable(
+                    VisualBridgeRuntimeBridgePlayerBootstrap.AutoListenEnvironmentVariable, previousAutoListen);
+                foreach (var listener in listeners)
+                {
+                    listener.Stop();
+                }
+
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        [Test]
+        public void PlayerBootstrapHonoursTheAutoListenSwitchAndRejectsInvalidPortRanges()
+        {
+            var previousRange = Environment.GetEnvironmentVariable(
+                VisualBridgeRuntimeBridgePlayerBootstrap.PortRangeEnvironmentVariable);
+            var previousAutoListen = Environment.GetEnvironmentVariable(
+                VisualBridgeRuntimeBridgePlayerBootstrap.AutoListenEnvironmentVariable);
+            try
+            {
+                Environment.SetEnvironmentVariable(
+                    VisualBridgeRuntimeBridgePlayerBootstrap.AutoListenEnvironmentVariable, "0");
+                Assert.That(VisualBridgeRuntimeBridgePlayerBootstrap.AutoListenInPlayer, Is.False,
+                    "VISUALBRIDGE_RUNTIME_AUTO_LISTEN=0 must disable the player listener.");
+
+                Environment.SetEnvironmentVariable(
+                    VisualBridgeRuntimeBridgePlayerBootstrap.AutoListenEnvironmentVariable, null);
+                Assert.That(VisualBridgeRuntimeBridgePlayerBootstrap.AutoListenInPlayer, Is.True,
+                    "AutoListenInPlayer defaults to on (Appendix A.8).");
+
+                Environment.SetEnvironmentVariable(
+                    VisualBridgeRuntimeBridgePlayerBootstrap.PortRangeEnvironmentVariable, "not-a-range");
+                VisualBridgeRuntimeBridgePlayerBootstrap.ResolvePortRange(out var rangeStart, out var rangeEnd);
+                Assert.That(rangeStart, Is.EqualTo(VisualBridgeRuntimeBridgePlayerBootstrap.DefaultPortRangeStart));
+                Assert.That(rangeEnd, Is.EqualTo(VisualBridgeRuntimeBridgePlayerBootstrap.DefaultPortRangeEnd));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(
+                    VisualBridgeRuntimeBridgePlayerBootstrap.PortRangeEnvironmentVariable, previousRange);
+                Environment.SetEnvironmentVariable(
+                    VisualBridgeRuntimeBridgePlayerBootstrap.AutoListenEnvironmentVariable, previousAutoListen);
+            }
+        }
+
+        [Test]
+        public void RuntimeServerPicksFirstFreePortInRange()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            var listeners = ReservePortBlock(3, out var firstPort);
+            try
+            {
+                // 故意空出中间一个端口：范围扫描必须按序选它，而不是跳到随机端口。
+                listeners[1].Stop();
+                using (var server = new VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer(
+                    "player-41013", "player", 0, null, artifactsRoot, 1, null, false, firstPort, firstPort + 2))
+                {
+                    Assert.That(server.TcpPort, Is.EqualTo(firstPort + 1));
+                    Assert.That(server.ListenAddress, Is.EqualTo(IPAddress.Loopback));
+                }
+            }
+            finally
+            {
+                foreach (var listener in listeners)
+                {
+                    listener.Stop();
+                }
+
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        [Test]
+        public void RuntimeServerFailsWhenPortRangeIsExhausted()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            var listeners = ReservePortBlock(2, out var firstPort);
+            try
+            {
+                var exception = Assert.Throws<InvalidOperationException>(() =>
+                {
+                    // 整段被占用：必须显式失败并停止，而不是无限重试或悄悄换端口。
+                    using (new VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer(
+                        "player-41014", "player", 0, null, artifactsRoot, 1, null, false, firstPort, firstPort + 1))
+                    {
+                    }
+                });
+                Assert.That(exception.Message, Does.Contain("No free runtime bridge port"));
+            }
+            finally
+            {
+                foreach (var listener in listeners)
+                {
+                    listener.Stop();
+                }
+
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        [Test]
+        public void RuntimeServerBindsAllInterfacesForPlayerMode()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            var listeners = ReservePortBlock(1, out var firstPort);
+            try
+            {
+                listeners[0].Stop();
+                using (var server = new VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer(
+                    "player-41015", "player", 0, null, artifactsRoot, 1, null, true, firstPort, firstPort + 1))
+                {
+                    // Player：BindAllInterfaces（附录 A.8）——监听 0.0.0.0 而不是回环。
+                    Assert.That(server.ListenAddress, Is.EqualTo(IPAddress.Any));
+                    Assert.That(server.TcpPort, Is.EqualTo(firstPort));
+                }
+            }
+            finally
+            {
+                foreach (var listener in listeners)
+                {
+                    listener.Stop();
+                }
+
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        /// <summary>占用一段连续回环端口；返回的监听器由调用方决定哪些保留、哪些释放。</summary>
+        private static List<TcpListener> ReservePortBlock(int count, out int firstPort)
+        {
+            for (var candidate = 31000; candidate < 33000; candidate++)
+            {
+                var listeners = new List<TcpListener>(count);
+                try
+                {
+                    for (var offset = 0; offset < count; offset++)
+                    {
+                        var listener = new TcpListener(IPAddress.Loopback, candidate + offset);
+                        listener.Start();
+                        listeners.Add(listener);
+                    }
+
+                    firstPort = candidate;
+                    return listeners;
+                }
+                catch (SocketException)
+                {
+                    foreach (var listener in listeners)
+                    {
+                        listener.Stop();
+                    }
+                }
+            }
+
+            throw new InvalidOperationException("No free contiguous loopback port block found.");
         }
 
         [Test]
@@ -274,8 +667,9 @@ namespace VisualBridge.Editor.Tests
                 using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
                 {
                     client.Send(
-                        "{\"type\":\"hello\",\"protocolVersion\":2,\"coreVersion\":1,\"token\":\"" + ValidToken
-                        + "\",\"clientInstanceId\":\"" + ClientInstanceId + "\",\"capabilities\":[\"snapshot\"]}");
+                        "{\"type\":\"hello\",\"protocolVersion\":2,\"role\":\"vscode\",\"clientEndpointId\":\""
+                        + ClientInstanceId + "\",\"contractHash\":\"\",\"payloads\":[\"json\"],\"token\":\""
+                        + ValidToken + "\"}");
                     var error = client.ReadMessage();
                     Assert.That(error.ErrorCode, Is.EqualTo("runtime.protocolVersionMismatch"));
                     Assert.That(client.IsDisconnected(), Is.True);
@@ -288,26 +682,37 @@ namespace VisualBridge.Editor.Tests
         }
 
         [Test]
-        public void RuntimeServerAcceptsConcurrentClients()
+        public void RuntimeServerRejectsASecondPlayerClientAndKeepsTheFirst()
         {
+            // Player 腿监听 0.0.0.0 且无认证（附录 E.3）：同一时刻只接纳一条连接，
+            // 第二条回 runtime.alreadyConnected 后断开，第一条必须原样保留。
             var artifactsRoot = CreateTempArtifactsRoot();
             try
             {
-                using (var server = StartServer(artifactsRoot, "editor-41007"))
+                using (var server = new VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer(
+                    "player-41007", "player", 0, null, artifactsRoot, 1))
                 using (var first = RuntimeBridgeTestClient.Connect(server.TcpPort))
-                using (var second = RuntimeBridgeTestClient.Connect(server.TcpPort))
                 {
-                    first.Send(HelloLine(ValidToken, new[] { "snapshot" }));
-                    second.Send(HelloLine(ValidToken, new[] { "snapshot" }));
-                    Assert.That(first.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
-                    Assert.That(second.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+                    first.Send(HelloLine(null, ClientInstanceId));
+                    var welcome = first.ReadMessage();
+                    Assert.That(welcome.Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+                    Assert.That(welcome.SessionId, Is.EqualTo(server.SessionId));
 
-                    first.Send(RequestLine("req-c1", null));
-                    second.Send(RequestLine("req-c2", null));
-                    var firstResponse = first.ReadMessage();
-                    var secondResponse = second.ReadMessage();
-                    Assert.That(firstResponse.IsOk && firstResponse.Documents.Count == 2, Is.True);
-                    Assert.That(secondResponse.IsOk && secondResponse.Documents.Count == 2, Is.True);
+                    using (var second = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                    {
+                        second.Send(HelloLine(null, ClientInstanceIdB));
+                        var rejected = second.ReadMessage();
+                        Assert.That(rejected.Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Error));
+                        Assert.That(rejected.ErrorCode, Is.EqualTo("runtime.alreadyConnected"));
+                        Assert.That(second.IsDisconnected(), Is.True, "The rejected connection must be closed.");
+                        Assert.That(server.HandshakenConnectionCount, Is.EqualTo(1), "The first connection must be kept.");
+                    }
+
+                    // 第一条仍可用：发一次 getSnapshot 证明（不是"两条都活着"的旧语义）。
+                    first.Send(RequestLine("req-after-reject", null));
+                    var snapshot = first.ReadMessage();
+                    Assert.That(snapshot.IsOk, Is.True);
+                    Assert.That(snapshot.Documents.Count, Is.EqualTo(2));
                 }
             }
             finally
@@ -331,7 +736,7 @@ namespace VisualBridge.Editor.Tests
                 using (var server = StartServer(artifactsRoot, "editor-41009"))
                 using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
                 {
-                    client.Send(HelloLine(ValidToken, new[] { "snapshot", "lease" }));
+                    client.Send(HelloLine(ValidToken));
                     Assert.That(client.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
 
                     // 校验失败是连接级错误：回发 invalidMessage 后断开。
@@ -358,8 +763,8 @@ namespace VisualBridge.Editor.Tests
                 using (var first = RuntimeBridgeTestClient.Connect(server.TcpPort))
                 using (var second = RuntimeBridgeTestClient.Connect(server.TcpPort))
                 {
-                    first.Send(HelloLine(ValidToken, new[] { "snapshot", "lease", "sources" }, ClientInstanceId));
-                    second.Send(HelloLine(ValidToken, new[] { "snapshot", "lease", "sources" }, ClientInstanceIdB));
+                    first.Send(HelloLine(ValidToken, ClientInstanceId));
+                    second.Send(HelloLine(ValidToken, ClientInstanceIdB));
                     Assert.That(first.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
                     Assert.That(second.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
 
@@ -418,7 +823,7 @@ namespace VisualBridge.Editor.Tests
                 using (var server = StartServer(artifactsRoot, "editor-41011"))
                 using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
                 {
-                    client.Send(HelloLine(ValidToken, new[] { "snapshot", "lease", "sources" }, ClientInstanceId));
+                    client.Send(HelloLine(ValidToken, ClientInstanceId));
                     Assert.That(client.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
 
                     // 无租约：leaseRequired。
@@ -450,7 +855,7 @@ namespace VisualBridge.Editor.Tests
                 using (var server = StartServer(artifactsRoot, "editor-41012"))
                 using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
                 {
-                    client.Send(HelloLine(ValidToken, new[] { "snapshot", "lease", "sources" }, ClientInstanceId));
+                    client.Send(HelloLine(ValidToken, ClientInstanceId));
                     Assert.That(client.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
 
                     client.Send(LeaseRequestLine("req-la", "acquireLease"));
@@ -489,8 +894,8 @@ namespace VisualBridge.Editor.Tests
                 using (var first = RuntimeBridgeTestClient.Connect(server.TcpPort))
                 using (var second = RuntimeBridgeTestClient.Connect(server.TcpPort))
                 {
-                    first.Send(HelloLine(ValidToken, new[] { "snapshot", "lease" }, ClientInstanceId));
-                    second.Send(HelloLine(ValidToken, new[] { "snapshot", "lease" }, ClientInstanceIdB));
+                    first.Send(HelloLine(ValidToken, ClientInstanceId));
+                    second.Send(HelloLine(ValidToken, ClientInstanceIdB));
                     Assert.That(first.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
                     Assert.That(second.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
 
@@ -540,7 +945,7 @@ namespace VisualBridge.Editor.Tests
             using (var server = StartServer(compiledRoot, "editor-41014"))
             using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
             {
-                client.Send(HelloLine(ValidToken, new[] { "snapshot", "lease", "sources" }, ClientInstanceId));
+                client.Send(HelloLine(ValidToken, ClientInstanceId));
                 Assert.That(client.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
 
                 client.Send(LeaseRequestLine("req-la", "acquireLease"));
@@ -625,7 +1030,7 @@ namespace VisualBridge.Editor.Tests
                 using (var server = StartServer(artifactsRoot, "editor-41008"))
                 using (var client = RuntimeBridgeTestClient.Connect(server.TcpPort))
                 {
-                    client.Send(HelloLine(ValidToken, new[] { "snapshot", "events" }));
+                    client.Send(HelloLine(ValidToken));
                     Assert.That(client.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
 
                     // 后台写入新产物：新增 entity 文档 + 登记它的 entity manifest。
@@ -1039,10 +1444,15 @@ namespace VisualBridge.Editor.Tests
                 instanceId, "editor-play", 0, ValidToken, artifactsRoot, generation);
         }
 
-        private static string HelloLine(string token, string[] capabilities, string clientInstanceId = null)
+        /// <summary>
+        /// hello（附录 A.3 统一形状）。clientEndpointId 缺省用 <see cref="ClientInstanceId"/>；
+        /// 端口/模拟实例的解析见 RuntimeBridgeTestClient。
+        /// </summary>
+        private static string HelloLine(string token, string clientEndpointId = null, string resumeSessionId = null)
         {
             return VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator
-                .CreateHello(clientInstanceId ?? ClientInstanceId, token, capabilities).ToLine();
+                .CreateHello(clientEndpointId ?? ClientInstanceId, token, string.Empty, new[] { "json" }, resumeSessionId)
+                .ToLine();
         }
 
         private static string RequestLine(string requestId, string[] documentTypeIds)
@@ -1079,7 +1489,7 @@ namespace VisualBridge.Editor.Tests
             VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer server, string clientInstanceId)
         {
             var client = RuntimeBridgeTestClient.Connect(server.TcpPort);
-            client.Send(HelloLine(ValidToken, new[] { "snapshot", "events", "graphExecution" }, clientInstanceId));
+            client.Send(HelloLine(ValidToken, clientInstanceId));
             Assert.That(client.ReadMessage().Type, Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
             return client;
         }
@@ -1134,10 +1544,18 @@ namespace VisualBridge.Editor.Tests
             string documentTypeId,
             string documentId,
             string sourcePath = null,
-            string sourceSha256 = null)
+            string sourceSha256 = null,
+            string payloadPadding = null)
         {
             var absolutePath = Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(absolutePath));
+            var data = new JObject { ["formatVersion"] = 1, ["kind"] = kind };
+            if (payloadPadding != null)
+            {
+                // 超过 MaxMessageBytes 的响应用例：把 data 撑到 1 MB 以上。
+                data["padding"] = payloadPadding;
+            }
+
             var artifact = new JObject
             {
                 ["formatVersion"] = 1,
@@ -1154,7 +1572,7 @@ namespace VisualBridge.Editor.Tests
                         ["sha256"] = sourceSha256 ?? new string('3', 64),
                     },
                 },
-                ["data"] = new JObject { ["formatVersion"] = 1, ["kind"] = kind },
+                ["data"] = data,
             };
             File.WriteAllText(absolutePath, artifact.ToString(Newtonsoft.Json.Formatting.None));
 

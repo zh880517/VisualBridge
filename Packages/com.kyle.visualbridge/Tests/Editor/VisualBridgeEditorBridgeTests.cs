@@ -520,6 +520,129 @@ namespace VisualBridge.Editor.Tests
         }
 
         [Test]
+        public void AutoConnectPolicyBacksOffThreeTimesThenGivesUp()
+        {
+            // 策略只负责决策；"清空会话"发生在连接器的 GiveUp 分支（VisualBridgeEditorBridgeAutoConnect.TryOnce），
+            // 因此这里断言 GiveUp 本身，以及清空后（hasSession=false）连接器不再重试。
+            var none = VisualBridgeAutoConnectPolicy.Decide(hasSession: true, isConnected: false, liveWindowCount: 0, failedAttempts: 0);
+            Assert.That(none.Action, Is.EqualTo(VisualBridgeAutoConnectAction.Retry));
+            Assert.That(none.DelayMilliseconds, Is.EqualTo(1000), "First retry waits 1 s.");
+
+            var second = VisualBridgeAutoConnectPolicy.Decide(hasSession: true, isConnected: false, liveWindowCount: 0, failedAttempts: 1);
+            Assert.That(second.DelayMilliseconds, Is.EqualTo(2000), "Second retry waits 2 s.");
+
+            var third = VisualBridgeAutoConnectPolicy.Decide(hasSession: true, isConnected: false, liveWindowCount: 0, failedAttempts: 2);
+            Assert.That(third.DelayMilliseconds, Is.EqualTo(4000), "Third retry waits 4 s.");
+
+            var exhausted = VisualBridgeAutoConnectPolicy.Decide(hasSession: true, isConnected: false, liveWindowCount: 0, failedAttempts: 3);
+            Assert.That(exhausted.Action, Is.EqualTo(VisualBridgeAutoConnectAction.GiveUp),
+                "After 1 s / 2 s / 4 s the switch gives up instead of retrying forever.");
+
+            Assert.That(
+                VisualBridgeAutoConnectPolicy.Decide(hasSession: false, isConnected: false, liveWindowCount: 1, failedAttempts: 0).Action,
+                Is.EqualTo(VisualBridgeAutoConnectAction.Skip),
+                "Once the connector cleared the session, there is nothing left to retry.");
+
+            var live = VisualBridgeAutoConnectPolicy.Decide(hasSession: true, isConnected: false, liveWindowCount: 1, failedAttempts: 0);
+            Assert.That(live.Action, Is.EqualTo(VisualBridgeAutoConnectAction.Connect));
+
+            Assert.That(
+                VisualBridgeAutoConnectPolicy.Decide(hasSession: false, isConnected: false, liveWindowCount: 1, failedAttempts: 0).Action,
+                Is.EqualTo(VisualBridgeAutoConnectAction.Skip), "No session means nothing to resume.");
+            Assert.That(
+                VisualBridgeAutoConnectPolicy.Decide(hasSession: true, isConnected: true, liveWindowCount: 1, failedAttempts: 0).Action,
+                Is.EqualTo(VisualBridgeAutoConnectAction.Skip), "An established connection is never replaced.");
+        }
+
+        [Test]
+        public void AutoConnectDialsTheRememberedWindowAndCarriesResumeSessionId()
+        {
+            // P0（评审清单）：reload 后的续接必须由 SessionState 恢复，而不是重新生成 bootId/sessionId。
+            VisualBridgeSessionState.Clear();
+            var directory = CreateDiscoveryDirectory();
+            var previousOverride = VisualBridgeEditorBridgeAutoConnect.DiscoveryDirectoryOverride;
+            var previousFlag = Environment.GetEnvironmentVariable("VISUALBRIDGE_BRIDGE_AUTOCONNECT");
+            using (var server = BridgeTestServer.Start(Welcome(generation: 2, resumed: true)))
+            {
+                try
+                {
+                    var recordPath = WriteRecord(
+                        directory,
+                        "live.json",
+                        pid: Process.GetCurrentProcess().Id,
+                        projectRoot: GetAuthoringRoot(),
+                        tcpPort: server.Port,
+                        generation: 2);
+                    VisualBridgeEditorBridgeAutoConnect.DiscoveryDirectoryOverride = directory;
+                    VisualBridgeSessionState.Empty.WithConnection(SessionId, recordPath, connectedDebugEnabled: false).Save();
+                    Environment.SetEnvironmentVariable("VISUALBRIDGE_BRIDGE_AUTOCONNECT", "1");
+
+                    VisualBridgeEditorBridgeAutoConnect.Start("test");
+
+                    var service = VisualBridgeEditorBridgeService.Instance;
+                    Assert.That(service.IsConnected, Is.True, "Auto-connect must dial the remembered window after a reload.");
+                    var hello = (JObject)JToken.Parse(server.ReceivedHello);
+                    Assert.That(hello["resumeSessionId"]?.Value<string>(), Is.EqualTo(SessionId),
+                        "The reconnecting hello must carry the SessionState sessionId (never a freshly generated one).");
+                    Assert.That(service.Client.Resumed, Is.True);
+                    Assert.That(VisualBridgeEditorBridgeAutoConnect.IsReconnecting, Is.False,
+                        "A successful reconnect stops the backoff loop.");
+                }
+                finally
+                {
+                    VisualBridgeEditorBridgeAutoConnect.Stop();
+                    VisualBridgeEditorBridgeService.Instance.Disconnect();
+                    VisualBridgeSessionState.Clear();
+                    Environment.SetEnvironmentVariable("VISUALBRIDGE_BRIDGE_AUTOCONNECT", previousFlag);
+                    VisualBridgeEditorBridgeAutoConnect.DiscoveryDirectoryOverride = previousOverride;
+                    Directory.Delete(directory, true);
+                }
+            }
+        }
+
+        [Test]
+        public void SessionStateExpiresTheReconnectGraceAndRoundTripsLastSeen()
+        {
+            // 假时钟：14.9 s / 15.1 s 边界只移动 now，不真等 15 秒。
+            VisualBridgeSessionState.Clear();
+            var connectedAt = new DateTime(2026, 10, 27, 12, 0, 0, DateTimeKind.Utc);
+            try
+            {
+                Assert.That(VisualBridgeSessionState.ReconnectGraceMs, Is.EqualTo(15000));
+                var state = VisualBridgeSessionState.Empty
+                    .WithConnection(SessionId, "/tmp/window.json", connectedDebugEnabled: true, utcNow: connectedAt);
+                state.Save();
+
+                var restored = VisualBridgeSessionState.Load();
+                Assert.That(restored.HasSession, Is.True);
+                Assert.That(restored.LastSeenUtc, Is.EqualTo(connectedAt), "lastSeenUtc must round-trip as ISO 8601.");
+
+                Assert.That(restored.IsReconnectGraceExpired(connectedAt.AddMilliseconds(14900)), Is.False,
+                    "14.9 s is inside the 15 s reconnect grace.");
+                Assert.That(restored.IsReconnectGraceExpired(connectedAt.AddMilliseconds(15100)), Is.True,
+                    "15.1 s is past the 15 s reconnect grace.");
+            }
+            finally
+            {
+                VisualBridgeSessionState.Clear();
+            }
+        }
+
+        [Test]
+        public void EditorBridgeWindowReportsConnectingResumedAndNewSessionStates()
+        {
+            Assert.That(
+                VisualBridgeEditorBridgeWindow.DescribeStatus(reconnecting: true, failedAttempts: 0, connected: false, resumed: false),
+                Is.EqualTo("Connecting to VS Code… (attempt 1)"));
+            Assert.That(
+                VisualBridgeEditorBridgeWindow.DescribeStatus(reconnecting: false, failedAttempts: 0, connected: true, resumed: true),
+                Is.EqualTo("Reconnected (session resumed)."));
+            Assert.That(
+                VisualBridgeEditorBridgeWindow.DescribeStatus(reconnecting: false, failedAttempts: 0, connected: true, resumed: false),
+                Is.EqualTo("Connected (new session)."));
+        }
+
+        [Test]
         public void DiscoveryFiltersStaleHeartbeatAndDeadPidRecords()
         {
             if (Environment.OSVersion.Platform != PlatformID.Win32NT)
@@ -673,16 +796,18 @@ namespace VisualBridge.Editor.Tests
             return directory;
         }
 
-        private static void WriteRecord(string directory, string fileName, int pid, TimeSpan? heartbeatAge = null, string projectRoot = "D:/Authoring", string windowId = "1b3121ab-2646-4e0f-a789-e970d4fbca8f")
+        private static string WriteRecord(string directory, string fileName, int pid, TimeSpan? heartbeatAge = null, string projectRoot = "D:/Authoring", string windowId = "1b3121ab-2646-4e0f-a789-e970d4fbca8f", int tcpPort = 8226, int generation = 1)
         {
             var path = Path.Combine(directory, fileName);
-            File.WriteAllText(path, "{\"formatVersion\":2,\"protocolVersion\":4,\"role\":\"vscode\",\"tcpPort\":8226,\"token\":\""
-                + ValidToken + "\",\"pid\":" + pid + ",\"generation\":1,\"windowId\":\"" + windowId
+            File.WriteAllText(path, "{\"formatVersion\":2,\"protocolVersion\":4,\"role\":\"vscode\",\"tcpPort\":" + tcpPort + ",\"token\":\""
+                + ValidToken + "\",\"pid\":" + pid + ",\"generation\":" + generation + ",\"windowId\":\"" + windowId
                 + "\",\"projectRoots\":[\"" + projectRoot.Replace('\\', '/') + "\"]}");
             if (heartbeatAge.HasValue)
             {
                 File.SetLastWriteTimeUtc(path, DateTime.UtcNow - heartbeatAge.Value);
             }
+
+            return path;
         }
 
         private static int SpawnExitedProcessId()

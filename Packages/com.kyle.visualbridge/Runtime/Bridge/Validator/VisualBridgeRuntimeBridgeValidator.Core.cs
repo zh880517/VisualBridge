@@ -15,16 +15,22 @@ namespace VisualBridge.Runtime
     /// </summary>
     public static partial class VisualBridgeRuntimeBridgeValidator
     {
-        // 连接层版本与 Editor 腿共用 4；Runtime 腿的旧握手字段（coreVersion 等）
-        // 在 E3/E5 收敛前仍保留，但不再声明第二份连接层版本。
+        // 连接层版本与 Editor 腿共用同一个 4（附录 A.1/A.3）；握手形状也与 Editor 腿统一。
         public const int ProtocolVersion = 4;
+
+        /// <summary>仅 v1 运行时发现记录仍携带 coreVersion；握手消息不再有该字段。</summary>
         public const int CoreVersion = 1;
         public const int DiscoveryFormatVersion = 1;
 
         private static readonly Regex StableIdPattern = new Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", RegexOptions.Compiled);
         private static readonly Regex TokenPattern = new Regex("^[0-9a-f]{48,64}$", RegexOptions.Compiled);
+
+        /// <summary>发现记录里的 token：Player 无认证时为空串（附录 E.3）。</summary>
+        private static readonly Regex OptionalTokenPattern = new Regex("^([0-9a-f]{48,64})?$", RegexOptions.Compiled);
         private static readonly Regex UuidPattern = new Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex InstanceIdPattern = new Regex("^(editor|player)-[0-9]+$", RegexOptions.Compiled);
+        private static readonly Regex SessionIdPattern = new Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}#[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", RegexOptions.Compiled);
+        private static readonly Regex ContractHashPattern = new Regex("^(?:[0-9a-f]{16})?$", RegexOptions.Compiled);
         private static readonly Regex CompiledKindPattern = new Regex("^visualbridge\\.(structured|entity|table|graph)\\.compiled$", RegexOptions.Compiled);
         private static readonly Regex StartedAtPattern = new Regex("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$", RegexOptions.Compiled);
         // normalizedPath 语义（primitives Schema）：无前导/、无盘符冒号、无反斜杠、
@@ -35,6 +41,9 @@ namespace VisualBridge.Runtime
 
         private static readonly HashSet<string> Capabilities = new HashSet<string>(StringComparer.Ordinal) { "snapshot", "events", "lease", "sources", "graphExecution" };
         private static readonly HashSet<string> InstanceKinds = new HashSet<string>(StringComparer.Ordinal) { "editor-play", "player" };
+        private static readonly HashSet<string> ConnectTypes = new HashSet<string>(StringComparer.Ordinal) { "editor-player", "player" };
+        private static readonly HashSet<string> PayloadKinds = new HashSet<string>(StringComparer.Ordinal) { "json", "binary" };
+        private static readonly HashSet<string> DialerRoles = new HashSet<string>(StringComparer.Ordinal) { "vscode" };
         private static readonly HashSet<string> RequestActions = new HashSet<string>(StringComparer.Ordinal)
         {
             "getSnapshot",
@@ -60,7 +69,7 @@ namespace VisualBridge.Runtime
 
         private static readonly HashSet<string> ErrorCodes = new HashSet<string>(StringComparer.Ordinal)
         {
-            "runtime.capabilityMissing",
+            "runtime.alreadyConnected",
             "runtime.executionNotFound",
             "runtime.internalError",
             "runtime.invalidJson",
@@ -161,9 +170,9 @@ namespace VisualBridge.Runtime
             }
 
             var token = RequireString(value, "token", "$.token");
-            if (!TokenPattern.IsMatch(token))
+            if (!OptionalTokenPattern.IsMatch(token))
             {
-                throw Error("runtime.invalidToken", "$.token", "Expected a hex authentication token.");
+                throw Error("runtime.invalidToken", "$.token", "Expected a hex authentication token or an empty string for an unauthenticated Player.");
             }
 
             var pid = RequireInteger(value, "pid", "$.pid");
@@ -213,19 +222,39 @@ namespace VisualBridge.Runtime
                 case VisualBridgeRuntimeBridgeMessageType.Hello:
                     value["type"] = "hello";
                     value["protocolVersion"] = message.ProtocolVersion;
-                    value["coreVersion"] = message.CoreVersion;
-                    value["token"] = message.Token;
-                    value["clientInstanceId"] = message.ClientInstanceId;
-                    value["capabilities"] = new JArray(message.Capabilities);
+                    value["role"] = message.Role;
+                    value["clientEndpointId"] = message.ClientEndpointId;
+                    if (message.Token != null)
+                    {
+                        value["token"] = message.Token;
+                    }
+                    value["contractHash"] = message.ContractHash ?? string.Empty;
+                    value["payloads"] = new JArray(message.Payloads);
+                    if (message.DebugCategories != null)
+                    {
+                        value["debugCategories"] = new JArray(message.DebugCategories);
+                    }
+                    if (message.DebugInstances != null)
+                    {
+                        value["debugInstances"] = new JArray(message.DebugInstances);
+                    }
+                    if (message.ResumeSessionId != null)
+                    {
+                        value["resumeSessionId"] = message.ResumeSessionId;
+                    }
                     break;
                 case VisualBridgeRuntimeBridgeMessageType.Welcome:
                     value["type"] = "welcome";
                     value["protocolVersion"] = message.ProtocolVersion;
-                    value["coreVersion"] = message.CoreVersion;
-                    value["instanceId"] = message.InstanceId;
-                    value["kind"] = message.Kind;
+                    value["endpointId"] = message.EndpointId;
+                    value["sessionId"] = message.SessionId;
+                    value["resumed"] = message.Resumed;
+                    value["connectType"] = message.ConnectType;
                     value["generation"] = message.Generation;
-                    value["capabilities"] = new JArray(message.Capabilities);
+                    value["bootId"] = message.BootId;
+                    value["contractHash"] = message.ContractHash ?? string.Empty;
+                    value["payloads"] = new JArray(message.Payloads);
+                    value["debugEnabled"] = message.DebugEnabled;
                     value["startedAt"] = message.StartedAt;
                     break;
                 case VisualBridgeRuntimeBridgeMessageType.Request:
@@ -408,6 +437,146 @@ namespace VisualBridge.Runtime
             }
 
             return requestId;
+        }
+
+        /// <summary>拨号方身份（附录 A.3 的方向层）：Runtime 腿只接受 vscode 拨号。</summary>
+        private static string RequireDialerRole(JObject value, string property, string path)
+        {
+            var role = RequireString(value, property, path);
+            if (!DialerRoles.Contains(role))
+            {
+                throw Error("runtime.invalidMessage", path, "Expected dialer role 'vscode' for the runtime leg.");
+            }
+
+            return role;
+        }
+
+        /// <summary>端点是标识而不是调试实例 id：与请求 id 同一字符集。</summary>
+        private static string RequireEndpointId(JObject value, string property, string path)
+        {
+            var endpointId = RequireString(value, property, path);
+            if (!StableIdPattern.IsMatch(endpointId))
+            {
+                throw Error("runtime.invalidMessage", path, "Expected an endpoint identifier.");
+            }
+
+            return endpointId;
+        }
+
+        private static string RequireContractHash(JObject value, string property, string path)
+        {
+            var contractHash = RequireString(value, property, path);
+            if (!ContractHashPattern.IsMatch(contractHash))
+            {
+                throw Error("runtime.invalidMessage", path, "Expected 16 lowercase hex characters or an empty string.");
+            }
+
+            return contractHash;
+        }
+
+        /// <summary>协商载荷：json 必选，binary 可选（与 Editor 腿同一规则）。</summary>
+        private static IReadOnlyList<string> RequirePayloads(JObject value, string property, string path)
+        {
+            if (!(value[property] is JArray array) || array.Count == 0)
+            {
+                throw Error("runtime.invalidMessage", path, "Expected a non-empty payloads array.");
+            }
+
+            var payloads = new List<string>(array.Count);
+            var unique = new HashSet<string>(StringComparer.Ordinal);
+            for (var index = 0; index < array.Count; index++)
+            {
+                if (array[index].Type != JTokenType.String || !PayloadKinds.Contains(array[index].Value<string>()))
+                {
+                    throw Error("runtime.invalidMessage", $"{path}[{index}]", "Expected 'json' or 'binary'.");
+                }
+
+                if (!unique.Add(array[index].Value<string>()))
+                {
+                    throw Error("runtime.invalidMessage", $"{path}[{index}]", "Duplicate payload.");
+                }
+
+                payloads.Add(array[index].Value<string>());
+            }
+
+            if (!unique.Contains("json"))
+            {
+                throw Error("runtime.invalidMessage", path, "Payloads must contain 'json'.");
+            }
+
+            return payloads;
+        }
+
+        private static string RequireSessionId(JObject value, string property, string path)
+        {
+            var sessionId = RequireString(value, property, path);
+            if (!SessionIdPattern.IsMatch(sessionId))
+            {
+                throw Error("runtime.invalidMessage", path, "Expected '<endpointId>#<bootId>'.");
+            }
+
+            return sessionId;
+        }
+
+        private static string RequireConnectType(JObject value, string property, string path)
+        {
+            var connectType = RequireString(value, property, path);
+            if (!ConnectTypes.Contains(connectType))
+            {
+                throw Error("runtime.invalidMessage", path, "Expected connectType 'editor-player' or 'player'.");
+            }
+
+            return connectType;
+        }
+
+        private static bool RequireBoolean(JObject value, string property, string path)
+        {
+            var token = value[property];
+            if (token == null || token.Type != JTokenType.Boolean)
+            {
+                throw Error("runtime.invalidMessage", path, "Expected a boolean.");
+            }
+
+            return token.Value<bool>();
+        }
+
+        private static IReadOnlyList<string> RequireDebugFilter(JObject value, string property, string path)
+        {
+            var token = value[property];
+            if (token == null)
+            {
+                return null;
+            }
+
+            if (!(token is JArray array))
+            {
+                throw Error("runtime.invalidMessage", path, "Expected an array of filter strings.");
+            }
+
+            var filters = new List<string>(array.Count);
+            var unique = new HashSet<string>(StringComparer.Ordinal);
+            for (var index = 0; index < array.Count; index++)
+            {
+                if (array[index].Type != JTokenType.String)
+                {
+                    throw Error("runtime.invalidMessage", $"{path}[{index}]", "Expected a filter string.");
+                }
+
+                var filter = array[index].Value<string>();
+                if (string.IsNullOrEmpty(filter) || filter.Length > 256)
+                {
+                    throw Error("runtime.invalidMessage", $"{path}[{index}]", "Filter strings must be 1..256 characters.");
+                }
+
+                if (!unique.Add(filter))
+                {
+                    throw Error("runtime.invalidMessage", $"{path}[{index}]", "Duplicate filter entry.");
+                }
+
+                filters.Add(filter);
+            }
+
+            return filters;
         }
 
         private static IReadOnlyList<string> RequireCapabilities(JObject value, string path)

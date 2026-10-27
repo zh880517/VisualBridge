@@ -29,8 +29,50 @@ exports.run = async function run() {
     const welcome = await vscode.commands.executeCommand("visualbridge.test.connectRuntimeInstance", instance);
     assert.equal(welcome.instanceId, instance.instanceId);
     assert.equal(welcome.generation, instance.generation);
-    assert.ok(welcome.capabilities.includes("snapshot"), "Runtime instance does not advertise the snapshot capability.");
-    console.log(`[runtime-e2e] connected to ${welcome.instanceId} generation ${welcome.generation} on port ${instance.tcpPort}`);
+    // 握手统一（附录 A.3）：welcome 带会话身份与载荷，首连不算续接（E5）。
+    assert.equal(welcome.kind, "editor-player");
+    assert.equal(welcome.resumed, false);
+    assert.match(welcome.sessionId, new RegExp(`^${instance.instanceId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}#`),
+      "welcome.sessionId must be '<endpointId>#<bootId>'.");
+    assert.deepEqual([...welcome.payloads], ["json"], "The runtime leg negotiates JSON payloads.");
+    console.log(`[runtime-e2e] connected to ${welcome.instanceId} generation ${welcome.generation} session ${welcome.sessionId} on port ${instance.tcpPort}`);
+  });
+
+  await test("probes the player-style port range and adopts the handshaken endpoint", async () => {
+    const instances = await vscode.commands.executeCommand("visualbridge.test.enumerateRuntimeInstances");
+    const instance = instances.find((entry) => entry.kind === "editor-play" && entry.staleReason === undefined);
+    assert.ok(instance, "No live runtime instance is available to probe.");
+
+    // 端口段探测（附录 A.8）：并发 8、单口 300 ms、第一个握手成功者胜出。
+    // Play 模式 server 在 28300–28349 里取第一个可用端口（E2E 编排注入的端口段）。
+    const probed = await vscode.commands.executeCommand("visualbridge.test.probeRuntimePorts", {
+      host: "127.0.0.1",
+      portRangeStart: 28300,
+      portRangeEnd: 28349,
+      token: instance.token,
+    });
+    assert.equal(probed.instanceId, instance.instanceId);
+    assert.equal(probed.kind, "editor-player");
+    assert.equal(probed.port, instance.tcpPort, "The probe must adopt the port discovery reported.");
+    assert.equal(probed.resumed, false, "A fresh probe starts a new session.");
+
+    // token 不匹配：TCP 可连但握手失败 => 整段按 runtime.noEndpoint 报错
+    // （禁用 / 端口占用 / 未启动不再区分）。
+    await assert.rejects(
+      vscode.commands.executeCommand("visualbridge.test.probeRuntimePorts", {
+        host: "127.0.0.1",
+        portRangeStart: 28300,
+        portRangeEnd: 28349,
+        token: "b".repeat(48),
+      }),
+      (error) => /runtime\.noEndpoint/.test(String(error && error.message ? error.message : error)),
+      "A probe with a mismatched token must fail as runtime.noEndpoint.",
+    );
+    console.log(`[runtime-e2e] probed port range and adopted ${probed.instanceId} on port ${probed.port}`);
+
+    // 探测失败会把服务置为未连接（探测先断开再挑端点）：恢复连接，后续用例继续用同一条链路。
+    const restored = await vscode.commands.executeCommand("visualbridge.test.connectRuntimeInstance", instance);
+    assert.equal(restored.instanceId, instance.instanceId);
   });
 
   await test("receives the compiled artifact snapshot from the runtime instance", async () => {

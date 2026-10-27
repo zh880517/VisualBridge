@@ -26,6 +26,7 @@ import {
   writeDiscoveryRecordAtomically,
 } from "./bridgeDiscovery";
 import { BridgeSocket } from "./bridgeSocket";
+import { planReconnectGrace, type ReconnectGraceDecision } from "./reconnectGrace";
 import {
   EditorBridgeConnectionGate,
   EditorBridgeConnectionSlot,
@@ -71,6 +72,10 @@ export interface EditorBridgeServerOptions {
   readonly contracts?: EditorBridgeContractSource;
   /** 关掉默认的契约自动加载（测试注入固定快照时用）。 */
   readonly autoLoadContracts?: boolean;
+  /** 重连宽限期覆盖（附录 A.8 的 `ReconnectGraceMs`）；缺省 15 s。 */
+  readonly reconnectGraceMs?: number;
+  /** 当前时刻（epoch ms）注入点；缺省 `Date.now`，测试用假时钟验证 14.9 s / 15.1 s 边界。 */
+  readonly now?: () => number;
 }
 
 type BridgeConnection = EditorBridgeConnectionSlot<BridgeSocket>;
@@ -97,10 +102,11 @@ interface EditorBridgeDebugBinding {
  * 通道 1 的调试载荷交给该连接绑定的 {@link DebugIngress}：帧校验失败只计数不断连
  * （A.1 的断开由连接层负责），解码落地为 `DebugEnvelope`（C.1）。F2 接上存储与路由。
  *
- * 重连语义（附录 A.3/A.6）：端点同一时刻只接纳一条**已完成握手且仍然存活**的连接
+ * 重连语义（附录 A.3/A.6/A.8）：端点同一时刻只接纳一条**已完成握手且仍然存活**的连接
  * （`runtime.alreadyConnected`）；"存活"按传输层的同步可观测状态判定，不等异步
- * `close` 事件。对端断开或本端关闭后，下一条连接立即取得槽位，`resumed` 只由
- * `resumeSessionId === sessionId` 决定，`generation` 每次传输 +1（不参与 `sessionId`）。
+ * `close` 事件。对端断开或本端关闭后，下一条连接立即取得槽位。`resumed` 由
+ * "`resumeSessionId === sessionId` **且** 距上次断开不超过 15 s" 共同决定；宽限到期后
+ * 换发新的 `bootId`/`sessionId`（旧会话不再续接），`generation` 每次传输 +1（不参与 `sessionId`）。
  */
 export class EditorBridgeServer implements vscode.Disposable {
   private readonly projects: ProjectRegistry;
@@ -122,6 +128,10 @@ export class EditorBridgeServer implements vscode.Disposable {
   private readonly startedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   private readonly contracts: EditorBridgeContractSource;
   private readonly autoLoadContracts: boolean;
+  private readonly reconnectGraceMs: number | undefined;
+  private readonly now: () => number;
+  /** 上一次连接被观察到的断开时刻（epoch ms）；宽限判定的起点。 */
+  private lastDisconnectedAtMs: number | undefined;
   private readonly debugBindings = new WeakMap<BridgeConnection, EditorBridgeDebugBinding>();
   private contractRefreshTimer: NodeJS.Timeout | undefined;
   private contractRefreshing: Promise<void> | undefined;
@@ -137,6 +147,8 @@ export class EditorBridgeServer implements vscode.Disposable {
     this.output = output;
     this.contracts = options.contracts ?? new DebugContractRegistry();
     this.autoLoadContracts = options.autoLoadContracts ?? options.contracts === undefined;
+    this.reconnectGraceMs = options.reconnectGraceMs;
+    this.now = options.now ?? Date.now;
   }
 
   public get state(): EditorBridgeServerState | undefined {
@@ -279,6 +291,8 @@ export class EditorBridgeServer implements vscode.Disposable {
         if (connection !== undefined) {
           this.logDebugCounters(connection);
           this.connections.retire(connection);
+          // 宽限从这里起算（附录 A.8）：下一条连接在 15 s 内带 resumeSessionId 才能续接。
+          this.lastDisconnectedAtMs = this.now();
         }
       },
     }, { log: (message) => this.output.appendLine(message) });
@@ -357,15 +371,28 @@ export class EditorBridgeServer implements vscode.Disposable {
     // 新连接可能出现在契约产物热更新之后：顺手刷新一次，下一条连接拿到新指纹。
     this.scheduleContractRefresh();
 
+    // 续接判定（附录 A.3/A.8）：命中 resumeSessionId 且仍在 15 s 宽限内才 resumed；
+    // 超过宽限则换发新 bootId/sessionId（旧会话数据随新会话作废），绝不无限续接。
+    const reconnect = planReconnectGrace({
+      sessionId: this.sessionId,
+      bootId: this.bootId,
+      ...(message.resumeSessionId === undefined ? {} : { resumeSessionId: message.resumeSessionId }),
+      ...(this.lastDisconnectedAtMs === undefined ? {} : { disconnectedAtMs: this.lastDisconnectedAtMs }),
+      nowMs: this.now(),
+      ...(this.reconnectGraceMs === undefined ? {} : { graceMs: this.reconnectGraceMs }),
+      nextBootId: () => crypto.randomBytes(16).toString("hex"),
+    });
+    this.applyReconnectDecision(reconnect);
+
     const welcome: BridgeWelcomeMessage = {
       type: "welcome",
       protocolVersion: BRIDGE_PROTOCOL_VERSION,
       endpointId: this.windowId!,
-      sessionId: this.sessionId,
-      resumed: message.resumeSessionId !== undefined && message.resumeSessionId === this.sessionId,
+      sessionId: reconnect.sessionId,
+      resumed: reconnect.resumed,
       connectType: "editor",
       generation: this.generation,
-      bootId: this.bootId,
+      bootId: reconnect.bootId,
       contractHash: selection.contractHash,
       payloads,
       debugEnabled: true,
@@ -375,6 +402,20 @@ export class EditorBridgeServer implements vscode.Disposable {
     connection.transport.sendControlJson(welcome);
     this.output.appendLine(
       `[bridge] handshake complete endpoint='${message.clientEndpointId}' session=${welcome.sessionId} resumed=${welcome.resumed} payloads=[${payloads.join(",")}]`,
+    );
+  }
+
+  /** 宽限到期时把新会话身份落到监听方状态；旧会话的调试绑定随连接关闭已失效。 */
+  private applyReconnectDecision(decision: ReconnectGraceDecision): void {
+    if (!decision.rotated) {
+      return;
+    }
+
+    const previous = this.sessionId;
+    this.bootId = decision.bootId;
+    this.sessionId = decision.sessionId;
+    this.output.appendLine(
+      `[bridge] reconnect grace expired: session '${previous}' is no longer resumable; issued session '${this.sessionId}'.`,
     );
   }
 

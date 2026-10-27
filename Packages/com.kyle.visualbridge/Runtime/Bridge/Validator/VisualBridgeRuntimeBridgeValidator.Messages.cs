@@ -8,55 +8,76 @@ namespace VisualBridge.Runtime
     {
         private static VisualBridgeRuntimeBridgeMessage ValidateHello(JObject value)
         {
-            RequireOnlyKeys(value, "$", "type", "protocolVersion", "coreVersion", "token", "clientInstanceId", "capabilities");
+            RequireOnlyKeys(value, "$",
+                new[] { "type", "protocolVersion", "role", "clientEndpointId", "contractHash", "payloads" },
+                new[] { "token", "debugCategories", "debugInstances", "resumeSessionId" });
             var protocolVersion = RequireVersion(value, "protocolVersion", "$.protocolVersion", ProtocolVersion);
-            var coreVersion = RequireVersion(value, "coreVersion", "$.coreVersion", CoreVersion);
-            var token = RequireString(value, "token", "$.token");
-            if (!TokenPattern.IsMatch(token))
+            var role = RequireDialerRole(value, "role", "$.role");
+            var clientEndpointId = RequireEndpointId(value, "clientEndpointId", "$.clientEndpointId");
+            string token = null;
+            if (value["token"] != null)
             {
-                throw Error("runtime.invalidToken", "$.token", "Expected a hex authentication token of at least 192 bits.");
+                token = RequireString(value, "token", "$.token");
+                if (!TokenPattern.IsMatch(token))
+                {
+                    throw Error("runtime.invalidToken", "$.token", "Expected a hex authentication token of at least 192 bits.");
+                }
             }
 
-            var clientInstanceId = RequireString(value, "clientInstanceId", "$.clientInstanceId");
-            if (!UuidPattern.IsMatch(clientInstanceId))
+            var contractHash = RequireContractHash(value, "contractHash", "$.contractHash");
+            var payloads = RequirePayloads(value, "payloads", "$.payloads");
+            var debugCategories = RequireDebugFilter(value, "debugCategories", "$.debugCategories");
+            var debugInstances = RequireDebugFilter(value, "debugInstances", "$.debugInstances");
+            string resumeSessionId = null;
+            if (value["resumeSessionId"] != null)
             {
-                throw Error("runtime.invalidMessage", "$.clientInstanceId", "Expected a UUID client instance identifier.");
+                resumeSessionId = RequireSessionId(value, "resumeSessionId", "$.resumeSessionId");
             }
 
             return new VisualBridgeRuntimeBridgeMessage
             {
                 Type = VisualBridgeRuntimeBridgeMessageType.Hello,
                 ProtocolVersion = protocolVersion,
-                CoreVersion = coreVersion,
+                Role = role,
+                ClientEndpointId = clientEndpointId,
                 Token = token,
-                ClientInstanceId = clientInstanceId,
-                Capabilities = RequireCapabilities(value, "$.capabilities"),
+                ContractHash = contractHash,
+                Payloads = payloads,
+                DebugCategories = debugCategories,
+                DebugInstances = debugInstances,
+                ResumeSessionId = resumeSessionId,
             };
         }
 
         private static VisualBridgeRuntimeBridgeMessage ValidateWelcome(JObject value)
         {
-            RequireOnlyKeys(value, "$", "type", "protocolVersion", "coreVersion", "instanceId", "kind", "generation", "capabilities", "startedAt");
+            RequireOnlyKeys(value, "$", "type", "protocolVersion", "endpointId", "sessionId", "resumed",
+                "connectType", "generation", "bootId", "contractHash", "payloads", "debugEnabled", "startedAt");
             var protocolVersion = RequireVersion(value, "protocolVersion", "$.protocolVersion", ProtocolVersion);
-            var coreVersion = RequireVersion(value, "coreVersion", "$.coreVersion", CoreVersion);
-            var instanceId = RequireString(value, "instanceId", "$.instanceId");
-            if (!InstanceIdPattern.IsMatch(instanceId))
+            var endpointId = RequireString(value, "endpointId", "$.endpointId");
+            if (!InstanceIdPattern.IsMatch(endpointId))
             {
-                throw Error("runtime.invalidMessage", "$.instanceId", "Expected an 'editor-<pid>' or 'player-<pid>' instance identifier.");
+                throw Error("runtime.invalidMessage", "$.endpointId", "Expected an 'editor-<pid>' or 'player-<pid>' endpoint identifier.");
             }
 
-            var kind = RequireString(value, "kind", "$.kind");
-            if (!InstanceKinds.Contains(kind))
-            {
-                throw Error("runtime.invalidMessage", "$.kind", "Expected instance kind 'editor-play' or 'player'.");
-            }
-
+            var sessionId = RequireSessionId(value, "sessionId", "$.sessionId");
+            var resumed = RequireBoolean(value, "resumed", "$.resumed");
+            var connectType = RequireConnectType(value, "connectType", "$.connectType");
             var generation = RequireInteger(value, "generation", "$.generation");
             if (generation < 1)
             {
                 throw Error("runtime.invalidMessage", "$.generation", "Expected a positive instance generation.");
             }
 
+            var bootId = RequireString(value, "bootId", "$.bootId");
+            if (!StableIdPattern.IsMatch(bootId))
+            {
+                throw Error("runtime.invalidMessage", "$.bootId", "Expected a boot identifier.");
+            }
+
+            var contractHash = RequireContractHash(value, "contractHash", "$.contractHash");
+            var payloads = RequirePayloads(value, "payloads", "$.payloads");
+            var debugEnabled = RequireBoolean(value, "debugEnabled", "$.debugEnabled");
             var startedAtText = RequireString(value, "startedAt", "$.startedAt");
             if (!IsUtcDateTime(startedAtText))
             {
@@ -67,12 +88,16 @@ namespace VisualBridge.Runtime
             {
                 Type = VisualBridgeRuntimeBridgeMessageType.Welcome,
                 ProtocolVersion = protocolVersion,
-                CoreVersion = coreVersion,
-                InstanceId = instanceId,
-                Kind = kind,
+                EndpointId = endpointId,
+                SessionId = sessionId,
+                Resumed = resumed,
+                ConnectType = connectType,
                 Generation = generation,
+                BootId = bootId,
+                ContractHash = contractHash,
+                Payloads = payloads,
+                DebugEnabled = debugEnabled,
                 StartedAt = startedAtText,
-                Capabilities = RequireCapabilities(value, "$.capabilities"),
             };
         }
 

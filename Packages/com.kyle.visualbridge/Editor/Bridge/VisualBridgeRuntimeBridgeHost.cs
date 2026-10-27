@@ -21,6 +21,13 @@ namespace VisualBridge.Editor
     {
         private static readonly object Gate = new object();
 
+        /// <summary>
+        /// 端口段覆盖（跨 Domain Reload 保存在 SessionState）：只有 E2E 编排会设置它，
+        /// 让 Play 模式 server 按 Player 的端口段规则监听，从而覆盖"Unity 监听端口段"这条路径。
+        /// 生产路径不设置，走记录里的旧端口 / 随机端口。
+        /// </summary>
+        private const string PortRangeKey = "VisualBridge.RuntimeBridgeHost.PortRange";
+
         private static bool lifecycleHooked;
         private static bool shuttingDown;
         private static VisualBridge.Diagnostics.Bridge.VisualBridgeDebugTransport debugTransport;
@@ -58,6 +65,43 @@ namespace VisualBridge.Editor
         {
             return Path.Combine(
                 VisualBridgeEditorBridgeService.UnityProjectRoot(), "Library", "VisualBridge", "Compiled");
+        }
+
+        /// <summary>
+        /// 配置端口段（仅 E2E 编排使用）：server 在区间内取第一个可用端口监听。
+        /// 写 SessionState 是因为设置发生在进入 Play 触发的 Domain Reload 之前。
+        /// </summary>
+        public static void ConfigurePortRange(int start, int end)
+        {
+            if (start <= 0 || end < start)
+            {
+                SessionState.EraseString(PortRangeKey);
+                return;
+            }
+
+            SessionState.SetString(PortRangeKey, start.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + "-" + end.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            UnityEngine.Debug.Log($"[runtime-bridge] port range override {start}-{end} (Player-style listener).");
+        }
+
+        private static void ResolvePortRange(out int start, out int end)
+        {
+            start = 0;
+            end = 0;
+            var text = SessionState.GetString(PortRangeKey, string.Empty);
+            var separator = text.IndexOf('-');
+            if (separator <= 0)
+            {
+                return;
+            }
+
+            if (int.TryParse(text.Substring(0, separator), out var parsedStart)
+                && int.TryParse(text.Substring(separator + 1), out var parsedEnd)
+                && parsedStart > 0 && parsedEnd >= parsedStart)
+            {
+                start = parsedStart;
+                end = parsedEnd;
+            }
         }
 
         private static void OnPlayModeStateChanged(PlayModeStateChange change)
@@ -102,6 +146,7 @@ namespace VisualBridge.Editor
                     UnityEngine.Debug.Log($"[runtime-bridge] reusing record generation {previous.Generation} -> {generation} (preferred port {preferredPort}).");
                 }
 
+                ResolvePortRange(out var portRangeStart, out var portRangeEnd);
                 var server = new VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer(
                     instanceId,
                     "editor-play",
@@ -109,7 +154,10 @@ namespace VisualBridge.Editor
                     GenerateToken(),
                     ArtifactsRoot(),
                     generation,
-                    message => UnityEngine.Debug.Log(message));
+                    message => UnityEngine.Debug.Log(message),
+                    contractHash: VisualBridgeDebugContractFingerprint.Read(VisualBridgeEditorBridgeService.UnityProjectRoot()),
+                    portRangeStart: portRangeStart,
+                    portRangeEnd: portRangeEnd);
                 if (shuttingDown)
                 {
                     server.Dispose();

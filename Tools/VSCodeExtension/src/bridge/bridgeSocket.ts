@@ -32,10 +32,29 @@ export interface BridgeSocketHandlers {
   readonly onClosed: (error: Error | undefined) => void;
 }
 
+/** 保活参数（附录 A.9）：空闲 10 s 入队 ping；30 s 无入站字节断开。 */
+export interface BridgeHeartbeatOptions {
+  readonly intervalMs?: number;
+  readonly idleTimeoutMs?: number;
+  readonly disabled?: boolean;
+  /** 可注入时钟与定时器：单测用假时钟驱动 {@link BridgeSocket.tickHeartbeat} 的同一逻辑。 */
+  readonly now?: () => number;
+  readonly setInterval?: (handler: () => void, ms: number) => unknown;
+  readonly clearInterval?: (handle: unknown) => void;
+}
+
 export interface BridgeSocketOptions {
   readonly limits?: Partial<BridgeSendLimits>;
   readonly log?: (message: string) => void;
+  readonly heartbeat?: BridgeHeartbeatOptions;
 }
+
+export const DEFAULT_BRIDGE_HEARTBEAT_INTERVAL_MS = 10000;
+export const DEFAULT_BRIDGE_IDLE_TIMEOUT_MS = 30000;
+
+const PING_PAYLOAD = Buffer.from("{\"type\":\"ping\"}", "utf8");
+const PONG_PAYLOAD = Buffer.from("{\"type\":\"pong\"}", "utf8");
+const MAX_CONTROL_CLASSIFY_BYTES = 64;
 
 export class BridgeSocket {
   private readonly socket: net.Socket;
@@ -43,18 +62,46 @@ export class BridgeSocket {
   private readonly queues: BridgeSendQueues;
   private readonly decoder = new BridgeFrameDecoder();
   private readonly log: (message: string) => void;
+  private readonly heartbeatIntervalMs: number;
+  private readonly heartbeatIdleTimeoutMs: number;
+  private readonly heartbeatNow: () => number;
+  private readonly setIntervalFn: (handler: () => void, ms: number) => unknown;
+  private readonly clearIntervalFn: (handle: unknown) => void;
   private finished = false;
   private ending = false;
   private waitingDrain = false;
+  private lastInboundAt: number;
+  private lastOutboundAt: number;
+  private heartbeatTimer: unknown;
 
   public constructor(socket: net.Socket, handlers: BridgeSocketHandlers, options: BridgeSocketOptions = {}) {
     this.socket = socket;
     this.handlers = handlers;
     this.log = options.log ?? (() => undefined);
+    const heartbeat = options.heartbeat ?? {};
+    this.heartbeatIntervalMs = heartbeat.intervalMs ?? DEFAULT_BRIDGE_HEARTBEAT_INTERVAL_MS;
+    this.heartbeatIdleTimeoutMs = heartbeat.idleTimeoutMs ?? DEFAULT_BRIDGE_IDLE_TIMEOUT_MS;
+    this.heartbeatNow = heartbeat.now ?? (() => Date.now());
+    this.setIntervalFn = heartbeat.setInterval ?? ((handler, ms) => {
+      const timer = setInterval(handler, ms);
+      // 保活定时器不得单独吊住 Node 进程。
+      (timer as { unref?: () => void }).unref?.();
+      return timer;
+    });
+    this.clearIntervalFn = heartbeat.clearInterval ?? ((handle) => clearInterval(handle as NodeJS.Timeout));
+
     this.queues = new BridgeSendQueues({
       ...DEFAULT_BRIDGE_SEND_LIMITS,
       ...(options.limits ?? {}),
     });
+
+    const now = this.heartbeatNow();
+    this.lastInboundAt = now;
+    this.lastOutboundAt = now;
+    if (heartbeat.disabled !== true) {
+      const period = Math.max(10, Math.min(100, Math.floor(Math.max(1, this.heartbeatIntervalMs) / 4)));
+      this.heartbeatTimer = this.setIntervalFn(() => this.tickHeartbeat(), period);
+    }
 
     socket.setNoDelay(true);
     socket.on("data", (chunk: Buffer) => this.receive(chunk));
@@ -106,7 +153,9 @@ export class BridgeSocket {
     }
 
     const result = this.queues.enqueueControl(payload, payloadKind, channel);
-    return this.handleEnqueueResult(result, "control");
+    const enqueued = this.handleEnqueueResult(result, "control");
+    if (enqueued) this.lastOutboundAt = this.heartbeatNow();
+    return enqueued;
   }
 
   /** 通道 1 的控制类消息：走控制队列（不淘汰）但帧头通道位是 1（附录 A.2/A.9）。 */
@@ -121,7 +170,9 @@ export class BridgeSocket {
     }
 
     const result = this.queues.enqueueDebug(payload, payloadKind);
-    return this.handleEnqueueResult(result, "debug");
+    const enqueued = this.handleEnqueueResult(result, "debug");
+    if (enqueued) this.lastOutboundAt = this.heartbeatNow();
+    return enqueued;
   }
 
   /** 立即断开（丢弃未写出的队列内容）。 */
@@ -156,6 +207,9 @@ export class BridgeSocket {
       return;
     }
 
+    // 任意入站字节都算活动（附录 A.9：30 s 无入站字节才断开）。
+    this.lastInboundAt = this.heartbeatNow();
+
     let frames;
     try {
       frames = this.decoder.push(chunk);
@@ -167,7 +221,14 @@ export class BridgeSocket {
     for (const frame of frames) {
       try {
         if (frame.channel === BridgeChannel.Control) {
-          this.handlers.onControlPayload(frame.payload);
+          // 保活消息在连接层消化：ping 立即回 pong，pong 只刷新空闲计时，都不交给握手/业务。
+          if (frame.payloadKind === BridgePayloadKind.Json && classifyKeepAlive(frame.payload) === "ping") {
+            this.sendControl(PONG_PAYLOAD);
+          } else if (frame.payloadKind === BridgePayloadKind.Json && classifyKeepAlive(frame.payload) === "pong") {
+            continue;
+          } else {
+            this.handlers.onControlPayload(frame.payload);
+          }
         } else {
           this.handlers.onDebugFrame(frame.payloadKind, frame.payload);
         }
@@ -177,6 +238,36 @@ export class BridgeSocket {
         return;
       }
     }
+  }
+
+  /**
+   * 写线程的保活判定（附录 A.9）：空闲超心跳间隔就入队 `ping`；连续超过空闲上限没有
+   * 入站字节就断开（把"静默死链"变成显式的断开判定，而不是永远等不到数据）。
+   * 定时器与假时钟共用本方法，单测直接驱动同一逻辑。
+   */
+  public tickHeartbeat(): void {
+    if (this.finished) {
+      return;
+    }
+
+    const now = this.heartbeatNow();
+    if (this.heartbeatIdleTimeoutMs > 0 && now - this.lastInboundAt > this.heartbeatIdleTimeoutMs) {
+      const idleMs = now - this.lastInboundAt;
+      this.log(`[bridge] no inbound bytes for ${idleMs} ms (idle timeout ${this.heartbeatIdleTimeoutMs} ms); closing the connection.`);
+      this.fail(new Error(`Idle timeout: no inbound bytes for ${idleMs} ms.`));
+      return;
+    }
+
+    if (now - this.lastOutboundAt < this.heartbeatIntervalMs) {
+      return;
+    }
+
+    if (this.queues.controlPendingCount > 0 || this.queues.dataPendingCount > 0) {
+      // 已有积压：等它们写出后 lastOutboundAt 会前进，不必再塞 ping。
+      return;
+    }
+
+    this.sendControl(PING_PAYLOAD);
   }
 
   private handleEnd(): void {
@@ -266,6 +357,7 @@ export class BridgeSocket {
     }
 
     this.finished = true;
+    this.stopHeartbeat();
     this.queues.close();
     this.socket.removeAllListeners("data");
     this.socket.destroy();
@@ -274,6 +366,36 @@ export class BridgeSocket {
     } catch (errorValue) {
       this.log(`[bridge] close handler failed: ${asError(errorValue).message}`);
     }
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer === undefined) {
+      return;
+    }
+
+    const timer = this.heartbeatTimer;
+    this.heartbeatTimer = undefined;
+    try {
+      this.clearIntervalFn(timer);
+    } catch {
+      // 定时器已随进程/测试时钟消失。
+    }
+  }
+}
+
+/**
+ * 只识别 ≤64 字节的通道 0 JSON 控制载荷：其余一律原样交给上层，避免误吞业务消息。
+ * 返回 `"ping"` / `"pong"` / undefined。
+ */
+function classifyKeepAlive(payload: Buffer): "ping" | "pong" | undefined {
+  if (payload.length === 0 || payload.length > MAX_CONTROL_CLASSIFY_BYTES) return undefined;
+  const text = payload.toString("utf8");
+  if (!text.includes("\"type\"")) return undefined;
+  try {
+    const value = JSON.parse(text) as { readonly type?: unknown };
+    return value.type === "ping" || value.type === "pong" ? value.type : undefined;
+  } catch {
+    return undefined;
   }
 }
 

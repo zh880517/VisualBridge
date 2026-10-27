@@ -167,14 +167,14 @@ namespace VisualBridge.Diagnostics.Bridge
             }
         }
 
-        public void SendCreate(string instanceId, string category, string resName, string debugInfo, ushort instanceSlot)
+        public bool SendCreate(string instanceId, string category, string resName, string debugInfo, ushort instanceSlot)
         {
             var message = UseBinary()
                 ? VisualBridgeDebugWireMessages.CreateBinary(category, instanceId, instanceSlot, resName, debugInfo)
                 : VisualBridgeDebugWireMessages.CreateJson(category, instanceId, instanceSlot, resName, debugInfo);
             if (!TrySendControl(message))
             {
-                return;
+                return false;
             }
 
             // Create 是分类进入协议的唯一入口：只有描述真正发出后才登记槽位，客户端才可能解码后续消息。
@@ -184,9 +184,10 @@ namespace VisualBridge.Diagnostics.Bridge
             }
 
             FlushDropped();
+            return true;
         }
 
-        public void SendFinish(string instanceId, ushort instanceSlot)
+        public bool SendFinish(string instanceId, ushort instanceSlot)
         {
             string category = null;
             lock (gate)
@@ -209,59 +210,65 @@ namespace VisualBridge.Diagnostics.Bridge
             var message = UseBinary()
                 ? VisualBridgeDebugWireMessages.FinishBinary(instanceId, instanceSlot)
                 : VisualBridgeDebugWireMessages.FinishJson(category, instanceId);
-            TrySendControl(message);
+            var sent = TrySendControl(message);
             FlushDropped();
+            return sent;
         }
 
-        public void SendEvent(ushort instanceSlot, ushort methodId, string category, string iface, string method,
+        public bool SendEvent(ushort instanceSlot, ushort methodId, string category, string iface, string method,
             long frame, VisualBridgeDebugEncodedMessage message)
         {
             if (!message.IsEncoded)
             {
                 CountEncodeFailure(message.Status);
-                return;
+                return false;
             }
 
             if (!TryAdmitEvent(instanceSlot, null, category, methodId))
             {
-                return;
+                return false;
             }
 
-            TrySendData(message);
+            var sent = TrySendData(message);
             FlushDropped();
+            return sent;
         }
 
-        public void SendResult(uint requestSeq, VisualBridgeDebugEncodedMessage message)
+        public bool SendResult(uint requestSeq, VisualBridgeDebugEncodedMessage message)
         {
             if (!message.IsEncoded)
             {
                 CountEncodeFailure(message.Status);
-                return;
+                return false;
             }
 
             // 查询结果是客户端主动要求的应答（附录 A.5 的 response 语义在调试流之外），不受筛选抑制。
-            TrySendData(message);
+            var sent = TrySendData(message);
             FlushDropped();
+            return sent;
         }
 
-        public void SendControl(VisualBridgeDebugEncodedMessage message)
+        public bool SendControl(VisualBridgeDebugEncodedMessage message)
         {
-            TrySendControl(message);
+            var sent = TrySendControl(message);
             FlushDropped();
+            return sent;
         }
 
-        public void SendQueryError(uint requestSeq, string code, string detail)
+        public bool SendQueryError(uint requestSeq, string code, string detail)
         {
-            TrySendControl(VisualBridgeDebugWireMessages.Response(requestSeq, code, detail));
+            var sent = TrySendControl(VisualBridgeDebugWireMessages.Response(requestSeq, code, detail));
             FlushDropped();
+            return sent;
         }
 
-        public void SendReject(uint requestSeq, string reason)
+        public bool SendReject(uint requestSeq, string reason)
         {
             // 业务拒绝：码统一取 VisualBridgeDebugQueryErrors.Rejected（附录 A.6 的 runtime.queryRejected）。
-            TrySendControl(VisualBridgeDebugWireMessages.Response(requestSeq,
+            var sent = TrySendControl(VisualBridgeDebugWireMessages.Response(requestSeq,
                 VisualBridgeDebugQueryErrors.Rejected, reason));
             FlushDropped();
+            return sent;
         }
 
         /// <summary>入队前准入：槽位未知 / 方法号非法 / 筛选未命中 时丢弃并计数（附录 A.4/A.9）。</summary>
@@ -626,9 +633,9 @@ namespace VisualBridge.Diagnostics.Bridge
             }
         }
 
-        private void TrySendData(VisualBridgeDebugEncodedMessage message)
+        private bool TrySendData(VisualBridgeDebugEncodedMessage message)
         {
-            TrySendMessage(message);
+            return TrySendMessage(message);
         }
 
         private static byte[] ToBytes(ReadOnlyMemory<byte> payload)

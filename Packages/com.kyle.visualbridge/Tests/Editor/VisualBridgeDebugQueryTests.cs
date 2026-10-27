@@ -583,39 +583,46 @@ namespace VisualBridge.Editor.Tests
             public List<VisualBridgeDebugEncodedMessage> Controls { get; } =
                 new List<VisualBridgeDebugEncodedMessage>();
 
-            public void SendCreate(string instanceId, string category, string resName, string debugInfo,
+            public bool SendCreate(string instanceId, string category, string resName, string debugInfo,
                 ushort instanceSlot)
             {
                 Creates.Add((instanceId, category, resName, debugInfo, instanceSlot));
+                return true;
             }
 
-            public void SendFinish(string instanceId, ushort instanceSlot)
+            public bool SendFinish(string instanceId, ushort instanceSlot)
             {
+                return true;
             }
 
-            public void SendEvent(ushort instanceSlot, ushort methodId, string category, string iface, string method,
+            public bool SendEvent(ushort instanceSlot, ushort methodId, string category, string iface, string method,
                 long frame, VisualBridgeDebugEncodedMessage message)
             {
+                return true;
             }
 
-            public void SendResult(uint requestSeq, VisualBridgeDebugEncodedMessage message)
+            public bool SendResult(uint requestSeq, VisualBridgeDebugEncodedMessage message)
             {
                 Results.Add((requestSeq, message));
+                return true;
             }
 
-            public void SendControl(VisualBridgeDebugEncodedMessage message)
+            public bool SendControl(VisualBridgeDebugEncodedMessage message)
             {
                 Controls.Add(message);
+                return true;
             }
 
-            public void SendReject(uint requestSeq, string reason)
+            public bool SendReject(uint requestSeq, string reason)
             {
                 Rejects.Add((requestSeq, reason));
+                return true;
             }
 
-            public void SendQueryError(uint requestSeq, string code, string detail)
+            public bool SendQueryError(uint requestSeq, string code, string detail)
             {
                 QueryErrors.Add((requestSeq, code, detail));
+                return true;
             }
         }
     }

@@ -231,7 +231,15 @@ namespace VisualBridge.Diagnostics
                 var transport = Volatile.Read(ref s_transport);
                 if (snapshot.Connected && transport != null)
                 {
-                    SendCreate(transport, instanceId, category, resName, debugInfo, instanceSlot);
+                    if (!SendCreate(transport, instanceId, category, resName, debugInfo, instanceSlot))
+                    {
+                        // 发送失败（例如控制队列满导致连接关闭）时必须回滚本地发布，
+                        // 否则本地有、远端没有，调试器与运行时状态永久分叉。
+                        PublishLocked(snapshot);
+                        VisualBridgeDebugDiagnostics.Warning(
+                            "VisualBridgeDebug Create '" + instanceId + "' 发送失败，已回滚本地发布。");
+                        return false;
+                    }
                 }
                 else
                 {
@@ -290,7 +298,14 @@ namespace VisualBridge.Diagnostics
                 var transport = Volatile.Read(ref s_transport);
                 if (!createWasPending && snapshot.Connected && transport != null)
                 {
-                    SendFinish(transport, instanceId, instanceSlot);
+                    if (!SendFinish(transport, instanceId, instanceSlot))
+                    {
+                        // 结束帧没送达：恢复本地发布，让下一次 Finish 仍有机会送达。
+                        PublishLocked(snapshot);
+                        VisualBridgeDebugDiagnostics.Warning(
+                            "VisualBridgeDebug Finish '" + instanceId + "' 发送失败，已回滚本地移除。");
+                        return false;
+                    }
                 }
 
                 return true;
@@ -497,14 +512,18 @@ namespace VisualBridge.Diagnostics
             {
                 // 帧通知先于数据：帧号变化时补一条 debugFrame 控制消息；Create/Finish 不参与帧分组。
                 SendFrameBeforeData(transport, message.Frame);
-                if (message.Kind == VisualBridgeDebugMessageKind.DebugResult)
-                {
-                    transport.SendResult(message.RequestSeq, encoded);
-                }
-                else
-                {
-                    transport.SendEvent(message.InstanceSlot, message.MethodId, message.Category, message.Iface,
+                var sent = message.Kind == VisualBridgeDebugMessageKind.DebugResult
+                    ? transport.SendResult(message.RequestSeq, encoded)
+                    : transport.SendEvent(message.InstanceSlot, message.MethodId, message.Category, message.Iface,
                         message.Method, message.Frame, encoded);
+
+                if (!sent)
+                {
+                    // 入队失败必须可见：数据消息没有真正写出，按丢弃计数并让 End 返回 false（A.9 的丢弃语义）。
+                    Interlocked.Increment(ref s_droppedMessages);
+                    VisualBridgeDebugDiagnostics.Warning(
+                        "VisualBridgeDebug 数据消息入队失败（未连接 / 队列满 / 载荷超限），消息丢弃。");
+                    return false;
                 }
 
                 return true;
@@ -622,8 +641,7 @@ namespace VisualBridge.Diagnostics
 
             try
             {
-                transport.SendReject(request.RequestId, reason ?? string.Empty);
-                return true;
+                return transport.SendReject(request.RequestId, reason ?? string.Empty);
             }
             catch (Exception exception)
             {
@@ -679,8 +697,7 @@ namespace VisualBridge.Diagnostics
 
             try
             {
-                transport.SendQueryError(requestSeq, code ?? string.Empty, detail ?? string.Empty);
-                return true;
+                return transport.SendQueryError(requestSeq, code ?? string.Empty, detail ?? string.Empty);
             }
             catch (Exception exception)
             {
@@ -700,8 +717,7 @@ namespace VisualBridge.Diagnostics
 
             try
             {
-                transport.SendReject(requestSeq, reason ?? string.Empty);
-                return true;
+                return transport.SendReject(requestSeq, reason ?? string.Empty);
             }
             catch (Exception exception)
             {
@@ -776,8 +792,8 @@ namespace VisualBridge.Diagnostics
         {
             try
             {
-                transport.SendControl(VisualBridgeDebugControlMessages.CreateFrame(frame));
-                return true;
+                // SendControl 现在返回 "是否入队成功"：入队失败时不能把帧标记成已发送（否则同帧后续数据不再补帧）。
+                return transport.SendControl(VisualBridgeDebugControlMessages.CreateFrame(frame));
             }
             catch (Exception exception)
             {
@@ -1018,30 +1034,32 @@ namespace VisualBridge.Diagnostics
             Volatile.Write(ref s_snapshot, snapshot);
         }
 
-        private static void SendCreate(IVisualBridgeDebugTransport transport, string instanceId, string category,
+        private static bool SendCreate(IVisualBridgeDebugTransport transport, string instanceId, string category,
             string resName, string debugInfo, ushort instanceSlot)
         {
             try
             {
-                transport.SendCreate(instanceId, category, resName, debugInfo, instanceSlot);
+                return transport.SendCreate(instanceId, category, resName, debugInfo, instanceSlot);
             }
             catch (Exception exception)
             {
                 VisualBridgeDebugDiagnostics.Warning(
                     "VisualBridgeDebug 发送实例描述失败，实例 '" + instanceId + "' 未送达：" + exception.Message);
+                return false;
             }
         }
 
-        private static void SendFinish(IVisualBridgeDebugTransport transport, string instanceId, ushort instanceSlot)
+        private static bool SendFinish(IVisualBridgeDebugTransport transport, string instanceId, ushort instanceSlot)
         {
             try
             {
-                transport.SendFinish(instanceId, instanceSlot);
+                return transport.SendFinish(instanceId, instanceSlot);
             }
             catch (Exception exception)
             {
                 VisualBridgeDebugDiagnostics.Warning(
                     "VisualBridgeDebug 发送实例结束失败，实例 '" + instanceId + "'：" + exception.Message);
+                return false;
             }
         }
 

@@ -5,7 +5,6 @@ import { randomUUID } from "crypto";
 import {
   parseRuntimeBridgeDiscoveryRecord,
   parseRuntimeBridgeMessage,
-  RUNTIME_BRIDGE_CAPABILITIES,
   RUNTIME_BRIDGE_DISCOVERY_DIRECTORY,
   RuntimeBridgeDocumentSnapshot,
   RuntimeBridgeDocumentSource,
@@ -22,6 +21,7 @@ import {
   RuntimeBridgeWelcomeMessage,
 } from "./runtimeBridgeProtocol";
 import { BridgeSocket } from "./bridgeSocket";
+import { probeBridgePorts } from "./bridgeProbe";
 import { BRIDGE_PROTOCOL_VERSION } from "./bridgeProtocol";
 import { BridgePayloadKind } from "./framing";
 import { GraphExecutionRecording } from "./graphExecutionRecording";
@@ -36,13 +36,40 @@ export interface RuntimeBridgeInstance {
   readonly generation: number;
   readonly startedAt: string;
   readonly staleReason?: string;
+  /** 拨号方契约指纹（hello.contractHash）；未知时为空串，指纹层降级为 JSON 而已。 */
+  readonly contractHash?: string;
+  /**
+   * 续接用的会话 id。**15 s 宽限由监听方判定**（`planReconnectGrace`，缺省 15 s）；
+   * 拨号方只有在持有上一次 welcome 的 `sessionId` 时才填这个字段——生产路径目前不填，
+   * 因此每次连接都是新会话，是否 `resumed` 完全由监听方按宽限与 id 匹配决定。
+   */
+  readonly resumeSessionId?: string;
+}
+
+/** 端口段探测连接参数（附录 A.8 的 host/portRangeStart/portRangeEnd/probeTimeoutMs/probeConcurrency）。 */
+export interface RuntimeBridgeProbeOptions {
+  readonly host?: string;
+  /** 显式端口：只连这一个，不扩散到端口段。 */
+  readonly port?: number;
+  readonly portRangeStart?: number;
+  readonly portRangeEnd?: number;
+  readonly timeoutMs?: number;
+  readonly concurrency?: number;
+  /** Player 无认证时为空串（不发送 token）。 */
+  readonly token: string;
+  readonly kind?: "editor-play" | "player";
+  readonly contractHash?: string;
+  readonly resumeSessionId?: string;
 }
 
 export interface RuntimeBridgeConnectionState {
   readonly connected: boolean;
   readonly instanceId?: string;
   readonly kind?: string;
+  readonly tcpPort?: number;
   readonly generation?: number;
+  readonly sessionId?: string;
+  readonly resumed?: boolean;
   readonly lastSnapshotCount?: number;
   readonly lastEventCount?: number;
   readonly subscribedExecutionId?: string;
@@ -120,6 +147,65 @@ export class RuntimeBridgeService {
       this.disconnect();
       throw errorValue;
     }
+  }
+
+  /**
+   * 端口段探测连接（附录 A.8）：并发 8、单口 300 ms，第一个握手成功者胜出。
+   * 显式 `port` 时只连该端口。整段都没有可握手端点时抛 `runtime.noEndpoint`
+   * （客户端本地错误码；禁用/端口占用/未启动不再区分）。
+   */
+  public async probeAndConnect(options: RuntimeBridgeProbeOptions): Promise<RuntimeBridgeWelcomeMessage> {
+    this.disconnect();
+    const attempts: RuntimeBridgeConnection[] = [];
+    const outcome = await probeBridgePorts<{ readonly connection: RuntimeBridgeConnection; readonly welcome: RuntimeBridgeWelcomeMessage }>({
+      ...(options.host === undefined ? {} : { host: options.host }),
+      ...(options.port === undefined ? {} : { explicitPort: options.port }),
+      ...(options.port === undefined ? { portRangeStart: options.portRangeStart, portRangeEnd: options.portRangeEnd } : {}),
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
+      attempt: async (target, timeoutMs, signal) => {
+        const instance: RuntimeBridgeInstance = {
+          recordPath: "",
+          instanceId: target.host,
+          kind: options.kind ?? "player",
+          tcpPort: target.port,
+          token: options.token,
+          pid: 0,
+          generation: 1,
+          startedAt: "",
+          ...(options.contractHash === undefined ? {} : { contractHash: options.contractHash }),
+          ...(options.resumeSessionId === undefined ? {} : { resumeSessionId: options.resumeSessionId }),
+        };
+        const connection = new RuntimeBridgeConnection(instance, this.output, (event) => this.handleEvent(event));
+        attempts.push(connection);
+        const aborted = new Promise<never>((_, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("Probe attempt aborted.")), { once: true });
+        });
+        const welcome = await Promise.race([connection.connect(timeoutMs), aborted]);
+        return { connection, welcome };
+      },
+    });
+
+    for (const candidate of attempts) {
+      if (outcome.ok && candidate === outcome.value.connection) {
+        continue;
+      }
+
+      candidate.dispose();
+    }
+
+    if (!outcome.ok) {
+      throw new RuntimeBridgeProtocolError(
+        "runtime.noEndpoint",
+        "$",
+        `No runtime bridge endpoint answered the handshake on ${options.host ?? "127.0.0.1"} `
+        + `(${options.port === undefined ? `${options.portRangeStart}-${options.portRangeEnd}` : String(options.port)}; `
+        + `attempts=${outcome.attempts}${outcome.lastError === undefined ? "" : `; last error: ${outcome.lastError.message}`}).`,
+      );
+    }
+
+    this.connection = outcome.value.connection;
+    return outcome.value.welcome;
   }
 
   public disconnect(): void {
@@ -245,6 +331,7 @@ export class RuntimeBridgeConnection {
   private pending = new Map<string, PendingRequest>();
   private handshake: Handshake | undefined;
   private readonly events: RuntimeBridgeEventMessage[] = [];
+  private readonly clientEndpointId = `vscode-${randomUUID()}`;
   private welcome: RuntimeBridgeWelcomeMessage | undefined;
   private snapshotCount = 0;
   private subscribedExecutionId: string | undefined;
@@ -265,13 +352,32 @@ export class RuntimeBridgeConnection {
 
     return {
       connected: !this.disposed,
-      instanceId: this.welcome.instanceId,
-      kind: this.welcome.kind,
+      instanceId: this.welcome.endpointId,
+      kind: this.welcome.connectType,
+      tcpPort: this.instance.tcpPort,
       generation: this.welcome.generation,
+      sessionId: this.welcome.sessionId,
+      resumed: this.welcome.resumed,
       lastSnapshotCount: this.snapshotCount,
       lastEventCount: this.events.length,
       ...(this.subscribedExecutionId === undefined ? {} : { subscribedExecutionId: this.subscribedExecutionId }),
     };
+  }
+
+  /**
+   * Player 腿（监听 0.0.0.0、无 token）必须在用户可见处留警告：这是一条
+   * 局域网内任何人都能接入的通道（附录 E.3 接受的风险）。输出通道里的警告行
+   * 在连接期间持续可见，不是一闪而过的 toast。
+   */
+  private warnIfPlayerWithoutAuthentication(): void {
+    if (this.instance.kind !== "player" || this.instance.token.length > 0) {
+      return;
+    }
+
+    this.output(
+      `WARNING: runtime instance '${this.welcome?.endpointId ?? this.instance.instanceId}' listens on 0.0.0.0:${this.instance.tcpPort} `
+      + "without a token - 局域网内无认证，同一网络中的任何人都可以连接并读取快照。",
+    );
   }
 
   public connect(timeoutMs: number): Promise<RuntimeBridgeWelcomeMessage> {
@@ -308,13 +414,16 @@ export class RuntimeBridgeConnection {
           return;
         }
 
+        // hello（附录 A.3，与 Editor 腿同形）：role 标识拨号方，resumeSessionId 请求续接。
         bridge.sendControlJson({
           type: "hello",
           protocolVersion: BRIDGE_PROTOCOL_VERSION,
-          coreVersion: 1,
-          token: this.instance.token,
-          clientInstanceId: randomUUID(),
-          capabilities: [...RUNTIME_BRIDGE_CAPABILITIES],
+          role: "vscode",
+          clientEndpointId: this.clientEndpointId,
+          ...(this.instance.token.length === 0 ? {} : { token: this.instance.token }),
+          contractHash: this.instance.contractHash ?? "",
+          payloads: ["json"],
+          ...(this.instance.resumeSessionId === undefined ? {} : { resumeSessionId: this.instance.resumeSessionId }),
         });
       });
     });
@@ -495,6 +604,7 @@ export class RuntimeBridgeConnection {
     if (this.handshake !== undefined) {
       if (message.type === "welcome") {
         this.welcome = message;
+        this.warnIfPlayerWithoutAuthentication();
         this.finishHandshake(message, undefined);
       } else {
         const detail = message.type === "error" ? message.detail ?? message.code : `Expected a welcome message, received '${message.type}'.`;

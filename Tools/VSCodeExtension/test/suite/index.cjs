@@ -8,6 +8,7 @@ const path = require("node:path");
 const vscode = require("vscode");
 const ExcelJS = require("exceljs");
 const { attachJsonReader, encodeFrame, KIND_JSON, sendJson } = require("../support/bridgeFrames.cjs");
+const { createRuntimeWelcome, createRuntimeHello, runtimeSessionId } = require("../support/runtimeHandshake.cjs");
 
 const EXTENSION_ID = "kyl.visualbridge";
 const EXPECTED_COMMANDS = [
@@ -3652,18 +3653,10 @@ exports.run = async function run() {
       let handshake = false;
       attachJsonReader(socket, (message) => {
           if (!handshake) {
-            if (message.type === "hello" && message.token === token && message.protocolVersion === 4) {
+            if (message.type === "hello" && message.token === token && message.protocolVersion === 4
+              && message.role === "vscode" && Array.isArray(message.payloads)) {
               handshake = true;
-              send(socket, {
-                type: "welcome",
-                protocolVersion: 4,
-                coreVersion: 1,
-                instanceId,
-                kind: "editor-play",
-                generation: 1,
-                capabilities,
-                startedAt,
-              });
+              send(socket, createRuntimeWelcome({ instanceId, startedAt }));
             } else {
               send(socket, { type: "error", code: "runtime.invalidToken" });
               socket.destroy();
@@ -3772,14 +3765,7 @@ exports.run = async function run() {
         });
         const lines = [];
         attachJsonReader(second, (message) => lines.push(message));
-        send(second, {
-          type: "hello",
-          protocolVersion: 4,
-          coreVersion: 1,
-          token,
-          clientInstanceId: "6e4d75d6-2b15-4f5e-9d8a-4c0d5f1a9b2c",
-          capabilities,
-        });
+        send(second, createRuntimeHello({ token, clientEndpointId: "vscode-test-second" }));
         await waitForAsync(
           () => lines.find((line) => line.type === "welcome"),
           (value) => value !== undefined,
@@ -3837,18 +3823,10 @@ exports.run = async function run() {
       let handshake = false;
       attachJsonReader(socket, (message) => {
           if (!handshake) {
-            if (message.type === "hello" && message.token === token && message.protocolVersion === 4) {
+            if (message.type === "hello" && message.token === token && message.protocolVersion === 4
+              && message.role === "vscode" && Array.isArray(message.payloads)) {
               handshake = true;
-              send(socket, {
-                type: "welcome",
-                protocolVersion: 4,
-                coreVersion: 1,
-                instanceId,
-                kind: "editor-play",
-                generation: 1,
-                capabilities,
-                startedAt,
-              });
+              send(socket, createRuntimeWelcome({ instanceId, startedAt }));
             } else {
               send(socket, { type: "error", code: "runtime.invalidToken" });
               socket.destroy();
@@ -3921,7 +3899,12 @@ exports.run = async function run() {
       const instance = instances.find((entry) => entry.instanceId === instanceId);
       assert.ok(instance, "The fake runtime instance was not enumerated.");
       const welcome = await vscode.commands.executeCommand("visualbridge.test.connectRuntimeInstance", instance);
-      assert.deepEqual([...welcome.capabilities], capabilities);
+      // 握手统一（附录 A.3）：welcome 是 endpointId/sessionId/connectType，不再协商 capabilities。
+      assert.deepEqual([...welcome.payloads], ["json"]);
+      assert.equal(welcome.instanceId, instanceId);
+      assert.equal(welcome.kind, "editor-player");
+      assert.equal(welcome.sessionId, runtimeSessionId(instanceId));
+      assert.equal(welcome.resumed, false);
 
       // 实例枚举：documentId 过滤。
       const unfiltered = await vscode.commands.executeCommand("visualbridge.test.getGraphExecutionInstances");
@@ -3949,14 +3932,7 @@ exports.run = async function run() {
       });
       const observerLines = [];
       attachJsonReader(observer, (message) => observerLines.push(message));
-      send(observer, {
-        type: "hello",
-        protocolVersion: 4,
-        coreVersion: 1,
-        token,
-        clientInstanceId: "6e4d75d6-2b15-4f5e-9d8a-4c0d5f1a9b2d",
-        capabilities,
-      });
+      send(observer, createRuntimeHello({ token, clientEndpointId: "vscode-test-observer" }));
       await waitForAsync(
         () => observerLines.find((line) => line.type === "welcome"),
         (value) => value !== undefined,
@@ -4079,18 +4055,10 @@ exports.run = async function run() {
       let handshake = false;
       attachJsonReader(socket, (message) => {
           if (!handshake) {
-            if (message.type === "hello" && message.token === token && message.protocolVersion === 4) {
+            if (message.type === "hello" && message.token === token && message.protocolVersion === 4
+              && message.role === "vscode" && Array.isArray(message.payloads)) {
               handshake = true;
-              send(socket, {
-                type: "welcome",
-                protocolVersion: 4,
-                coreVersion: 1,
-                instanceId,
-                kind: "editor-play",
-                generation: 1,
-                capabilities,
-                startedAt,
-              });
+              send(socket, createRuntimeWelcome({ instanceId, startedAt }));
             } else {
               send(socket, { type: "error", code: "runtime.invalidToken" });
               socket.destroy();

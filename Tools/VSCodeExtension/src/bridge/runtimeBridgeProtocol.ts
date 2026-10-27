@@ -1,9 +1,17 @@
-import { BRIDGE_PROTOCOL_VERSION } from "./bridgeProtocol";
+import {
+  BRIDGE_PROTOCOL_VERSION,
+  parseBridgeHello,
+  parseBridgeWelcome,
+  type BridgeHelloMessage,
+  type BridgeWelcomeMessage,
+} from "./bridgeProtocol";
 
-// Runtime 腿在 E3/E5 收敛前仍沿用旧握手字段（coreVersion/capabilities/kind）；
-// 连接层版本与 Editor 腿共用同一个来源，不再声明第二份版本常量。
-export const RUNTIME_BRIDGE_CORE_VERSION = 1;
+// Runtime 腿与 Editor 腿共用同一份 A.3 握手（E5 统一）：连接层版本、hello/welcome 字段
+// 全部来自 bridgeProtocol，本文件只保留 Runtime 腿特有的请求/响应/事件与 v1 发现记录。
 export const RUNTIME_BRIDGE_DISCOVERY_FORMAT_VERSION = 1;
+
+/** v1 发现记录里的 coreVersion 字段；握手消息不再携带 coreVersion。 */
+export const RUNTIME_BRIDGE_DISCOVERY_CORE_VERSION = 1;
 export const RUNTIME_BRIDGE_DISCOVERY_DIRECTORY = "visualbridge-runtime";
 
 export type RuntimeBridgeCapability = "snapshot" | "events" | "lease" | "sources" | "graphExecution";
@@ -11,7 +19,7 @@ export type RuntimeBridgeCapability = "snapshot" | "events" | "lease" | "sources
 export const RUNTIME_BRIDGE_CAPABILITIES: readonly RuntimeBridgeCapability[] = ["snapshot", "events", "lease", "sources", "graphExecution"];
 
 export const RUNTIME_BRIDGE_ERROR_CODES = [
-  "runtime.capabilityMissing",
+  "runtime.alreadyConnected",
   "runtime.executionNotFound",
   "runtime.internalError",
   "runtime.invalidJson",
@@ -37,27 +45,13 @@ export class RuntimeBridgeProtocolError extends Error {
   }
 }
 
-export interface RuntimeBridgeHelloMessage {
-  readonly type: "hello";
-  readonly protocolVersion: number;
-  readonly coreVersion: number;
-  readonly token: string;
-  readonly clientInstanceId: string;
-  readonly capabilities: readonly RuntimeBridgeCapability[];
-}
+/** hello 与 Editor 腿同形（附录 A.3）；Runtime 腿的拨号方恒为 VS Code。 */
+export type RuntimeBridgeHelloMessage = BridgeHelloMessage;
 
 export type RuntimeBridgeInstanceKind = "editor-play" | "player";
 
-export interface RuntimeBridgeWelcomeMessage {
-  readonly type: "welcome";
-  readonly protocolVersion: number;
-  readonly coreVersion: number;
-  readonly instanceId: string;
-  readonly kind: RuntimeBridgeInstanceKind;
-  readonly generation: number;
-  readonly capabilities: readonly RuntimeBridgeCapability[];
-  readonly startedAt: string;
-}
+/** welcome 与 Editor 腿同形（附录 A.3）；connectType 只会是 editor-player / player。 */
+export type RuntimeBridgeWelcomeMessage = BridgeWelcomeMessage;
 
 export type RuntimeBridgeRequestAction =
   | "getSnapshot"
@@ -302,45 +296,30 @@ export function isRuntimeBridgeProtocolError(errorValue: unknown): errorValue is
 }
 
 function parseHello(record: Record<string, unknown>): RuntimeBridgeHelloMessage {
-  requireOnlyKeys(record, "$", ["type", "protocolVersion", "coreVersion", "token", "clientInstanceId", "capabilities"]);
-  const protocolVersion = requireProtocolVersion(record, "$.protocolVersion");
-  const coreVersion = requireCoreVersion(record, "$.coreVersion");
-  const token = requireToken(record);
-  const clientInstanceId = requireString(record, "clientInstanceId", "$.clientInstanceId");
-  if (!UUID_PATTERN.test(clientInstanceId)) {
-    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.clientInstanceId", "Expected a UUID client instance identifier.");
+  // 握手与 Editor 腿共用 A.3 形状（E5 统一）：直接复用共享解析器，不再维护第二份字段表。
+  const hello = parseBridgeHello(record);
+  if (hello.role !== "vscode") {
+    throw new RuntimeBridgeProtocolError("runtime.roleMismatch", "$.role", "The runtime leg only accepts 'vscode' dialers.");
   }
 
-  return { type: "hello", protocolVersion, coreVersion, token, clientInstanceId, capabilities: requireCapabilities(record, "$.capabilities") };
+  return hello;
 }
 
 function parseWelcome(record: Record<string, unknown>): RuntimeBridgeWelcomeMessage {
-  requireOnlyKeys(record, "$", ["type", "protocolVersion", "coreVersion", "instanceId", "kind", "generation", "capabilities", "startedAt"]);
-  const protocolVersion = requireProtocolVersion(record, "$.protocolVersion");
-  const coreVersion = requireCoreVersion(record, "$.coreVersion");
-  const instanceId = requireString(record, "instanceId", "$.instanceId");
-  if (!INSTANCE_ID_PATTERN.test(instanceId)) {
-    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.instanceId", "Expected an 'editor-<pid>' or 'player-<pid>' instance identifier.");
+  const welcome = parseBridgeWelcome(record);
+  if (welcome.connectType === "editor") {
+    throw new RuntimeBridgeProtocolError(
+      "runtime.roleMismatch",
+      "$.connectType",
+      "A runtime instance must report connectType 'editor-player' or 'player'.");
   }
 
-  const kind = requireString(record, "kind", "$.kind");
-  if ((kind !== "editor-play" && kind !== "player")
-    || (instanceId.startsWith("editor-") && kind !== "editor-play")
-    || (instanceId.startsWith("player-") && kind !== "player")) {
-    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.kind", "Instance id prefix must match the kind.");
+  if ((welcome.endpointId.startsWith("editor-") && welcome.connectType !== "editor-player")
+    || (welcome.endpointId.startsWith("player-") && welcome.connectType !== "player")) {
+    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.connectType", "Endpoint id prefix must match connectType.");
   }
 
-  const generation = requireInteger(record, "generation", "$.generation");
-  if (generation < 1) {
-    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.generation", "Expected a positive generation.");
-  }
-
-  const startedAt = requireString(record, "startedAt", "$.startedAt");
-  if (!STARTED_AT_PATTERN.test(startedAt)) {
-    throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$.startedAt", "Expected a UTC ISO date-time.");
-  }
-
-  return { type: "welcome", protocolVersion, coreVersion, instanceId, kind, generation, capabilities: requireCapabilities(record, "$.capabilities"), startedAt };
+  return welcome;
 }
 
 function parseRequest(record: Record<string, unknown>): RuntimeBridgeMessage {
@@ -759,9 +738,10 @@ function requireProtocolVersion(record: Record<string, unknown>, path: string): 
 }
 
 function requireCoreVersion(record: Record<string, unknown>, path: string): number {
+  // 仅 v1 发现记录仍带 coreVersion；握手已统一到协议版本（E5）。
   const value = requireInteger(record, "coreVersion", path);
-  if (value !== RUNTIME_BRIDGE_CORE_VERSION) {
-    throw new RuntimeBridgeProtocolError("runtime.protocolVersionMismatch", path, `Expected coreVersion ${RUNTIME_BRIDGE_CORE_VERSION}.`);
+  if (value !== RUNTIME_BRIDGE_DISCOVERY_CORE_VERSION) {
+    throw new RuntimeBridgeProtocolError("runtime.protocolVersionMismatch", path, `Expected coreVersion ${RUNTIME_BRIDGE_DISCOVERY_CORE_VERSION}.`);
   }
 
   return value;

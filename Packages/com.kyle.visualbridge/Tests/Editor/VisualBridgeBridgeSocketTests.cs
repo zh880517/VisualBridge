@@ -131,12 +131,13 @@ namespace VisualBridge.Editor.Tests
         [Test]
         public void ClosesWhenTheControlQueueFillsInsteadOfDroppingControlMessages()
         {
+            var closeErrors = new System.Collections.Generic.List<Exception>();
             using (var stream = new BlockingStream())
             using (var bridge = new VisualBridgeBridgeSocket(
                 stream,
                 _ => { },
                 (_, __) => { },
-                _ => { },
+                error => closeErrors.Add(error),
                 null,
                 null))
             {
@@ -153,6 +154,94 @@ namespace VisualBridge.Editor.Tests
                 Assert.That(bridge.SendControlJson("{\"index\":257}"), Is.False, "a full control queue must close the connection");
                 Assert.That(bridge.IsOpen, Is.False);
                 Assert.That(bridge.SendCounters.ControlEnqueued, Is.EqualTo(257));
+                // 队列满不只是"返回 false"：onClosed 必须真的被调用一次并说明原因。
+                Assert.That(WaitUntil(() => closeErrors.Count == 1), Is.True, "the close must be reported exactly once");
+                Assert.That(closeErrors[0].Message, Does.Contain("Control queue is full"));
+            }
+        }
+
+        [Test]
+        public void SendsPingWhenIdleAndStaysOpenWhileHeartbeatsArrive()
+        {
+            using (var pair = SocketPair.Create())
+            using (var bridge = new VisualBridgeBridgeSocket(
+                pair.ClientStream,
+                _ => { },
+                (_, __) => { },
+                _ => { },
+                null,
+                null,
+                new VisualBridgeHeartbeatOptions { IntervalMs = 60, IdleTimeoutMs = 2000 }))
+            {
+                bridge.Start();
+
+                // 对端什么都不发：写线程必须在空闲一个心跳间隔后自己入队 ping。
+                var reader = new VisualBridgeFrameReader();
+                var pingSeen = false;
+                var buffer = new byte[4096];
+                pair.ServerStream.ReadTimeout = 3000;
+                var deadline = DateTime.UtcNow.AddSeconds(3);
+                while (!pingSeen && DateTime.UtcNow < deadline)
+                {
+                    int read;
+                    try
+                    {
+                        read = pair.ServerStream.Read(buffer, 0, buffer.Length);
+                    }
+                    catch (IOException)
+                    {
+                        break;
+                    }
+
+                    if (read <= 0)
+                    {
+                        break;
+                    }
+
+                    var chunk = new byte[read];
+                    Array.Copy(buffer, chunk, read);
+                    reader.Append(chunk, 0, chunk.Length);
+                    while (reader.TryReadFrame(out var frame))
+                    {
+                        if (VisualBridgePingPayload.IsPing(frame.Payload))
+                        {
+                            pingSeen = true;
+                        }
+                    }
+                }
+
+                Assert.That(pingSeen, Is.True, "An idle connection must emit a ping after the heartbeat interval.");
+                Assert.That(bridge.IsOpen, Is.True, "Heartbeats keep an otherwise idle connection alive.");
+            }
+        }
+
+        [Test]
+        public void ClosesWhenNoInboundBytesArriveWithinTheIdleTimeout()
+        {
+            using (var pair = SocketPair.Create())
+            {
+                Exception closeError = null;
+                var closed = new ManualResetEventSlim(false);
+                using (var bridge = new VisualBridgeBridgeSocket(
+                    pair.ClientStream,
+                    _ => { },
+                    (_, __) => { },
+                    error =>
+                    {
+                        closeError = error;
+                        closed.Set();
+                    },
+                    null,
+                    null,
+                    // 心跳间隔远大于判死阈值：这条连接只会静默，然后被空闲超时断开。
+                    new VisualBridgeHeartbeatOptions { IntervalMs = 5000, IdleTimeoutMs = 150 }))
+                {
+                    bridge.Start();
+                    Assert.That(closed.Wait(5000), Is.True, "An idle connection must be closed by the idle timeout.");
+                    Assert.That(bridge.IsOpen, Is.False);
+                    Assert.That(closeError, Is.Not.Null);
+                    Assert.That(closeError.Message, Does.Contain("idle timeout"));
+                }
             }
         }
 

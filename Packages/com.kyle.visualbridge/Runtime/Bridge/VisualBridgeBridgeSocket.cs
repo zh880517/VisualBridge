@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Sockets;
 using System.Text;
@@ -23,6 +24,7 @@ namespace VisualBridge.Runtime
         private readonly Action<VisualBridgePayloadKind, byte[]> onDebugFrame;
         private readonly Action<Exception> onClosed;
         private readonly Action<string> log;
+        private readonly VisualBridgeHeartbeatOptions heartbeat;
         private readonly Thread readerThread;
         private readonly Thread writerThread;
         private readonly object writerSignal = new object();
@@ -34,6 +36,8 @@ namespace VisualBridge.Runtime
         private bool closeNotified;
         private bool disposed;
         private bool started;
+        private long lastInboundTicks;
+        private long lastOutboundTicks;
 
         public VisualBridgeBridgeSocket(
             Stream stream,
@@ -41,13 +45,18 @@ namespace VisualBridge.Runtime
             Action<VisualBridgePayloadKind, byte[]> onDebugFrame,
             Action<Exception> onClosed,
             VisualBridgeSendLimits limits = null,
-            Action<string> log = null)
+            Action<string> log = null,
+            VisualBridgeHeartbeatOptions heartbeat = null)
         {
             this.stream = stream ?? throw new ArgumentNullException(nameof(stream));
             this.onControlPayload = onControlPayload ?? (_ => { });
             this.onDebugFrame = onDebugFrame ?? ((_, __) => { });
             this.onClosed = onClosed ?? (_ => { });
             this.log = log;
+            this.heartbeat = heartbeat ?? VisualBridgeHeartbeatOptions.Default();
+            var now = NowMilliseconds();
+            lastInboundTicks = now;
+            lastOutboundTicks = now;
             queues = new VisualBridgeSendQueues(limits);
             readerThread = new Thread(ReadLoop)
             {
@@ -232,6 +241,8 @@ namespace VisualBridge.Runtime
                     return;
                 }
 
+                // 任意入站字节都算活动（附录 A.9：30 s 无入站字节才断开）。
+                Volatile.Write(ref lastInboundTicks, NowMilliseconds());
                 reader.Append(buffer, 0, read);
                 while (!stopping)
                 {
@@ -252,7 +263,20 @@ namespace VisualBridge.Runtime
 
                     try
                     {
-                        if (frame.Channel == VisualBridgeChannel.Editor)
+                        if (frame.Channel == VisualBridgeChannel.Editor
+                            && frame.PayloadKind == VisualBridgePayloadKind.Json
+                            && VisualBridgePingPayload.IsPing(frame.Payload))
+                        {
+                            // 保活消息在连接层消化：回 pong，不分发给握手/业务（附录 A.2/A.9）。
+                            SendControl(VisualBridgePingPayload.Pong);
+                        }
+                        else if (frame.Channel == VisualBridgeChannel.Editor
+                            && frame.PayloadKind == VisualBridgePayloadKind.Json
+                            && VisualBridgePingPayload.IsPong(frame.Payload))
+                        {
+                            // pong 只用于刷新入站空闲计时，已在读循环入口刷新。
+                        }
+                        else if (frame.Channel == VisualBridgeChannel.Editor)
                         {
                             onControlPayload(frame.Payload);
                         }
@@ -282,6 +306,7 @@ namespace VisualBridge.Runtime
                         var frame = VisualBridgeFraming.EncodeFrame(message.Channel, message.PayloadKind, message.Payload);
                         stream.Write(frame, 0, frame.Length);
                         stream.Flush();
+                        Volatile.Write(ref lastOutboundTicks, NowMilliseconds());
                         continue;
                     }
                     catch (Exception exception) when (exception is IOException || exception is ObjectDisposedException || exception is SocketException)
@@ -304,11 +329,54 @@ namespace VisualBridge.Runtime
                     return;
                 }
 
+                if (MaintainHeartbeat())
+                {
+                    return;
+                }
+
                 lock (writerSignal)
                 {
-                    Monitor.Wait(writerSignal, 100);
+                    Monitor.Wait(writerSignal, heartbeat.Disabled ? 100 : heartbeat.PollMilliseconds);
                 }
             }
+        }
+
+        /// <summary>
+        /// 写线程的保活判定（附录 A.9）：空闲超心跳间隔就入队 ping；超过空闲上限直接断开。
+        /// 返回 true 表示连接已被判定死亡，调用方应结束写循环。
+        /// </summary>
+        private bool MaintainHeartbeat()
+        {
+            if (heartbeat.Disabled)
+            {
+                return false;
+            }
+
+            var now = NowMilliseconds();
+            var idleMs = now - Volatile.Read(ref lastInboundTicks);
+            if (heartbeat.IdleTimeoutMs > 0 && idleMs > heartbeat.IdleTimeoutMs)
+            {
+                HandleConnectionEnd(new TimeoutException(
+                    "No inbound bytes for " + idleMs.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + " ms (idle timeout " + heartbeat.IdleTimeoutMs + " ms)."));
+                return true;
+            }
+
+            if (now - Volatile.Read(ref lastOutboundTicks) < heartbeat.IntervalMs)
+            {
+                return false;
+            }
+
+            if (queues.ControlPendingCount > 0 || queues.DataPendingCount > 0)
+            {
+                // 已经积压：等这些消息写出后 lastOutboundTicks 会前进，不必再塞 ping。
+                return false;
+            }
+
+            queues.TryEnqueueControl(VisualBridgePingPayload.Ping, out _, VisualBridgePayloadKind.Json,
+                VisualBridgeChannel.Editor);
+            Volatile.Write(ref lastOutboundTicks, now);
+            return false;
         }
 
         private void PulseWriter()
@@ -317,6 +385,15 @@ namespace VisualBridge.Runtime
             {
                 Monitor.PulseAll(writerSignal);
             }
+        }
+
+        /// <summary>
+        /// 单调毫秒时钟。Unity 的 .NET Standard 2.1 profile 没有 <c>Environment.TickCount64</c>，
+        /// 这里用 Stopwatch（开机起单调递增，不受系统时间调整影响）。
+        /// </summary>
+        private static long NowMilliseconds()
+        {
+            return Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1000L);
         }
 
         private void HandleConnectionEnd(Exception error)

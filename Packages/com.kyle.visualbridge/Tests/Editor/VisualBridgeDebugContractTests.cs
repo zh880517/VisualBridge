@@ -122,6 +122,40 @@ namespace VisualBridge.Editor.Tests
         }
 
         [Test]
+        public void CreateRollsBackTheLocalInstanceWhenTheDescriptorCannotBeSent()
+        {
+            // 发送失败（控制队列满会关闭连接）时本地发布必须回滚，否则本地有、远端没有。
+            var transport = InstallTransport();
+            transport.FailCreate = true;
+
+            Assert.That(VisualBridgeDebug.Create("inst-fail", Category, "res-a", "info-a"), Is.False);
+            Assert.That(transport.Creates.Count, Is.EqualTo(0));
+
+            // 回滚后同一实例可以重新 Create 并真正送达；若没回滚，这里会走"重复 Create"而不发描述。
+            transport.FailCreate = false;
+            Assert.That(VisualBridgeDebug.Create("inst-fail", Category, "res-a", "info-a"), Is.True);
+            Assert.That(transport.Creates.Count, Is.EqualTo(1));
+            Assert.That(transport.Creates[0].InstanceId, Is.EqualTo("inst-fail"));
+        }
+
+        [Test]
+        public void FinishRollsBackTheLocalRemovalWhenTheFinishFrameCannotBeSent()
+        {
+            var transport = InstallTransport();
+            Assert.That(VisualBridgeDebug.Create("inst-1", Category, "res-a", "info-a"), Is.True);
+
+            transport.FailFinish = true;
+            Assert.That(VisualBridgeDebug.Finish("inst-1"), Is.False);
+            Assert.That(transport.Finishes.Count, Is.EqualTo(0));
+
+            // 回滚后实例仍在：恢复发送时 Finish 必须成功（未回滚则会因实例已删而返回 false）。
+            transport.FailFinish = false;
+            Assert.That(VisualBridgeDebug.Finish("inst-1"), Is.True);
+            Assert.That(transport.Finishes.Count, Is.EqualTo(1));
+            Assert.That(transport.Finishes[0].InstanceId, Is.EqualTo("inst-1"));
+        }
+
+        [Test]
         public void SlotsStartAtOneAndAreNeverReusedWithinAConnection()
         {
             var transport = InstallTransport();
@@ -757,48 +791,70 @@ namespace VisualBridge.Editor.Tests
                 }
             }
 
-            public void SendCreate(string instanceId, string category, string resName, string debugInfo,
+            /// <summary>模拟控制队列满：SendCreate/SendFinish 返回 false 且不记录（连接随即关闭）。</summary>
+            public bool FailCreate { get; set; }
+
+            public bool FailFinish { get; set; }
+
+            public bool SendCreate(string instanceId, string category, string resName, string debugInfo,
                 ushort instanceSlot)
             {
                 EnsureConnected();
+                if (FailCreate)
+                {
+                    return false;
+                }
+
                 Creates.Add((instanceId, category, resName, debugInfo, instanceSlot));
+                return true;
             }
 
-            public void SendFinish(string instanceId, ushort instanceSlot)
+            public bool SendFinish(string instanceId, ushort instanceSlot)
             {
                 EnsureConnected();
+                if (FailFinish)
+                {
+                    return false;
+                }
+
                 Finishes.Add((instanceId, instanceSlot));
+                return true;
             }
 
-            public void SendEvent(ushort instanceSlot, ushort methodId, string category, string iface, string method,
+            public bool SendEvent(ushort instanceSlot, ushort methodId, string category, string iface, string method,
                 long frame, VisualBridgeDebugEncodedMessage message)
             {
                 EnsureConnected();
                 Events.Add((instanceSlot, methodId, category, iface, method, frame, message.Payload.ToArray()));
+                return true;
             }
 
-            public void SendResult(uint requestSeq, VisualBridgeDebugEncodedMessage message)
+            public bool SendResult(uint requestSeq, VisualBridgeDebugEncodedMessage message)
             {
                 EnsureConnected();
                 Results.Add((requestSeq, message.Payload.ToArray()));
+                return true;
             }
 
-            public void SendControl(VisualBridgeDebugEncodedMessage message)
+            public bool SendControl(VisualBridgeDebugEncodedMessage message)
             {
                 EnsureConnected();
                 Controls.Add(message);
+                return true;
             }
 
-            public void SendReject(uint requestSeq, string reason)
+            public bool SendReject(uint requestSeq, string reason)
             {
                 EnsureConnected();
                 Rejects.Add((requestSeq, reason));
+                return true;
             }
 
-            public void SendQueryError(uint requestSeq, string code, string detail)
+            public bool SendQueryError(uint requestSeq, string code, string detail)
             {
                 EnsureConnected();
                 QueryErrors.Add((requestSeq, code, detail));
+                return true;
             }
 
             private void EnsureConnected()

@@ -22,7 +22,11 @@ namespace VisualBridge.Editor
         private VisualBridgeBridgeWindow[] windows = new VisualBridgeBridgeWindow[0];
         private int selectedWindow;
         private bool busy;
-        private bool connected;
+        private bool lastConnected;
+        private bool lastReconnecting;
+
+        /// <summary>服务实时连接状态；窗口不缓存它（Domain Reload 后缓存会撒谎）。</summary>
+        private static bool IsConnected => VisualBridgeEditorBridgeService.Instance.IsConnected;
 
         [MenuItem("Tools/VisualBridge/Editor Bridge/Open in VS Code…")]
         public static void Open()
@@ -35,8 +39,9 @@ namespace VisualBridge.Editor
             // Domain Reload 会清空全部静态与实例状态，必须整体重建。
             windows = new VisualBridgeBridgeWindow[0];
             selectedWindow = 0;
-            connected = false;
             busy = false;
+            lastConnected = IsConnected;
+            lastReconnecting = VisualBridgeEditorBridgeAutoConnect.IsReconnecting;
             AppendLog("Editor Bridge ready. Discovery re-scans on Refresh.");
             EditorApplication.update += DrainMainThreadQueue;
         }
@@ -49,6 +54,34 @@ namespace VisualBridge.Editor
 
         private void OnGUI()
         {
+            // E5：连接状态每帧从服务实时读取——不要缓存到字段里（Domain Reload 后缓存会撒谎，
+            // 自动连接器随后连上也不会让窗口自己重画）。
+            var connected = IsConnected;
+
+            var runtimeServer = VisualBridgeRuntimeBridgeHost.CurrentServer;
+            if (runtimeServer != null
+                && runtimeServer.ListenAddress.Equals(System.Net.IPAddress.Any)
+                && runtimeServer.Token.Length == 0)
+            {
+                // Player 腿的监听 0.0.0.0 无认证（附录 E.3 接受的风险）：必须让用户看见，
+                // 不能只写 Debug.Log。
+                EditorGUILayout.HelpBox(
+                    $"Runtime Bridge listens on 0.0.0.0:{runtimeServer.TcpPort} without a token — "
+                    + "局域网内无认证，同一网络中的任何机器都能连接并读取快照。",
+                    MessageType.Error);
+            }
+            else if (VisualBridge.Diagnostics.Bridge.VisualBridgeRuntimeBridgePlayerBootstrap.AutoListenInPlayer)
+            {
+                // 没在监听也照样警告：构建出的 Player 会以同样方式暴露（AutoListenInPlayer）。
+                VisualBridge.Diagnostics.Bridge.VisualBridgeRuntimeBridgePlayerBootstrap.ResolvePortRange(
+                    out var rangeStart, out var rangeEnd);
+                EditorGUILayout.HelpBox(
+                    $"Player builds auto-listen on 0.0.0.0:{rangeStart}-{rangeEnd} without a token "
+                    + "(AutoListenInPlayer) — 局域网内无认证，同一网络中的任何机器都能连接并读取快照。"
+                    + $" 设置环境变量 {VisualBridge.Diagnostics.Bridge.VisualBridgeRuntimeBridgePlayerBootstrap.AutoListenEnvironmentVariable}=0 可关闭。",
+                    MessageType.Warning);
+            }
+
             EditorGUILayout.LabelField("Matching VS Code windows", EditorStyles.boldLabel);
             if (windows.Length == 0)
             {
@@ -74,22 +107,26 @@ namespace VisualBridge.Editor
                         RefreshWindows();
                     }
 
-                    if (GUILayout.Button("Connect"))
-                    {
-                        ConnectSelected();
-                    }
-
                     using (new EditorGUI.DisabledScope(!connected))
                     {
                         if (GUILayout.Button("Disconnect"))
                         {
                             VisualBridgeEditorBridgeService.Instance.Disconnect();
-                            connected = VisualBridgeEditorBridgeService.Instance.IsConnected;
-                            AppendLog("disconnected");
+                            VisualBridgeSessionState.Clear();
+                            AppendLog("disconnected (session cleared)");
                         }
                     }
                 }
             }
+
+            // E5：编辑器模式没有"启动传输 / 手动连接"这一步——VS Code 监听、Unity 自动拨号。
+            var client = VisualBridgeEditorBridgeService.Instance.Client;
+            var status = DescribeStatus(
+                VisualBridgeEditorBridgeAutoConnect.IsReconnecting,
+                VisualBridgeEditorBridgeAutoConnect.FailedAttempts,
+                connected,
+                client != null && client.Resumed);
+            EditorGUILayout.HelpBox(status, connected ? MessageType.Info : MessageType.Warning);
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Requests", EditorStyles.boldLabel);
@@ -121,6 +158,24 @@ namespace VisualBridge.Editor
             EditorGUILayout.EndScrollView();
         }
 
+        /// <summary>
+        /// 窗口状态文案（纯函数，便于 EditMode 断言三种状态）：连接中 / 已恢复 / 新会话。
+        /// </summary>
+        internal static string DescribeStatus(bool reconnecting, int failedAttempts, bool connected, bool resumed)
+        {
+            if (reconnecting)
+            {
+                return $"Connecting to VS Code… (attempt {failedAttempts + 1})";
+            }
+
+            if (connected)
+            {
+                return resumed ? "Reconnected (session resumed)." : "Connected (new session).";
+            }
+
+            return "Disconnected. Unity reconnects automatically after a domain reload; disconnect here only to drop the session.";
+        }
+
         private static string Describe(VisualBridgeBridgeMessage response)
         {
             return response.IsOk
@@ -134,8 +189,11 @@ namespace VisualBridge.Editor
             {
                 windows = new List<VisualBridgeBridgeWindow>(VisualBridgeEditorBridgeService.Instance.FindWindows()).ToArray();
                 selectedWindow = 0;
-                connected = VisualBridgeEditorBridgeService.Instance.IsConnected;
                 AppendLog($"discovery: {windows.Length} matching window(s)");
+                if (IsConnected)
+                {
+                    DescribeConnection();
+                }
             }
             catch (Exception exception)
             {
@@ -144,32 +202,22 @@ namespace VisualBridge.Editor
             }
         }
 
-        private void ConnectSelected()
+        /// <summary>E5：手动连接入口已删除——编辑器模式由自动连接器拨号，这里只展示连接详情。</summary>
+        private void DescribeConnection()
         {
-            if (windows.Length == 0)
+            var client = VisualBridgeEditorBridgeService.Instance.Client;
+            if (client == null)
             {
-                AppendLog("no window to connect to");
+                AppendLog("no connection (auto-connect dials the VS Code window)");
                 return;
             }
 
-            try
-            {
-                var window = windows[Math.Min(selectedWindow, windows.Length - 1)];
-                VisualBridgeEditorBridgeService.Instance.Connect(window);
-                connected = VisualBridgeEditorBridgeService.Instance.IsConnected;
-                var client = VisualBridgeEditorBridgeService.Instance.Client;
-                AppendLog($"connected to {window.WindowId} (generation {window.Generation})");
-                // 指纹层不拒连：两侧 hash 都展示出来，数据面按 payloads 降级。
-                AppendLog(
-                    $"contract client='{client.ContractHash}' server='{client.ServerContractHash}' "
-                    + $"payloads=[{string.Join(",", client.ServerPayloads ?? Array.Empty<string>())}] "
-                    + $"session={client.SessionId} resumed={client.Resumed} debugEnabled={client.ServerDebugEnabled}");
-            }
-            catch (Exception exception)
-            {
-                connected = false;
-                AppendLog($"connect failed: {exception.Message}");
-            }
+            AppendLog($"connected to {client.Window.WindowId} (generation {client.Window.Generation})");
+            // 指纹层不拒连：两侧 hash 都展示出来，数据面按 payloads 降级。
+            AppendLog(
+                $"contract client='{client.ContractHash}' server='{client.ServerContractHash}' "
+                + $"payloads=[{string.Join(",", client.ServerPayloads ?? Array.Empty<string>())}] "
+                + $"session={client.SessionId} resumed={client.Resumed} debugEnabled={client.ServerDebugEnabled}");
         }
 
         private void RunRequest(string label, Func<VisualBridgeEditorBridgeService, string> send)
@@ -192,7 +240,6 @@ namespace VisualBridge.Editor
                 EnqueueOnMainThread(() =>
                 {
                     busy = false;
-                    connected = service.IsConnected;
                     AppendLog($"{label}: {result}");
                 });
             });
@@ -215,7 +262,7 @@ namespace VisualBridge.Editor
                 {
                     if (mainThreadQueue.Count == 0)
                     {
-                        return;
+                        break;
                     }
 
                     action = mainThreadQueue.Dequeue();
@@ -223,6 +270,24 @@ namespace VisualBridge.Editor
 
                 action();
             }
+
+            // 自动连接器在后台把状态改掉时窗口不会自己重画：这里检测跳变并主动 Repaint，
+            // 让"重连中 → 已恢复/新会话"真的出现在界面上。
+            var connected = IsConnected;
+            var reconnecting = VisualBridgeEditorBridgeAutoConnect.IsReconnecting;
+            if (connected == lastConnected && reconnecting == lastReconnecting)
+            {
+                return;
+            }
+
+            if (connected && !lastConnected)
+            {
+                DescribeConnection();
+            }
+
+            lastConnected = connected;
+            lastReconnecting = reconnecting;
+            Repaint();
         }
 
         private void AppendLog(string line)

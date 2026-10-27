@@ -7,12 +7,12 @@
       "value": {
         "type": "hello",
         "protocolVersion": 4,
-        "coreVersion": 1,
+        "role": "vscode",
+        "clientEndpointId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
         "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
-        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
-        "capabilities": [
-          "snapshot",
-          "events"
+        "contractHash": "",
+        "payloads": [
+          "json"
         ]
       }
     },
@@ -23,14 +23,17 @@
       "value": {
         "type": "welcome",
         "protocolVersion": 4,
-        "coreVersion": 1,
-        "instanceId": "editor-44936",
-        "kind": "editor-play",
+        "endpointId": "editor-44936",
+        "sessionId": "editor-44936#b00t0000e5",
+        "resumed": false,
+        "connectType": "editor-player",
         "generation": 2,
-        "capabilities": [
-          "snapshot",
-          "events"
+        "bootId": "b00t0000e5",
+        "contractHash": "",
+        "payloads": [
+          "json"
         ],
+        "debugEnabled": true,
         "startedAt": "2026-08-31T12:00:00.000Z"
       }
     },
@@ -90,15 +93,15 @@
       }
     },
     {
-      "label": "valid error response",
+      "label": "valid internalError response",
       "target": "message",
       "valid": true,
       "value": {
         "type": "response",
         "requestId": "req-003",
         "status": "error",
-        "error": "runtime.capabilityMissing",
-        "detail": "Instance does not advertise the snapshot capability."
+        "error": "runtime.internalError",
+        "detail": "Instance failed to read the compiled artifacts."
       }
     },
     {
@@ -128,6 +131,16 @@
         "type": "error",
         "code": "runtime.invalidToken",
         "detail": "Token does not match the discovery record."
+      }
+    },
+    {
+      "label": "valid alreadyConnected error message for the player leg",
+      "target": "message",
+      "valid": true,
+      "value": {
+        "type": "error",
+        "code": "runtime.alreadyConnected",
+        "detail": "Another client is already connected; the Player leg accepts one connection at a time."
       }
     },
     {
@@ -172,17 +185,18 @@
       }
     },
     {
-      "label": "hello without coreVersion is rejected",
+      "label": "hello without a role is rejected",
       "target": "message",
       "valid": false,
       "loaderCode": "runtime.missingProperty",
       "value": {
         "type": "hello",
         "protocolVersion": 4,
+        "clientEndpointId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
         "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
-        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
-        "capabilities": [
-          "snapshot"
+        "contractHash": "",
+        "payloads": [
+          "json"
         ]
       }
     },
@@ -194,11 +208,12 @@
       "value": {
         "type": "hello",
         "protocolVersion": 4,
-        "coreVersion": 1,
+        "role": "vscode",
+        "clientEndpointId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
         "token": "deadbeef",
-        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
-        "capabilities": [
-          "snapshot"
+        "contractHash": "",
+        "payloads": [
+          "json"
         ]
       }
     },
@@ -210,47 +225,54 @@
       "value": {
         "type": "hello",
         "protocolVersion": 2,
-        "coreVersion": 1,
+        "role": "vscode",
+        "clientEndpointId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
         "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
-        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
-        "capabilities": [
-          "snapshot"
+        "contractHash": "",
+        "payloads": [
+          "json"
         ]
       }
     },
     {
-      "label": "welcome with invalid instanceId prefix is rejected",
+      "label": "welcome with a sessionId missing the boot id is rejected",
       "target": "message",
       "valid": false,
       "loaderCode": "runtime.invalidMessage",
       "value": {
         "type": "welcome",
         "protocolVersion": 4,
-        "coreVersion": 1,
-        "instanceId": "window-1234",
-        "kind": "editor-play",
+        "endpointId": "editor-44936",
+        "sessionId": "editor-44936",
+        "resumed": false,
+        "connectType": "editor-player",
         "generation": 1,
-        "capabilities": [
-          "snapshot"
+        "bootId": "b00t0000e5",
+        "contractHash": "",
+        "payloads": [
+          "json"
         ],
+        "debugEnabled": false,
         "startedAt": "2026-08-31T12:00:00.000Z"
       }
     },
     {
-      "label": "welcome with unknown capability is rejected",
+      "label": "welcome with an empty payload list is rejected",
       "target": "message",
       "valid": false,
       "loaderCode": "runtime.invalidMessage",
       "value": {
         "type": "welcome",
         "protocolVersion": 4,
-        "coreVersion": 1,
-        "instanceId": "editor-44936",
-        "kind": "editor-play",
+        "endpointId": "editor-44936",
+        "sessionId": "editor-44936#b00t0000e5",
+        "resumed": false,
+        "connectType": "editor-player",
         "generation": 1,
-        "capabilities": [
-          "debug"
-        ],
+        "bootId": "b00t0000e5",
+        "contractHash": "",
+        "payloads": [],
+        "debugEnabled": false,
         "startedAt": "2026-08-31T12:00:00.000Z"
       }
     },
@@ -552,22 +574,20 @@
       }
     },
     {
-      "label": "valid hello with graphExecution capability",
+      "label": "valid hello that resumes a session",
       "target": "message",
       "valid": true,
       "value": {
         "type": "hello",
         "protocolVersion": 4,
-        "coreVersion": 1,
+        "role": "vscode",
+        "clientEndpointId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
         "token": "910faf8d766ffd9609cbab396b190e37b6dd5553402c92e0",
-        "clientInstanceId": "1b3121ab-2646-4e0f-a789-e970d4fbca8f",
-        "capabilities": [
-          "snapshot",
-          "events",
-          "lease",
-          "sources",
-          "graphExecution"
-        ]
+        "contractHash": "",
+        "payloads": [
+          "json"
+        ],
+        "resumeSessionId": "editor-44936#b00t0000e5"
       }
     },
     {

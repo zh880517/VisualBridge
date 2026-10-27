@@ -953,10 +953,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           startedAt: instance.startedAt,
         });
         return {
-          instanceId: welcome.instanceId,
-          kind: welcome.kind,
+          instanceId: welcome.endpointId,
+          kind: welcome.connectType,
           generation: welcome.generation,
-          capabilities: [...welcome.capabilities],
+          sessionId: welcome.sessionId,
+          resumed: welcome.resumed,
+          payloads: [...welcome.payloads],
+        };
+      }),
+      vscode.commands.registerCommand("visualbridge.test.probeRuntimePorts", async (options: {
+        readonly host?: string;
+        readonly port?: number;
+        readonly portRangeStart?: number;
+        readonly portRangeEnd?: number;
+        readonly timeoutMs?: number;
+        readonly concurrency?: number;
+        readonly token: string;
+        readonly contractHash?: string;
+      }) => {
+        // 端口段探测（附录 A.8）：并发 8、单口 300 ms，第一个握手成功者胜出。
+        const welcome = await runtimeBridge.probeAndConnect(options);
+        return {
+          instanceId: welcome.endpointId,
+          kind: welcome.connectType,
+          generation: welcome.generation,
+          sessionId: welcome.sessionId,
+          resumed: welcome.resumed,
+          port: runtimeBridge.state.tcpPort,
         };
       }),
       vscode.commands.registerCommand("visualbridge.test.getRuntimeSnapshot", async (documentTypeIds?: readonly string[]) =>

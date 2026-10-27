@@ -112,8 +112,34 @@ namespace VisualBridge.Editor
             SessionState.SetBool(HostedActiveKey, true);
             SessionState.SetString(HostedQuitPathKey, quitPath);
             SessionState.SetString(HostedDeadlineKey, DateTime.UtcNow.AddMilliseconds(120_000).Ticks.ToString());
+            ConfigurePortRangeFromEnvironment();
             EditorApplication.update += HostedStep;
             EditorApplication.isPlaying = true;
+        }
+
+        /// <summary>
+        /// E2E 可让 Play 模式 server 按 Player 的端口段规则监听
+        /// （VISUALBRIDGE_RUNTIME_E2E_PORT_RANGE="28300-28349"），
+        /// 供 VS Code 侧验证端口段探测；未设置时保持记录/随机端口。
+        /// </summary>
+        private static void ConfigurePortRangeFromEnvironment()
+        {
+            var text = Environment.GetEnvironmentVariable("VISUALBRIDGE_RUNTIME_E2E_PORT_RANGE");
+            if (string.IsNullOrEmpty(text))
+            {
+                return;
+            }
+
+            var separator = text.IndexOf('-');
+            if (separator <= 0
+                || !int.TryParse(text.Substring(0, separator), out var start)
+                || !int.TryParse(text.Substring(separator + 1), out var end))
+            {
+                UnityEngine.Debug.LogError("[runtime-bridge] VISUALBRIDGE_RUNTIME_E2E_PORT_RANGE must look like '28300-28349'.");
+                return;
+            }
+
+            VisualBridgeRuntimeBridgeHost.ConfigurePortRange(start, end);
         }
 
         private static void HostedStep()
@@ -356,7 +382,10 @@ namespace VisualBridge.Editor
                     var frameReader = new VisualBridgeFrameReader();
 
                     var hello = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.CreateHello(
-                        Guid.NewGuid().ToString(), record.Token, new[] { "snapshot", "events" });
+                        "vscode-e2e-" + Guid.NewGuid().ToString("N"),
+                        record.Token,
+                        server.ContractHash,
+                        new[] { "json" });
                     WriteLine(stream, hello.ToLine());
 
                     var welcome = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(ReadMessage(stream, frameReader));
@@ -368,6 +397,23 @@ namespace VisualBridge.Editor
                     if (welcome.Generation != record.Generation)
                     {
                         throw new InvalidOperationException("welcome generation does not match the discovery record.");
+                    }
+
+                    // 握手统一（附录 A.3）：welcome 的会话身份必须与 server 一致，首次连接不算 resume。
+                    if (welcome.SessionId != server.SessionId || welcome.BootId != server.BootId)
+                    {
+                        throw new InvalidOperationException("welcome session identity does not match the server.");
+                    }
+
+                    if (welcome.EndpointId != record.InstanceId || welcome.ConnectType != "editor-player")
+                    {
+                        throw new InvalidOperationException(
+                            "welcome endpoint/connectType does not match the editor-play runtime instance.");
+                    }
+
+                    if (welcome.Resumed)
+                    {
+                        throw new InvalidOperationException("a fresh hello must not be reported as resumed.");
                     }
 
                     var request = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.CreateSnapshotRequest("req-e2e-1", null);
@@ -394,7 +440,69 @@ namespace VisualBridge.Editor
                             $"snapshot response does not contain the compiled fixtures (documents={response.Documents.Count}, hero.default={heroFound}).");
                     }
 
-                    return "snapshot=ok\ndocuments=" + response.Documents.Count;
+                    return "snapshot=ok\ndocuments=" + response.Documents.Count
+                        + "\nsession=" + server.SessionId
+                        + "\nresume=" + AssertResume(server, record);
+                }
+            }
+        }
+
+        /// <summary>
+        /// 会话续接（附录 A.3）：同一条 welcome.sessionId 再来一次必须判 resumed=true，
+        /// 伪造的 resumeSessionId 必须判 resumed=false（不得把任意值当成续接）。
+        /// </summary>
+        private static string AssertResume(
+            VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer server,
+            VisualBridge.Runtime.VisualBridgeRuntimeInstance record)
+        {
+            var resumedWelcome = HandshakeOnce(record, server, server.SessionId);
+            if (!resumedWelcome.Resumed)
+            {
+                throw new InvalidOperationException("re-hello with the current sessionId must be reported as resumed.");
+            }
+
+            var freshWelcome = HandshakeOnce(record, server, "player-0#bogus");
+            if (freshWelcome.Resumed)
+            {
+                throw new InvalidOperationException("an unknown resumeSessionId must not be reported as resumed.");
+            }
+
+            return "matched";
+        }
+
+        private static VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessage HandshakeOnce(
+            VisualBridge.Runtime.VisualBridgeRuntimeInstance record,
+            VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer server,
+            string resumeSessionId)
+        {
+            using (var client = new TcpClient())
+            {
+                var async = client.BeginConnect("127.0.0.1", record.TcpPort, null, null);
+                if (!async.AsyncWaitHandle.WaitOne(ReadTimeoutMs))
+                {
+                    throw new TimeoutException("TCP connect timed out.");
+                }
+
+                client.EndConnect(async);
+                using (var stream = client.GetStream())
+                {
+                    stream.ReadTimeout = ReadTimeoutMs;
+                    stream.WriteTimeout = ReadTimeoutMs;
+                    var frameReader = new VisualBridgeFrameReader();
+                    var hello = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.CreateHello(
+                        "vscode-e2e-" + Guid.NewGuid().ToString("N"),
+                        record.Token,
+                        server.ContractHash,
+                        new[] { "json" },
+                        resumeSessionId);
+                    WriteLine(stream, hello.ToLine());
+                    var welcome = VisualBridge.Runtime.VisualBridgeRuntimeBridgeValidator.ParseMessage(ReadMessage(stream, frameReader));
+                    if (welcome.Type != VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome)
+                    {
+                        throw new InvalidOperationException("expected a welcome message, received '" + welcome.Type + "'.");
+                    }
+
+                    return welcome;
                 }
             }
         }

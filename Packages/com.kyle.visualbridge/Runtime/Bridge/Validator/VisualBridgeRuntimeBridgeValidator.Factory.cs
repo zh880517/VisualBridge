@@ -6,30 +6,44 @@ namespace VisualBridge.Runtime
 {
     public static partial class VisualBridgeRuntimeBridgeValidator
     {
-        public static VisualBridgeRuntimeBridgeMessage CreateHello(string clientInstanceId, string token, IReadOnlyList<string> capabilities)
+        /// <summary>hello（附录 A.3）：Runtime 腿的拨号方恒为 VS Code，载荷固定 json。</summary>
+        public static VisualBridgeRuntimeBridgeMessage CreateHello(string clientEndpointId, string token, string contractHash,
+            IReadOnlyList<string> payloads, string resumeSessionId = null, IReadOnlyList<string> debugCategories = null,
+            IReadOnlyList<string> debugInstances = null)
         {
             return new VisualBridgeRuntimeBridgeMessage
             {
                 Type = VisualBridgeRuntimeBridgeMessageType.Hello,
                 ProtocolVersion = ProtocolVersion,
-                CoreVersion = CoreVersion,
+                Role = "vscode",
+                ClientEndpointId = clientEndpointId,
                 Token = token,
-                ClientInstanceId = clientInstanceId,
-                Capabilities = capabilities,
+                ContractHash = contractHash ?? string.Empty,
+                Payloads = payloads,
+                DebugCategories = debugCategories,
+                DebugInstances = debugInstances,
+                ResumeSessionId = resumeSessionId,
             };
         }
 
-        public static VisualBridgeRuntimeBridgeMessage CreateWelcome(string instanceId, string kind, int generation, IReadOnlyList<string> capabilities, string startedAt)
+        /// <summary>welcome（附录 A.3）：监听方端点、会话身份与协商结果。</summary>
+        public static VisualBridgeRuntimeBridgeMessage CreateWelcome(string endpointId, string sessionId, string bootId,
+            bool resumed, string connectType, int generation, string contractHash, IReadOnlyList<string> payloads,
+            bool debugEnabled, string startedAt)
         {
             return new VisualBridgeRuntimeBridgeMessage
             {
                 Type = VisualBridgeRuntimeBridgeMessageType.Welcome,
                 ProtocolVersion = ProtocolVersion,
-                CoreVersion = CoreVersion,
-                InstanceId = instanceId,
-                Kind = kind,
+                EndpointId = endpointId,
+                SessionId = sessionId,
+                Resumed = resumed,
+                ConnectType = connectType,
                 Generation = generation,
-                Capabilities = capabilities,
+                BootId = bootId,
+                ContractHash = contractHash ?? string.Empty,
+                Payloads = payloads,
+                DebugEnabled = debugEnabled,
                 StartedAt = startedAt,
             };
         }

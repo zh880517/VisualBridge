@@ -7,6 +7,10 @@ namespace VisualBridge.Diagnostics
     /// 由 <c>VisualBridge.Debug.Bridge</c> 注入；运行时只按实例与槽位规则调用，不关心 socket、成帧与载荷格式。
     /// 实现约束：所有成员都可能在业务线程被同步调用，因此不得回调调试 API、不得阻塞、不得自行重试；
     /// 连接事件由宿主显式调用 <see cref="VisualBridgeDebug.Attach"/> / <see cref="VisualBridgeDebug.Detach"/> 表达。
+    ///
+    /// **发送成员一律返回 bool**：true 表示消息已进入发送队列，false 表示本次发送被拒
+    /// （未连接 / 队列满 / 载荷超限 / 连接已换代）。调用方必须据此把失败计入丢弃或判定断连，
+    /// 不得把"入队成功"当成"已经发出去"（D3 遗留的 void 盲区，E5 收口）。
     /// </summary>
     public interface IVisualBridgeDebugTransport
     {
@@ -23,21 +27,21 @@ namespace VisualBridge.Diagnostics
         long ConnectionGeneration { get; }
 
         /// <summary>发送实例描述；<paramref name="resName"/> / <paramref name="debugInfo"/> 由传输层负责发出后丢弃。</summary>
-        void SendCreate(string instanceId, string category, string resName, string debugInfo, ushort instanceSlot);
+        bool SendCreate(string instanceId, string category, string resName, string debugInfo, ushort instanceSlot);
 
         /// <summary>发送实例结束。</summary>
-        void SendFinish(string instanceId, ushort instanceSlot);
+        bool SendFinish(string instanceId, ushort instanceSlot);
 
         /// <summary>
         /// 发送已编码的事件载荷。<paramref name="category"/> / <paramref name="iface"/> / <paramref name="method"/>
         /// 供传输层诊断与路由，<paramref name="frame"/> 在消息构造时刻读取；<paramref name="message"/> 已包含
         /// 完整载荷、载荷格式与数据队列目标，传输层不得二次编码。
         /// </summary>
-        void SendEvent(ushort instanceSlot, ushort methodId, string category, string iface, string method, long frame,
+        bool SendEvent(ushort instanceSlot, ushort methodId, string category, string iface, string method, long frame,
             VisualBridgeDebugEncodedMessage message);
 
         /// <summary>发送查询结果载荷；<paramref name="requestSeq"/> 是信封里的请求号。</summary>
-        void SendResult(uint requestSeq, VisualBridgeDebugEncodedMessage message);
+        bool SendResult(uint requestSeq, VisualBridgeDebugEncodedMessage message);
 
         /// <summary>
         /// 发送查询失败应答（通道 1 的 <c>response</c>，不进调试流）：<paramref name="code"/> 取附录 A.6 的
@@ -45,16 +49,16 @@ namespace VisualBridge.Diagnostics
         /// <c>runtime.instanceNotFound</c> / <c>runtime.invalidArgument</c>，<paramref name="detail"/> 是诊断文本。
         /// 与 <see cref="SendReject"/> 的区别：这个由查询运行期产生（含超时、队列满），<c>reason</c> 那条由业务拒绝产生。
         /// </summary>
-        void SendQueryError(uint requestSeq, string code, string detail);
+        bool SendQueryError(uint requestSeq, string code, string detail);
 
         /// <summary>
         /// 发送通道 1 的控制消息（当前只有 debugFrame）：载荷是完整 JSON，目标队列为
         /// <see cref="VisualBridgeDebugTargetQueue.Control"/>；传输层必须保证它先于之后的数据消息写出。
         /// 注意它不是通道 0 的编辑器控制队列。
         /// </summary>
-        void SendControl(VisualBridgeDebugEncodedMessage message);
+        bool SendControl(VisualBridgeDebugEncodedMessage message);
 
         /// <summary>发送失败应答（通道 1 的 response），不进入调试流。</summary>
-        void SendReject(uint requestSeq, string reason);
+        bool SendReject(uint requestSeq, string reason);
     }
 }

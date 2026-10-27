@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://visualbridge.dev/schema/visualbridge-runtime-bridge.schema.json",
   "title": "VisualBridge Runtime Bridge V2",
-  "description": "Runtime-mode leg of the unified VisualBridge connection protocol (protocolVersion 4) between the VS Code runtime bridge client and a Unity Runtime instance listener (Editor Play mode or same-machine Player), plus the current per-instance discovery record published at <temp>/visualbridge-runtime/<instanceId>.json. This leg still carries the runtime snapshot, artifact-change, and graph-execution messages. By the 2026-10-27 review ruling, the following are all owned by E5: unifying the runtime-leg hello/welcome fields (removing coreVersion/capabilities/clientInstanceId/kind), direction probing, runtime discovery record v2, and grace-period reconnection. Until E5 lands, this schema intentionally keeps the pre-unification runtime handshake fields while the connection-layer protocolVersion is already shared with the Editor leg (4).",
+  "description": "Runtime-mode leg of the unified VisualBridge connection protocol (protocolVersion 4) between the VS Code runtime bridge client and a Unity Runtime instance listener (Editor Play mode or same-machine Player), plus the current per-instance discovery record published at <temp>/visualbridge-runtime/<instanceId>.json. The hello/welcome handshake is the same shape as the editor leg (Appendix A.3): role, clientEndpointId, contractHash, payloads, resumeSessionId on hello; endpointId, sessionId, resumed, connectType, generation, bootId, contractHash, payloads, debugEnabled, startedAt on welcome. This leg still carries the runtime snapshot, artifact-change, and graph-execution messages.",
   "oneOf": [
     {
       "$ref": "#/$defs/helloMessage"
@@ -28,7 +28,46 @@
       "const": 4
     },
     "coreVersion": {
+      "description": "仅用于 v1 运行时发现记录（formatVersion 1）；握手消息不再携带 coreVersion。",
       "const": 1
+    },
+    "capability": {
+      "description": "仅用于 v1 运行时发现记录；握手改为按 protocolVersion 4 隐含完整能力集，不再协商 capabilities。",
+      "enum": [
+        "snapshot",
+        "events",
+        "lease",
+        "sources",
+        "graphExecution"
+      ]
+    },
+    "capabilityList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/capability"
+      }
+    },
+    "role": {
+      "description": "拨号方身份；监听方据此拒绝错配（方向层）。Runtime 腿的拨号方恒为 VS Code。",
+      "enum": [
+        "vscode"
+      ]
+    },
+    "connectType": {
+      "description": "监听方实际承载的连接拓扑；editor-player 对应 Editor Play 模式实例。",
+      "enum": [
+        "editor-player",
+        "player"
+      ]
+    },
+    "payload": {
+      "description": "协商的载荷类型；json 必选（Runtime 腿目前只实现 JSON）。",
+      "enum": [
+        "json",
+        "binary"
+      ]
     },
     "requestId": {
       "type": "string",
@@ -36,8 +75,49 @@
     },
     "token": {
       "type": "string",
-      "description": "Hex-encoded per-instance authentication token of at least 192 bits.",
-      "pattern": "^[0-9a-f]{48,64}$"
+      "description": "Hex-encoded per-instance authentication token of at least 192 bits. Editor Play mode always publishes one and requires it in hello; a Player without authentication leaves it empty and accepts hello without a token (附录 E.3: token 只用于 editor 模式).",
+      "pattern": "^([0-9a-f]{48,64})?$"
+    },
+    "endpointId": {
+      "description": "端点标识（不是调试实例 id）：editor-<pid> / player-<pid>。",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "bootId": {
+      "description": "每次进程启动随机生成；Domain Reload 不改变。",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "sessionId": {
+      "description": "endpointId#bootId；跨 Domain Reload 稳定，generation 不参与。",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}#[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "contractHash": {
+      "description": "调试契约指纹：16 位小写十六进制，无契约时为空串。",
+      "type": "string",
+      "pattern": "^([0-9a-f]{16})?$"
+    },
+    "payloadList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/payload"
+      },
+      "contains": {
+        "const": "json"
+      }
+    },
+    "debugFilter": {
+      "description": "调试筛选：空数组/省略表示全部；服务端在入队前过滤。",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
     },
     "instanceId": {
       "type": "string",
@@ -58,26 +138,9 @@
         "player"
       ]
     },
-    "capability": {
-      "enum": [
-        "snapshot",
-        "events",
-        "lease",
-        "sources",
-        "graphExecution"
-      ]
-    },
-    "capabilityList": {
-      "type": "array",
-      "minItems": 1,
-      "uniqueItems": true,
-      "items": {
-        "$ref": "#/$defs/capability"
-      }
-    },
     "errorCode": {
       "enum": [
-        "runtime.capabilityMissing",
+        "runtime.alreadyConnected",
         "runtime.executionNotFound",
         "runtime.internalError",
         "runtime.invalidJson",
@@ -93,14 +156,14 @@
     },
     "helloMessage": {
       "type": "object",
-      "description": "First message sent by the VS Code client after connecting; authenticates the connection and negotiates the protocol, core and capability set.",
+      "description": "First message sent by the VS Code client after connecting (Appendix A.3): the same handshake shape as the editor leg. role identifies the dialer, clientEndpointId is the dialer endpoint, resumeSessionId asks the listener to resume an existing session.",
       "required": [
         "type",
         "protocolVersion",
-        "coreVersion",
-        "token",
-        "clientInstanceId",
-        "capabilities"
+        "role",
+        "clientEndpointId",
+        "contractHash",
+        "payloads"
       ],
       "properties": {
         "type": {
@@ -109,33 +172,48 @@
         "protocolVersion": {
           "$ref": "#/$defs/protocolVersion"
         },
-        "coreVersion": {
-          "$ref": "#/$defs/coreVersion"
+        "role": {
+          "$ref": "#/$defs/role"
+        },
+        "clientEndpointId": {
+          "$ref": "#/$defs/endpointId"
         },
         "token": {
           "$ref": "#/$defs/token"
         },
-        "clientInstanceId": {
-          "type": "string",
-          "format": "uuid"
+        "contractHash": {
+          "$ref": "#/$defs/contractHash"
         },
-        "capabilities": {
-          "$ref": "#/$defs/capabilityList"
+        "payloads": {
+          "$ref": "#/$defs/payloadList"
+        },
+        "debugCategories": {
+          "$ref": "#/$defs/debugFilter"
+        },
+        "debugInstances": {
+          "$ref": "#/$defs/debugFilter"
+        },
+        "resumeSessionId": {
+          "$ref": "#/$defs/sessionId"
         }
       },
       "additionalProperties": false
     },
     "welcomeMessage": {
       "type": "object",
-      "description": "Instance reply to a valid hello message; identifies the runtime instance, its kind and the current generation.",
+      "description": "Instance reply to a valid hello message (Appendix A.3): identifies the listening endpoint, its session identity and the negotiated payloads.",
       "required": [
         "type",
         "protocolVersion",
-        "coreVersion",
-        "instanceId",
-        "kind",
+        "endpointId",
+        "sessionId",
+        "resumed",
+        "connectType",
         "generation",
-        "capabilities",
+        "bootId",
+        "contractHash",
+        "payloads",
+        "debugEnabled",
         "startedAt"
       ],
       "properties": {
@@ -145,20 +223,32 @@
         "protocolVersion": {
           "$ref": "#/$defs/protocolVersion"
         },
-        "coreVersion": {
-          "$ref": "#/$defs/coreVersion"
+        "endpointId": {
+          "$ref": "#/$defs/endpointId"
         },
-        "instanceId": {
-          "$ref": "#/$defs/instanceId"
+        "sessionId": {
+          "$ref": "#/$defs/sessionId"
         },
-        "kind": {
-          "$ref": "#/$defs/instanceKind"
+        "resumed": {
+          "type": "boolean"
+        },
+        "connectType": {
+          "$ref": "#/$defs/connectType"
         },
         "generation": {
           "$ref": "#/$defs/generation"
         },
-        "capabilities": {
-          "$ref": "#/$defs/capabilityList"
+        "bootId": {
+          "$ref": "#/$defs/bootId"
+        },
+        "contractHash": {
+          "$ref": "#/$defs/contractHash"
+        },
+        "payloads": {
+          "$ref": "#/$defs/payloadList"
+        },
+        "debugEnabled": {
+          "type": "boolean"
         },
         "startedAt": {
           "type": "string",

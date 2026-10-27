@@ -192,21 +192,52 @@ namespace VisualBridge.Runtime
 
         public int ProtocolVersion { get; internal set; }
 
-        public int CoreVersion { get; internal set; }
+        /// <summary>hello：拨号方身份（Runtime 腿恒为 vscode）。</summary>
+        public string Role { get; internal set; }
 
+        /// <summary>hello：拨号方端点标识（不是调试实例 id）。</summary>
+        public string ClientEndpointId { get; internal set; }
+
+        /// <summary>hello：token；Player 无认证时为空。</summary>
         public string Token { get; internal set; }
 
-        public string ClientInstanceId { get; internal set; }
+        /// <summary>hello / welcome：调试契约指纹（16 位小写十六进制，无契约时为空串）。</summary>
+        public string ContractHash { get; internal set; }
 
-        public string InstanceId { get; internal set; }
+        /// <summary>hello / welcome：协商的载荷集合；json 必选。</summary>
+        public IReadOnlyList<string> Payloads { get; internal set; }
 
-        public string Kind { get; internal set; }
+        /// <summary>hello：调试分类筛选（空/缺省 = 全部）。</summary>
+        public IReadOnlyList<string> DebugCategories { get; internal set; }
 
+        /// <summary>hello：调试实例筛选（空/缺省 = 全部）。</summary>
+        public IReadOnlyList<string> DebugInstances { get; internal set; }
+
+        /// <summary>hello：Domain Reload 后的续接会话 id。</summary>
+        public string ResumeSessionId { get; internal set; }
+
+        /// <summary>welcome：监听方端点标识（= editor-&lt;pid&gt; / player-&lt;pid&gt;）。</summary>
+        public string EndpointId { get; internal set; }
+
+        /// <summary>welcome：endpointId#bootId，跨 Domain Reload 稳定。</summary>
+        public string SessionId { get; internal set; }
+
+        /// <summary>welcome：本次是否续接了 hello 的 resumeSessionId。</summary>
+        public bool Resumed { get; internal set; }
+
+        /// <summary>welcome：editor-player / player。</summary>
+        public string ConnectType { get; internal set; }
+
+        /// <summary>welcome：每次传输建立 +1，不参与 sessionId。</summary>
         public int Generation { get; internal set; }
 
-        public string StartedAt { get; internal set; }
+        /// <summary>welcome：每次进程启动随机。</summary>
+        public string BootId { get; internal set; }
 
-        public IReadOnlyList<string> Capabilities { get; internal set; }
+        /// <summary>welcome：debug 总开关当前值。</summary>
+        public bool DebugEnabled { get; internal set; }
+
+        public string StartedAt { get; internal set; }
 
         public string RequestId { get; internal set; }
 

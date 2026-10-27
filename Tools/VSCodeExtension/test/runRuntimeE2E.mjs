@@ -40,6 +40,9 @@ const unity = spawn(UNITY_EDITOR, [
   env: {
     ...process.env,
     VISUALBRIDGE_RUNTIME_E2E_QUIT: quitPath,
+    // 让 Play 模式 server 按 Player 的端口段规则监听（附录 A.8），
+    // 从而让 VS Code 侧的端口段探测（并发 8 / 300 ms）成为真实链路而不是单测桩。
+    VISUALBRIDGE_RUNTIME_E2E_PORT_RANGE: process.env.VISUALBRIDGE_RUNTIME_E2E_PORT_RANGE ?? "28300-28349",
   },
   stdio: "ignore",
 });
