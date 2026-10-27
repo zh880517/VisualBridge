@@ -11,6 +11,13 @@
 
 import { BridgePayloadKind } from "./framing";
 
+/**
+ * 分类方法号段起点（附录 A.4）：`0` = None、`1`/`2` = Create/Finish、`3–9` 预留系统、`10+` 分类方法。
+ * 与 C# 的 `VisualBridgeDebugMethodIdRange.FirstCategoryMethodId` 同值；查询信封的 `methodId`
+ * 低于它按 `invalidRequest` 拒绝（C# 侧对应 `invalid-method-id`）。
+ */
+const FIRST_CATEGORY_METHOD_ID = 10;
+
 /** A.4 的 type 码表（与 C# 侧 `VisualBridgeDebugWireType` 同一张表）。 */
 export enum DebugWireType {
   None = 0,
@@ -90,6 +97,11 @@ export interface DebugRequestMessage {
   readonly instance: string;
   readonly iface?: string;
   readonly method?: string;
+  /**
+   * 方法号（附录 A.5）：与二进制信封载荷头的 `u16 methodId` 同一语义，分类方法从 `10` 起。
+   * JSON 信封必须带它——`method` / `iface` 只是名字，服务端的分发与参数声明表都只认方法号。
+   */
+  readonly methodId: number;
   readonly args: readonly DebugArg[];
 }
 
@@ -99,6 +111,29 @@ export interface DebugResponseMessage {
   readonly ok: boolean;
   readonly code?: string;
   readonly detail?: string;
+}
+
+/**
+ * 通道 1 `response` 的公开错误码（附录 A.6 的查询子集，E6 登记）。
+ * `runtime.queryRejected` 是**业务拒绝**的码：业务实现 `RejectRequest` 主动拒绝、生成的 Dispatcher
+ * 捕获业务异常后拒绝、handler 返回 false 且未回发结果（含非生成处理器抛异常，由运行期兜底）三条路径
+ * 都回它，可区分的原因在 `detail`（`handler-returned-false`、`handler-exception: <异常类型>`、
+ * 以及业务自定义原因）。本清单与 C# 的 `VisualBridgeDebugQueryErrors` 一一对应，由 `check:protocol` 双向核对。
+ */
+export const DEBUG_QUERY_ERROR_CODES = [
+  "runtime.instanceNotFound",
+  "runtime.invalidArgument",
+  "runtime.queryBusy",
+  "runtime.queryRejected",
+  "runtime.queryTimeout",
+  "runtime.queryUnregistered",
+] as const;
+
+export type DebugQueryErrorCode = (typeof DEBUG_QUERY_ERROR_CODES)[number];
+
+/** 线上拿到的 `code` 是否属于 A.6 的查询错误码（客户端据此决定是否映射成 UI 文案）。 */
+export function isDebugQueryErrorCode(value: string | undefined): value is DebugQueryErrorCode {
+  return value !== undefined && (DEBUG_QUERY_ERROR_CODES as readonly string[]).includes(value);
 }
 
 /** `dropped` 的累计计数（A.5，E4 定稿）。 */
@@ -142,9 +177,17 @@ export interface DebugDecodeContext {
   /**
    * **二进制路径必需**：A.4 的信封不带「debug 还是 debugResult」的标志位，`debugResult` 只在
    * `methodId + instanceSlot` 之后多一个 `u32 requestId`。解码器用挂起表判定该 u32 是否为请求号；
-   * 缺少本回调时二进制载荷一律返回 `ambiguousEnvelope` 失败，绝不把请求号当参数区静默解析。
+   * 缺少本回调（且没有 {@link isKnownRequest}）时二进制载荷一律返回 `ambiguousEnvelope` 失败，
+   * 绝不把请求号当参数区静默解析。
    */
   readonly isPendingRequest?: (requestId: number) => boolean;
+  /**
+   * **已知请求号**（在途 + 已结算/已作废）：与 {@link isPendingRequest} 同时给出时本回调优先。
+   * 存在的意义是**晚到结果**：请求超时/结算后已不在挂起表里，只查挂起表会把它的 `u32 requestId`
+   * 当成参数区解出垃圾，或按 `unknownMethod` 丢掉一条本可按 `requestId` 关联进流的结果（A.5）。
+   * 消费端据此仍把它解成 `debugResult`，再由查询客户端判定「已完成 / 已超时」。
+   */
+  readonly isKnownRequest?: (requestId: number) => boolean;
 }
 
 /** 槽位路由表：`Create` 建立、`debugFinish` 与断连立即失效（A.4/A.9）。 */
@@ -205,8 +248,10 @@ export function decodeDebugEnvelope(
 
 /** 编码一条 `request`（通道 1，JSON；A.5 的唯一入站消息）。 */
 export function encodeDebugRequest(request: DebugRequestMessage): Buffer {
-  // 键顺序按附录 A.5 的字段清单（type/requestId/action/category/instance/iface/method/args），
-  // 与 C# 侧 fixture 逐字节一致。
+  // 键顺序按附录 A.5 的字段清单（type/requestId/action/category/instance/iface/method/methodId/args）。
+  // 本函数是 `request` 信封的**唯一**序列化入口（C# 侧只解析、不生产），对象→字节只有这一条路径；
+  // 键顺序由对象字面量的插入顺序固定（`JSON.stringify` 不排序键），跨语言靠两侧共享的 fixture 锁字节。
+  // 该信封不参与任何 hash / 契约指纹计算。
   const value: Record<string, unknown> = {
     type: "request",
     requestId: request.requestId,
@@ -224,6 +269,8 @@ export function encodeDebugRequest(request: DebugRequestMessage): Buffer {
   if (request.method !== undefined) {
     value.method = request.method;
   }
+
+  value.methodId = request.methodId;
 
   if (request.args.length !== 0) {
     value.args = request.args.map((arg) => encodeJsonArg(arg));
@@ -337,12 +384,32 @@ function decodeJson(payload: Buffer): DebugDecodeResult {
       const requestId = readString(record, "requestId");
       const instance = readString(record, "instance");
       if (requestId === undefined || instance === undefined) {
-        return { ok: false, reason: "malformed", detail: "request without requestId/instance" };
+        return { ok: false, reason: "invalidRequest", detail: "request without requestId/instance" };
+      }
+
+      if (record.action !== "debugQuery") {
+        return { ok: false, reason: "invalidRequest", detail: "request with an unknown action" };
+      }
+
+      // A.5：JSON 信封必须带方法号（与二进制载荷头的 u16 同一语义），`method` 只是诊断。
+      // 号段见 A.4：0 = None、1/2 = Create/Finish、3–9 预留、10+ 分类方法。C# 侧对 < 10 回
+      // `invalid-method-id`（E6），客户端也拒绝保留号段：不把必然被服务端拒的请求发出去。
+      const rawMethodId = record.methodId;
+      if (typeof rawMethodId !== "number" || !Number.isInteger(rawMethodId) || rawMethodId > 0xffff) {
+        return { ok: false, reason: "invalidRequest", detail: "request without a u16 methodId" };
+      }
+
+      if (rawMethodId < FIRST_CATEGORY_METHOD_ID) {
+        return {
+          ok: false,
+          reason: "invalidRequest",
+          detail: `request methodId ${rawMethodId} is in the reserved 0-9 range`,
+        };
       }
 
       const args = readJsonArgs(record);
       if (args === undefined) {
-        return { ok: false, reason: "malformed", detail: "request args is not an array" };
+        return { ok: false, reason: "invalidRequest", detail: "request args is not an array" };
       }
 
       const category = readString(record, "category");
@@ -355,6 +422,7 @@ function decodeJson(payload: Buffer): DebugDecodeResult {
           requestId,
           action: "debugQuery",
           instance,
+          methodId: rawMethodId,
           ...(category === undefined ? {} : { category }),
           ...(iface === undefined ? {} : { iface }),
           ...(method === undefined ? {} : { method }),
@@ -442,37 +510,42 @@ function decodeBinary(payload: Buffer, context: DebugDecodeContext): DebugDecode
     return { ok: false, reason: "unknownSlot", detail: `unknown instanceSlot ${instanceSlot}` };
   }
 
-  const pendingRequestId = context.isPendingRequest;
-  if (pendingRequestId === undefined) {
+  // 已知请求号优先：只用挂起表时，超时/已结算请求的晚到结果会退化成 `debug` 事件（解出垃圾参数
+  // 或按 unknownMethod 丢弃）；`isKnownRequest` 让这类结果仍按 requestId 关联进流（A.5）。
+  const isKnownRequest = context.isKnownRequest ?? context.isPendingRequest;
+  if (isKnownRequest === undefined) {
     // 没有挂起表就无法判断第 5–8 字节是请求号还是参数，宁可明确失败也不静默错解（A.4）。
     return {
       ok: false,
       reason: "ambiguousEnvelope",
-      detail: "binary payload needs context.isPendingRequest to tell debug from debugResult",
+      detail: "binary payload needs context.isPendingRequest or context.isKnownRequest to tell debug from debugResult",
     };
   }
 
-  if (payload.length >= 8 && pendingRequestId(payload.readUInt32BE(4))) {
-    const requestId = `req-${payload.readUInt32BE(4)}`;
-    const args = decodeParameterArea(payload, 8, binding.category, methodId, context);
-    if (typeof args === "string") {
-      return { ok: false, reason: "unknownMethod", detail: args };
-    }
+  if (payload.length >= 8) {
+    const rawRequestId = payload.readUInt32BE(4);
+    if (rawRequestId !== 0 && isKnownRequest(rawRequestId)) {
+      const requestId = `req-${rawRequestId}`;
+      const args = decodeParameterArea(payload, 8, binding.category, methodId, context);
+      if (typeof args === "string") {
+        return { ok: false, reason: "unknownMethod", detail: args };
+      }
 
-    return {
-      ok: true,
-      message: {
-        kind: "debugResult",
-        category: binding.category,
-        instance: binding.instance,
-        instanceSlot,
-        methodId,
-        iface: undefined,
-        method: undefined,
-        requestId,
-        args,
-      },
-    };
+      return {
+        ok: true,
+        message: {
+          kind: "debugResult",
+          category: binding.category,
+          instance: binding.instance,
+          instanceSlot,
+          methodId,
+          iface: undefined,
+          method: undefined,
+          requestId,
+          args,
+        },
+      };
+    }
   }
 
   const args = decodeParameterArea(payload, 4, binding.category, methodId, context);

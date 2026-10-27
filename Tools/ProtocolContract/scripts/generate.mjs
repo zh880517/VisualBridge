@@ -531,6 +531,7 @@ async function verifyImplementationRegistry() {
   assertSortedUnique(contractManifest.errors.lifecycleBlockers, "Lifecycle blocker registry");
   assertSortedUnique(contractManifest.errors.providerHost, "Provider Host error registry");
   assertSortedUnique(contractManifest.errors.mcpPublic, "MCP public error registry");
+  assertSortedUnique(contractManifest.errors.debugQuery, "Debug query error registry");
 
   const transactionSource = await readFile(path.join(repositoryRoot, "Tools", "NodeHost", "src", "projectTransaction.ts"), "utf8");
   const transactionFailures = literalMatches(transactionSource, /new ProjectTransactionFailure\(\s*"([^"]+)"/g);
@@ -575,6 +576,26 @@ async function verifyImplementationRegistry() {
     "refactor.valueTypeMismatch",
   );
   assertSameSet(mcpErrors, contractManifest.errors.mcpPublic, "MCP public errors");
+
+  // 通道 1 查询错误码（附录 A.6）：C# 运行期与客户端解码表必须与清单三方一致，否则客户端会把
+  // 已登记的码当成未知识别不了（E6 的 `runtime.queryRejected` 就是靠这条对齐的）。
+  const debugQueryErrorsSource = await readFile(
+    path.join(repositoryRoot, "Packages", "com.kyle.visualbridge", "Runtime", "Debug", "VisualBridgeDebugQueryErrors.cs"),
+    "utf8",
+  );
+  const debugQueryErrors = literalMatches(debugQueryErrorsSource, /public const string \w+ = "(runtime\.[A-Za-z]+)";/g);
+  assertSameSet(debugQueryErrors, contractManifest.errors.debugQuery, "Debug query errors (C# runtime)");
+  const debugQueryClientSource = await readFile(
+    path.join(repositoryRoot, "Tools", "VSCodeExtension", "src", "bridge", "debugMessages.ts"),
+    "utf8",
+  );
+  const debugQueryClientBlock = debugQueryClientSource.match(/export const DEBUG_QUERY_ERROR_CODES = \[([\s\S]*?)\] as const;/)?.[1];
+  if (debugQueryClientBlock === undefined) throw new Error("DEBUG_QUERY_ERROR_CODES was not found in debugMessages.ts.");
+  assertSameSet(
+    literalMatches(debugQueryClientBlock, /"([^"]+)"/g),
+    contractManifest.errors.debugQuery,
+    "Debug query errors (client)",
+  );
 
   verifySchemaVersion("visualbridge-project.schema.json", "project");
   verifySchemaVersion("visualbridge-graph.schema.json", "graphDocument");

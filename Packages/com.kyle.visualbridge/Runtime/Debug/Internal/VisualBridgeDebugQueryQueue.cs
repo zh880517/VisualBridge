@@ -90,6 +90,12 @@ namespace VisualBridge.Diagnostics
                 return Reject(VisualBridgeDebugQueryStatus.InvalidArgument);
             }
 
+            if (request.MethodId < VisualBridgeDebugMethodIdRange.FirstCategoryMethodId)
+            {
+                // 0 = None、1/2 = Create/Finish、3–9 预留（附录 A.4）：查询必须指向分类方法。
+                return Reject(VisualBridgeDebugQueryStatus.InvalidArgument);
+            }
+
             if (!VisualBridgeDebugSession.IsAttachedAndConnected)
             {
                 // 没有连接就没有可回应的通道，静默丢弃并计数（附录 B.3.1 的未连接语义）。
@@ -111,6 +117,13 @@ namespace VisualBridge.Diagnostics
             string category = string.IsNullOrEmpty(request.Category) ? boundCategory : request.Category;
             if (string.IsNullOrEmpty(category))
             {
+                return Reject(VisualBridgeDebugQueryStatus.InvalidArgument);
+            }
+
+            if (!string.IsNullOrEmpty(boundCategory) && !string.Equals(category, boundCategory, StringComparison.Ordinal))
+            {
+                // 信封分类必须与实例创建时绑定的分类一致（附录 B.6.2 的"分类未知"口径）：
+                // 否则可以用一个分类的处理器去查另一个分类的实例。binary 路径的槽位校验管不到分类。
                 return Reject(VisualBridgeDebugQueryStatus.InvalidArgument);
             }
 

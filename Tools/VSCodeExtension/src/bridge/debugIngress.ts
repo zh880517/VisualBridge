@@ -106,6 +106,8 @@ export interface DebugRequestEnvelope extends DebugEnvelopeCommon {
   readonly instance: string;
   readonly interfaceId: string | undefined;
   readonly method: string | undefined;
+  /** 方法号（A.5 的 JSON 信封字段，与二进制载荷头同源）；参数名按它查声明表。 */
+  readonly methodId: number;
   readonly args: readonly DebugArg[];
 }
 
@@ -207,6 +209,12 @@ export interface DebugIngressOptions {
    */
   readonly isPendingRequest?: (requestId: number) => boolean;
   /**
+   * 已知请求号（在途 + 已结算/已超时）；同样由 F6 注入，与 {@link isPendingRequest} 同时给出时优先。
+   * 只给挂起表时，超时请求的**晚到结果**会被解成 `debug`（垃圾参数）或按 `unknownMethod` 丢掉；
+   * 给出本回调后仍解成 `debugResult`，由查询客户端判定"已完成 / 已超时后丢弃"（A.5）。
+   */
+  readonly isKnownRequest?: (requestId: number) => boolean;
+  /**
    * 显式声明"本数据源确定没有挂起请求"（F1 单测解事件帧用）。
    * 与 {@link isPendingRequest} 同时给出时后者优先；缺省仍走 `ambiguousEnvelope`。
    */
@@ -225,6 +233,7 @@ export class DebugIngress {
   private readonly contracts: DebugContractSnapshot | undefined;
   private readonly slots: DebugSlotRegistry;
   private readonly pendingRequest: ((requestId: number) => boolean) | undefined;
+  private readonly knownRequest: ((requestId: number) => boolean) | undefined;
   private readonly maxPayloadBytes: number;
   private readonly log: (message: string) => void;
   private countersValue: DebugIngressCounters = ZERO_COUNTERS;
@@ -238,6 +247,7 @@ export class DebugIngress {
     // 不提供挂起表时保持 undefined：让解码器返回 ambiguousEnvelope（A.4），由 F6 注入真实表。
     this.pendingRequest = options.isPendingRequest
       ?? (options.assumeNoPendingRequests === true ? () => false : undefined);
+    this.knownRequest = options.isKnownRequest;
     this.maxPayloadBytes = options.maxPayloadBytes ?? MAX_MESSAGE_BYTES;
     this.log = options.log ?? (() => undefined);
   }
@@ -480,6 +490,7 @@ export class DebugIngress {
         : (category, methodId, tag) => contracts.resolveEnumWidth(category ?? "", methodId, tag),
       // 缺表时整条键都不给，解码器才会走 `ambiguousEnvelope`（A.4）。
       ...(this.pendingRequest === undefined ? {} : { isPendingRequest: this.pendingRequest }),
+      ...(this.knownRequest === undefined ? {} : { isKnownRequest: this.knownRequest }),
     };
   }
 
@@ -582,7 +593,11 @@ export class DebugIngress {
           instance: message.instance,
           interfaceId: message.iface,
           method: message.method,
-          args: this.nameArguments(message.args, this.declarationFor(message.category, message.iface, message.method)),
+          methodId: message.methodId,
+          args: this.nameArguments(
+            message.args,
+            this.declarationFor(message.category, message.iface, message.method, message.methodId),
+          ),
         };
       case "response":
         return {
@@ -653,8 +668,18 @@ export class DebugIngress {
     category: string | undefined,
     interfaceId: string | undefined,
     method: string | undefined,
+    methodId: number,
   ): DebugContractMethod | undefined {
-    if (this.contracts === undefined || category === undefined || interfaceId === undefined || method === undefined) {
+    if (this.contracts === undefined || category === undefined) {
+      return undefined;
+    }
+
+    // 方法号优先：A.5 的信封自带 methodId（与二进制载荷头同一真源），iface/method 只是名字兜底。
+    if (methodId > 0) {
+      return this.contracts.resolveMessage(category, methodId, interfaceId, method).declaration;
+    }
+
+    if (interfaceId === undefined || method === undefined) {
       return undefined;
     }
 

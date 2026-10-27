@@ -173,6 +173,14 @@
       "provider.unresponsive",
       "provider.writeFailed"
     ],
+    "debugQuery": [
+      "runtime.instanceNotFound",
+      "runtime.invalidArgument",
+      "runtime.queryBusy",
+      "runtime.queryRejected",
+      "runtime.queryTimeout",
+      "runtime.queryUnregistered"
+    ],
     "mcpPublic": [
       "catalog.documentTypeUnbound",
       "catalog.invalid",

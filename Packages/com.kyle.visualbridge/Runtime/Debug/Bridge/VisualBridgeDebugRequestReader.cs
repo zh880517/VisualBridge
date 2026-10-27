@@ -7,8 +7,10 @@ namespace VisualBridge.Diagnostics.Bridge
 {
 #if UNITY_EDITOR || VISUALBRIDGE_RUNTIME_BRIDGE
     /// <summary>
-    /// 入站 <c>request</c>（通道 1，JSON）的解析器（附录 A.2/A.5）：把信封与 <c>args</c> 解成
+    /// 入站 <c>request</c>（通道 1，JSON）的解析器（附录 A.5）：把信封与 <c>args</c> 解成
     /// <see cref="VisualBridgeDebugQueryRequest"/>，交给 <see cref="VisualBridgeDebugQueryRuntime.TryEnqueue"/>。
+    /// 信封必须带 <c>methodId</c>（u16，分类方法号段 10+，与二进制载荷头同一语义）——服务端的分发与
+    /// 参数声明表只认方法号，<c>iface</c> / <c>method</c> 只是名字（<c>method</c> 仅诊断/展示）。
     /// 本程序集不能引用 Newtonsoft（<c>VisualBridge.Runtime</c> 是 overrideReferences 引用），因此带一个
     /// 只服务该信封的最小 JSON 读取器：对象/数组/字符串/数字/true/false/null，转义与代理对按 RFC 8259。
     /// </summary>
@@ -73,23 +75,51 @@ namespace VisualBridge.Diagnostics.Bridge
                 return false;
             }
 
+            if (!TryReadMethodId(envelope, out ushort methodId, out error))
+            {
+                return false;
+            }
+
             if (!TryReadArguments(envelope, out var arguments, out error))
             {
                 return false;
             }
 
-            // JSON 信封没有 methodId（附录 A.5）：方法号只在二进制信封里，而 D4 的声明表只能按
-            // methodId 取（TryGetParameters(methodId)），methodId=0 恒不命中 —— JSON 降级路径下
-            // **所有**查询（含无参）都无法分发到生成代码，这是 E6 的前置缺口（见实现说明 risks）。
+            // 附录 A.5 的 JSON 信封携带 u16 `methodId`（与二进制载荷头同一语义）：服务端的处理器分发与
+            // 参数声明表都只认方法号，`iface` / `method` 只是名字（`method` 仅诊断/展示）。
             request = new VisualBridgeDebugQueryRequest(
                 requestSeq,
                 Text(envelope, "category"),
                 instanceId,
-                0,
-                0,
+                methodId,
                 Text(envelope, "iface"),
                 Text(envelope, "method"),
                 arguments);
+            return true;
+        }
+
+        /// <summary>
+        /// 解析 JSON 信封的 <c>methodId</c>（附录 A.5）：必须是分类方法号段（≥ 10，附录 A.4 里
+        /// 0 = None、1/2 = Create/Finish、3–9 预留），且落在 u16 内、不得是小数。
+        /// </summary>
+        private static bool TryReadMethodId(Dictionary<string, object> envelope, out ushort methodId, out string error)
+        {
+            methodId = 0;
+            error = null;
+            if (!envelope.TryGetValue("methodId", out var raw))
+            {
+                error = "missing-method-id";
+                return false;
+            }
+
+            if (!(raw is double number) || Math.Floor(number) != number
+                || number < VisualBridgeDebugMethodIdRange.FirstCategoryMethodId || number > ushort.MaxValue)
+            {
+                error = "invalid-method-id";
+                return false;
+            }
+
+            methodId = (ushort)number;
             return true;
         }
 

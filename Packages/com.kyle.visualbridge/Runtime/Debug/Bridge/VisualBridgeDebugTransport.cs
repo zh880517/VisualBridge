@@ -19,9 +19,6 @@ namespace VisualBridge.Diagnostics.Bridge
     /// </summary>
     public sealed class VisualBridgeDebugTransport : IVisualBridgeDebugTransport, IVisualBridgeDebugOutboundGate, IDisposable
     {
-        /// <summary>分类方法的起始方法号（附录 A.4：0–9 为系统保留）。</summary>
-        public const ushort FirstCategoryMethodId = 10;
-
         /// <summary>dropped 上报的最小间隔（附录 A.9 的「按周期上报」，配合 1 s 心跳）。</summary>
         public const int DroppedReportIntervalMs = 500;
 
@@ -261,7 +258,7 @@ namespace VisualBridge.Diagnostics.Bridge
 
         public void SendReject(uint requestSeq, string reason)
         {
-            // 业务拒绝：码统一取 VisualBridgeDebugQueryErrors.Rejected（A.6 登记归 E6）。
+            // 业务拒绝：码统一取 VisualBridgeDebugQueryErrors.Rejected（附录 A.6 的 runtime.queryRejected）。
             TrySendControl(VisualBridgeDebugWireMessages.Response(requestSeq,
                 VisualBridgeDebugQueryErrors.Rejected, reason));
             FlushDropped();
@@ -279,7 +276,7 @@ namespace VisualBridge.Diagnostics.Bridge
                     unknownSlot += 1;
                     droppedDirty = true;
                 }
-                else if (methodId < FirstCategoryMethodId)
+                else if (methodId < VisualBridgeDebugMethodIdRange.FirstCategoryMethodId)
                 {
                     unknownMethod += 1;
                     droppedDirty = true;
@@ -560,7 +557,7 @@ namespace VisualBridge.Diagnostics.Bridge
                 {
                     unknownSlot += 1;
                 }
-                else if (methodId < FirstCategoryMethodId)
+                else if (methodId < VisualBridgeDebugMethodIdRange.FirstCategoryMethodId)
                 {
                     unknownMethod += 1;
                 }

@@ -415,6 +415,82 @@ test("a binary debugResult decodes with an injected pending-request table", asyn
   assert.equal(ingress.counters.unknownMethods, 0);
 });
 
+test("a late binary debugResult still normalizes when the request id is known", async () => {
+  const contracts = await primaryContracts();
+  // 超时后请求已不在挂起表里，但仍是「已知请求号」：晚到结果必须解成 debugResult，
+  // 不能退化成 debug（垃圾参数）或 unknownMethod（丢掉一条可按 requestId 关联的结果）。
+  const ingress = new DebugIngress({
+    contracts,
+    isPendingRequest: () => false,
+    isKnownRequest: (requestId) => requestId === 7,
+  });
+  ingress.acceptFrame({ channel: BridgeChannel.Debug, payloadKind: BridgePayloadKind.Binary, payload: CREATE_BINARY });
+
+  const envelopes = ingress.acceptFrame({
+    channel: BridgeChannel.Debug,
+    payloadKind: BridgePayloadKind.Binary,
+    payload: RESULT_BINARY,
+  });
+  assert.equal(envelopes.length, 1);
+  const [lateResult] = envelopes;
+  assert.ok(lateResult !== undefined);
+  assert.equal(lateResult.type, "debugResult");
+  if (lateResult.type !== "debugResult") return;
+  assert.equal(lateResult.requestId, "req-7");
+  assert.deepEqual(lateResult.args, [{ tag: 0, name: "matched", type: "bool", value: true }]);
+  assert.equal(ingress.counters.ambiguousMessages, 0);
+  assert.equal(ingress.counters.unknownMethods, 0);
+});
+
+test("a JSON request envelope carries its methodId and names args from the contract", async () => {
+  const contracts = await primaryContracts();
+  const ingress = new DebugIngress({ contracts });
+  const envelopes = ingress.acceptFrame({
+    channel: BridgeChannel.Debug,
+    payloadKind: BridgePayloadKind.Json,
+    payload: Buffer.from(JSON.stringify({
+      type: "request",
+      requestId: "req-12",
+      action: "debugQuery",
+      category: "graph",
+      instance: "hero",
+      iface: "IGraphDebuger",
+      method: "Query",
+      methodId: 12,
+      args: [{ tag: 0, type: "bool", value: true }],
+    }), "utf8"),
+  });
+
+  assert.equal(envelopes.length, 1);
+  const [envelope] = envelopes;
+  assert.ok(envelope !== undefined);
+  assert.equal(envelope.type, "request");
+  if (envelope.type !== "request") return;
+  assert.equal(envelope.methodId, 12);
+  assert.equal(envelope.requestId, "req-12");
+  assert.deepEqual(envelope.args, [{ tag: 0, name: "matched", type: "bool", value: true }]);
+  assert.equal(ingress.counters.invalidRequests, 0);
+});
+
+test("a JSON request envelope without methodId is counted as an invalid request", () => {
+  const ingress = new DebugIngress();
+  const envelopes = ingress.acceptFrame({
+    channel: BridgeChannel.Debug,
+    payloadKind: BridgePayloadKind.Json,
+    payload: Buffer.from(JSON.stringify({
+      type: "request",
+      requestId: "req-12",
+      action: "debugQuery",
+      category: "graph",
+      instance: "hero",
+    }), "utf8"),
+  });
+
+  assert.deepEqual(envelopes, []);
+  assert.equal(ingress.counters.invalidRequests, 1);
+  assert.equal(ingress.counters.malformedMessages, 0);
+});
+
 test("a JSON debugCreate missing its required category is rejected instead of binding slot 0", () => {
   const ingress = new DebugIngress();
   const incomplete = JSON.stringify({

@@ -1,8 +1,10 @@
 namespace VisualBridge.Diagnostics
 {
     /// <summary>
-    /// 查询失败应答的错误码（附录 A.6）。运行期只产出这五个码：业务实现用
-    /// <see cref="VisualBridgeDebug.RejectRequest"/> 拒绝时只带 detail，码由传输层按失败应答补齐。
+    /// 查询失败应答的错误码（附录 A.6）。清单在 <c>Protocol/contract-manifest.json</c> 的
+    /// <c>errors.debugQuery</c>，由 <c>check:protocol</c> 与本类及客户端解码表三方核对。
+    /// 运行期只产出这六个码：业务实现用 <see cref="VisualBridgeDebug.RejectRequest"/> 拒绝时只带 detail，
+    /// 码由传输层按失败应答补齐。
     /// </summary>
     public static class VisualBridgeDebugQueryErrors
     {
@@ -22,8 +24,10 @@ namespace VisualBridge.Diagnostics
         public const string InvalidArgument = "runtime.invalidArgument";
 
         /// <summary>
-        /// 业务拒绝（<see cref="VisualBridgeDebug.RejectRequest"/>）：A.6 尚未登记该码，
-        /// 由 E6 补登；先收敛成常量，避免传输层与文档两处漂移。
+        /// 业务拒绝（附录 A.6，E6 登记）：三条路径都回这个码——业务实现用
+        /// <see cref="VisualBridgeDebug.RejectRequest"/> 主动拒绝、生成的 Dispatcher 捕获业务异常后拒绝、
+        /// handler 返回 false 且未回发结果（含非生成处理器抛异常，由运行期兜底）。可机器区分的原因在
+        /// <c>detail</c>：`handler-returned-false`、`handler-exception: &lt;类型名&gt;`、或业务自定义原因。
         /// </summary>
         public const string Rejected = "runtime.queryRejected";
 

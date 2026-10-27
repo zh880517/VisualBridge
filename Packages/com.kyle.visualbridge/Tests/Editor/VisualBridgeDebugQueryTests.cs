@@ -141,6 +141,26 @@ namespace VisualBridge.Editor.Tests
         }
 
         [Test]
+        public void RequestWithoutACategoryMethodIdIsRejectedAsInvalidArgument()
+        {
+            // 0 = None、1/2 = Create/Finish、3–9 预留（A.4）：直接调 API 也按不合法拒绝。
+            var status = VisualBridgeDebugQueryRuntime.TryEnqueue(Request(1, methodId: 0));
+            Assert.That(status, Is.EqualTo(VisualBridgeDebugQueryStatus.InvalidArgument));
+            Assert.That(_transport.QueryErrors[0].Code, Is.EqualTo("runtime.invalidArgument"));
+            Assert.That(VisualBridgeDebugQueryRuntime.Pump(), Is.EqualTo(0));
+        }
+
+        [Test]
+        public void RequestCategoryMustMatchTheInstanceBinding()
+        {
+            // 信封的分类与实例创建时绑定的分类不一致（B.6.2 的"分类未知"）：不得跨分类取处理器。
+            var status = VisualBridgeDebugQueryRuntime.TryEnqueue(Request(1, category: "visualbridge.entity"));
+            Assert.That(status, Is.EqualTo(VisualBridgeDebugQueryStatus.InvalidArgument));
+            Assert.That(_transport.QueryErrors[0].Code, Is.EqualTo("runtime.invalidArgument"));
+            Assert.That(TestDispatcher.Calls, Is.EqualTo(0));
+        }
+
+        [Test]
         public void UnknownTagOrWrongValueTypeIsRejectedAsInvalidArgument()
         {
             var unknownTag = new VisualBridgeDebugQueryRequest(1, Category, InstanceId, IsVisibleMethodId, InterfaceId,

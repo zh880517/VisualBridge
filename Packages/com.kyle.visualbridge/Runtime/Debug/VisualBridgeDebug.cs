@@ -113,7 +113,10 @@ namespace VisualBridge.Diagnostics
 #endif
         }
 
-        /// <summary>拒绝请求：发送失败应答（通道 1 的 response），不进入调试流。</summary>
+        /// <summary>
+        /// 拒绝请求：发送失败应答（通道 1 的 <c>response</c>），不进入调试流。错误码是
+        /// <c>runtime.queryRejected</c>（附录 A.6），<paramref name="reason"/> 原样进 <c>detail</c>。
+        /// </summary>
         public static bool RejectRequest(VisualBridgeDebugRequest request, string reason)
         {
 #if UNITY_EDITOR || VISUALBRIDGE_RUNTIME_BRIDGE

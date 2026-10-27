@@ -15,6 +15,9 @@ namespace VisualBridge.Editor.Tests
     /// E4 调试消息与筛选用例：七种消息的 JSON/二进制线格式、槽位路由与失效、入队前筛选
     /// （不编码、不入队、计数）、dropped 聚合与节流、未知方法/未知槽位不断连、1 MB 上限。
     /// 线格式与 TS 侧 `test/unit/debugMessages.test.ts` 共用同一组 fixture（同一批字符串与十六进制）。
+    /// E6 补充查询往返：入站 JSON `request` 的 `methodId` 必填校验与失败原因，以及
+    /// 「JSON request → 真实 transport → D4 队列/泵 → `debugResult`」在 JSON 与二进制两种结果编码下
+    /// 的 `requestId` 映射（`"req-12"` ↔ `u32 12`）与业务拒绝应答码 `runtime.queryRejected`。
     /// </summary>
     public sealed class VisualBridgeDebugTransportTests
     {
@@ -30,6 +33,15 @@ namespace VisualBridge.Editor.Tests
             + "\"unknownMethod\":1,\"unknownSlot\":1,\"invalidRequest\":1,\"encodeFailed\":0,"
             + "\"oversize\":0,\"queueOverflow\":5}";
 
+        /// <summary>
+        /// 与 TS 侧 `test/unit/debugMessages.test.ts` 共用的 request 信封（A.5 键序，含 E6 补的 `methodId`）。
+        /// 两侧必须逐字节一致：键顺序是协议的一部分（fixture 比对即键序比对）。
+        /// </summary>
+        private const string RequestJsonFixture = "{\"type\":\"request\",\"requestId\":\"req-12\","
+            + "\"action\":\"debugQuery\",\"category\":\"graph\",\"instance\":\"hero\","
+            + "\"iface\":\"IGraphDebuger\",\"method\":\"IsVisible\",\"methodId\":10,"
+            + "\"args\":[{\"tag\":1,\"name\":\"nodeId\",\"type\":\"int\",\"value\":3}]}";
+
         [SetUp]
         public void SetUp()
         {
@@ -41,6 +53,8 @@ namespace VisualBridge.Editor.Tests
         [TearDown]
         public void TearDown()
         {
+            // 处理器注册是静态接线（B.6.1），不随会话重置：用例自己收干净，避免串到别的用例。
+            VisualBridgeDebug.RegisterRequestHandler(Category, InterfaceId, null);
             VisualBridgeDebugBridge.Uninstall();
             VisualBridgeDebug.SetEncoder(null);
             VisualBridgeDebug.SetFrame(-1);
@@ -264,6 +278,57 @@ namespace VisualBridge.Editor.Tests
             return transport;
         }
 
+        /// <summary>
+        /// 查询往返的公共接线（E6）：真实 transport + 与线格式一致的编码器 + 一个等价于生成 Dispatcher
+        /// 的处理器（同一签名，同样用 7 参句柄携带归属），并创建一个已绑定的实例。
+        /// </summary>
+        private static void ConfigureQueryRoundTrip(VisualBridgeDebugTransport transport, bool binary = false)
+        {
+            VisualBridgeDebugBridge.Install(transport);
+            VisualBridgeDebug.SetEncoder(binary
+                ? new VisualBridgeDebugBinaryEncoder()
+                : new VisualBridgeDebugJsonEncoder());
+            VisualBridgeDebug.RegisterRequestHandler(Category, InterfaceId,
+                new VisualBridgeDebugRequestDispatcher(DispatchIsVisible),
+                new VisualBridgeDebugRequestParameterDecoder(DecodeIsVisible));
+            Assert.IsTrue(VisualBridgeDebug.Create(InstanceId, Category, "R", string.Empty));
+        }
+
+        private static bool DispatchIsVisible(ushort methodId, string instanceId, ushort instanceSlot,
+            uint requestSeq, object[] parameters)
+        {
+            if (methodId != MethodId || parameters == null || parameters.Length != 1)
+            {
+                return false;
+            }
+
+            var request = new VisualBridgeDebugRequest(instanceId, instanceSlot, methodId, requestSeq,
+                Category, InterfaceId, "IsVisible");
+            if (!VisualBridgeDebug.StartResult(request))
+            {
+                return false;
+            }
+
+            VisualBridgeDebug.PushParam("visible", 1, (int)parameters[0] > 0);
+            return VisualBridgeDebug.End();
+        }
+
+        private static bool DecodeIsVisible(ushort methodId, out string[] names, out ushort[] tags, out Type[] types)
+        {
+            if (methodId != MethodId)
+            {
+                names = null;
+                tags = null;
+                types = null;
+                return false;
+            }
+
+            names = new[] { "nodeId" };
+            tags = new[] { (ushort)1 };
+            types = new[] { typeof(int) };
+            return true;
+        }
+
         [Test]
         public void QueryFailureResponseMatchesJsonFixture()
         {
@@ -275,6 +340,21 @@ namespace VisualBridge.Editor.Tests
             Assert.AreEqual(1, wire.Controls.Count);
             Assert.AreEqual("{\"type\":\"response\",\"requestId\":\"req-12\",\"ok\":false,"
                 + "\"code\":\"runtime.queryBusy\",\"detail\":\"queue full\"}", Text(wire.Controls[0]));
+        }
+
+        [Test]
+        public void BusinessRejectionMatchesJsonFixtureWithQueryRejectedCode()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire);
+
+            // 业务拒绝的公开码（附录 A.6，E6 登记）：code 恒 runtime.queryRejected，原因在 detail。
+            transport.SendReject(12u, "handler-returned-false");
+
+            Assert.AreEqual(1, wire.Controls.Count);
+            Assert.AreEqual("{\"type\":\"response\",\"requestId\":\"req-12\",\"ok\":false,"
+                + "\"code\":\"runtime.queryRejected\",\"detail\":\"handler-returned-false\"}",
+                Text(wire.Controls[0]));
         }
 
         [Test]
@@ -462,7 +542,8 @@ namespace VisualBridge.Editor.Tests
         {
             byte[] payload = Encoding.UTF8.GetBytes("{\"type\":\"request\",\"requestId\":\"req-12\","
                 + "\"action\":\"debugQuery\",\"category\":\"graph\",\"instance\":\"hero\","
-                + "\"iface\":\"IGraphDebuger\",\"method\":\"Query\",\"args\":[{\"tag\":1,\"name\":\"hp\","
+                + "\"iface\":\"IGraphDebuger\",\"method\":\"Query\",\"methodId\":10,"
+                + "\"args\":[{\"tag\":1,\"name\":\"hp\","
                 + "\"type\":\"int\",\"value\":5},{\"tag\":2,\"name\":\"mode\",\"type\":\"enum\","
                 + "\"value\":\"Fast\"},{\"tag\":3,\"name\":\"blob\",\"type\":\"byte[]\",\"value\":\"AQID\"}]}");
 
@@ -472,10 +553,63 @@ namespace VisualBridge.Editor.Tests
             Assert.AreEqual("hero", request.InstanceId);
             Assert.AreEqual("IGraphDebuger", request.InterfaceId);
             Assert.AreEqual("Query", request.Method);
+            Assert.AreEqual((ushort)10, request.MethodId, "JSON 信封的 methodId 必须落到请求上（E6 的分发依据）");
             Assert.AreEqual(3, request.Arguments.Count);
             Assert.AreEqual(5, request.Arguments[0].Value);
             Assert.AreEqual("Fast", request.Arguments[1].Value);
             Assert.AreEqual(new byte[] { 1, 2, 3 }, request.Arguments[2].Value);
+
+            // 键序也是协议的一部分：TS 侧用同一个字面量比对 `encodeDebugRequest` 的字节（唯一的生产路径），
+            // C# 侧只解析、不生产，所以这里显式锁一次顺序，防止有人手改 fixture 时静默漂移。
+            AssertKeyOrder(Encoding.UTF8.GetString(payload),
+                "\"type\":\"request\"", "\"requestId\":\"req-12\"", "\"action\":\"debugQuery\"",
+                "\"category\":\"graph\"", "\"instance\":\"hero\"", "\"iface\":\"IGraphDebuger\"",
+                "\"method\":\"Query\"", "\"methodId\":10", "\"args\":[");
+        }
+
+        /// <summary>断言这些片段在文本里按给定顺序出现（信封键序的显式守卫）。</summary>
+        private static void AssertKeyOrder(string text, params string[] fragments)
+        {
+            int offset = 0;
+            foreach (var fragment in fragments)
+            {
+                int index = text.IndexOf(fragment, offset, StringComparison.Ordinal);
+                Assert.GreaterOrEqual(index, offset, "信封键序漂移：" + fragment + " 不在预期位置（" + text + "）");
+                offset = index + fragment.Length;
+            }
+        }
+
+        [Test]
+        public void JsonRequestRoundTripsToAJsonDebugResult()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire, droppedReportIntervalMs: 0);
+            ConfigureQueryRoundTrip(transport);
+
+            wire.RaiseFrameReceived(VisualBridgePayloadKind.Json, Encoding.UTF8.GetBytes(RequestJsonFixture));
+            Assert.AreEqual(1, VisualBridgeDebugQueryRuntime.Pump(), "JSON request 必须真的分发到业务实现");
+
+            Assert.AreEqual(1, wire.Datas.Count);
+            Assert.AreEqual(
+                "{\"type\":\"debugResult\",\"category\":\"graph\",\"instance\":\"hero\","
+                + "\"iface\":\"IGraphDebuger\",\"method\":\"IsVisible\",\"requestId\":\"req-12\","
+                + "\"args\":[{\"tag\":1,\"name\":\"visible\",\"type\":\"bool\",\"value\":true}]}",
+                Text(wire.Datas[0]));
+        }
+
+        [Test]
+        public void JsonRequestRoundTripsToABinaryDebugResultWithTheSameRequestNumber()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire, VisualBridgeDebugPayloadFormat.Binary, droppedReportIntervalMs: 0);
+            ConfigureQueryRoundTrip(transport, binary: true);
+
+            wire.RaiseFrameReceived(VisualBridgePayloadKind.Json, Encoding.UTF8.GetBytes(RequestJsonFixture));
+            Assert.AreEqual(1, VisualBridgeDebugQueryRuntime.Pump());
+
+            // 同一请求号的两侧映射：JSON 是 "req-12"，二进制是载荷头之后的 u32 0x0000000c。
+            Assert.AreEqual(1, wire.Datas.Count);
+            Assert.AreEqual("000a0001" + "0000000c" + "0001" + "01" + "01", Hex(wire.Datas[0]));
         }
 
         [Test]
@@ -483,8 +617,8 @@ namespace VisualBridge.Editor.Tests
         {
             byte[] payload = Encoding.UTF8.GetBytes("{\"type\":\"request\",\"requestId\":\"req-12\","
                 + "\"action\":\"debugQuery\",\"category\":\"graph\",\"instance\":\"hero\","
-                + "\"iface\":\"IGraphDebuger\",\"method\":\"Query\",\"args\":[{\"tag\":1.5,\"name\":\"hp\","
-                + "\"type\":\"int\",\"value\":5}]}");
+                + "\"iface\":\"IGraphDebuger\",\"method\":\"Query\",\"methodId\":12,"
+                + "\"args\":[{\"tag\":1.5,\"name\":\"hp\",\"type\":\"int\",\"value\":5}]}");
 
             // A.5 的 tag 是 u16：1.5 不能被静默截断成 1。
             Assert.IsFalse(VisualBridgeDebugRequestReader.TryRead(payload, out _, out string error));
@@ -525,6 +659,22 @@ namespace VisualBridge.Editor.Tests
                 Encoding.UTF8.GetBytes("{\"type\":\"request\",\"requestId\":\"req-1\",\"action\":\"debugQuery\"}"),
                 out _, out error));
             Assert.AreEqual("missing-instance", error);
+
+            // E6：JSON 信封必须带 u16 方法号（A.5），否则服务端无从分发。
+            Assert.IsFalse(VisualBridgeDebugRequestReader.TryRead(
+                Encoding.UTF8.GetBytes("{\"type\":\"request\",\"requestId\":\"req-1\",\"action\":\"debugQuery\","
+                    + "\"instance\":\"hero\"}"), out _, out error));
+            Assert.AreEqual("missing-method-id", error);
+
+            Assert.IsFalse(VisualBridgeDebugRequestReader.TryRead(
+                Encoding.UTF8.GetBytes("{\"type\":\"request\",\"requestId\":\"req-1\",\"action\":\"debugQuery\","
+                    + "\"instance\":\"hero\",\"methodId\":1}"), out _, out error));
+            Assert.AreEqual("invalid-method-id", error, "1/2 是 Create/Finish，3–9 预留，都不是分类方法号");
+
+            Assert.IsFalse(VisualBridgeDebugRequestReader.TryRead(
+                Encoding.UTF8.GetBytes("{\"type\":\"request\",\"requestId\":\"req-1\",\"action\":\"debugQuery\","
+                    + "\"instance\":\"hero\",\"methodId\":10.5}"), out _, out error));
+            Assert.AreEqual("invalid-method-id", error, "methodId 是 u16，不得静默截断小数");
         }
 
         // ---------- dropped 聚合 ----------
