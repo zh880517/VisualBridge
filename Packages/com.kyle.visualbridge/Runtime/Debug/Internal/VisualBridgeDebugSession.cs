@@ -341,6 +341,14 @@ namespace VisualBridge.Diagnostics
                 return false;
             }
 
+            // 入队前准入（附录 A.9）：槽位/方法号校验与 debugCategories / debugInstances 筛选都在
+            // 编码之前完成；未命中即整条消息不编码、不入队，计数由传输层累加并经 dropped 上报。
+            var outboundGate = transport as IVisualBridgeDebugOutboundGate;
+            if (outboundGate != null && !outboundGate.TryAdmitEvent(instanceSlot, instanceId, category, methodId))
+            {
+                return false;
+            }
+
             var encoder = Volatile.Read(ref s_encoder);
             if (encoder == null)
             {

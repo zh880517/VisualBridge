@@ -85,14 +85,27 @@ namespace VisualBridge.Runtime
 
         public VisualBridgeSendCounters SendCounters => queues.SnapshotCounters();
 
-        public bool SendControl(byte[] payload, VisualBridgePayloadKind payloadKind = VisualBridgePayloadKind.Json)
+        /// <summary>
+        /// 控制队列消息（不淘汰）；<paramref name="channel"/> 决定帧头通道位，默认通道 0。
+        /// 通道 1 的控制类消息（debugCreate/debugFinish/debugFrame/dropped/response）用
+        /// <see cref="SendDebugControl"/>，两者共用同一条控制队列与屏障语义。
+        /// </summary>
+        public bool SendControl(byte[] payload, VisualBridgePayloadKind payloadKind = VisualBridgePayloadKind.Json,
+            VisualBridgeChannel channel = VisualBridgeChannel.Editor)
         {
-            return Enqueue(() => queues.TryEnqueueControl(payload, out _, payloadKind), "control");
+            return Enqueue(() => queues.TryEnqueueControl(payload, out _, payloadKind, channel), "control");
         }
 
         public bool SendControlJson(string json)
         {
             return SendControl(Encoding.UTF8.GetBytes(json ?? string.Empty));
+        }
+
+        /// <summary>通道 1 的控制类消息：走控制队列（不淘汰）但帧头通道位是 1（附录 A.2/A.9）。</summary>
+        public bool SendDebugControl(byte[] payload,
+            VisualBridgePayloadKind payloadKind = VisualBridgePayloadKind.Json)
+        {
+            return SendControl(payload, payloadKind, VisualBridgeChannel.Debug);
         }
 
         public bool SendDebug(byte[] payload, VisualBridgePayloadKind payloadKind)

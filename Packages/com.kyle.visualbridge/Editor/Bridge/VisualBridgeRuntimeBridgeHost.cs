@@ -23,6 +23,7 @@ namespace VisualBridge.Editor
 
         private static bool lifecycleHooked;
         private static bool shuttingDown;
+        private static VisualBridge.Diagnostics.Bridge.VisualBridgeDebugTransport debugTransport;
 
         static VisualBridgeRuntimeBridgeHost()
         {
@@ -116,6 +117,7 @@ namespace VisualBridge.Editor
                 }
 
                 CurrentServer = server;
+                InstallDebugTransport(server);
                 UnityEngine.Debug.Log($"[runtime-bridge] started ({reason}): instanceId={instanceId} port={server.TcpPort} generation={generation} record={server.RecordPath}");
                 return server;
             }
@@ -128,6 +130,7 @@ namespace VisualBridge.Editor
             {
                 shuttingDown = true;
                 var server = CurrentServer;
+                RemoveDebugTransport();
                 if (server == null)
                 {
                     return;
@@ -137,6 +140,44 @@ namespace VisualBridge.Editor
                 server.Dispose();
                 UnityEngine.Debug.Log($"[runtime-bridge] stopped ({reason}); record deleted.");
             }
+        }
+
+        /// <summary>
+        /// 注入调试传输实现（附录 A.9）：每个 Play 会话一个传输实例，握手完成的连接经
+        /// <see cref="VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer.DebugLinkOpened"/> 绑定上来。
+        /// 绑定后必须显式 <c>Attach</c>（A.5：连接建立后立即 flush 当前帧与待发描述），
+        /// 连接关闭时先解绑再 <c>Detach</c>（按断连语义重置会话）。
+        /// 载荷格式固定 JSON：契约指纹为空时协商结果必然是 <c>["json"]</c>（E2 的降级规则），
+        /// 二进制协商留给 E5 统一 welcome 字段后再切换。
+        /// </summary>
+        private static void InstallDebugTransport(VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer server)
+        {
+            RemoveDebugTransport();
+            var transport = new VisualBridge.Diagnostics.Bridge.VisualBridgeDebugTransport(
+                VisualBridge.Diagnostics.ConnectType.EditorPlayer,
+                log: message => UnityEngine.Debug.Log(message));
+            VisualBridge.Diagnostics.VisualBridgeDebug.SetEncoder(new VisualBridge.Diagnostics.VisualBridgeDebugJsonEncoder());
+            server.DebugLinkOpened += link =>
+            {
+                transport.Bind(new VisualBridge.Diagnostics.Bridge.VisualBridgeRuntimeDebugWire(link));
+                VisualBridge.Diagnostics.Bridge.VisualBridgeDebugBridge.Attach();
+                link.Closed += VisualBridge.Diagnostics.Bridge.VisualBridgeDebugBridge.Detach;
+            };
+            VisualBridge.Diagnostics.Bridge.VisualBridgeDebugBridge.Install(transport);
+            debugTransport = transport;
+        }
+
+        private static void RemoveDebugTransport()
+        {
+            var transport = debugTransport;
+            if (transport == null)
+            {
+                return;
+            }
+
+            debugTransport = null;
+            VisualBridge.Diagnostics.Bridge.VisualBridgeDebugBridge.Uninstall();
+            transport.Dispose();
         }
 
         [MenuItem("Tools/VisualBridge/Runtime Bridge/Start in Play Mode")]

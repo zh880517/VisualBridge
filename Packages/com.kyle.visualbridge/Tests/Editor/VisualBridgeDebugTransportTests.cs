@@ -1,0 +1,865 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Text;
+using System.Threading;
+using NUnit.Framework;
+using VisualBridge.Diagnostics;
+using VisualBridge.Diagnostics.Bridge;
+using VisualBridge.Runtime;
+
+namespace VisualBridge.Editor.Tests
+{
+    /// <summary>
+    /// E4 调试消息与筛选用例：七种消息的 JSON/二进制线格式、槽位路由与失效、入队前筛选
+    /// （不编码、不入队、计数）、dropped 聚合与节流、未知方法/未知槽位不断连、1 MB 上限。
+    /// 线格式与 TS 侧 `test/unit/debugMessages.test.ts` 共用同一组 fixture（同一批字符串与十六进制）。
+    /// </summary>
+    public sealed class VisualBridgeDebugTransportTests
+    {
+        private const string Category = "graph";
+        private const string InterfaceId = "IGraphDebuger";
+        private const string MethodName = "NodeStart";
+        private const ushort MethodId = 10;
+        private const ushort InstanceSlot = 1;
+        private const string InstanceId = "hero";
+
+        /// <summary>与 TS 侧 `test/unit/debugMessages.test.ts` 共用的 dropped 线格式字面量（含键顺序）。</summary>
+        private const string DroppedJsonFixture = "{\"type\":\"dropped\",\"filteredByServer\":1,"
+            + "\"unknownMethod\":1,\"unknownSlot\":1,\"invalidRequest\":1,\"encodeFailed\":0,"
+            + "\"oversize\":0,\"queueOverflow\":5}";
+
+        [SetUp]
+        public void SetUp()
+        {
+            VisualBridgeDebugBridge.Uninstall();
+            VisualBridgeDebug.SetEncoder(null);
+            VisualBridgeDebug.SetFrame(-1);
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            VisualBridgeDebugBridge.Uninstall();
+            VisualBridgeDebug.SetEncoder(null);
+            VisualBridgeDebug.SetFrame(-1);
+        }
+
+        // ---------- 线格式 fixture（JSON 文本 / 二进制十六进制） ----------
+
+        [Test]
+        public void DebugCreateMatchesJsonFixture()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire);
+
+            transport.SendCreate("hero", "graph", "R", string.Empty, InstanceSlot);
+
+            Assert.AreEqual(1, wire.Controls.Count);
+            Assert.AreEqual("{\"type\":\"debugCreate\",\"category\":\"graph\",\"instance\":\"hero\","
+                + "\"instanceSlot\":1,\"resName\":\"R\",\"debugInfo\":\"\"}", Text(wire.Controls[0]));
+            Assert.AreEqual(VisualBridgeDebugPayloadFormat.Json, wire.ControlFormats[0]);
+        }
+
+        [Test]
+        public void DebugCreateMatchesBinaryFixture()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire, VisualBridgeDebugPayloadFormat.Binary);
+
+            transport.SendCreate("hero", "graph", "R", string.Empty, InstanceSlot);
+
+            // u16 methodId=1 + u16 slot=1 + tag0 category / tag1 instanceId / tag2 resName（空串按稀疏规则不写）
+            Assert.AreEqual(
+                "00010001" + "00000800056772617068" + "0001080004" + "6865726f" + "0002080001" + "52",
+                Hex(wire.Controls[0]));
+            Assert.AreEqual(VisualBridgeDebugPayloadFormat.Binary, wire.ControlFormats[0]);
+        }
+
+        [Test]
+        public void DebugFinishMatchesFixturesAndInvalidatesSlot()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+
+            transport.SendFinish(InstanceId, InstanceSlot);
+
+            Assert.AreEqual(2, wire.Controls.Count);
+            Assert.AreEqual("{\"type\":\"debugFinish\",\"category\":\"graph\",\"instance\":\"hero\"}",
+                Text(wire.Controls[1]));
+            // 槽位映射在 debugFinish 后立即失效（附录 A.9）：同一槽位的数据消息按未知槽位丢弃。
+            Assert.IsFalse(transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId));
+            Assert.AreEqual(0, wire.Datas.Count);
+            Assert.AreEqual(1, transport.GetDroppedSnapshot().UnknownSlot);
+        }
+
+        [Test]
+        public void DebugFinishBinaryMatchesFixture()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire, VisualBridgeDebugPayloadFormat.Binary);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+
+            transport.SendFinish(InstanceId, InstanceSlot);
+
+            Assert.AreEqual("00020001" + "0000080004" + "6865726f", Hex(wire.Controls[1]));
+        }
+
+        [Test]
+        public void DroppedMatchesTheSharedJsonFixture()
+        {
+            var wire = new FakeWire { OverflowDroppedMessages = 5 };
+            var transport = CreateTransport(wire, VisualBridgeDebugPayloadFormat.Json, droppedReportIntervalMs: 0);
+            transport.SetFilter(new[] { "visualbridge.entity" }, null);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+            transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId); // 筛选
+            transport.TryAdmitEvent(99, InstanceId, Category, MethodId); // 未知槽位
+            transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, 5); // 未知方法
+            wire.RaiseFrameReceived(VisualBridgePayloadKind.Json, Encoding.UTF8.GetBytes("{")); // 畸形入站
+            transport.FlushDropped();
+
+            // 全串 + 键顺序断言；TS 侧 test/unit/debugMessages.test.ts 用同一字面量。
+            Assert.AreEqual(DroppedJsonFixture, FindLastControl(wire, "{\"type\":\"dropped\""));
+        }
+
+        [Test]
+        public void QueueOverflowOnlyChangeIsReportedOnTick()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire, droppedReportIntervalMs: 0);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+            Assert.AreEqual(0, CountControls(wire, "{\"type\":\"dropped\""));
+
+            // 队列淘汰由发送侧计数，不经过传输层的丢弃路径：节拍必须能报出来（不被脏标记挡住）。
+            wire.OverflowDroppedMessages = 7;
+            wire.RaiseTick();
+
+            var dropped = FindLastControl(wire, "{\"type\":\"dropped\"");
+            Assert.IsNotNull(dropped);
+            StringAssert.Contains("\"queueOverflow\":7", dropped);
+            StringAssert.Contains("\"filteredByServer\":0", dropped);
+        }
+
+        [Test]
+        public void DeeplyNestedInboundJsonIsRejectedWithoutClosing()
+        {
+            var wire = new FakeWire { OverflowDroppedMessages = 0 };
+            var transport = CreateTransport(wire, droppedReportIntervalMs: 0);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+            var deep = new StringBuilder();
+            for (int index = 0; index < 200; index++)
+            {
+                deep.Append('[');
+            }
+
+            for (int index = 0; index < 200; index++)
+            {
+                deep.Append(']');
+            }
+
+            Assert.DoesNotThrow(() => wire.RaiseFrameReceived(VisualBridgePayloadKind.Json,
+                Encoding.UTF8.GetBytes(deep.ToString())));
+            Assert.AreEqual(1, transport.GetDroppedSnapshot().InvalidRequest);
+            Assert.IsTrue(wire.IsOpen);
+
+            Assert.IsFalse(VisualBridgeDebugRequestReader.TryRead(Encoding.UTF8.GetBytes(deep.ToString()), out _,
+                out string error));
+            StringAssert.StartsWith("invalid-json", error);
+        }
+
+        [Test]
+        public void DebugFinishWithoutKnownSlotOmitsCategory()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire);
+
+            transport.SendFinish("ghost", 42);
+
+            Assert.AreEqual(1, wire.Controls.Count);
+            Assert.AreEqual("{\"type\":\"debugFinish\",\"instance\":\"ghost\"}", Text(wire.Controls[0]));
+        }
+
+        [Test]
+        public void AttachAfterBindFlushesPendingCreateAndFrame()
+        {
+            var wire = new FakeWire();
+            var transport = new VisualBridgeDebugTransport(ConnectType.Editor,
+                droppedReportIntervalMs: 0);
+            VisualBridgeDebug.SetFrame(7);
+            VisualBridgeDebugBridge.Install(transport); // 先 Install（此时未绑定连接）
+            VisualBridgeDebug.SetEncoder(new VisualBridgeDebugJsonEncoder());
+
+            // Create 早于连接：描述进待发队列，不写线上。
+            Assert.IsTrue(VisualBridgeDebug.Create(InstanceId, Category, "R", string.Empty));
+            Assert.AreEqual(0, wire.Controls.Count);
+
+            // 连接建立后 Attach：A.5 要求立即 flush 当前帧与待发描述，不再需要业务再 Create 一次。
+            transport.Bind(wire);
+            VisualBridgeDebug.Attach();
+
+            // 附录 A.5 只规定"连接建立时先 flush 待发项""连接建立后先发一条当前值"，未规定 frame 与 create
+            // 的相对顺序；本断言按实测顺序（`RefreshConnectionLocked` 先发帧再 flush）记录，两者都是任何数据消息之前的控制消息。
+            Assert.AreEqual(2, wire.Controls.Count);
+            Assert.AreEqual("{\"type\":\"debugFrame\",\"frame\":7}", Text(wire.Controls[0]));
+            Assert.AreEqual("{\"type\":\"debugCreate\",\"category\":\"graph\",\"instance\":\"hero\","
+                + "\"instanceSlot\":1,\"resName\":\"R\",\"debugInfo\":\"\"}", Text(wire.Controls[1]));
+        }
+
+        [Test]
+        public void RealSocketSendsChannelOneControlInOrder()
+        {
+            var stream = new CaptureStream(10);
+            var socket = new VisualBridgeBridgeSocket(stream, _ => { }, (_, __) => { }, _ => { }, null, null);
+            socket.Start();
+            var transport = new VisualBridgeDebugTransport(ConnectType.EditorPlayer,
+                droppedReportIntervalMs: 0);
+            try
+            {
+                // 通道 0 的 welcome 先写出，随后是通道 1 的控制类消息与数据消息。
+                Assert.IsTrue(socket.SendControlJson("{\"type\":\"welcome\"}"));
+                var link = new VisualBridgeRuntimeDebugLink(socket, 1L, null);
+                transport.Bind(new VisualBridgeRuntimeDebugWire(link));
+                VisualBridgeDebug.SetFrame(7);
+                VisualBridgeDebugBridge.Install(transport);
+                VisualBridgeDebug.SetEncoder(new VisualBridgeDebugJsonEncoder());
+                Assert.IsTrue(VisualBridgeDebug.Create(InstanceId, Category, "R", string.Empty));
+                Assert.IsTrue(VisualBridgeDebug.Start(InstanceId, Category, MethodId, InterfaceId, MethodName));
+                VisualBridgeDebug.PushParam("hp", 1, 5);
+                Assert.IsTrue(VisualBridgeDebug.End());
+
+                var frames = ReadFrames(stream, 4);
+                Assert.AreEqual(4, frames.Count, "expected welcome + debugFrame + debugCreate + debug");
+                Assert.AreEqual(VisualBridgeChannel.Editor, frames[0].Channel);
+                StringAssert.Contains("welcome", Text(frames[0].Payload));
+                // 通道 1 的控制类消息：帧头 channel=1，而不是 0。
+                Assert.AreEqual(VisualBridgeChannel.Debug, frames[1].Channel);
+                StringAssert.Contains("debugFrame", Text(frames[1].Payload));
+                Assert.AreEqual(VisualBridgeChannel.Debug, frames[2].Channel);
+                StringAssert.Contains("debugCreate", Text(frames[2].Payload));
+                Assert.AreEqual(VisualBridgeChannel.Debug, frames[3].Channel);
+                StringAssert.Contains("\"type\":\"debug\"", Text(frames[3].Payload));
+                Assert.AreEqual(VisualBridgePayloadKind.Json, frames[2].PayloadKind);
+
+                // 写出统计按队列类别：三条控制队列消息 + 一条数据消息。
+                var counters = socket.SendCounters;
+                Assert.AreEqual(3, counters.WrittenControl);
+                Assert.AreEqual(1, counters.WrittenDebug);
+            }
+            finally
+            {
+                socket.Dispose();
+                VisualBridgeDebugBridge.Uninstall();
+            }
+        }
+
+        private static VisualBridgeDebugTransport CreateTransport(FakeWire wire,
+            VisualBridgeDebugPayloadFormat format = VisualBridgeDebugPayloadFormat.Json,
+            int droppedReportIntervalMs = VisualBridgeDebugTransport.DroppedReportIntervalMs)
+        {
+            var transport = new VisualBridgeDebugTransport(ConnectType.Editor, format,
+                droppedReportIntervalMs: droppedReportIntervalMs);
+            transport.Bind(wire);
+            return transport;
+        }
+
+        [Test]
+        public void QueryFailureResponseMatchesJsonFixture()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire);
+
+            transport.SendQueryError(12u, "runtime.queryBusy", "queue full");
+
+            Assert.AreEqual(1, wire.Controls.Count);
+            Assert.AreEqual("{\"type\":\"response\",\"requestId\":\"req-12\",\"ok\":false,"
+                + "\"code\":\"runtime.queryBusy\",\"detail\":\"queue full\"}", Text(wire.Controls[0]));
+        }
+
+        [Test]
+        public void DebugFrameAndEventMessagesReachTheWireUnchanged()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+
+            var encoder = new VisualBridgeDebugJsonEncoder();
+            encoder.Begin(VisualBridgeDebugMessageKind.Debug, InstanceId, Category, InterfaceId, MethodName,
+                MethodId, InstanceSlot, 0u);
+            encoder.PushParam("hp", 1, 5);
+            transport.SendControl(FrameMessage(7));
+            transport.SendEvent(InstanceSlot, MethodId, Category, InterfaceId, MethodName, 7, encoder.End());
+
+            Assert.AreEqual("{\"type\":\"debugFrame\",\"frame\":7}", Text(wire.Controls[1]));
+            Assert.AreEqual(1, wire.Datas.Count);
+            Assert.AreEqual("{\"type\":\"debug\",\"category\":\"graph\",\"instance\":\"hero\","
+                + "\"iface\":\"IGraphDebuger\",\"method\":\"NodeStart\",\"args\":[{\"tag\":1,\"name\":\"hp\","
+                + "\"type\":\"int\",\"value\":5}]}", Text(wire.Datas[0]));
+        }
+
+        [Test]
+        public void DebugResultBinaryMatchesFixture()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire, VisualBridgeDebugPayloadFormat.Binary);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+
+            var encoder = new VisualBridgeDebugBinaryEncoder();
+            encoder.Begin(VisualBridgeDebugMessageKind.DebugResult, InstanceId, Category, InterfaceId, MethodName,
+                MethodId, InstanceSlot, 12u);
+            encoder.PushParam("hp", 1, 5);
+            transport.SendResult(12u, encoder.End());
+
+            // u16 methodId=10 + u16 slot=1 + u32 requestId=12 + 参数区（tag1 int 5）
+            Assert.AreEqual("000a0001" + "0000000c" + "0001" + "02" + "00000005", Hex(wire.Datas[0]));
+        }
+
+        // ---------- 筛选 ----------
+
+        [Test]
+        public void MissingOrEmptyFilterMeansEverything()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+
+            Assert.IsTrue(transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId));
+            transport.SetFilter(null, null);
+            Assert.IsTrue(transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId));
+            transport.SetFilter(Array.Empty<string>(), Array.Empty<string>());
+            Assert.IsTrue(transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId));
+            Assert.AreEqual(0, transport.GetDroppedSnapshot().FilteredByServer);
+        }
+
+        [Test]
+        public void CategoryAndInstanceFiltersCombineWithAnd()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+            transport.SendCreate("boss", Category, "B", string.Empty, 2);
+
+            transport.SetFilter(new[] { Category }, new[] { "boss" });
+
+            Assert.IsFalse(transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId));
+            Assert.IsTrue(transport.TryAdmitEvent(2, "boss", Category, MethodId));
+            Assert.AreEqual(1, transport.GetDroppedSnapshot().FilteredByServer);
+
+            transport.SetFilter(new[] { "visualbridge.entity" }, null);
+            Assert.IsFalse(transport.TryAdmitEvent(2, "boss", Category, MethodId));
+            Assert.AreEqual(2, transport.GetDroppedSnapshot().FilteredByServer);
+        }
+
+        [Test]
+        public void FilteredEventIsNotEncodedAndNotQueued()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire, droppedReportIntervalMs: 0);
+            var encoder = new CountingEncoder();
+            VisualBridgeDebug.SetFrame(7);
+            transport.Bind(wire);
+            VisualBridgeDebugBridge.Install(transport);
+            VisualBridgeDebug.SetEncoder(encoder);
+            transport.SetFilter(new[] { "visualbridge.entity" }, null);
+
+            Assert.IsTrue(VisualBridgeDebug.Create(InstanceId, Category, "R", string.Empty));
+            int creates = CountControls(wire, "{\"type\":\"debugCreate\"");
+            Assert.IsFalse(VisualBridgeDebug.Start(InstanceId, Category, MethodId, InterfaceId, MethodName));
+            VisualBridgeDebug.PushParam("hp", 1, 5);
+            Assert.IsFalse(VisualBridgeDebug.End());
+
+            // 未编码（Begin 未被调用）、未入队（无数据消息），只累加 filteredByServer。
+            Assert.AreEqual(0, encoder.BeginCalls);
+            Assert.AreEqual(0, wire.Datas.Count);
+            Assert.AreEqual(creates, CountControls(wire, "{\"type\":\"debugCreate\""));
+            Assert.AreEqual(1, transport.GetDroppedSnapshot().FilteredByServer);
+        }
+
+        [Test]
+        public void DebugFrameIsNotFilteredAndEmptyFrameProducesNoFrameMessage()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire, droppedReportIntervalMs: 0);
+            VisualBridgeDebug.SetFrame(7);
+            transport.Bind(wire);
+            VisualBridgeDebugBridge.Install(transport);
+            VisualBridgeDebug.SetEncoder(new VisualBridgeDebugJsonEncoder());
+            VisualBridgeDebug.SetFrame(7);
+
+            Assert.IsTrue(VisualBridgeDebug.Create(InstanceId, Category, "R", string.Empty));
+            transport.SetFilter(new[] { "visualbridge.entity" }, null);
+            Assert.IsFalse(VisualBridgeDebug.Start(InstanceId, Category, MethodId, InterfaceId, MethodName));
+
+            // 连接建立时的当前帧恰好一条；筛选掉的事件不产生 debugFrame（空帧不发）。
+            Assert.AreEqual(1, CountControls(wire, "{\"type\":\"debugFrame\""));
+            Assert.AreEqual(7, FrameFrom(wire));
+
+            transport.SetFilter(null, null);
+            Assert.IsTrue(VisualBridgeDebug.Start(InstanceId, Category, MethodId, InterfaceId, MethodName));
+            VisualBridgeDebug.PushParam("hp", 1, 5);
+            Assert.IsTrue(VisualBridgeDebug.End());
+            // 同一帧的后续数据不重发 debugFrame。
+            Assert.AreEqual(1, CountControls(wire, "{\"type\":\"debugFrame\""));
+            Assert.AreEqual(1, wire.Datas.Count);
+        }
+
+        // ---------- 未知方法 / 未知槽位 ----------
+
+        [Test]
+        public void UnknownSlotIsDroppedAndCountedWithoutThrowing()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire, droppedReportIntervalMs: 0);
+            var encoder = new VisualBridgeDebugJsonEncoder();
+            encoder.Begin(VisualBridgeDebugMessageKind.Debug, InstanceId, Category, InterfaceId, MethodName,
+                MethodId, 99, 0u);
+            encoder.PushParam("hp", 1, 5);
+
+            Assert.DoesNotThrow(() => transport.SendEvent(99, MethodId, Category, InterfaceId, MethodName, 7,
+                encoder.End()));
+            Assert.AreEqual(0, wire.Datas.Count);
+            Assert.AreEqual(1, transport.GetDroppedSnapshot().UnknownSlot);
+            Assert.IsTrue(wire.IsOpen);
+        }
+
+        [Test]
+        public void ReservedMethodIdIsDroppedAndCounted()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+            var encoder = new VisualBridgeDebugJsonEncoder();
+            encoder.Begin(VisualBridgeDebugMessageKind.Debug, InstanceId, Category, InterfaceId, MethodName, 5,
+                InstanceSlot, 0u);
+            encoder.PushParam("hp", 1, 5);
+
+            transport.SendEvent(InstanceSlot, 5, Category, InterfaceId, MethodName, 7, encoder.End());
+
+            Assert.AreEqual(0, wire.Datas.Count);
+            Assert.AreEqual(1, transport.GetDroppedSnapshot().UnknownMethod);
+        }
+
+        [Test]
+        public void InboundBinaryFrameIsCountedInsteadOfDisconnecting()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire, droppedReportIntervalMs: 0);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+
+            // 通道 1 的入站只有 JSON request：二进制按槽位/方法号归类后丢弃。
+            wire.RaiseFrameReceived(VisualBridgePayloadKind.Binary, new byte[] { 0x00, 0x0a, 0x00, 0x63 });
+            Assert.AreEqual(1, transport.GetDroppedSnapshot().UnknownSlot);
+            wire.RaiseFrameReceived(VisualBridgePayloadKind.Binary, new byte[] { 0x00, 0x05, 0x00, 0x01 });
+            Assert.AreEqual(1, transport.GetDroppedSnapshot().UnknownMethod);
+            wire.RaiseFrameReceived(VisualBridgePayloadKind.Binary, new byte[] { 0x01 });
+            Assert.AreEqual(1, transport.GetDroppedSnapshot().InvalidRequest);
+            Assert.IsTrue(wire.IsOpen);
+        }
+
+        [Test]
+        public void InboundRequestIsParsedIntoAQueryRequest()
+        {
+            byte[] payload = Encoding.UTF8.GetBytes("{\"type\":\"request\",\"requestId\":\"req-12\","
+                + "\"action\":\"debugQuery\",\"category\":\"graph\",\"instance\":\"hero\","
+                + "\"iface\":\"IGraphDebuger\",\"method\":\"Query\",\"args\":[{\"tag\":1,\"name\":\"hp\","
+                + "\"type\":\"int\",\"value\":5},{\"tag\":2,\"name\":\"mode\",\"type\":\"enum\","
+                + "\"value\":\"Fast\"},{\"tag\":3,\"name\":\"blob\",\"type\":\"byte[]\",\"value\":\"AQID\"}]}");
+
+            Assert.IsTrue(VisualBridgeDebugRequestReader.TryRead(payload, out var request, out string error), error);
+            Assert.AreEqual(12u, request.RequestSeq);
+            Assert.AreEqual("graph", request.Category);
+            Assert.AreEqual("hero", request.InstanceId);
+            Assert.AreEqual("IGraphDebuger", request.InterfaceId);
+            Assert.AreEqual("Query", request.Method);
+            Assert.AreEqual(3, request.Arguments.Count);
+            Assert.AreEqual(5, request.Arguments[0].Value);
+            Assert.AreEqual("Fast", request.Arguments[1].Value);
+            Assert.AreEqual(new byte[] { 1, 2, 3 }, request.Arguments[2].Value);
+        }
+
+        [Test]
+        public void NonIntegerArgumentTagIsRejectedWithoutDisconnecting()
+        {
+            byte[] payload = Encoding.UTF8.GetBytes("{\"type\":\"request\",\"requestId\":\"req-12\","
+                + "\"action\":\"debugQuery\",\"category\":\"graph\",\"instance\":\"hero\","
+                + "\"iface\":\"IGraphDebuger\",\"method\":\"Query\",\"args\":[{\"tag\":1.5,\"name\":\"hp\","
+                + "\"type\":\"int\",\"value\":5}]}");
+
+            // A.5 的 tag 是 u16：1.5 不能被静默截断成 1。
+            Assert.IsFalse(VisualBridgeDebugRequestReader.TryRead(payload, out _, out string error));
+            Assert.AreEqual("arg-tag-out-of-range", error);
+
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire, droppedReportIntervalMs: 0);
+            wire.RaiseFrameReceived(VisualBridgePayloadKind.Json, payload);
+
+            // 只累加 invalidRequest 这一项，连接不断。
+            var snapshot = transport.GetDroppedSnapshot();
+            Assert.AreEqual(1, snapshot.InvalidRequest);
+            Assert.AreEqual(0, snapshot.FilteredByServer);
+            Assert.AreEqual(0, snapshot.UnknownMethod);
+            Assert.AreEqual(0, snapshot.UnknownSlot);
+            Assert.AreEqual(0, snapshot.EncodeFailed);
+            Assert.AreEqual(0, snapshot.Oversize);
+            Assert.AreEqual(0, snapshot.QueueOverflow);
+            Assert.IsTrue(wire.IsOpen);
+        }
+
+        [Test]
+        public void InvalidRequestPayloadsAreRejectedWithReasons()
+        {
+            Assert.IsFalse(VisualBridgeDebugRequestReader.TryRead(Encoding.UTF8.GetBytes("{"), out _, out string error));
+            StringAssert.StartsWith("invalid-json", error);
+
+            Assert.IsFalse(VisualBridgeDebugRequestReader.TryRead(
+                Encoding.UTF8.GetBytes("{\"type\":\"debug\",\"instance\":\"hero\"}"), out _, out error));
+            Assert.AreEqual("not-a-request", error);
+
+            Assert.IsFalse(VisualBridgeDebugRequestReader.TryRead(
+                Encoding.UTF8.GetBytes("{\"type\":\"request\",\"requestId\":\"x\",\"action\":\"debugQuery\","
+                    + "\"instance\":\"hero\"}"), out _, out error));
+            Assert.AreEqual("invalid-request-id", error);
+
+            Assert.IsFalse(VisualBridgeDebugRequestReader.TryRead(
+                Encoding.UTF8.GetBytes("{\"type\":\"request\",\"requestId\":\"req-1\",\"action\":\"debugQuery\"}"),
+                out _, out error));
+            Assert.AreEqual("missing-instance", error);
+        }
+
+        // ---------- dropped 聚合 ----------
+
+        [Test]
+        public void DroppedIsCumulativeAndSkipsUnchangedSnapshots()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire, droppedReportIntervalMs: 0);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+            transport.SetFilter(new[] { "visualbridge.entity" }, null);
+
+            transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId);
+            int first = CountControls(wire, "{\"type\":\"dropped\"");
+            Assert.AreEqual(1, first);
+
+            transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId);
+            Assert.AreEqual(2, CountControls(wire, "{\"type\":\"dropped\""));
+
+            // 计数无变化时不重复上报。
+            transport.FlushDropped();
+            Assert.AreEqual(2, CountControls(wire, "{\"type\":\"dropped\""));
+            StringAssert.Contains("\"filteredByServer\":2", FindLastControl(wire, "{\"type\":\"dropped\""));
+        }
+
+        [Test]
+        public void DroppedIsThrottledToProtectTheControlQueue()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire, droppedReportIntervalMs: 100);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+            transport.SetFilter(new[] { "visualbridge.entity" }, null);
+
+            // 第一次丢弃触发上报并开启节流窗口，之后的增量必须被压住。
+            transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId);
+            Assert.AreEqual(1, CountControls(wire, "{\"type\":\"dropped\""));
+            for (int index = 0; index < 9; index++)
+            {
+                transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId);
+            }
+
+            // 节流窗口内的 9 次丢弃不打爆控制队列（一条 dropped 都不多发）。
+            Assert.AreEqual(1, CountControls(wire, "{\"type\":\"dropped\""));
+            System.Threading.Thread.Sleep(150);
+            wire.RaiseTick();
+            Assert.AreEqual(2, CountControls(wire, "{\"type\":\"dropped\""));
+            StringAssert.Contains("\"filteredByServer\":10", FindLastControl(wire, "{\"type\":\"dropped\""));
+
+            // 计数无变化时下一次节拍不重发：先睡过 100 ms 节流窗口，确保断言打到快照比较而不是节流。
+            System.Threading.Thread.Sleep(150);
+            wire.RaiseTick();
+            Assert.AreEqual(2, CountControls(wire, "{\"type\":\"dropped\""));
+        }
+
+        [Test]
+        public void OversizeMessageIsRejectedAndCounted()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire, droppedReportIntervalMs: 0);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+            var payload = new byte[VisualBridgeDebugPayloadLimits.MaxMessageBytes + 1];
+            var message = new VisualBridgeDebugEncodedMessage(VisualBridgeDebugPayloadFormat.Json,
+                VisualBridgeDebugTargetQueue.Data, payload);
+
+            transport.SendEvent(InstanceSlot, MethodId, Category, InterfaceId, MethodName, 7, message);
+
+            Assert.AreEqual(0, wire.Datas.Count);
+            var snapshot = transport.GetDroppedSnapshot();
+            Assert.AreEqual(1, snapshot.EncodeFailed);
+            Assert.AreEqual(1, snapshot.Oversize);
+        }
+
+        [Test]
+        public void BindingANewConnectionClearsSlotsAndCounters()
+        {
+            var wire = new FakeWire();
+            var transport = CreateTransport(wire, droppedReportIntervalMs: 0);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+            transport.TryAdmitEvent(99, InstanceId, Category, MethodId);
+            Assert.AreEqual(1, transport.GetDroppedSnapshot().UnknownSlot);
+
+            var next = new FakeWire();
+            transport.Bind(next);
+
+            // 新连接：槽位映射作废（属上一条连接），计数从零开始。
+            Assert.AreEqual(0, transport.GetDroppedSnapshot().UnknownSlot);
+            Assert.IsFalse(transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId));
+            Assert.AreEqual(1, transport.GetDroppedSnapshot().UnknownSlot);
+            next.RaiseClosed();
+            Assert.IsFalse(transport.IsConnected);
+        }
+
+        private static VisualBridgeDebugEncodedMessage FrameMessage(long frame)
+        {
+            return new VisualBridgeDebugEncodedMessage(VisualBridgeDebugPayloadFormat.Json,
+                VisualBridgeDebugTargetQueue.Control,
+                Encoding.UTF8.GetBytes("{\"type\":\"debugFrame\",\"frame\":"
+                    + frame.ToString(CultureInfo.InvariantCulture) + "}"));
+        }
+
+        private static string Text(byte[] payload)
+        {
+            return Encoding.UTF8.GetString(payload);
+        }
+
+        private static string Hex(byte[] payload)
+        {
+            var builder = new StringBuilder(payload.Length * 2);
+            foreach (var value in payload)
+            {
+                builder.Append(value.ToString("x2", CultureInfo.InvariantCulture));
+            }
+
+            return builder.ToString();
+        }
+
+        private static int CountControls(FakeWire wire, string prefix)
+        {
+            int count = 0;
+            foreach (var payload in wire.Controls)
+            {
+                if (Text(payload).StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static string FindLastControl(FakeWire wire, string prefix)
+        {
+            for (int index = wire.Controls.Count - 1; index >= 0; index--)
+            {
+                var text = Text(wire.Controls[index]);
+                if (text.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    return text;
+                }
+            }
+
+            return null;
+        }
+
+        private static long FrameFrom(FakeWire wire)
+        {
+            var text = FindLastControl(wire, "{\"type\":\"debugFrame\"");
+            Assert.IsNotNull(text);
+            int start = text.IndexOf("\"frame\":", StringComparison.Ordinal) + "\"frame\":".Length;
+            return long.Parse(text.Substring(start, text.Length - start - 1), CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>
+        /// 真实 socket 用例的环回流：写入按 <c>writeDelayMs</c> 变慢（模拟慢写/背压），读端阻塞到测试收尾
+        /// （返回 0 会被连接层当成帧边界处关闭）。捕获的字节由 <see cref="ReadFrames"/> 逐帧解出。
+        /// </summary>
+        private sealed class CaptureStream : Stream
+        {
+            private readonly MemoryStream captured = new MemoryStream();
+            private readonly object captureGate = new object();
+            private readonly int writeDelayMs;
+            private readonly ManualResetEventSlim finished = new ManualResetEventSlim(false);
+
+            public CaptureStream(int writeDelayMs)
+            {
+                this.writeDelayMs = writeDelayMs;
+            }
+
+            public override bool CanRead => true;
+
+            public override bool CanSeek => false;
+
+            public override bool CanWrite => true;
+
+            public override long Length => 0L;
+
+            public override long Position
+            {
+                get => 0L;
+                set { }
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                if (writeDelayMs > 0)
+                {
+                    System.Threading.Thread.Sleep(writeDelayMs);
+                }
+
+                lock (captureGate)
+                {
+                    captured.Write(buffer, offset, count);
+                }
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                while (!finished.IsSet)
+                {
+                    System.Threading.Thread.Sleep(5);
+                }
+
+                return 0;
+            }
+
+            public byte[] Snapshot()
+            {
+                lock (captureGate)
+                {
+                    return captured.ToArray();
+                }
+            }
+
+            public override void Flush()
+            {
+            }
+
+            public override long Seek(long offset, SeekOrigin origin)
+            {
+                return 0L;
+            }
+
+            public override void SetLength(long value)
+            {
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                finished.Set();
+                base.Dispose(disposing);
+            }
+        }
+
+        private static List<VisualBridgeFrame> ReadFrames(CaptureStream stream, int count)
+        {
+            var reader = new VisualBridgeFrameReader();
+            var frames = new List<VisualBridgeFrame>();
+            int consumed = 0;
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (frames.Count < count && DateTime.UtcNow < deadline)
+            {
+                var bytes = stream.Snapshot();
+                if (bytes.Length > consumed)
+                {
+                    reader.Append(bytes, consumed, bytes.Length - consumed);
+                    consumed = bytes.Length;
+                    while (reader.TryReadFrame(out var frame))
+                    {
+                        frames.Add(frame);
+                    }
+
+                    continue;
+                }
+
+                System.Threading.Thread.Sleep(10);
+            }
+
+            return frames;
+        }
+
+        /// <summary>假连接：记录控制/数据消息与格式，可手工触发入站帧、节拍与断开。</summary>
+        private sealed class FakeWire : IVisualBridgeDebugWire
+        {
+            public bool IsOpen { get; private set; } = true;
+
+            public long Generation { get; set; } = 1L;
+
+            public long OverflowDroppedMessages { get; set; }
+
+            public List<byte[]> Controls { get; } = new List<byte[]>();
+
+            public List<VisualBridgeDebugPayloadFormat> ControlFormats { get; } =
+                new List<VisualBridgeDebugPayloadFormat>();
+
+            public List<byte[]> Datas { get; } = new List<byte[]>();
+
+            public event Action<VisualBridgePayloadKind, byte[]> FrameReceived;
+
+            public event Action Closed;
+
+            public event Action Tick;
+
+            public bool SendControl(byte[] payload, VisualBridgeDebugPayloadFormat format)
+            {
+                Controls.Add(payload);
+                ControlFormats.Add(format);
+                return true;
+            }
+
+            public bool SendDebug(byte[] payload, VisualBridgeDebugPayloadFormat format)
+            {
+                Datas.Add(payload);
+                return true;
+            }
+
+            public void RaiseFrameReceived(VisualBridgePayloadKind payloadKind, byte[] payload)
+            {
+                FrameReceived?.Invoke(payloadKind, payload);
+            }
+
+            public void RaiseTick()
+            {
+                Tick?.Invoke();
+            }
+
+            public void RaiseClosed()
+            {
+                IsOpen = false;
+                Closed?.Invoke();
+            }
+        }
+
+        /// <summary>计数编码器：只统计 Begin 次数，编码仍交给 JSON 编码器。</summary>
+        private sealed class CountingEncoder : IDebugMessageEncoder
+        {
+            private readonly VisualBridgeDebugJsonEncoder inner = new VisualBridgeDebugJsonEncoder();
+
+            public int BeginCalls { get; private set; }
+
+            public void Begin(VisualBridgeDebugMessageKind kind, string instanceId, string category, string iface,
+                string method, ushort methodId, ushort instanceSlot, uint requestId)
+            {
+                BeginCalls++;
+                inner.Begin(kind, instanceId, category, iface, method, methodId, instanceSlot, requestId);
+            }
+
+            public void PushParam(string name, ushort tag, object value)
+            {
+                inner.PushParam(name, tag, value);
+            }
+
+            public VisualBridgeDebugEncodedMessage End()
+            {
+                return inner.End();
+            }
+        }
+    }
+}

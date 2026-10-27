@@ -80,13 +80,26 @@ export class BridgeSocket {
     return this.sendControl(Buffer.from(JSON.stringify(message), "utf8"));
   }
 
-  public sendControl(payload: Uint8Array, payloadKind: BridgePayloadKind = BridgePayloadKind.Json): boolean {
+  /**
+   * 控制队列消息（不淘汰）；`channel` 决定帧头通道位，默认通道 0。
+   * 通道 1 的控制类消息用 {@link sendDebugControl}，两者共用同一条控制队列与屏障语义。
+   */
+  public sendControl(
+    payload: Uint8Array,
+    payloadKind: BridgePayloadKind = BridgePayloadKind.Json,
+    channel: BridgeChannel = BridgeChannel.Control,
+  ): boolean {
     if (!this.isOpen) {
       return false;
     }
 
-    const result = this.queues.enqueueControl(payload, payloadKind);
+    const result = this.queues.enqueueControl(payload, payloadKind, channel);
     return this.handleEnqueueResult(result, "control");
+  }
+
+  /** 通道 1 的控制类消息：走控制队列（不淘汰）但帧头通道位是 1（附录 A.2/A.9）。 */
+  public sendDebugControl(payload: Uint8Array, payloadKind: BridgePayloadKind = BridgePayloadKind.Json): boolean {
+    return this.sendControl(payload, payloadKind, BridgeChannel.Debug);
   }
 
   /** 入队并写出一个通道 1 消息；数据队列满时淘汰最旧数据消息。 */

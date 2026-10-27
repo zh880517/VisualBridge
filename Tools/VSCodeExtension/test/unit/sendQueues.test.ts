@@ -149,3 +149,30 @@ test("close discards queued messages and rejects further enqueues", () => {
   assert.equal(result.ok, false);
   assert.equal(!result.ok ? result.reason : "", "closed");
 });
+
+test("control queue messages can carry channel 1 without changing queue category", () => {
+  const queues = new BridgeSendQueues();
+  // 通道 1 的控制类消息（debugCreate/debugFinish/debugFrame/dropped）：走控制队列但帧头 channel=1。
+  const create = queues.enqueueControl(payload("debugCreate"), BridgePayloadKind.Json, BridgeChannel.Debug);
+  const event = queues.enqueueDebug(payload("debug"), BridgePayloadKind.Json);
+  assert.ok(create.ok && event.ok);
+
+  const messages = drain(queues);
+  assert.equal(messages[0]?.channel, BridgeChannel.Debug);
+  assert.equal(messages[0]?.payload.toString("utf8"), "debugCreate");
+  assert.equal(messages[1]?.channel, BridgeChannel.Debug);
+
+  // 写出统计按队列类别：控制队列 1 条、数据队列 1 条（不能因为两者都是通道 1 就把控制算成数据）。
+  const counters = queues.counterSnapshot;
+  assert.equal(counters.writtenControl, 1);
+  assert.equal(counters.writtenDebug, 1);
+  assert.equal(counters.controlEnqueued, 1);
+  assert.equal(counters.debugEnqueued, 1);
+});
+
+test("default control channel stays 0 for the editor channel", () => {
+  const queues = new BridgeSendQueues();
+  const control = queues.enqueueControl(payload("hello"));
+  assert.ok(control.ok);
+  assert.equal(drain(queues)[0]?.channel, BridgeChannel.Control);
+});

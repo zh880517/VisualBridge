@@ -43,6 +43,7 @@ namespace VisualBridge.Runtime
         private readonly List<Connection> connections = new List<Connection>();
         private readonly object leaseGate = new object();
         private Connection leaseHolder;
+        private long nextDebugGeneration;
 
         private readonly TcpListener listener;
         private readonly Thread acceptThread;
@@ -62,6 +63,8 @@ namespace VisualBridge.Runtime
             public string ClientInstanceId;
             /// <summary>当前订阅的执行实例 ID；null 表示未订阅（单实例跟踪）。</summary>
             public string SubscribedExecutionId;
+            /// <summary>本连接的调试通道（附录 A.2）；握手完成后交给宿主。</summary>
+            public VisualBridgeRuntimeDebugLink DebugLink;
         }
 
         /// <summary>
@@ -120,6 +123,12 @@ namespace VisualBridge.Runtime
         public string RecordPath => recordPath;
 
         public string StartedAtText => startedAtText;
+
+        /// <summary>
+        /// 握手完成的连接把调试通道（附录 A.2）交给宿主：每条新连接一个新实例（<see cref="VisualBridgeRuntimeDebugLink.Generation"/> 递增），
+        /// 宿主在处理器里注入调试传输实现。处理器在连接读线程上同步调用，不得阻塞。
+        /// </summary>
+        public event Action<VisualBridgeRuntimeDebugLink> DebugLinkOpened;
 
         /// <summary>当前产物快照（每次调用重新读取产物目录）。</summary>
         public IReadOnlyList<VisualBridgeRuntimeDocumentSnapshot> Snapshot()
@@ -243,11 +252,7 @@ namespace VisualBridge.Runtime
                 connection.Bridge = new VisualBridgeBridgeSocket(
                     client.GetStream(),
                     payload => HandleControlFrame(connection, payload),
-                    (payloadKind, payload) =>
-                    {
-                        // E1 只搭传输底座：Runtime 通道当前全部业务消息走控制通道。
-                        log?.Invoke("[runtime-bridge] ignored a " + payload.Length + "-byte debug payload (kind " + payloadKind + ").");
-                    },
+                    (payloadKind, payload) => connection.DebugLink?.NotifyDebugFrame(payloadKind, payload),
                     error =>
                     {
                         if (error != null)
@@ -259,6 +264,8 @@ namespace VisualBridge.Runtime
                     },
                     null,
                     log);
+                connection.DebugLink = new VisualBridgeRuntimeDebugLink(
+                    connection.Bridge, Interlocked.Increment(ref nextDebugGeneration), log);
                 // 先发布 connection.Bridge 再启动读写线程，保证首帧回调看到完整连接状态。
                 connection.Bridge.Start();
                 lock (connectionsGate)
@@ -282,6 +289,7 @@ namespace VisualBridge.Runtime
 
                 ReleaseLeaseOnDisconnect(connection);
                 UpdateExecutionSubscriptionState();
+                connection.DebugLink?.NotifyClosed();
                 CloseConnection(connection);
                 connection.Bridge?.Dispose();
                 connection.Closed.Dispose();
@@ -382,6 +390,26 @@ namespace VisualBridge.Runtime
             var welcome = VisualBridgeRuntimeBridgeValidator.CreateWelcome(
                 instanceId, kind, generation, AdvertisedCapabilities, startedAtText);
             WriteLine(connection, welcome.ToLine());
+            NotifyDebugLinkOpened(connection);
+        }
+
+        /// <summary>握手完成后把调试通道交给宿主；处理器异常只记日志，不断开连接。</summary>
+        private void NotifyDebugLinkOpened(Connection connection)
+        {
+            var handler = DebugLinkOpened;
+            if (handler == null || connection.DebugLink == null)
+            {
+                return;
+            }
+
+            try
+            {
+                handler(connection.DebugLink);
+            }
+            catch (Exception exception)
+            {
+                log?.Invoke("[runtime-bridge] debug link handler failed: " + exception.Message);
+            }
         }
 
         /// <summary>连接级错误：回发 error 帧后优雅闭合（确保错误帧先写完）。</summary>
@@ -778,6 +806,18 @@ namespace VisualBridge.Runtime
                 catch (Exception exception) when (exception is IOException || exception is UnauthorizedAccessException)
                 {
                     log?.Invoke($"[runtime-bridge] heartbeat touch failed: {exception.Message}");
+                }
+
+                // 调试通道的节拍：传输层用它在无消息时也能按周期上报 dropped（附录 A.9）。
+                List<Connection> current;
+                lock (connectionsGate)
+                {
+                    current = new List<Connection>(connections);
+                }
+
+                foreach (var connection in current)
+                {
+                    connection.DebugLink?.NotifyTick();
                 }
             }
         }

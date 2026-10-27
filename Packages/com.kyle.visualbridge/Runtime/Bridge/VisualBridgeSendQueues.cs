@@ -28,6 +28,13 @@ namespace VisualBridge.Runtime
         Closed,
     }
 
+    /// <summary>消息来自哪条队列（与线上通道位无关：通道 1 的控制类消息也走控制队列）。</summary>
+    public enum VisualBridgeSendQueueKind
+    {
+        Control = 0,
+        Data = 1,
+    }
+
     /// <summary>一条已入队、等待写出的消息。</summary>
     public sealed class VisualBridgeQueuedMessage
     {
@@ -38,6 +45,9 @@ namespace VisualBridge.Runtime
         public VisualBridgePayloadKind PayloadKind { get; internal set; }
 
         public byte[] Payload { get; internal set; }
+
+        /// <summary>队列类别；写出统计按它计数，不能用通道位推断（附录 A.2 的通道 1 也有控制类消息）。</summary>
+        public VisualBridgeSendQueueKind Queue { get; internal set; }
 
         /// <summary>仅控制消息：入队时的数据队列尾序号（0 表示此前无数据消息）。</summary>
         public long Barrier { get; internal set; }
@@ -152,11 +162,16 @@ namespace VisualBridge.Runtime
             }
         }
 
-        /// <summary>控制消息入队；满 256 条返回 <see cref="VisualBridgeEnqueueStatus.ControlQueueFull"/>，调用方必须断开。</summary>
+        /// <summary>
+        /// 控制消息入队；满 256 条返回 <see cref="VisualBridgeEnqueueStatus.ControlQueueFull"/>，调用方必须断开。
+        /// <paramref name="channel"/> 决定帧头的通道位（附录 A.2：<c>debugCreate</c>/<c>debugFinish</c>/<c>debugFrame</c>/
+        /// <c>dropped</c>/通道 1 的 <c>response</c> 都是通道 1 上的控制类消息），与「走哪条队列」互不绑定。
+        /// </summary>
         public VisualBridgeEnqueueStatus TryEnqueueControl(
             byte[] payload,
             out long sequence,
-            VisualBridgePayloadKind payloadKind = VisualBridgePayloadKind.Json)
+            VisualBridgePayloadKind payloadKind = VisualBridgePayloadKind.Json,
+            VisualBridgeChannel channel = VisualBridgeChannel.Editor)
         {
             sequence = 0;
             var body = payload ?? Array.Empty<byte>();
@@ -182,9 +197,10 @@ namespace VisualBridge.Runtime
                 controlQueue.Enqueue(new VisualBridgeQueuedMessage
                 {
                     Sequence = sequence,
-                    Channel = VisualBridgeChannel.Editor,
+                    Channel = channel,
                     PayloadKind = payloadKind,
                     Payload = body,
+                    Queue = VisualBridgeSendQueueKind.Control,
                     Barrier = lastDataSequence,
                 });
                 counters.ControlEnqueued += 1;
@@ -228,6 +244,7 @@ namespace VisualBridge.Runtime
                     Channel = VisualBridgeChannel.Debug,
                     PayloadKind = payloadKind,
                     Payload = body,
+                    Queue = VisualBridgeSendQueueKind.Data,
                     Barrier = 0,
                 });
                 dataBytes += body.Length;
@@ -277,7 +294,9 @@ namespace VisualBridge.Runtime
 
                 counters.WrittenMessages += 1;
                 counters.WrittenBytes += message.Payload.Length;
-                if (message.Channel == VisualBridgeChannel.Editor)
+                // 统计按队列类别：通道 1 的 debugCreate/debugFinish/debugFrame/dropped 走控制队列，
+                // 不能用 Channel 推断（附录 A.2）。
+                if (message.Queue == VisualBridgeSendQueueKind.Control)
                 {
                     counters.WrittenControl += 1;
                 }

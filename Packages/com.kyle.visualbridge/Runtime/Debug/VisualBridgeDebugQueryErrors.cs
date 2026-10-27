@@ -21,6 +21,12 @@ namespace VisualBridge.Diagnostics
         /// <summary>请求信封、槽位或参数不合法。</summary>
         public const string InvalidArgument = "runtime.invalidArgument";
 
+        /// <summary>
+        /// 业务拒绝（<see cref="VisualBridgeDebug.RejectRequest"/>）：A.6 尚未登记该码，
+        /// 由 E6 补登；先收敛成常量，避免传输层与文档两处漂移。
+        /// </summary>
+        public const string Rejected = "runtime.queryRejected";
+
         /// <summary>把入队状态翻译成错误码；<see cref="VisualBridgeDebugQueryStatus.Accepted"/> 返回 null。</summary>
         public static string ToCode(VisualBridgeDebugQueryStatus status)
         {

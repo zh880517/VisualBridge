@@ -104,8 +104,16 @@ export class BridgeSendQueues {
     return { ...this.counters };
   }
 
-  /** 控制消息入队；满 256 条返回 `controlQueueFull`，调用方必须断开连接。 */
-  public enqueueControl(payload: Uint8Array, payloadKind: BridgePayloadKind = BridgePayloadKind.Json): BridgeEnqueueResult {
+  /**
+   * 控制消息入队；满 256 条返回 `controlQueueFull`，调用方必须断开连接。
+   * `channel` 决定帧头通道位（附录 A.2：`debugCreate`/`debugFinish`/`debugFrame`/`dropped` 及通道 1 的
+   * 应答都是通道 1 上的控制类消息），与「走哪条队列」互不绑定。
+   */
+  public enqueueControl(
+    payload: Uint8Array,
+    payloadKind: BridgePayloadKind = BridgePayloadKind.Json,
+    channel: BridgeChannel = BridgeChannel.Control,
+  ): BridgeEnqueueResult {
     if (!this.accepting) {
       return { ok: false, reason: "closed" };
     }
@@ -122,7 +130,7 @@ export class BridgeSendQueues {
     const sequence = this.nextSequence++;
     this.controlQueue.push({
       sequence,
-      channel: BridgeChannel.Control,
+      channel,
       payloadKind,
       payload: Buffer.from(payload),
       barrier: this.lastDataSequence,
@@ -180,13 +188,14 @@ export class BridgeSendQueues {
     const control = this.controlQueue[0];
     const data = this.dataQueue[0];
     let message: BridgeQueuedMessage | undefined;
+    let fromControl = false;
     if (control !== undefined && data !== undefined) {
       // 屏障未满足时先写数据；否则按序号取较小者（控制消息序号必然大于其屏障）。
-      message = data.sequence <= control.barrier || data.sequence < control.sequence
-        ? this.shiftData()
-        : this.shiftControl();
+      fromControl = !(data.sequence <= control.barrier || data.sequence < control.sequence);
+      message = fromControl ? this.shiftControl() : this.shiftData();
     } else if (control !== undefined) {
       message = this.shiftControl();
+      fromControl = true;
     } else if (data !== undefined) {
       message = this.shiftData();
     }
@@ -197,7 +206,8 @@ export class BridgeSendQueues {
 
     this.counters.writtenMessages += 1;
     this.counters.writtenBytes += message.payload.length;
-    if (message.channel === BridgeChannel.Control) {
+    // 统计按队列类别：通道 1 的控制类消息也走控制队列，不能用 channel 推断（附录 A.2）。
+    if (fromControl) {
       this.counters.writtenControl += 1;
     } else {
       this.counters.writtenDebug += 1;
