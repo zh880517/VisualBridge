@@ -11,6 +11,7 @@ import { verifyModuleEntry } from "../dist/moduleAuthorization.js";
  * 附录 D.2 的路径/Hash 错误码：
  * - `module.invalidPath`：词法路径越出 `VISUALBRIDGE_WORKSPACE`；
  * - `module.entryAlias`：真实路径经 junction/symlink 别名越出工作区；
+ * - `module.notFound`：工程声明的 entry 不存在；
  * - `module.loadFailed`：存在但不可读（例如 entry 是目录）；
  * - `module.hashMismatch`：`hash` 与 bundle 字节不符。
  */
@@ -110,15 +111,17 @@ test("reports module.loadFailed when the entry exists but is not a file", async 
   });
 });
 
-test("keeps a missing entry as the C1 transitional 'pending bundle' state", async () => {
+test("reports module.notFound when the declared entry does not exist", async () => {
   await withWorkspace(async ({ workspaceRoot, projectRoot }) => {
-    // C1 产出真 bundle 之前，五个 TestData 工程声明的 entry 都还不存在。
-    // bundle 落地同批要把这里改成 `module.notFound` + `failed`（附录 D.2），
-    // 否则"待构建"会掩盖真实的装载失败。
+    // C1 已产出并分发 bundle，声明了 entry 却没有文件就是失败：
+    // 继续报 `loaded` 会让"工程声明了不存在的模块"静默通过（附录 D.2 的 `module.notFound`）。
     const verification = await verifyModuleEntry(context(projectRoot), declaration(), workspaceRoot);
-    assert.equal(verification.status, "loaded");
+    assert.equal(verification.status, "failed");
     assert.equal(Object.hasOwn(verification, "sha256"), false);
-    assert.deepEqual(verification.diagnostics, []);
+    assert.deepEqual(verification.diagnostics.map((entry) => [entry.code, entry.path]), [
+      ["module.notFound", `modules.${MODULE_ID}.entry`],
+    ]);
+    assert.match(verification.diagnostics[0].message, new RegExp(MODULE_ID, "u"));
   });
 });
 

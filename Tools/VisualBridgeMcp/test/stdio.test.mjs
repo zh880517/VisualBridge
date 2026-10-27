@@ -68,8 +68,12 @@ test("MCP V2 exposes eight stable tools and routes Graph semantics with real cro
       assert.equal(module.version, "0.1.0");
       assert.equal(module.editors.length, 1);
       assert.equal(module.editors[0].editor, module.id.split(".")[1]);
-      // entry bundle 由 C1 产出；当前只有进程内 facet，所以不能伪造 sha256。
-      assert.equal(Object.hasOwn(module, "sha256"), false);
+      // C1 的 bundle 已分发到 TestData 工程：entry 存在就必须报出它的真实字节 Hash，
+      // 而不是继续用"还没构建"的空值。
+      assert.equal(
+        module.sha256,
+        hash(await readFile(path.join(projectRoot, ...module.entry.split("/")))),
+      );
       const operationSchema = module.editors[0].operationSchema;
       assert.equal(operationSchema.type, "object");
       assert.deepEqual(operationSchema.required, ["type"]);
@@ -2287,6 +2291,8 @@ test("MCP rejects module entries that leave the workspace or are not readable fi
       await writeFile(path.join(outsideRoot, name), "export {};\n", "utf8");
     }
     await withFixture("GraphSemanticProject", async ({ projectRoot, client }) => {
+      // 夹具已带上分发好的 bundle；先删掉 `Modules/` 才能用别名目录替换它。
+      await rm(path.join(projectRoot, "Modules"), { recursive: true, force: true });
       try {
         await symlink(outsideRoot, path.join(projectRoot, "Modules"), process.platform === "win32" ? "junction" : "dir");
       } catch (error) {
@@ -2325,7 +2331,10 @@ test("MCP rejects module entries that leave the workspace or are not readable fi
 
   // ② realpath 成功但不可读（entry 是目录，readFile 报 EISDIR）⇒ failed，不能被当成"待构建"。
   await withFixture("GraphSemanticProject", async ({ projectRoot, client }) => {
-    await mkdir(path.join(projectRoot, "Modules", "graph.vbmodule.js"), { recursive: true });
+    const graphEntry = path.join(projectRoot, "Modules", "graph.vbmodule.js");
+    // 夹具已带上分发好的 bundle：先删文件再建同名目录，才能造出 EISDIR。
+    await rm(graphEntry, { force: true });
+    await mkdir(graphEntry, { recursive: true });
     const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
     const project = await call(client, "visualbridge_project", { action: "read", projectFile });
     assert.deepEqual(project.modules.map((module) => [module.id, module.status]), [
@@ -2335,11 +2344,11 @@ test("MCP rejects module entries that leave the workspace or are not readable fi
     const graph = project.modules.find((module) => module.id === "visualbridge.graph");
     assert.ok(graph.diagnostics.some((diagnostic) => diagnostic.code === "module.loadFailed"));
     assert.equal(Object.hasOwn(graph, "sha256"), false);
-    // 缺失的 entry 仍是"待构建"：同一工程里 table 保持 loaded 且无 sha256。
+    // 另一个模块不受影响：table 的 entry 真实存在，必须报出它的字节 Hash。
     const table = project.modules.find((module) => module.id === "visualbridge.table");
     assert.equal(project.supportedEditors.includes("table"), true);
     assert.deepEqual(table.diagnostics, []);
-    assert.equal(Object.hasOwn(table, "sha256"), false);
+    assert.equal(table.sha256, hash(await readFile(path.join(projectRoot, ...table.entry.split("/")))));
 
     const document = await client.callTool({
       name: "visualbridge_document",
@@ -2352,6 +2361,37 @@ test("MCP rejects module entries that leave the workspace or are not readable fi
       },
     });
     assert.equal(document.isError, true);
+    assert.equal(document.structuredContent.error.details.reason, "moduleFailed");
+  });
+
+  // ③ entry 不存在（ENOENT）⇒ failed + `module.notFound`，不再是"待构建"。
+  await withFixture("GraphSemanticProject", async ({ projectRoot, client }) => {
+    await rm(path.join(projectRoot, "Modules", "table.vbmodule.js"), { force: true });
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const project = await call(client, "visualbridge_project", { action: "read", projectFile });
+    assert.deepEqual(project.modules.map((module) => [module.id, module.status]), [
+      ["visualbridge.graph", "loaded"],
+      ["visualbridge.table", "failed"],
+    ]);
+    const table = project.modules.find((module) => module.id === "visualbridge.table");
+    assert.deepEqual(table.diagnostics.map((entry) => [entry.code, entry.path]), [
+      ["module.notFound", "modules.visualbridge.table.entry"],
+    ]);
+    assert.equal(Object.hasOwn(table, "sha256"), false);
+    assert.equal(project.supportedEditors.includes("table"), false);
+    // 其它模块与"模块失败"的可用性口径不变：graph 仍可读，table 报 moduleFailed。
+    const document = await client.callTool({
+      name: "visualbridge_document",
+      arguments: {
+        action: "read",
+        projectFile,
+        documentTypeId: "sample.table.skills",
+        editor: "table",
+        path: "Tables/Skills_Main.skillstable",
+      },
+    });
+    assert.equal(document.isError, true);
+    assert.equal(document.structuredContent.error.code, "document.editorUnsupported");
     assert.equal(document.structuredContent.error.details.reason, "moduleFailed");
   });
 });

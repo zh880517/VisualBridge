@@ -47,14 +47,13 @@ export type ModuleEntryVerification =
  * 校验模块 entry 的物理位置与可选 Hash。
  *
  * 错误码按附录 D.1/D.2 的路径三段分：`module.invalidPath`（词法路径越出工作区）、
- * `module.entryAlias`（真实路径经 junction/symlink 别名越出工作区）、`module.loadFailed`
- * （存在但不可读）。
+ * `module.entryAlias`（真实路径经 junction/symlink 别名越出工作区）、`module.notFound`
+ * （工程声明的 entry 不存在）、`module.loadFailed`（存在但不可读）。
  *
- * C1 之前模块以进程内 facet 形式登记，entry bundle 可能尚未生成；缺失 entry 视为“待构建”，
- * 不阻止装载，也不提供 `sha256`。一旦 C1 产出 bundle，缺失就必须改判 `module.notFound`
- * ——那一步与 bundle 落地同批进行，否则五个 TestData 工程会集体从 `loaded` 翻成 `failed`。
- * 存在但不可读（例如 entry 是目录）是**失败**而不是“待构建”，否则“目录 junction 逃逸”
- * 会被 readFile 的 EISDIR 掩盖成 `loaded`。
+ * 缺失 entry 是**失败**：C1 已产出并分发 bundle，`Modules/*.vbmodule.js` 不再有“待构建”
+ * 的过渡态，再把 ENOENT 当 `loaded` 会让“工程声明了不存在的模块”静默通过。
+ * 存在但不可读（例如 entry 是目录）同样是失败，否则“目录 junction 逃逸”会被 readFile
+ * 的 EISDIR 掩盖成 `loaded`。
  */
 export async function verifyModuleEntry(
   project: ProjectContext,
@@ -72,8 +71,8 @@ export async function verifyModuleEntry(
     resolved = await realpath(lexical);
   } catch (errorValue) {
     if (isMissingPath(errorValue)) {
-      // entry 尚未生成（C1 才产出 bundle）：进程内 facet 仍可用，只报告“无 sha256”。
-      return { status: "loaded", diagnostics: [] };
+      // 工程声明了 entry 却没有对应文件：`module.notFound`（附录 D.2），不再当作“待构建”。
+      return { status: "failed", diagnostics: [entryNotFound(moduleDefinition, lexical)] };
     }
     return { status: "failed", diagnostics: [entryUnreadable(moduleDefinition, lexical, errorValue)] };
   }
@@ -124,6 +123,18 @@ async function workspaceRealPath(workspaceRoot: string): Promise<string> {
 function isMissingPath(errorValue: unknown): boolean {
   const code = (errorValue as { readonly code?: unknown } | undefined)?.code;
   return code === "ENOENT" || code === "ENOTDIR";
+}
+
+function entryNotFound(
+  moduleDefinition: ProjectModuleDefinition,
+  candidate: string,
+): DocumentDiagnostic {
+  return {
+    severity: "error",
+    code: "module.notFound",
+    path: `modules.${moduleDefinition.id}.entry`,
+    message: `Module '${moduleDefinition.id}' entry '${candidate}' does not exist.`,
+  };
 }
 
 function entryUnreadable(
