@@ -3313,16 +3313,21 @@ exports.run = async function run() {
         },
       };
     };
+    // 指纹跟服务端发布值走：约定 ArtifactsRoot 里一旦有契约产物，监听方指纹就不再是空串，
+    // 默认 hello 必须用它才算"匹配"，否则每个用例都会静默走降级分支。
     const hello = (token, overrides = {}) => ({
       type: "hello",
       protocolVersion: 4,
       role: "editor",
       clientEndpointId: "editor-1234",
       token,
-      contractHash: "",
+      contractHash: state.contractHash,
       payloads: ["json", "binary"],
       ...overrides,
     });
+    // 抖动一位十六进制：用它证明"不匹配"判定真的来自契约注册表，而不是写死的字符串。
+    const flipHex = (value) => `${value[0] === "a" ? "b" : "a"}${value.slice(1)}`;
+    const probeHash = state.contractHash.length === 0 ? "a".repeat(16) : flipHex(state.contractHash);
 
     // 无效 token 以连接级错误拒绝。
     {
@@ -3403,6 +3408,7 @@ exports.run = async function run() {
         assert.ok(welcome.generation >= state.generation);
         assert.equal(welcome.connectType, "editor");
         assert.deepEqual(welcome.payloads, ["json", "binary"]);
+        assert.equal(welcome.contractHash, state.contractHash);
         assert.equal(welcome.resumed, false);
 
         // 一对一约束：第二条连接被拒，且不影响已建立的连接。
@@ -3471,14 +3477,14 @@ exports.run = async function run() {
       }
     }
 
-    // 指纹层：两侧 hash 不同仍建立连接，welcome.payloads 去掉 binary。
+    // 指纹层：两侧 hash 不同仍建立连接，welcome.payloads 去掉 binary，且回发监听方指纹。
     {
       const connection = await connectBridge();
       try {
-        connection.send(hello(state.token, { contractHash: "aaaaaaaaaaaaaaaa" }));
+        connection.send(hello(state.token, { contractHash: probeHash }));
         const welcome = await connection.waitForLine(
           (line) => line.type === "welcome", "Bridge server did not complete a mismatched-fingerprint handshake.");
-        assert.equal(welcome.contractHash, "");
+        assert.equal(welcome.contractHash, state.contractHash);
         assert.deepEqual(welcome.payloads, ["json"]);
       } finally {
         connection.socket.destroy();
@@ -3510,6 +3516,75 @@ exports.run = async function run() {
         assert.equal(welcome.sessionId, state.sessionId);
       } finally {
         connection.socket.destroy();
+      }
+    }
+
+    // 契约注册表：工作区里出现 Unity 工程根 + 约定 ArtifactsRoot 产物后，监听方指纹就变成
+    // 产物里的 contractHash（无需任何设置项）；产物被删掉后回到空串。这里在临时工作区里
+    // 造一份真实布局，验证"按约定定位 + 热更新"而不是断言某个写死的值。
+    {
+      const unityVersionPath = path.join(workspacePath, "ProjectSettings", "ProjectVersion.txt");
+      const contractDirectory = path.join(workspacePath, "Assets", "VisualBridgeGenerated", "Debug");
+      const contractPath = path.join(contractDirectory, "debug-contracts.json");
+      const fixturePath = path.join(__dirname, "..", "..", "..", "..",
+        "TestData", "DebugContracts", "UnityProject", "Assets", "VisualBridgeGenerated", "Debug", "debug-contracts.json");
+      const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
+      const expectedHash = fixture.contractHash;
+      assert.match(expectedHash, /^[0-9a-f]{16}$/, "The fixture must carry a real 16-hex contract fingerprint.");
+      const readState = () => vscode.commands.executeCommand("visualbridge.test.getBridgeServerState");
+      try {
+        await fsPromises.mkdir(contractDirectory, { recursive: true });
+        await fsPromises.mkdir(path.dirname(unityVersionPath), { recursive: true });
+        await writeFile(unityVersionPath, "m_EditorVersion: 6000.3.10f1\n", "utf8");
+        await writeFile(contractPath, await readFile(fixturePath, "utf8"), "utf8");
+
+        const located = await waitForAsync(
+          readState,
+          (value) => value?.contractHash === expectedHash,
+          20_000,
+          "The bridge server did not adopt debug-contracts.json from the conventional ArtifactsRoot.",
+        );
+        assert.equal(located.contractHash, expectedHash);
+
+        // 命中时保留 binary 数据面，并把命中的指纹回给客户端。
+        {
+          const matched = await connectBridge();
+          try {
+            matched.send(hello(located.token, { contractHash: expectedHash }));
+            const welcome = await matched.waitForLine(
+              (line) => line.type === "welcome", "Bridge server did not complete a matched-fingerprint handshake.");
+            assert.equal(welcome.contractHash, expectedHash);
+            assert.deepEqual(welcome.payloads, ["json", "binary"]);
+          } finally {
+            matched.socket.destroy();
+          }
+        }
+
+        // 抖动一位仍是"不匹配"：连接保留，只降级数据面（A.3）。
+        {
+          const mismatch = await connectBridge();
+          try {
+            mismatch.send(hello(located.token, { contractHash: flipHex(expectedHash) }));
+            const welcome = await mismatch.waitForLine(
+              (line) => line.type === "welcome", "Bridge server did not complete a mismatched-fingerprint handshake.");
+            assert.equal(welcome.contractHash, expectedHash);
+            assert.deepEqual(welcome.payloads, ["json"]);
+          } finally {
+            mismatch.socket.destroy();
+          }
+        }
+      } finally {
+        await rm(contractPath, { force: true });
+        await rm(unityVersionPath, { force: true });
+        await rm(path.join(workspacePath, "Assets"), { recursive: true, force: true });
+        await rm(path.join(workspacePath, "ProjectSettings"), { recursive: true, force: true });
+        const restored = await waitForAsync(
+          readState,
+          (value) => value?.contractHash === "",
+          20_000,
+          "The bridge server kept the contract fingerprint after the artifacts disappeared.",
+        );
+        assert.equal(restored.contractHash, "");
       }
     }
   });

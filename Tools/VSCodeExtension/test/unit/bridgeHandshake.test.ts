@@ -12,6 +12,8 @@ import {
   parseBridgeMessage,
   parseBridgeWelcome,
   parseDiscoveryRecord,
+  selectBridgeContractHash,
+  shouldDegradeToJson,
   type BridgeDiscoveryRecord,
   type BridgeHelloMessage,
 } from "../../src/bridge/bridgeProtocol";
@@ -216,4 +218,54 @@ test("a parsed hello can be evaluated after the listener reports a degraded data
     hasActiveConnection: false,
     supportsBinary: false,
   }), undefined);
+});
+
+test("contract fingerprints degrade the data plane instead of rejecting the connection", () => {
+  // 两侧都没有契约：指纹相等，保留 binary。
+  assert.deepEqual(selectBridgeContractHash("", []), { contractHash: "", degraded: false, matched: true });
+  // 客户端有契约、监听方没有：不一致 → 降级，且监听方如常报告自己是空串。
+  assert.deepEqual(selectBridgeContractHash("aaaaaaaaaaaaaaaa", []), {
+    contractHash: "",
+    degraded: true,
+    matched: false,
+  });
+
+  // 多 Project 工作区：命中任意一个已加载契约就算一致（客户端指纹决定它来自哪个工程）。
+  // 刻意让客户端取**非排序首个** hash：否则 `known[0] === client` 这类退化实现也能碰巧通过。
+  const known = ["9f1c2d3e4a5b6c7d", "0123456789abcdef"];
+  assert.deepEqual(selectBridgeContractHash("9f1c2d3e4a5b6c7d", known), {
+    contractHash: "9f1c2d3e4a5b6c7d",
+    degraded: false,
+    matched: true,
+  });
+  // 都不命中：连接保留，welcome 回发排序首个指纹供 UI 提示两侧 hash。
+  assert.deepEqual(selectBridgeContractHash("ffffffffffffffff", known), {
+    contractHash: "0123456789abcdef",
+    degraded: true,
+    matched: false,
+  });
+
+  // 单契约工程里该函数与 A.3 的原始定义等价。
+  assert.equal(shouldDegradeToJson("", ""), false);
+  assert.equal(shouldDegradeToJson("9f1c2d3e4a5b6c7d", ""), true);
+  assert.equal(shouldDegradeToJson("9f1c2d3e4a5b6c7d", "9f1c2d3e4a5b6c7d"), false);
+  assert.equal(selectBridgeContractHash("9f1c2d3e4a5b6c7d", ["9f1c2d3e4a5b6c7d"]).degraded, false);
+});
+
+test("a client hash that is not the first known hash keeps the binary data plane", () => {
+  // 排序后首个是 0123…；客户端命中中间的 9f1c…。任何"只认首个"的实现都会在这里降级。
+  const known = ["1111111111111111", "9f1c2d3e4a5b6c7d", "0123456789abcdef"];
+  const sortedFirst = "0123456789abcdef";
+  const client = "9f1c2d3e4a5b6c7d";
+  assert.notEqual(client, sortedFirst);
+
+  const selection = selectBridgeContractHash(client, known);
+  assert.deepEqual(selection, { contractHash: client, degraded: false, matched: true });
+  // 命中非首个 hash 时 welcome 仍协商出 ["json","binary"]，不因排序位置降级。
+  assert.deepEqual(negotiatePayloads(["json", "binary"], !selection.degraded), ["json", "binary"]);
+
+  // 未命中任意一个时才降级，并回发排序首个指纹供 UI 提示。
+  const miss = selectBridgeContractHash("ffffffffffffffff", known);
+  assert.deepEqual(miss, { contractHash: sortedFirst, degraded: true, matched: false });
+  assert.deepEqual(negotiatePayloads(["json", "binary"], !miss.degraded), ["json"]);
 });

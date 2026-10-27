@@ -286,6 +286,40 @@ export function shouldDegradeToJson(clientContractHash: string, serverContractHa
   return clientContractHash !== serverContractHash;
 }
 
+/** 监听方在 welcome 里发布的指纹与降级决定（附录 A.3 指纹层）。 */
+export interface BridgeContractHashSelection {
+  /** 写进 welcome.contractHash 的值；无契约时为空串。 */
+  readonly contractHash: string;
+  /** 数据面是否去掉 binary。 */
+  readonly degraded: boolean;
+  /** 客户端指纹是否与某个已知工程契约一致。 */
+  readonly matched: boolean;
+}
+
+/**
+ * 从该窗口已知的契约指纹集合里选 welcome 指纹。
+ *
+ * 多 Project 工作区里每个 Unity 工程有自己的指纹（F1 按 Project 根分别缓存），
+ * 而 hello 只带一个指纹：客户端命中其中任意一个就算一致（它来自哪个工程由它自己决定），
+ * welcome 回它命中的那个；都不命中时发布唯一/排序首个指纹，便于 UI 提示两侧 hash（C.8）。
+ */
+export function selectBridgeContractHash(
+  clientContractHash: string,
+  knownContractHashes: readonly string[],
+): BridgeContractHashSelection {
+  const known = [...new Set(knownContractHashes.filter((hash) => hash.length > 0))].sort();
+  if (known.length === 0) {
+    // 两侧都没有契约：指纹相等（都是空串），不降级（A.3 只要求"不一致"才降级）。
+    return { contractHash: "", degraded: clientContractHash !== "", matched: clientContractHash === "" };
+  }
+
+  if (known.includes(clientContractHash)) {
+    return { contractHash: clientContractHash, degraded: false, matched: true };
+  }
+
+  return { contractHash: known[0]!, degraded: true, matched: false };
+}
+
 /**
  * 契约层：debug-contracts.json 的 manifest.schemaVersion 不等于当前格式时，
  * 该目录的契约整体不加载（不参与指纹与二进制编码）。

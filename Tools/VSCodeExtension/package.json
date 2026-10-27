@@ -438,7 +438,21 @@
         "fileMatch": "**/*.vbstructuredcatalog",
         "url": "./dist/schemas/visualbridge-structured-catalog.schema.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "VisualBridge",
+      "properties": {
+        "visualbridge.debug.contractDirectories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "window",
+          "description": "额外的调试契约目录（相对工作区根或绝对路径）。用于补充 Unity 约定 ArtifactsRoot 未覆盖的接口；同名接口以约定产物为准，冲突会在界面上标出。"
+        }
+      }
+    }
   },
   "scripts": {
     "clean": "node ./scripts/clean.mjs",

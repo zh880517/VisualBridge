@@ -14,7 +14,7 @@ import {
   isBridgeErrorCode,
   negotiatePayloads,
   parseBridgeMessage,
-  shouldDegradeToJson,
+  selectBridgeContractHash,
   type BridgeDiscoveryRecord,
   type BridgeErrorCode,
   type BridgeMessage,
@@ -30,7 +30,14 @@ import {
   EditorBridgeConnectionGate,
   EditorBridgeConnectionSlot,
 } from "./editorBridgeConnections";
-import type { BridgePayloadKind } from "./framing";
+import { BridgeChannel, type BridgePayloadKind } from "./framing";
+import {
+  DEBUG_CONTRACT_DIRECTORIES_SETTING,
+  DebugContractRegistry,
+  type DebugContractSnapshot,
+  type DebugContractSnapshotSet,
+} from "./debugContractRegistry";
+import { DebugIngress } from "./debugIngress";
 
 export const OPEN_DOCUMENT_COMMAND = "visualbridge.openDocument";
 export const REVEAL_REFERENCE_COMMAND = "visualbridge.revealReference";
@@ -42,6 +49,7 @@ export interface EditorBridgeServerState {
   readonly role: "vscode";
   readonly sessionId: string;
   readonly bootId: string;
+  /** 本窗口发布的契约指纹：唯一契约时就是它，多工程时取排序首个；无契约时为空串。 */
   readonly contractHash: string;
   readonly tcpPort: number;
   readonly token: string;
@@ -49,7 +57,29 @@ export interface EditorBridgeServerState {
   readonly projectRoots: readonly string[];
 }
 
+/** 契约注册表注入点：测试与宿主可以替换它，服务端只依赖这两个读操作。 */
+export interface EditorBridgeContractSource {
+  readonly current: DebugContractSnapshotSet;
+  load(options: {
+    readonly projectRoots: readonly string[];
+    readonly supplementalDirectories?: readonly string[];
+  }): Promise<DebugContractSnapshotSet>;
+}
+
+export interface EditorBridgeServerOptions {
+  /** 契约注册表（F1 注入点）；缺省按 Project 根 + 工作区设置自行加载。 */
+  readonly contracts?: EditorBridgeContractSource;
+  /** 关掉默认的契约自动加载（测试注入固定快照时用）。 */
+  readonly autoLoadContracts?: boolean;
+}
+
 type BridgeConnection = EditorBridgeConnectionSlot<BridgeSocket>;
+
+/** 一条连接绑定的调试面状态：指纹决定契约快照，快照决定二进制解码。 */
+interface EditorBridgeDebugBinding {
+  snapshot: DebugContractSnapshot | undefined;
+  ingress: DebugIngress | undefined;
+}
 
 /**
  * 本地 Editor Bridge 监听方（VS Code Extension Host）。
@@ -60,7 +90,12 @@ type BridgeConnection = EditorBridgeConnectionSlot<BridgeSocket>;
  * - open/reveal 请求的路由与应答（通道 0；通道 1 只属于调试数据面）。
  *
  * 指纹不一致时保留连接，只把 welcome.payloads 收敛为 ["json"]，并把两侧 hash
- * 写进日志与 UI 状态（E2 的 VS Code 侧尚无契约注册表，服务端指纹暂时为空串）。
+ * 写进日志与 UI 状态。监听方指纹来自 {@link DebugContractRegistry}：按 Project 根各自
+ * 推导 Unity 的 `ArtifactsRoot` 约定路径，第二个来源是 `visualbridge.debug.contractDirectories`
+ * （附录 C.8）。契约产物变化（热更新）后重新加载快照，已握手的连接继续用旧快照（不回溯）。
+ *
+ * 通道 1 的调试载荷交给该连接绑定的 {@link DebugIngress}：帧校验失败只计数不断连
+ * （A.1 的断开由连接层负责），解码落地为 `DebugEnvelope`（C.1）。F2 接上存储与路由。
  *
  * 重连语义（附录 A.3/A.6）：端点同一时刻只接纳一条**已完成握手且仍然存活**的连接
  * （`runtime.alreadyConnected`）；"存活"按传输层的同步可观测状态判定，不等异步
@@ -85,17 +120,23 @@ export class EditorBridgeServer implements vscode.Disposable {
   private sessionId = "";
   private generation = 0;
   private readonly startedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-  // F1 接入契约注册表前，VS Code 侧没有可发布的调试契约指纹。
-  private readonly contractHash = "";
+  private readonly contracts: EditorBridgeContractSource;
+  private readonly autoLoadContracts: boolean;
+  private readonly debugBindings = new WeakMap<BridgeConnection, EditorBridgeDebugBinding>();
+  private contractRefreshTimer: NodeJS.Timeout | undefined;
+  private contractRefreshing: Promise<void> | undefined;
 
   public constructor(
     projects: ProjectRegistry,
     documents: WorkspaceDocumentIndex,
     output: vscode.LogOutputChannel,
+    options: EditorBridgeServerOptions = {},
   ) {
     this.projects = projects;
     this.documents = documents;
     this.output = output;
+    this.contracts = options.contracts ?? new DebugContractRegistry();
+    this.autoLoadContracts = options.autoLoadContracts ?? options.contracts === undefined;
   }
 
   public get state(): EditorBridgeServerState | undefined {
@@ -110,7 +151,7 @@ export class EditorBridgeServer implements vscode.Disposable {
       role: "vscode",
       sessionId: this.sessionId,
       bootId: this.bootId,
-      contractHash: this.contractHash,
+      contractHash: this.publishedContractHash(),
       tcpPort: this.tcpPort,
       token: this.token,
       generation: this.generation,
@@ -132,6 +173,10 @@ export class EditorBridgeServer implements vscode.Disposable {
       BRIDGE_DISCOVERY_DIRECTORY_NAME,
     );
     const recordPath = nodePath.join(discoveryDirectory, `${this.windowId}.json`);
+
+    // 先定位契约，再开始 listen 并发布 discovery：否则首个连接可能落在"指纹还是空串"的
+    // 早连接窗口里，被无谓降级成 JSON（A.3 指纹层）。
+    await this.refreshContracts();
 
     const connected = new Promise<void>((resolve, reject) => {
       const tcpServer = net.createServer((socket) => this.accept(socket));
@@ -161,10 +206,13 @@ export class EditorBridgeServer implements vscode.Disposable {
     this.disposables.push(
       this.projects.onDidChange(() => {
         void this.writeDiscoveryRecord();
+        // Project 增删可能带来新的 Unity 工程根，契约要跟着重新定位（C.8）。
+        this.scheduleContractRefresh();
       }),
     );
+    this.watchContracts();
     this.output.appendLine(
-      `[bridge] listening tcp=127.0.0.1:${this.tcpPort} record=${this.recordPath} session=${this.sessionId}`,
+      `[bridge] listening tcp=127.0.0.1:${this.tcpPort} record=${this.recordPath} session=${this.sessionId} contractHash='${this.publishedContractHash()}'`,
     );
   }
 
@@ -172,6 +220,11 @@ export class EditorBridgeServer implements vscode.Disposable {
     if (this.heartbeat !== undefined) {
       clearInterval(this.heartbeat);
       this.heartbeat = undefined;
+    }
+
+    if (this.contractRefreshTimer !== undefined) {
+      clearTimeout(this.contractRefreshTimer);
+      this.contractRefreshTimer = undefined;
     }
 
     for (const connection of this.connections.snapshot()) {
@@ -211,9 +264,11 @@ export class EditorBridgeServer implements vscode.Disposable {
         }
       },
       onDebugFrame: (payloadKind: BridgePayloadKind, payload: Buffer) => {
-        // 通道按帧头分派（附录 A.2）：通道 0 的消息进 handlePayload，通道 1 的调试载荷
-        // 不属于本任务范围（E5/G1 接入数据面），这里只记录、绝不当作编辑器消息解析。
-        this.output.appendLine(`[bridge] ignoring a ${payload.length}-byte debug payload (kind ${payloadKind}) on the editor connection.`);
+        // 通道按帧头分派（附录 A.2）：通道 1 的调试载荷交给本连接的接收门。
+        // 帧层错误（CRC/长度）已由 BridgeSocket 断开，这里只做解码与计数，绝不断连。
+        if (connection !== undefined) {
+          this.acceptDebugFrame(connection, payloadKind, payload);
+        }
       },
       onClosed: (error) => {
         if (error !== undefined) {
@@ -222,6 +277,7 @@ export class EditorBridgeServer implements vscode.Disposable {
 
         // 同步释放：BridgeSocket 在 finish() 里同步回调本方法。
         if (connection !== undefined) {
+          this.logDebugCounters(connection);
           this.connections.retire(connection);
         }
       },
@@ -284,13 +340,22 @@ export class EditorBridgeServer implements vscode.Disposable {
     }
 
     // 指纹层：不一致不拒连，只把数据面降级为 JSON（附录 A.3）。
-    const degradeToJson = shouldDegradeToJson(message.contractHash, this.contractHash);
-    const payloads = negotiatePayloads(message.payloads, !degradeToJson) ?? ["json"];
-    if (degradeToJson) {
+    const selection = selectBridgeContractHash(message.contractHash, this.contracts.current.hashes);
+    const payloads = negotiatePayloads(message.payloads, !selection.degraded) ?? ["json"];
+    if (selection.degraded) {
       this.output.appendLine(
-        `[bridge] contract hash mismatch client='${message.contractHash}' server='${this.contractHash}'; data plane degrades to JSON.`,
+        `[bridge] contract hash mismatch client='${message.contractHash}' server='${selection.contractHash}'; data plane degrades to JSON.`,
       );
     }
+
+    // 该连接的数据面绑定它自己声明的契约快照（多 Project 工作区里各工程指纹不同）。
+    this.debugBindings.set(connection, {
+      snapshot: this.contracts.current.snapshotForHash(message.contractHash) ?? this.singleContractSnapshot(),
+      ingress: undefined,
+    });
+
+    // 新连接可能出现在契约产物热更新之后：顺手刷新一次，下一条连接拿到新指纹。
+    this.scheduleContractRefresh();
 
     const welcome: BridgeWelcomeMessage = {
       type: "welcome",
@@ -301,7 +366,7 @@ export class EditorBridgeServer implements vscode.Disposable {
       connectType: "editor",
       generation: this.generation,
       bootId: this.bootId,
-      contractHash: this.contractHash,
+      contractHash: selection.contractHash,
       payloads,
       debugEnabled: true,
       startedAt: this.startedAt,
@@ -424,6 +489,135 @@ export class EditorBridgeServer implements vscode.Disposable {
     connection.transport.sendControlJson({ type: "error", code, detail });
     // 先让已入队的错误帧写完，再断开发送方向。
     connection.transport.end();
+  }
+
+  /**
+   * 通道 1 的调试载荷：交给本连接绑定的接收门（槽位表与契约快照都按连接隔离）。
+   * 解码结果暂存日志——存储与路由由 F2 接在 `DebugIngress` 下游。
+   */
+  private acceptDebugFrame(connection: BridgeConnection, payloadKind: BridgePayloadKind, payload: Buffer): void {
+    const binding = this.debugBindings.get(connection);
+    if (binding === undefined) {
+      // 握手前收到的通道 1 帧：没有契约绑定，按无契约接收（不静默丢字节）。
+      this.debugBindings.set(connection, { snapshot: undefined, ingress: undefined });
+      this.acceptDebugFrame(connection, payloadKind, payload);
+      return;
+    }
+
+    binding.ingress ??= new DebugIngress({
+      ...(binding.snapshot === undefined ? {} : { contracts: binding.snapshot }),
+      log: (message) => this.output.appendLine(message),
+    });
+    binding.ingress.acceptFrame({ channel: BridgeChannel.Debug, payloadKind, payload });
+  }
+
+  private logDebugCounters(connection: BridgeConnection): void {
+    const binding = this.debugBindings.get(connection);
+    if (binding?.ingress === undefined) {
+      return;
+    }
+
+    const counters = binding.ingress.counters;
+    this.output.appendLine(
+      `[debug] connection summary frames=${counters.frames} controlFrames=${counters.controlFrames} envelopes=${counters.envelopes} wireBytes=${counters.wireBytes} unknownSlots=${counters.unknownSlots} unknownMethods=${counters.unknownMethods} unknownContractMethods=${counters.unknownContractMethods} oversize=${counters.oversizeFrames} malformed=${counters.malformedMessages}`,
+    );
+  }
+
+  /** 本窗口对外发布的指纹（状态与 welcome 兜底）；多工程取排序首个（A.3 只允许一个字符串）。 */
+  private publishedContractHash(): string {
+    return selectBridgeContractHash("", this.contracts.current.hashes).contractHash;
+  }
+
+  /** 只有一个契约工程时，即使客户端指纹不匹配也用它解码（比全通用视图更有用）。 */
+  private singleContractSnapshot(): DebugContractSnapshot | undefined {
+    const snapshots = this.contracts.current.snapshots.filter((snapshot) => !snapshot.empty);
+    return snapshots.length === 1 ? snapshots[0] : undefined;
+  }
+
+  /** 监听契约产物的出现/变化/删除（Unity 重新生成后无需重启窗口）。 */
+  private watchContracts(): void {
+    if (!this.autoLoadContracts) {
+      return;
+    }
+
+    const watcher = vscode.workspace.createFileSystemWatcher("**/debug-contracts.json");
+    this.disposables.push(
+      watcher,
+      watcher.onDidCreate(() => this.scheduleContractRefresh()),
+      watcher.onDidChange(() => this.scheduleContractRefresh()),
+      watcher.onDidDelete(() => this.scheduleContractRefresh()),
+    );
+  }
+
+  private scheduleContractRefresh(): void {
+    if (!this.autoLoadContracts) {
+      return;
+    }
+
+    if (this.contractRefreshTimer !== undefined) {
+      clearTimeout(this.contractRefreshTimer);
+    }
+
+    this.contractRefreshTimer = setTimeout(() => {
+      this.contractRefreshTimer = undefined;
+      void this.refreshContracts();
+    }, 100);
+  }
+
+  /** 重新按 Project 根定位契约；同一时刻只跑一次加载。 */
+  private refreshContracts(): Promise<void> {
+    if (!this.autoLoadContracts) {
+      return Promise.resolve();
+    }
+
+    if (this.contractRefreshing !== undefined) {
+      return this.contractRefreshing;
+    }
+
+    const projectRoots = this.projects.projects.map((project) => project.rootUri.fsPath);
+    const supplementalDirectories = this.contractDirectories();
+    this.contractRefreshing = (async () => {
+      try {
+        const set = await this.contracts.load({ projectRoots, supplementalDirectories });
+        for (const warning of set.warnings) {
+          this.output.appendLine(`[bridge] contract warning: ${warning.message}`);
+        }
+      } catch (errorValue) {
+        this.output.appendLine(`[bridge] contract load failed: ${String(errorValue)}`);
+      } finally {
+        this.contractRefreshing = undefined;
+      }
+    })();
+    return this.contractRefreshing;
+  }
+
+  /** `visualbridge.debug.contractDirectories`：工作区相对路径，多根工作区逐个解析后去重。 */
+  private contractDirectories(): readonly string[] {
+    const configured = vscode.workspace
+      .getConfiguration()
+      .get<readonly string[]>(DEBUG_CONTRACT_DIRECTORIES_SETTING, []);
+    if (!Array.isArray(configured) || configured.length === 0) {
+      return [];
+    }
+
+    const folders = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+    const resolved = new Set<string>();
+    for (const entry of configured) {
+      if (typeof entry !== "string" || entry.trim().length === 0) {
+        continue;
+      }
+
+      if (nodePath.isAbsolute(entry)) {
+        resolved.add(nodePath.normalize(entry));
+        continue;
+      }
+
+      for (const folder of folders) {
+        resolved.add(nodePath.resolve(folder, entry));
+      }
+    }
+
+    return [...resolved].sort();
   }
 
   private currentProjectRoots(): readonly string[] {
