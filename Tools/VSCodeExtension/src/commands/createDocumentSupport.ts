@@ -51,62 +51,6 @@ function lifecyclePlanDetail(plan: DocumentLifecyclePlan): string {
   ].join("\n");
 }
 
-export function validateCreateDocumentSelection(
-  selection: CreateDocumentSelection | undefined,
-  editorId: string,
-): CreateDocumentSelection | undefined {
-  return selection?.documentType.editor === editorId ? selection : undefined;
-}
-
-export async function selectProject(
-  projects: readonly ProjectContext[],
-  purpose: string,
-): Promise<ProjectContext | undefined> {
-  if (projects.length === 0) {
-    void vscode.window.showWarningMessage("No valid VisualBridge project is available.");
-    return undefined;
-  }
-  if (projects.length === 1) {
-    return projects[0];
-  }
-  const selected = await vscode.window.showQuickPick(
-    projects.map((project) => ({
-      label: project.definition.projectId,
-      description: project.rootUri.fsPath,
-      project,
-    })),
-    { title: "Select a VisualBridge project", placeHolder: `Project for the new ${purpose}` },
-  );
-  return selected?.project;
-}
-
-export async function selectDocumentType(
-  project: ProjectContext,
-  editorId: string,
-  displayName: string,
-): Promise<DocumentTypeDefinition | undefined> {
-  const candidates = project.definition.documentTypes.filter((documentType) => documentType.editor === editorId);
-  if (candidates.length === 0) {
-    void vscode.window.showWarningMessage(
-      `Project '${project.definition.projectId}' does not declare a ${displayName} document type.`,
-    );
-    return undefined;
-  }
-  if (candidates.length === 1) {
-    return candidates[0];
-  }
-  const selected = await vscode.window.showQuickPick(
-    candidates.map((documentType) => ({
-      label: documentType.id,
-      description: documentType.include.join(", "),
-      detail: documentType.catalogs.length === 0 ? "No Catalogs" : documentType.catalogs.join(", "),
-      documentType,
-    })),
-    { title: `Select ${displayName} Document Type`, placeHolder: "Project-defined subtype and file association" },
-  );
-  return selected?.documentType;
-}
-
 export function suggestDefaultTarget(
   project: ProjectContext,
   documentType: DocumentTypeDefinition,

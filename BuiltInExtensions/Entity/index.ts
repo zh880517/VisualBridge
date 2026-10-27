@@ -5,3 +5,6 @@ export * from "./src/entityLifecycle";
 export * from "./src/entityReferences";
 export * from "./src/entitySession";
 export * from "./src/moduleSessionContract";
+export * from "./src/entityCatalogFacet";
+export * from "./src/entityCreateFacet";
+export * from "./src/entityDocumentFacet";

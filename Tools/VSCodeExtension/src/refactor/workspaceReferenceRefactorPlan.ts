@@ -2,7 +2,6 @@ import {
   compareUtf16CodeUnits,
   documentIndexKey,
   referenceLocationKey,
-  referenceValuesEqual,
   type IndexedDocument,
   type ReferenceCandidate,
   type ReferenceDefinition,
@@ -155,64 +154,6 @@ export function firstWorkspaceBlocker(input: WorkspaceBlockerInput): RefactorBlo
   return collectWorkspaceBlockers(input)[0];
 }
 
-const SUPPORTED_RENAME_KINDS: ReadonlySet<string> = new Set([
-  "document",
-  "entity.component",
-  "graph.element",
-  "table.row",
-]);
-
-export function isSupportedRenameKind(kind: string): boolean {
-  return SUPPORTED_RENAME_KINDS.has(kind);
-}
-
-export function unsupportedRenameKindMessage(kind: string): string {
-  return `Reference Provider '${kind}' does not expose a rename adapter.`;
-}
-
-/** Only Table rows expose a stable-key editable target in the Table editor. */
-export function isTableRowTargetKind(kind: string): boolean {
-  return kind === "table.row";
-}
-
-export interface TableKeyRenameInput {
-  readonly keyColumnId: string | undefined;
-  /** Raw cell value; non string/number values fail the stale-key comparison, as before. */
-  readonly currentValue: unknown;
-  readonly oldValue: string | number;
-  readonly newValue: string | number;
-  readonly duplicateExists: boolean;
-}
-
-export type TableKeyRenameCheck =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly code: string; readonly message: string };
-
-/** Pure validation of a Table stable-key rename against the parsed target row. */
-export function checkTableKeyRename(input: TableKeyRenameInput): TableKeyRenameCheck {
-  if (input.keyColumnId === undefined) {
-    return {
-      ok: false,
-      code: "refactor.tableTargetUnavailable",
-      message: "The target Table row or key column no longer exists.",
-    };
-  }
-  if (!referenceValuesEqual(input.currentValue as string | number, input.oldValue)) {
-    return {
-      ok: false,
-      code: "refactor.tableKeyChanged",
-      message: "The target Table key changed after the refactor preview was created.",
-    };
-  }
-  if (input.duplicateExists) {
-    return {
-      ok: false,
-      code: "refactor.tableKeyDuplicate",
-      message: `Table key '${String(input.newValue)}' already exists in a physical row.`,
-    };
-  }
-  return { ok: true };
-}
 /** Failure returned when the refactor produces no physical source changes. */
 export function noChangeRenameFailure(): Pick<RefactorBlocker, "code" | "message"> {
   return {

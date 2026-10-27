@@ -4,3 +4,6 @@ export * from "./src/structuredDocumentAdapter";
 export * from "./src/structuredLifecycle";
 export * from "./src/structuredSession";
 export * from "./src/moduleSessionContract";
+export * from "./src/structuredCatalogFacet";
+export * from "./src/structuredCreateFacet";
+export * from "./src/structuredDocumentFacet";

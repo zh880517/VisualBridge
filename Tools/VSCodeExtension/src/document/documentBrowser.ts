@@ -12,6 +12,7 @@ import { createDocument } from "../commands/createDocument";
 import type { CreateDocumentSelection } from "../commands/createDocumentSupport";
 import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
 import type { HostModuleRegistry } from "../modules/hostModuleRegistry";
+import { documentFacetFor } from "../modules/documentFacetRegistry";
 import {
   REVEAL_REFERENCE_COMMAND,
   type WorkspaceReferenceService,
@@ -110,9 +111,11 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
         await this.open(node);
       }),
       vscode.commands.registerCommand("visualbridge.documentBrowser.create", async (node?: DocumentBrowserNode) => {
-        await createDocument(this.projects, this.lifecycle, this.creationSelection(node), (project, editor) => (
-          this.modules.editorAvailability(project, editor).kind === "available"
-        ));
+        const selection = this.creationSelection(node);
+        await createDocument(this.projects, this.lifecycle, {
+          ...(selection === undefined ? {} : { selection }),
+          isEditorAvailable: (project, editor) => this.modules.editorAvailability(project, editor).kind === "available",
+        });
       }),
       vscode.commands.registerCommand("visualbridge.documentBrowser.copy", async (node?: DocumentBrowserNode) => {
         await this.copyDocument(node);
@@ -209,8 +212,9 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
         .map((project) => ({ kind: "project", project }));
     }
     if (node.kind === "project") {
+      // 与语义索引/新建/引用同源：只有"有 facet"的 editor 才列举，避免浏览树与索引分叉。
       const types: DocumentTypeNode[] = node.project.definition.documentTypes
-        .filter((documentType) => ["graph", "entity", "structured", "table"].includes(documentType.editor))
+        .filter((documentType) => documentFacetFor(documentType.editor) !== undefined)
         .slice()
         .sort((left, right) => compareUtf16CodeUnits(`${left.editor}\u0000${left.id}`, `${right.editor}\u0000${right.id}`))
         .map((documentType) => ({ kind: "documentType", project: node.project, documentType }));
@@ -507,8 +511,8 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
       });
       if (target === undefined || target.toString() === current.toString()) return;
       const identities = await this.lifecycle.collectOwnedIdentities(node.document);
-      const stableIdRemap = node.document.editor === "table"
-        ? await promptTableRemap(identities)
+      const stableIdRemap = documentFacetFor(node.document.editor)?.facet.storage === "sources"
+        ? await promptExplicitRemap(identities)
         : identities.map((identity): StableIdentityRemap => ({
             identityKey: identity.identityKey,
             from: identity.value,
@@ -600,7 +604,7 @@ function lifecyclePlanDetail(plan: DocumentLifecyclePlan): string {
   ].join("\n");
 }
 
-async function promptTableRemap(
+async function promptExplicitRemap(
   identities: readonly { readonly identityKey: string; readonly kind: string; readonly value: string | number }[],
 ): Promise<readonly StableIdentityRemap[] | undefined> {
   const remap: StableIdentityRemap[] = [];
@@ -639,15 +643,7 @@ function diagnosticCounts(documents: readonly IndexedDocument[]): { readonly err
 }
 
 function editorTitle(editor: string): string {
-  return editor === "graph"
-    ? "Graph"
-    : editor === "entity"
-      ? "Entity"
-      : editor === "structured"
-        ? "Structured"
-        : editor === "table"
-          ? "Table"
-          : editor;
+  return editor.length === 0 ? editor : `${editor[0]!.toUpperCase()}${editor.slice(1)}`;
 }
 
 function editorIcon(editor: string): vscode.ThemeIcon {

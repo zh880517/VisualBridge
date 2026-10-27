@@ -8,18 +8,14 @@ import type {
 } from "@visualbridge/core";
 import {
   REFACTOR_BLOCKER_PRIORITY,
-  checkTableKeyRename,
   collectWorkspaceBlockers,
   findCrossProjectBlocker,
   firstWorkspaceBlocker,
   hasSourceChanges,
   isCrossProjectReferenceRefactor,
-  isSupportedRenameKind,
-  isTableRowTargetKind,
   noChangeRenameFailure,
   selectTargetCandidate,
   uniqueIndexedDocuments,
-  unsupportedRenameKindMessage,
 } from "../../src/refactor/workspaceReferenceRefactorPlan";
 
 const TARGET_LOCATION: ReferenceLocation = {
@@ -138,78 +134,6 @@ test("an allowed open Table target does not count as a workspace blocker", () =>
   assert.equal(blocker, undefined);
 });
 
-test("Table key rename accepts a fresh key and rejects invalid or conflicting keys", () => {
-  assert.deepEqual(checkTableKeyRename({
-    keyColumnId: "id",
-    currentValue: "hero",
-    oldValue: "hero",
-    newValue: "hero_v2",
-    duplicateExists: false,
-  }), { ok: true });
-
-  assert.deepEqual(checkTableKeyRename({
-    keyColumnId: undefined,
-    currentValue: "hero",
-    oldValue: "hero",
-    newValue: "hero_v2",
-    duplicateExists: false,
-  }), {
-    ok: false,
-    code: "refactor.tableTargetUnavailable",
-    message: "The target Table row or key column no longer exists.",
-  });
-
-  assert.deepEqual(checkTableKeyRename({
-    keyColumnId: "id",
-    currentValue: "hero",
-    oldValue: "renamed_elsewhere",
-    newValue: "hero_v2",
-    duplicateExists: false,
-  }), {
-    ok: false,
-    code: "refactor.tableKeyChanged",
-    message: "The target Table key changed after the refactor preview was created.",
-  });
-
-  // A non string/number cell fails the original referenceValuesEqual comparison,
-  // so it keeps the historical "key changed" result rather than "target unavailable".
-  assert.deepEqual(checkTableKeyRename({
-    keyColumnId: "id",
-    currentValue: true,
-    oldValue: "hero",
-    newValue: "hero_v2",
-    duplicateExists: false,
-  }), {
-    ok: false,
-    code: "refactor.tableKeyChanged",
-    message: "The target Table key changed after the refactor preview was created.",
-  });
-
-  assert.deepEqual(checkTableKeyRename({
-    keyColumnId: "id",
-    currentValue: undefined,
-    oldValue: "hero",
-    newValue: "hero_v2",
-    duplicateExists: false,
-  }), {
-    ok: false,
-    code: "refactor.tableKeyChanged",
-    message: "The target Table key changed after the refactor preview was created.",
-  });
-
-  assert.deepEqual(checkTableKeyRename({
-    keyColumnId: "id",
-    currentValue: "hero",
-    oldValue: "hero",
-    newValue: "villain",
-    duplicateExists: true,
-  }), {
-    ok: false,
-    code: "refactor.tableKeyDuplicate",
-    message: "Table key 'villain' already exists in a physical row.",
-  });
-});
-
 test("target resolution accepts exactly one candidate at the requested location", () => {
   const target = candidate(TARGET_LOCATION);
   const selected = selectTargetCandidate(
@@ -257,20 +181,6 @@ test("a no-op refactor fails with refactor.noChanges and produces no writes", ()
   assert.equal(hasSourceChanges(new Uint8Array([1, 2, 3]), new Uint8Array([1, 2, 3])), false);
   assert.equal(hasSourceChanges(new Uint8Array([1, 2, 3]), new Uint8Array([1, 2, 4])), true);
   assert.equal(hasSourceChanges(new Uint8Array([1, 2]), new Uint8Array([1, 2, 3])), true);
-});
-
-test("supported rename kinds and Table targets are classified explicitly", () => {
-  assert.equal(isSupportedRenameKind("document"), true);
-  assert.equal(isSupportedRenameKind("entity.component"), true);
-  assert.equal(isSupportedRenameKind("graph.element"), true);
-  assert.equal(isSupportedRenameKind("table.row"), true);
-  assert.equal(isSupportedRenameKind("custom.provider"), false);
-  assert.equal(
-    unsupportedRenameKindMessage("custom.provider"),
-    "Reference Provider 'custom.provider' does not expose a rename adapter.",
-  );
-  assert.equal(isTableRowTargetKind("table.row"), true);
-  assert.equal(isTableRowTargetKind("document"), false);
 });
 
 test("affected documents are deduplicated and sorted by document identity", () => {

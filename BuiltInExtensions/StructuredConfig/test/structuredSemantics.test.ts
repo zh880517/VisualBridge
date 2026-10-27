@@ -17,6 +17,7 @@ import {
   serializeStructuredCatalog,
   serializeStructuredDocument,
   structuredDocumentAdapter,
+  structuredDocumentFacet,
   structuredTextDocumentCodec,
   validateStructuredDocument,
   type StructuredCatalog,
@@ -167,6 +168,23 @@ test("Structured Operation batches are focused, canonical, atomic, and determini
   const roundTrip = parseStructuredCatalog(serializedCatalog);
   assert.equal(roundTrip.success, true);
   assert.equal(roundTrip.success && serializeStructuredCatalog(roundTrip.document), serializedCatalog);
+});
+
+test("Structured facet titles a document from its Catalog Config Type, not the file name", () => {
+  const { registry, document } = load();
+  const descriptor = structuredDocumentFacet.describe(document, {
+    projectId: "visualbridge.structured-semantics",
+    documentTypeId,
+    path: "Config/Game.gamesettings",
+    sourcePaths: ["Config/Game.gamesettings"],
+    registry,
+    projectDefinition: {},
+    moduleOptions: undefined,
+  });
+  // 文件名是 `Game`，Catalog 标题是 `Game Settings`：删掉"优先取 Config Type title"就变红。
+  assert.equal(descriptor.title, "Game Settings");
+  assert.notEqual(descriptor.title, "Game");
+  assert.equal(descriptor.documentId, document.documentId);
 });
 
 test("new Structured Documents materialize every Catalog default", () => {

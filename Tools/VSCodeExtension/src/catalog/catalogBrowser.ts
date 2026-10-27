@@ -6,28 +6,19 @@ import type {
   ProjectFileIssue,
 } from "@visualbridge/core";
 import { compareUtf16CodeUnits } from "@visualbridge/core";
-import type { EntityCatalog, EntityCatalogRegistry } from "@visualbridge/entity";
-import type { GraphCatalog, GraphCatalogRegistry } from "@visualbridge/graph";
-import {
-  resolveStructuredConfigType,
-  type StructuredCatalog,
-  type StructuredCatalogRegistry,
-} from "@visualbridge/structured";
-import { resolveTableType, type TableCatalog, type TableCatalogRegistry } from "@visualbridge/table";
 import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
 import type { HostModuleRegistry } from "../modules/hostModuleRegistry";
-import { catalogDiagnosticSourceIndex, type CatalogRegistryLoadResult } from "./catalogRegistryLoader";
-import { loadEntityCatalogRegistry } from "./entityCatalogLoader";
-import { loadGraphCatalogRegistry } from "./graphCatalogLoader";
-import { loadStructuredCatalogRegistry } from "./structuredCatalogLoader";
-import { loadTableCatalogRegistry } from "./tableCatalogLoader";
+import { catalogFacetFor, loadDocumentTypeCatalogRegistry } from "../modules/documentFacetRegistry";
+import {
+  catalogDiagnosticSourceIndex,
+  type CatalogDefinitionEntry,
+  type CatalogFacet,
+  type CatalogRegistryLoadResult,
+  type CatalogWithSource,
+} from "./catalogRegistryLoader";
 
-export interface CatalogDefinitionSnapshot {
-  readonly kind: string;
-  readonly id: string;
-  readonly title: string;
-  readonly aliases: readonly string[];
-}
+/** Catalog 视图里的一条定义；形状由模块 `catalog` facet 决定，宿主不自带领域列表。 */
+export type CatalogDefinitionSnapshot = CatalogDefinitionEntry;
 
 export interface CatalogSourceSnapshot {
   readonly path: string;
@@ -212,52 +203,22 @@ export class CatalogBrowserNode extends vscode.TreeItem {
   }
 }
 
+/**
+ * 按 Document Type 的 editor 找到模块 `catalog` facet，再让 facet 决定解析、定义与绑定校验。
+ *
+ * 没有 facet（模块未登记的领域）时返回 `undefined`，Catalog 视图直接跳过该 Document Type。
+ */
 async function loadSnapshot(
   project: ProjectContext,
   documentType: DocumentTypeDefinition,
 ): Promise<CatalogRegistrySnapshot | undefined> {
-  switch (documentType.editor) {
-    case "graph":
-      return graphSnapshot(project, documentType, await loadGraphCatalogRegistry(project, documentType.catalogs));
-    case "entity":
-      return entitySnapshot(project, documentType, await loadEntityCatalogRegistry(project, documentType.catalogs));
-    case "structured":
-      return loadStructuredSnapshot(project, documentType);
-    case "table":
-      return loadTableSnapshot(project, documentType);
-    default:
-      return undefined;
-  }
-}
-
-async function loadStructuredSnapshot(
-  project: ProjectContext,
-  documentType: DocumentTypeDefinition,
-): Promise<CatalogRegistrySnapshot> {
-  const result = await loadStructuredCatalogRegistry(project, documentType.catalogs);
-  const base = structuredSnapshot(project, documentType, result);
-  return result.ready && resolveStructuredConfigType(result.registry, documentType.id) === undefined
-    ? withBindingError(
-      base,
-      "projectCatalog.structuredTypeMissing",
-      `Structured Document Type '${documentType.id}' does not resolve to a Config Type ID or alias in its Catalog Registry.`,
-    )
-    : base;
-}
-
-async function loadTableSnapshot(
-  project: ProjectContext,
-  documentType: DocumentTypeDefinition,
-): Promise<CatalogRegistrySnapshot> {
-  const result = await loadTableCatalogRegistry(project, documentType.catalogs);
-  const base = tableSnapshot(project, documentType, result);
-  return result.ready && resolveTableType(result.registry, documentType.id) === undefined
-    ? withBindingError(
-      base,
-      "projectCatalog.tableTypeMissing",
-      `Table Document Type '${documentType.id}' does not resolve to a Table Type ID or alias in its Catalog Registry.`,
-    )
-    : base;
+  const facet = catalogFacetFor(documentType.editor);
+  const loading = loadDocumentTypeCatalogRegistry(project, documentType);
+  if (facet === undefined || loading === undefined) return undefined;
+  const result = await loading;
+  const base = snapshot(project, documentType, result, facet);
+  const issue = result.ready ? facet.bindingIssue?.(result.registry, documentType.id) : undefined;
+  return issue === undefined ? base : withBindingError(base, issue.code, issue.message);
 }
 
 function withBindingError(
@@ -277,86 +238,21 @@ function withBindingError(
   };
 }
 
-function graphSnapshot(
+function snapshot(
   project: ProjectContext,
   documentType: DocumentTypeDefinition,
-  result: CatalogRegistryLoadResult<GraphCatalog, GraphCatalogRegistry>,
-): CatalogRegistrySnapshot {
-  return snapshot(project, documentType, result,
-    (catalog) => [
-      ...catalog.dataTypes.map((entry) => definition("dataType", entry)),
-      ...catalog.graphTypes.map((entry) => definition("graphType", entry)),
-      ...catalog.nodeTypes.map((entry) => definition("nodeType", entry)),
-    ],
-    [
-      ...result.registry.dataTypes.map((entry) => definition("dataType", entry)),
-      ...result.registry.graphTypes.map((entry) => definition("graphType", entry)),
-      ...result.registry.nodeTypes.map((entry) => definition("nodeType", entry)),
-    ]);
-}
-
-function entitySnapshot(
-  project: ProjectContext,
-  documentType: DocumentTypeDefinition,
-  result: CatalogRegistryLoadResult<EntityCatalog, EntityCatalogRegistry>,
-): CatalogRegistrySnapshot {
-  return snapshot(project, documentType, result,
-    (catalog) => [
-      ...catalog.componentGroups.map((entry) => definition("componentGroup", entry)),
-      ...catalog.entityTypes.map((entry) => definition("entityType", entry)),
-      ...catalog.componentTypes.map((entry) => definition("componentType", entry)),
-    ],
-    [
-      ...result.registry.componentGroups.map((entry) => definition("componentGroup", entry)),
-      ...result.registry.entityTypes.map((entry) => definition("entityType", entry)),
-      ...result.registry.componentTypes.map((entry) => definition("componentType", entry)),
-    ]);
-}
-
-function structuredSnapshot(
-  project: ProjectContext,
-  documentType: DocumentTypeDefinition,
-  result: CatalogRegistryLoadResult<StructuredCatalog, StructuredCatalogRegistry>,
-): CatalogRegistrySnapshot {
-  return snapshot(
-    project,
-    documentType,
-    result,
-    (catalog) => catalog.configTypes.map((entry) => definition("configType", entry)),
-    result.registry.configTypes.map((entry) => definition("configType", entry)),
-  );
-}
-
-function tableSnapshot(
-  project: ProjectContext,
-  documentType: DocumentTypeDefinition,
-  result: CatalogRegistryLoadResult<TableCatalog, TableCatalogRegistry>,
-): CatalogRegistrySnapshot {
-  return snapshot(
-    project,
-    documentType,
-    result,
-    (catalog) => catalog.tableTypes.map((entry) => definition("tableType", entry)),
-    result.registry.tableTypes.map((entry) => definition("tableType", entry)),
-  );
-}
-
-function snapshot<TCatalog extends { readonly catalogId: string; readonly title: string; readonly source: CatalogSourceDefinition }, TRegistry>(
-  project: ProjectContext,
-  documentType: DocumentTypeDefinition,
-  result: CatalogRegistryLoadResult<TCatalog, TRegistry>,
-  definitions: (catalog: TCatalog) => readonly CatalogDefinitionSnapshot[],
-  registryDefinitions: readonly CatalogDefinitionSnapshot[],
+  result: CatalogRegistryLoadResult<CatalogWithSource, unknown>,
+  facet: CatalogFacet<CatalogWithSource, unknown>,
 ): CatalogRegistrySnapshot {
   return {
     projectId: project.definition.projectId,
     documentTypeId: documentType.id,
     editor: documentType.editor,
     ready: result.ready,
-    definitions: sortDefinitions(registryDefinitions),
+    definitions: sortDefinitions(facet.registryDefinitions(result.registry)),
     sources: result.sources.map((source) => ({
       path: source.path,
-      definitions: source.catalog === undefined ? [] : sortDefinitions(definitions(source.catalog)),
+      definitions: source.catalog === undefined ? [] : sortDefinitions(facet.definitions(source.catalog)),
       ...(source.catalog === undefined ? {} : {
         catalogId: source.catalog.catalogId,
         title: source.catalog.title,
@@ -454,13 +350,6 @@ function diagnosticsNode(diagnostics: readonly DocumentDiagnostic[]): CatalogBro
 
 function leaf(label: string, icon: string): CatalogBrowserNode {
   return new CatalogBrowserNode(label, vscode.TreeItemCollapsibleState.None, [], { icon });
-}
-
-function definition(
-  kind: string,
-  entry: { readonly id: string; readonly title: string; readonly aliases?: readonly string[] },
-): CatalogDefinitionSnapshot {
-  return { kind, id: entry.id, title: entry.title, aliases: [...entry.aliases ?? []].sort(compareUtf16CodeUnits) };
 }
 
 function sortDefinitions(definitions: readonly CatalogDefinitionSnapshot[]): readonly CatalogDefinitionSnapshot[] {

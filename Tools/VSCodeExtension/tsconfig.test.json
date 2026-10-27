@@ -14,8 +14,8 @@
   },
   "include": [
     "src/editor/webviewEpoch.ts",
-    "src/document/lifecycleOperationGuard.ts",
     "src/document/projectSemanticDependency.ts",
+    "src/reference/openDocumentOverrides.ts",
     "src/refactor/workspaceReferenceRefactorPlan.ts",
     "test/unit/**/*.ts"
   ]

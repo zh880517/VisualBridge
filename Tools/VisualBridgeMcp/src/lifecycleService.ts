@@ -15,6 +15,7 @@ import {
   type DocumentLifecycleApplyRequest,
   type DocumentLifecycleBlocker,
   type DocumentLifecycleDependency,
+  type DocumentLifecycleDeleteTarget,
   type DocumentLifecycleOperation,
   type DocumentLifecyclePlan,
   type DocumentLifecyclePreview,
@@ -519,7 +520,7 @@ export class DocumentLifecycleService {
     references: Awaited<ReturnType<VisualBridgeReferenceService["createProjectService"]>>,
   ) {
     const source = await this.loadSnapshot(project, operation.source, references);
-    const deletion = prepareDeleteClosure(source, operation.target);
+    const deletion = prepareDeleteClosure(source, narrowDeleteTarget(operation.target));
     const closureLocations = new Map(deletion.ownedIdentities.flatMap((identity) => (
       identity.reference?.location === undefined
         ? []
@@ -877,7 +878,7 @@ async function remapSnapshot(
 
 function prepareDeleteClosure(
   source: LifecycleSnapshot,
-  target: Extract<DocumentLifecycleOperation, { readonly kind: "delete" }>["target"],
+  target: DomainDeleteTarget | { readonly kind: "document" },
 ): DeletePreparation {
   if (target.kind === "document") {
     return {
@@ -1270,6 +1271,63 @@ function unsupportedEditor(editor: string): VisualBridgeMcpError {
 
 function incompatibleDeleteTarget(kind: string, editor: string): VisualBridgeMcpError {
   return new VisualBridgeMcpError("lifecycle.invalidDeleteTarget", `Delete target '${kind}' is incompatible with '${editor}'.`);
+}
+
+/** Core 的删除目标已按模块开放（`kind` + 任意字段），MCP 在这里按自身 Schema 收窄。 */
+type DomainDeleteTarget =
+  | { readonly kind: "entity.component"; readonly componentId: string }
+  | {
+      readonly kind: "graph.element";
+      readonly graphId: string;
+      readonly elementKind: "graph" | "node" | "interfacePort";
+      readonly elementId: string;
+    }
+  | {
+      readonly kind: "graph.element";
+      readonly graphId: string;
+      readonly elementKind: "dynamicPort";
+      readonly elementId: string;
+      readonly nodeId: string;
+    }
+  | { readonly kind: "table.row"; readonly sheetId: string; readonly rowId: string };
+
+function narrowDeleteTarget(
+  target: DocumentLifecycleDeleteTarget,
+): DomainDeleteTarget | { readonly kind: "document" } {
+  // Core 的删除目标是开放形状（`kind` + 任意字段）；具体形状由 MCP 的 zod Schema 先行校验，
+  // 这里是唯一的收窄点。
+  const payload = target as Readonly<Record<string, JsonValue>>;
+  if (payload.kind === "document") return { kind: "document" };
+  const readString = (key: string): string | undefined => {
+    const value = payload[key];
+    return typeof value === "string" && value.length > 0 ? value : undefined;
+  };
+  const kind = payload.kind;
+  if (kind === "entity.component") {
+    const componentId = readString("componentId");
+    if (componentId !== undefined) return { kind, componentId };
+  } else if (kind === "table.row") {
+    const sheetId = readString("sheetId");
+    const rowId = readString("rowId");
+    if (sheetId !== undefined && rowId !== undefined) return { kind, sheetId, rowId };
+  } else if (kind === "graph.element") {
+    const graphId = readString("graphId");
+    const elementId = readString("elementId");
+    const elementKind = readString("elementKind");
+    if (graphId !== undefined && elementId !== undefined) {
+      if (elementKind === "graph" || elementKind === "node" || elementKind === "interfacePort") {
+        return { kind, graphId, elementKind, elementId };
+      }
+      const nodeId = readString("nodeId");
+      if (elementKind === "dynamicPort" && nodeId !== undefined) {
+        return { kind, graphId, elementKind, elementId, nodeId };
+      }
+    }
+  }
+  throw new VisualBridgeMcpError(
+    "lifecycle.invalidDeleteTarget",
+    `Delete target '${payload.kind}' is missing required selector fields.`,
+  );
 }
 
 function missingDeleteTarget(id: string): VisualBridgeMcpError {

@@ -675,6 +675,156 @@ exports.run = async function run() {
     }
   });
 
+  await test("renames an Entity component through the reference facet and rewrites its occurrences", async () => {
+    const uri = vscode.Uri.file(path.join(
+      workspacePath,
+      "EntitySemanticProject",
+      "Config",
+      "Entities",
+      "Player.herojson",
+    ));
+    const before = await vscode.workspace.fs.readFile(uri);
+    try {
+      const result = await vscode.commands.executeCommand("visualbridge.test.renameReferenceTarget", {
+        projectId: "visualbridge.entity-semantics",
+        definition: {
+          kind: "entity.component",
+          target: { documentTypeId: "hero-config" },
+          allowMissing: false,
+        },
+        location: {
+          projectId: "visualbridge.entity-semantics",
+          documentTypeId: "hero-config",
+          path: "Config/Entities/Player.herojson",
+          documentId: "sample.player",
+          componentId: "health",
+          elementKind: "component",
+          elementId: "health",
+        },
+        oldValue: "health",
+        newValue: "health_primary",
+        confirm: false,
+      });
+      assert.equal(result.success, true, result.success ? "" : result.message);
+      const document = JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(uri)));
+      assert.deepEqual(document.components.map((component) => component.id), ["health_primary", "move"]);
+      // `properties.primaryComponentId` 是同文档内的引用 occurrence，必须一起改写。
+      assert.equal(document.properties.primaryComponentId, "health_primary");
+    } finally {
+      await vscode.workspace.fs.writeFile(uri, before);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("renames a Graph element through the reference facet and rewrites subgraph references", async () => {
+    const uri = vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "Graph", "SemanticSample.vbgraph"));
+    const before = await vscode.workspace.fs.readFile(uri);
+    try {
+      const result = await vscode.commands.executeCommand("visualbridge.test.renameReferenceTarget", {
+        projectId: "GraphSemanticProject",
+        definition: {
+          kind: "graph.element",
+          target: { documentTypeId: "logicGraph", elementKind: "graph" },
+          allowMissing: false,
+        },
+        location: {
+          projectId: "GraphSemanticProject",
+          documentTypeId: "logicGraph",
+          path: "Graph/SemanticSample.vbgraph",
+          documentId: "semantic-sample",
+          elementKind: "graph",
+          elementId: "child",
+          graphId: "child",
+        },
+        oldValue: "child",
+        newValue: "child_renamed",
+        confirm: false,
+      });
+      assert.equal(result.success, true, result.success ? "" : result.message);
+      const document = JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(uri)));
+      assert.equal(document.graphs.some((graph) => graph.id === "child_renamed"), true);
+      const root = document.graphs.find((graph) => graph.id === "root");
+      // 引用该子图的 Subgraph 节点必须同步改写。
+      assert.equal(root.nodes.find((node) => node.id === "subgraph_call").subgraphId, "child_renamed");
+    } finally {
+      await vscode.workspace.fs.writeFile(uri, before);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("renames a Structured document ID through the built-in document facet", async () => {
+    const uri = vscode.Uri.file(path.join(
+      workspacePath,
+      "StructuredSemanticProject",
+      "Config",
+      "Game.gamesettings",
+    ));
+    const before = await vscode.workspace.fs.readFile(uri);
+    try {
+      const result = await vscode.commands.executeCommand("visualbridge.test.renameReferenceTarget", {
+        projectId: "visualbridge.structured-semantics",
+        definition: {
+          kind: "document",
+          target: { documentTypeId: "sample.game.settings" },
+          allowMissing: false,
+        },
+        location: {
+          projectId: "visualbridge.structured-semantics",
+          documentTypeId: "sample.game.settings",
+          path: "Config/Game.gamesettings",
+          documentId: "sample.game.settings.default",
+        },
+        oldValue: "sample.game.settings.default",
+        newValue: "sample.game.settings.renamed",
+        confirm: false,
+      });
+      assert.equal(result.success, true, result.success ? "" : result.message);
+      const document = JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(uri)));
+      assert.equal(document.documentId, "sample.game.settings.renamed");
+    } finally {
+      await vscode.workspace.fs.writeFile(uri, before);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
+    }
+  });
+
+  await test("reports unknown reference kinds as a generic preflight error instead of crashing", async () => {
+    const result = await vscode.commands.executeCommand("visualbridge.test.renameReferenceTarget", {
+      projectId: "GraphSemanticProject",
+      definition: {
+        kind: "custom.provider",
+        target: { documentTypeId: "logicGraph" },
+        allowMissing: false,
+      },
+      location: {
+        projectId: "GraphSemanticProject",
+        documentTypeId: "logicGraph",
+        path: "Graph/SemanticSample.vbgraph",
+        documentId: "semantic-sample",
+        elementKind: "graph",
+        elementId: "child",
+        graphId: "child",
+      },
+      oldValue: "child",
+      newValue: "child_renamed",
+      confirm: false,
+    });
+    assert.equal(result.success, false);
+    assert.equal(result.code, "refactor.targetUnavailable");
+    assert.match(result.message, /custom\.provider/u);
+  });
+
+  await test("reports unknown lifecycle delete kinds as a readable blocker", async () => {
+    await assert.rejects(
+      vscode.commands.executeCommand("visualbridge.test.lifecycleDeleteElement", {
+        projectId: "GraphSemanticProject",
+        documentTypeId: "logicGraph",
+        path: "Graph/SemanticSample.vbgraph",
+        target: { kind: "custom.provider", elementId: "child" },
+      }),
+      (error) => /custom\.provider/u.test(String(error?.message ?? error)) && !/TypeError/u.test(String(error)),
+    );
+  });
+
   await test("safely deletes a Graph node and its connected edge through lifecycle", async () => {
     const uri = vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "Graph", "SemanticSample.vbgraph"));
     const before = await vscode.workspace.fs.readFile(uri);
@@ -1489,6 +1639,22 @@ exports.run = async function run() {
       return new Set(keys).size === keys.length;
     };
     try {
+      // open 阶段（未建面板、未 ready）必须已经去重：ready 之后 `state.diagnostics` 会覆盖
+      // open 阶段发布结果，只在 ready 之后断言无法证明 `updateDiagnostics` 的去重生效。
+      const openProbe = await vscode.commands.executeCommand(
+        "visualbridge.test.getTableOpenDiagnostics",
+        uri,
+      );
+      assert.ok(
+        openProbe.raw.length > openProbe.published.length,
+        "The open path must produce duplicate diagnostics that get deduped.",
+      );
+      const publishKeys = openProbe.published.map((diagnostic) => JSON.stringify(diagnostic));
+      assert.equal(
+        new Set(publishKeys).size,
+        publishKeys.length,
+        "Open-phase published diagnostics must be unique.",
+      );
       await vscode.commands.executeCommand("vscode.openWith", uri, "visualbridge.tableEditor");
       await waitForAsync(
         () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", uri),
@@ -1925,6 +2091,55 @@ exports.run = async function run() {
       );
     } finally {
       await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+    }
+  });
+
+  await test("rejects unparsable Operation payloads through the relaxed applyOperations contract", async () => {
+    const graphUri = vscode.Uri.file(path.join(
+      workspacePath,
+      "GraphSemanticProject",
+      "Graph",
+      "SemanticSample.vbgraph",
+    ));
+    const before = await vscode.workspace.fs.readFile(graphUri);
+    try {
+      await vscode.commands.executeCommand("vscode.openWith", graphUri, "visualbridge.documentEditor");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", graphUri),
+        (value) => value === true,
+        20_000,
+        "Graph editor did not become ready for the invalid operation test.",
+      );
+      const version = (await vscode.workspace.openTextDocument(graphUri)).version;
+      for (const operations of [[{ type: "graph.notAnOperation" }], ["not-an-operation-object"]]) {
+        await vscode.commands.executeCommand(
+          "visualbridge.test.applyDocumentOperations",
+          graphUri,
+          "graph",
+          operations,
+          version,
+        );
+        assert.equal(
+          Buffer.compare(Buffer.from(await vscode.workspace.fs.readFile(graphUri)), Buffer.from(before)),
+          0,
+          "An invalid Operation batch must not write.",
+        );
+        const rejection = String(await vscode.commands.executeCommand(
+          "visualbridge.test.getEditorLastRejection",
+          graphUri,
+        ));
+        // 拒绝文案必须可读并指向具体操作，而不是一个空泛的 TypeError。
+        assert.match(
+          rejection,
+          /operations\[0\]|Unknown operation|Expected an operation object/u,
+          `Unreadable rejection for an invalid Operation batch: ${rejection}`,
+        );
+        assert.equal(/TypeError|undefined is not/u.test(rejection), false);
+      }
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeAllGroups").catch(() => undefined);
+      await vscode.workspace.fs.writeFile(graphUri, before);
+      await vscode.commands.executeCommand("visualbridge.documentBrowser.refresh");
     }
   });
 
@@ -2760,6 +2975,19 @@ exports.run = async function run() {
         "A module state change did not rebuild the Document Index.",
       );
 
+      // 模块失效（dispose）后其 referenceData 必须离开语义快照：组件自引用不再出现在索引里。
+      const incomingAfterFailure = await vscode.commands.executeCommand(
+        "visualbridge.test.getDocumentBrowserIncomingReferences",
+      );
+      assert.equal(
+        incomingAfterFailure.some((entry) => (
+          entry.sourcePath === "Config/Entities/Player.herojson"
+          && entry.occurrencePath === "properties.primaryComponentId"
+        )),
+        false,
+        "A failed module still contributed referenceData to the semantic snapshot.",
+      );
+
       // Problems 里定位到 modules[0] 条目，而不是整个文件第 0 行。
       const diagnostics = vscode.languages.getDiagnostics(markerUri);
       const activation = diagnostics.find((entry) => entry.code === "module.activateFailed");
@@ -3013,7 +3241,7 @@ exports.run = async function run() {
     const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
     assert.ok(Array.isArray(fixture.cases) && fixture.cases.length >= 12);
     for (const testCase of fixture.cases) {
-      const result = await vscode.commands.executeCommand("visualbridge.test.parseGraphCatalog", testCase.value);
+      const result = await vscode.commands.executeCommand("visualbridge.test.parseCatalog", "graph", testCase.value);
       if (testCase.valid) {
         assert.equal(result.ok, true, `${testCase.label}: expected a valid parse.`);
       } else {

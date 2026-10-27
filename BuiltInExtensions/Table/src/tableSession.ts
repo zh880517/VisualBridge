@@ -165,8 +165,10 @@ export const tableSourcesStorage: ModuleSourcesStorage = {
     if (tableType === undefined || layout === undefined) {
       throw new Error("Table Catalog or layout is unavailable; cannot render Table sources.");
     }
+    // 只按 `changedColumnIds` 重编码：未命中列的 `rawCells` 原样写回，新增行（无
+    // `sourceRowNumber`）才整行编码。编辑期保存、引用改名与 Lifecycle 写回共用这一条规则，
+    // 否则 `"true"` / `"1.50"` / `"007"` 会被逐格规范化，把 diff 噪声放大到整族文件。
     const parsed = document as unknown as TableDocument;
-    const marked = markAllCellsChanged(parsed, tableType);
     if (parsed.format === "xlsx") {
       const active = previous[0];
       if (active === undefined) {
@@ -174,13 +176,13 @@ export const tableSourcesStorage: ModuleSourcesStorage = {
       }
       return [{
         path: active.path,
-        bytes: await serializeXlsxTable(active.bytes, marked, tableType, layout),
+        bytes: await serializeXlsxTable(active.bytes, parsed, tableType, layout),
       }];
     }
     const rendered: ModuleSourceFile[] = [];
     for (const file of previous) {
       const physicalName = basenameWithoutExtension(file.path);
-      const sourceSheets = marked.sheets.filter((sheet) => sheet.name === physicalName);
+      const sourceSheets = parsed.sheets.filter((sheet) => sheet.name === physicalName);
       const originalText = new TextDecoder("utf-8", { fatal: true }).decode(file.bytes);
       rendered.push({
         path: file.path,
@@ -419,20 +421,6 @@ function rejected(
     type: "operationRejected",
     message,
     ...(diagnostics === undefined ? {} : { diagnostics: diagnostics as unknown as JsonValue }),
-  };
-}
-
-function markAllCellsChanged(document: TableDocument, tableType: TableTypeDefinition): TableDocument {
-  return {
-    format: document.format,
-    sheets: document.sheets.map((sheet) => {
-      const definition = resolveTableSheet(tableType, sheet.definitionId);
-      const columnIds = definition?.columns.map((column) => column.id) ?? [];
-      return {
-        ...sheet,
-        rows: sheet.rows.map((row) => ({ ...row, changedColumnIds: columnIds })),
-      };
-    }),
   };
 }
 

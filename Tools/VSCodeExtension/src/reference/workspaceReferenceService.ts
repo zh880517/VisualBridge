@@ -1,75 +1,58 @@
-import * as nodePath from "node:path";
 import * as vscode from "vscode";
-import { minimatch } from "minimatch";
 import {
-  compareUtf16CodeUnits,
   createDocumentReferenceProvider,
   ReferenceService,
   type DocumentReferenceDocument,
   type DocumentDiagnostic,
+  type ProjectProviderDocumentSnapshot,
   type ReferenceCandidate,
   type ReferenceDefinition,
   type ReferenceOccurrence,
-  type ProjectProviderDocumentSnapshot,
+  type ReferenceProvider,
   type ReferenceResolution,
 } from "@visualbridge/core";
-import {
-  createEntityComponentReferenceProvider,
-  parseEntityDocument,
-  type EntityReferenceDocument,
-} from "@visualbridge/entity";
-import {
-  createGraphElementReferenceProvider,
-  parseGraphDocument,
-  type GraphReferenceDocument,
-} from "@visualbridge/graph";
-import { parseStructuredDocument } from "@visualbridge/structured";
-import {
-  createTableRowReferenceProvider,
-  parseCsvTable,
-  parseXlsxTable,
-  resolveProjectTableLayout,
-  resolveTableType,
-  type TableDocument,
-  type TableReferenceDocument,
-  type TableSheet,
-  type TableTypeDefinition,
-} from "@visualbridge/table";
-import { loadEntityCatalogRegistry } from "../catalog/entityCatalogLoader";
-import { loadTableCatalogRegistry } from "../catalog/tableCatalogLoader";
+import { documentFacetEntries } from "../modules/documentFacetRegistry";
 import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
 import type { WorkspaceProjectProviderService } from "../provider/workspaceProjectProviderService";
+import { loadProjectReferenceSnapshots } from "../document/workspaceSemanticSnapshotBuilder";
+import { projectSemanticSnapshotDependencyKey } from "../document/projectSemanticDependency";
+import { selectCurrentOverrides } from "./openDocumentOverrides";
 
 export const REVEAL_REFERENCE_COMMAND = "visualbridge.revealReference";
 
+/** 一个文档为某模块贡献的引用数据（宿主只做信封，不解释 `data`）。 */
+export interface WorkspaceReferenceDataEntry {
+  readonly documentTypeId: string;
+  readonly sourcePaths: readonly string[];
+  readonly data: unknown;
+}
+
+/** 每个 Project 的语义快照：内建 `document` 候选 + 按模块分组的引用数据。 */
 export interface WorkspaceProjectSemanticSnapshot {
   readonly dependencyKey: string;
   readonly documents: readonly DocumentReferenceDocument[];
-  readonly entities: readonly EntityReferenceDocument[];
-  readonly graphs: readonly GraphReferenceDocument[];
-  readonly tables: readonly TableReferenceDocument[];
+  readonly referenceData: Readonly<Record<string, readonly WorkspaceReferenceDataEntry[]>>;
 }
 
 interface ReferenceQuickPickItem extends vscode.QuickPickItem {
   readonly candidate: ReferenceCandidate;
 }
 
+interface OpenDocumentReferenceData {
+  readonly projectKey: string;
+  readonly moduleId: string;
+  readonly documentTypeId: string;
+  readonly sourcePaths: ReadonlySet<string>;
+  readonly data: unknown;
+  readonly sequence: number;
+}
+
 export class WorkspaceReferenceService implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
-  private readonly tableDocuments = new Map<string, Promise<readonly TableReferenceDocument[]>>();
-  private readonly semanticDocuments = new Map<string, Promise<{
-    readonly documents: readonly DocumentReferenceDocument[];
-    readonly entities: readonly EntityReferenceDocument[];
-    readonly graphs: readonly GraphReferenceDocument[];
-  }>>();
-  private readonly openTableDocuments = new Map<string, {
-    readonly projectKey: string;
-    readonly sourcePaths: ReadonlySet<string>;
-    readonly document: TableReferenceDocument;
-    readonly sequence: number;
-  }>();
+  private readonly fallbackSnapshots = new Map<string, Promise<WorkspaceProjectSemanticSnapshot>>();
+  private readonly openDocuments = new Map<string, OpenDocumentReferenceData>();
   private readonly snapshots = new Map<string, WorkspaceProjectSemanticSnapshot>();
-  private openTableSequence = 0;
+  private openDocumentSequence = 0;
 
   public constructor(
     projects: ProjectRegistry,
@@ -111,8 +94,8 @@ export class WorkspaceReferenceService implements vscode.Disposable {
   }
 
   private invalidateFallback(): void {
-    this.tableDocuments.clear();
-    this.semanticDocuments.clear();
+    this.openDocuments.clear();
+    this.fallbackSnapshots.clear();
   }
 
   public updateProjectSnapshot(
@@ -120,19 +103,26 @@ export class WorkspaceReferenceService implements vscode.Disposable {
     snapshot: WorkspaceProjectSemanticSnapshot,
   ): void {
     const key = project.markerUri.toString();
+    const referenceData: Record<string, readonly WorkspaceReferenceDataEntry[]> = {};
+    for (const [moduleId, entries] of Object.entries(snapshot.referenceData)) {
+      referenceData[moduleId] = Object.freeze(entries.map((entry) => Object.freeze({
+        documentTypeId: entry.documentTypeId,
+        sourcePaths: Object.freeze([...entry.sourcePaths]) as readonly string[],
+        data: entry.data,
+      })));
+    }
     this.snapshots.set(key, Object.freeze({
       dependencyKey: snapshot.dependencyKey,
       documents: Object.freeze([...snapshot.documents]),
-      entities: Object.freeze([...snapshot.entities]),
-      graphs: Object.freeze([...snapshot.graphs]),
-      tables: Object.freeze([...snapshot.tables]),
+      referenceData: Object.freeze(referenceData),
     }));
-    this.tableDocuments.delete(key);
-    this.semanticDocuments.delete(key);
+    this.fallbackSnapshots.delete(key);
   }
 
   public removeProjectSnapshot(project: ProjectContext): void {
-    this.snapshots.delete(project.markerUri.toString());
+    const key = project.markerUri.toString();
+    this.snapshots.delete(key);
+    this.fallbackSnapshots.delete(key);
   }
 
   public async validate(
@@ -248,44 +238,38 @@ export class WorkspaceReferenceService implements vscode.Disposable {
     await vscode.commands.executeCommand(REVEAL_REFERENCE_COMMAND, candidate.location);
   }
 
-  public updateTableDocument(
+  /**
+   * 已打开文档的实时引用数据（编辑中、尚未落盘时优先于快照）。
+   *
+   * `data` 的形状由模块自己决定：宿主只按 (moduleId, documentTypeId, sourcePaths) 覆盖快照条目。
+   */
+  public updateModuleDocument(
     ownerId: string,
     project: ProjectContext,
-    documentTypeId: string,
-    tableType: TableTypeDefinition,
-    document: TableDocument,
-    sources: readonly { readonly uri: vscode.Uri; readonly sheetIds: readonly string[] }[],
+    input: {
+      readonly moduleId: string;
+      readonly documentTypeId: string;
+      readonly sourcePaths: readonly string[];
+      readonly data: unknown;
+    },
   ): void {
-    const projectKey = project.markerUri.toString();
-    const sourcePaths = sources.map((source) => relativeProjectPath(project, source.uri)).sort(compareUtf16CodeUnits);
-    const sheetPaths: Record<string, string> = {};
-    sources.forEach((source) => {
-      const relativePath = relativeProjectPath(project, source.uri);
-      source.sheetIds.forEach((sheetId) => { sheetPaths[sheetId] = relativePath; });
-    });
-    this.openTableDocuments.set(ownerId, {
-      projectKey,
-      sourcePaths: new Set(sourcePaths),
-      document: referenceDocument(
-        project,
-        documentTypeId,
-        sourcePaths[0] ?? "",
-        document,
-        tableType,
-        sheetPaths,
-      ),
-      sequence: ++this.openTableSequence,
+    this.openDocuments.set(ownerId, {
+      projectKey: project.markerUri.toString(),
+      moduleId: input.moduleId,
+      documentTypeId: input.documentTypeId,
+      sourcePaths: new Set(input.sourcePaths),
+      data: input.data,
+      sequence: ++this.openDocumentSequence,
     });
   }
 
-  public removeTableDocument(ownerId: string): void {
-    this.openTableDocuments.delete(ownerId);
+  public removeModuleDocument(ownerId: string): void {
+    this.openDocuments.delete(ownerId);
   }
 
   public dispose(): void {
-    this.tableDocuments.clear();
-    this.semanticDocuments.clear();
-    this.openTableDocuments.clear();
+    this.openDocuments.clear();
+    this.fallbackSnapshots.clear();
     this.snapshots.clear();
     for (const disposable of this.disposables.splice(0)) {
       disposable.dispose();
@@ -297,336 +281,84 @@ export class WorkspaceReferenceService implements vscode.Disposable {
     snapshotOverride?: WorkspaceProjectSemanticSnapshot,
   ): Promise<ReferenceService> {
     const snapshot = snapshotOverride ?? this.snapshots.get(project.markerUri.toString());
-    return new ReferenceService([
-      createDocumentReferenceProvider(() => snapshot === undefined
-        ? this.loadSemanticDocuments(project).then((loaded) => loaded.documents)
-        : Promise.resolve(snapshot.documents)),
-      createEntityComponentReferenceProvider(() => snapshot === undefined
-        ? this.loadSemanticDocuments(project).then((loaded) => loaded.entities)
-        : Promise.resolve(snapshot.entities)),
-      createGraphElementReferenceProvider(() => snapshot === undefined
-        ? this.loadSemanticDocuments(project).then((loaded) => loaded.graphs)
-        : Promise.resolve(snapshot.graphs)),
-      createTableRowReferenceProvider(() => this.loadTableDocuments(project, snapshot?.tables)),
-      ...await this.providers?.referenceProviders(project) ?? [],
-    ], snapshot?.dependencyKey);
+    const loadSnapshot = () => this.loadSnapshot(project, snapshotOverride);
+    const providers: ReferenceProvider[] = [
+      createDocumentReferenceProvider(async () => (await loadSnapshot()).documents),
+    ];
+    for (const entry of documentFacetEntries()) {
+      for (const kind of entry.facet.references) {
+        providers.push(kind.createProvider(async () => (
+          this.withOpenDocuments(project, entry.moduleId, await loadSnapshot())
+        )));
+      }
+    }
+    providers.push(...await this.providers?.referenceProviders(project) ?? []);
+    return new ReferenceService(providers, snapshot?.dependencyKey);
   }
 
-  private loadSemanticDocuments(project: ProjectContext): Promise<{
-    readonly documents: readonly DocumentReferenceDocument[];
-    readonly entities: readonly EntityReferenceDocument[];
-    readonly graphs: readonly GraphReferenceDocument[];
-  }> {
+  private loadSnapshot(
+    project: ProjectContext,
+    override?: WorkspaceProjectSemanticSnapshot,
+  ): Promise<WorkspaceProjectSemanticSnapshot> {
+    if (override !== undefined) return Promise.resolve(override);
     const key = project.markerUri.toString();
-    const existing = this.semanticDocuments.get(key);
-    if (existing !== undefined) return existing;
-    const loading = loadProjectSemanticDocuments(project, this.output).catch((errorValue: unknown) => {
-      this.semanticDocuments.delete(key);
-      throw errorValue;
-    });
-    this.semanticDocuments.set(key, loading);
+    const existing = this.snapshots.get(key);
+    if (existing !== undefined) return Promise.resolve(existing);
+    const cached = this.fallbackSnapshots.get(key);
+    if (cached !== undefined) return cached;
+    const loading = loadProjectReferenceSnapshots([project], new AbortController().signal)
+      .then((snapshots) => snapshots.get(key))
+      .then((value) => value ?? {
+        dependencyKey: projectSemanticSnapshotDependencyKey(project.definition, []),
+        documents: [],
+        referenceData: {},
+      })
+      .catch((errorValue: unknown) => {
+        this.fallbackSnapshots.delete(key);
+        this.output.appendLine(`[reference] Semantic snapshot for '${project.definition.projectId}' is unavailable: ${formatError(errorValue)}`);
+        throw errorValue;
+      });
+    this.fallbackSnapshots.set(key, loading);
     return loading;
   }
 
-  private async loadTableDocuments(
+  private withOpenDocuments(
     project: ProjectContext,
-    snapshotDocuments?: readonly TableReferenceDocument[],
-  ): Promise<readonly TableReferenceDocument[]> {
-    const key = project.markerUri.toString();
-    let diskDocuments: readonly TableReferenceDocument[];
-    if (snapshotDocuments !== undefined) {
-      diskDocuments = snapshotDocuments;
-    } else {
-      const existing = this.tableDocuments.get(key);
-      let loading = existing;
-      if (loading === undefined) {
-        loading = loadProjectTableDocuments(project, this.output).catch((errorValue: unknown) => {
-          this.tableDocuments.delete(key);
-          throw errorValue;
-        });
-        this.tableDocuments.set(key, loading);
-      }
-      diskDocuments = await loading;
+    moduleId: string,
+    snapshot: WorkspaceProjectSemanticSnapshot,
+  ): readonly unknown[] {
+    const entries = snapshot.referenceData[moduleId] ?? [];
+    const projectKey = project.markerUri.toString();
+    const overrides = selectCurrentOverrides([...this.openDocuments.values()]
+      .filter((entry) => entry.projectKey === projectKey && entry.moduleId === moduleId));
+    if (overrides.length === 0) {
+      return entries.map((entry) => entry.data);
     }
-    const overrides = selectCurrentOverrides(
-      [...this.openTableDocuments.values()].filter((entry) => entry.projectKey === key),
-    );
-    const visibleDiskDocuments = diskDocuments.filter((document) => !overrides.some((entry) => (
-      entry.document.documentTypeId === document.documentTypeId
-      && documentSourcePaths(document).some((path) => entry.sourcePaths.has(path))
+    const visible = entries.filter((entry) => !overrides.some((override) => (
+      override.documentTypeId === entry.documentTypeId
+      && entry.sourcePaths.some((path) => override.sourcePaths.has(path))
     )));
-    return [...visibleDiskDocuments, ...overrides.map((entry) => entry.document)]
-      .sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
+    return [...visible.map((entry) => entry.data), ...overrides.map((entry) => entry.data)];
   }
-}
-
-async function loadProjectSemanticDocuments(
-  project: ProjectContext,
-  output: vscode.OutputChannel,
-): Promise<{
-  readonly documents: readonly DocumentReferenceDocument[];
-  readonly entities: readonly EntityReferenceDocument[];
-  readonly graphs: readonly GraphReferenceDocument[];
-}> {
-  const documents: DocumentReferenceDocument[] = [];
-  const entities: EntityReferenceDocument[] = [];
-  const graphs: GraphReferenceDocument[] = [];
-  const entityRegistries = new Map<string, ReturnType<typeof loadEntityCatalogRegistry>>();
-  for (const documentType of project.definition.documentTypes.filter((candidate) => (
-    candidate.editor === "graph" || candidate.editor === "entity" || candidate.editor === "structured"
-  ))) {
-    const uris = await findDocumentUris(project, documentType.id, documentType.include);
-    for (const uri of uris) {
-      const path = relativeProjectPath(project, uri);
-      try {
-        const text = await readText(uri);
-        if (documentType.editor === "graph") {
-          const parsed = parseGraphDocument(text);
-          if (!parsed.success) throw new Error(formatDiagnostics(parsed.diagnostics));
-          const title = parsed.document.graphs.find((graph) => graph.id === parsed.document.rootGraphId)?.title
-            ?? nodePath.basename(path, nodePath.extname(path));
-          documents.push({
-            projectId: project.definition.projectId,
-            documentTypeId: documentType.id,
-            editor: documentType.editor,
-            path,
-            documentId: parsed.document.documentId,
-            title,
-          });
-          graphs.push({
-            projectId: project.definition.projectId,
-            documentTypeId: documentType.id,
-            path,
-            document: parsed.document,
-          });
-        } else if (documentType.editor === "entity") {
-          const parsed = parseEntityDocument(text);
-          if (!parsed.success) throw new Error(formatDiagnostics(parsed.diagnostics));
-          documents.push({
-            projectId: project.definition.projectId,
-            documentTypeId: documentType.id,
-            editor: documentType.editor,
-            path,
-            documentId: parsed.document.documentId,
-            title: parsed.document.title,
-          });
-          let catalog = entityRegistries.get(documentType.id);
-          if (catalog === undefined) {
-            catalog = loadEntityCatalogRegistry(project, documentType.catalogs);
-            entityRegistries.set(documentType.id, catalog);
-          }
-          const loadedCatalog = await catalog;
-          if (loadedCatalog.ready) {
-            entities.push({
-              projectId: project.definition.projectId,
-              documentTypeId: documentType.id,
-              path,
-              document: parsed.document,
-              registry: loadedCatalog.registry,
-            });
-          } else {
-            output.appendLine(`[reference] Entity Catalog for '${documentType.id}' is unavailable; component references cannot be indexed.`);
-          }
-        } else {
-          const parsed = parseStructuredDocument(text);
-          if (!parsed.success) throw new Error(formatDiagnostics(parsed.diagnostics));
-          documents.push({
-            projectId: project.definition.projectId,
-            documentTypeId: documentType.id,
-            editor: documentType.editor,
-            path,
-            documentId: parsed.document.documentId,
-            title: nodePath.basename(path, nodePath.extname(path)),
-          });
-        }
-      } catch (errorValue) {
-        output.appendLine(`[reference] Skipped invalid ${documentType.editor} '${uri.fsPath}': ${formatError(errorValue)}`);
-      }
-    }
-  }
-  documents.sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
-  entities.sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
-  graphs.sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
-  return { documents, entities, graphs };
-}
-
-async function loadProjectTableDocuments(
-  project: ProjectContext,
-  output: vscode.OutputChannel,
-): Promise<readonly TableReferenceDocument[]> {
-  const layout = resolveProjectTableLayout(project.definition);
-  if (layout === undefined) {
-    return [];
-  }
-  const result: TableReferenceDocument[] = [];
-  for (const documentType of project.definition.documentTypes.filter((candidate) => candidate.editor === "table")) {
-    const catalog = await loadTableCatalogRegistry(project, documentType.catalogs);
-    const tableType = catalog.ready ? resolveTableType(catalog.registry, documentType.id) : undefined;
-    if (tableType === undefined) {
-      output.appendLine(`[reference] Table Catalog for '${documentType.id}' is unavailable; row references cannot be indexed.`);
-      continue;
-    }
-    const uris = await findDocumentUris(project, documentType.id, documentType.include);
-    const csvGroups = new Map<string, vscode.Uri[]>();
-    for (const uri of uris) {
-      const bytes = await vscode.workspace.fs.readFile(uri);
-      if (isXlsx(bytes)) {
-        const parsed = await parseXlsxTable(bytes, tableType, layout);
-        if (parsed.success) {
-          const relativePath = relativeProjectPath(project, uri);
-          result.push(referenceDocument(
-            project,
-            documentType.id,
-            relativePath,
-            parsed.document,
-            tableType,
-            Object.fromEntries(parsed.document.sheets.map((sheet) => [sheet.id, relativePath])),
-          ));
-        } else {
-          output.appendLine(`[reference] Skipped invalid Table '${uri.fsPath}': ${formatDiagnostics(parsed.diagnostics)}`);
-        }
-        continue;
-      }
-      const key = `${nodePath.dirname(uri.fsPath).toLowerCase()}\u0000${nodePath.extname(uri.fsPath).toLowerCase()}`;
-      const group = csvGroups.get(key) ?? [];
-      group.push(uri);
-      csvGroups.set(key, group);
-    }
-    for (const group of csvGroups.values()) {
-      const sheets: TableSheet[] = [];
-      const sheetPaths: Record<string, string> = {};
-      for (const uri of group.sort((left, right) => compareUtf16CodeUnits(left.path, right.path))) {
-        try {
-          const bytes = await vscode.workspace.fs.readFile(uri);
-          const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-          const physicalName = nodePath.basename(uri.fsPath, nodePath.extname(uri.fsPath));
-          const parsed = parseCsvTable(text, tableType, layout, physicalName);
-          if (!parsed.success) {
-            output.appendLine(`[reference] Skipped invalid Table '${uri.fsPath}': ${formatDiagnostics(parsed.diagnostics)}`);
-            continue;
-          }
-          const relativePath = relativeProjectPath(project, uri);
-          sheets.push(...parsed.document.sheets);
-          parsed.document.sheets.forEach((sheet) => { sheetPaths[sheet.id] = relativePath; });
-        } catch (errorValue) {
-          output.appendLine(`[reference] Skipped unreadable Table '${uri.fsPath}': ${formatError(errorValue)}`);
-        }
-      }
-      if (sheets.length > 0) {
-        const firstPath = sheetPaths[sheets[0]!.id]!;
-        result.push(referenceDocument(
-          project,
-          documentType.id,
-          firstPath,
-          { format: "csv", sheets },
-          tableType,
-          sheetPaths,
-        ));
-      }
-    }
-  }
-  return result.sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
-}
-
-async function findDocumentUris(
-  project: ProjectContext,
-  documentTypeId: string,
-  includes: readonly string[],
-): Promise<readonly vscode.Uri[]> {
-  const result = new Map<string, vscode.Uri>();
-  for (const include of includes) {
-    const uris = await vscode.workspace.findFiles(new vscode.RelativePattern(project.rootUri, include));
-    for (const uri of uris) {
-      const relativePath = relativeProjectPath(project, uri);
-      const documentType = project.definition.documentTypes.find((candidate) => candidate.id === documentTypeId);
-      if (documentType !== undefined
-        && documentType.include.some((pattern) => minimatchPath(pattern, relativePath))
-        && !documentType.exclude.some((pattern) => minimatchPath(pattern, relativePath))) {
-        result.set(uri.toString(), uri);
-      }
-    }
-  }
-  return [...result.values()].sort((left, right) => compareUtf16CodeUnits(left.path, right.path));
-}
-
-function referenceDocument(
-  project: ProjectContext,
-  documentTypeId: string,
-  path: string,
-  document: TableDocument,
-  tableType: TableTypeDefinition,
-  sheetPaths: Readonly<Record<string, string>>,
-): TableReferenceDocument {
-  return {
-    projectId: project.definition.projectId,
-    documentTypeId,
-    path,
-    document,
-    tableType,
-    sheetPaths,
-  };
-}
-
-function relativeProjectPath(project: ProjectContext, uri: vscode.Uri): string {
-  return nodePath.relative(project.rootUri.fsPath, uri.fsPath).replaceAll("\\", "/");
-}
-
-async function readText(uri: vscode.Uri): Promise<string> {
-  const open = vscode.workspace.textDocuments.find((document) => document.uri.toString() === uri.toString());
-  return open?.getText() ?? new TextDecoder("utf-8", { fatal: true }).decode(await vscode.workspace.fs.readFile(uri));
-}
-
-function documentSourcePaths(document: TableReferenceDocument): readonly string[] {
-  return [...new Set([document.path, ...Object.values(document.sheetPaths ?? {})])];
-}
-
-function selectCurrentOverrides<T extends {
-  readonly document: TableReferenceDocument;
-  readonly sourcePaths: ReadonlySet<string>;
-  readonly sequence: number;
-}>(entries: readonly T[]): readonly T[] {
-  const selected: T[] = [];
-  for (const entry of [...entries].sort((left, right) => right.sequence - left.sequence)) {
-    if (!selected.some((current) => (
-      current.document.documentTypeId === entry.document.documentTypeId
-      && [...entry.sourcePaths].some((path) => current.sourcePaths.has(path))
-    ))) {
-      selected.push(entry);
-    }
-  }
-  return selected;
-}
-
-function minimatchPath(pattern: string, relativePath: string): boolean {
-  return minimatch(relativePath, pattern, { dot: true, nocase: process.platform === "win32" });
-}
-
-function isXlsx(bytes: Uint8Array): boolean {
-  return bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
 }
 
 function sameReferenceValue(left: string | number, right: string | number): boolean {
   return typeof left === typeof right && left === right;
 }
 
-function formatDiagnostics(diagnostics: readonly { readonly path: string; readonly message: string }[]): string {
-  const first = diagnostics[0];
-  return first === undefined ? "Unknown Table error." : `${first.path}: ${first.message}`;
-}
-
-function formatError(errorValue: unknown): string {
-  return errorValue instanceof Error ? errorValue.message : String(errorValue);
+function diagnosticKey(diagnostic: DocumentDiagnostic): string {
+  return `${diagnostic.severity}\u0000${diagnostic.code}\u0000${diagnostic.path}\u0000${diagnostic.message}`;
 }
 
 function diagnosticCounts(diagnostics: readonly DocumentDiagnostic[]): Map<string, number> {
-  const result = new Map<string, number>();
-  diagnostics.filter((diagnostic) => diagnostic.severity === "error").forEach((diagnostic) => {
+  const counts = new Map<string, number>();
+  for (const diagnostic of diagnostics) {
     const key = diagnosticKey(diagnostic);
-    result.set(key, (result.get(key) ?? 0) + 1);
-  });
-  return result;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
 }
 
-function diagnosticKey(diagnostic: DocumentDiagnostic): string {
-  return `${diagnostic.code}\u0000${diagnostic.path}\u0000${diagnostic.message}`;
+function formatError(value: unknown): string {
+  return value instanceof Error ? value.message : String(value ?? "Unknown error.");
 }

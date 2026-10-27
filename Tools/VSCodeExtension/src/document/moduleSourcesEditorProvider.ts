@@ -193,6 +193,11 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
   private readonly lastRejections = new Map<string, string>();
   /** 每个文档最近一次 `operationCompleted`（宿主测试断言宿主盖章的 revision 用）。 */
   private readonly lastOperationCompleted = new Map<string, Readonly<Record<string, unknown>>>();
+  /** 每个文档最近一次发布的诊断"去重前/去重后"（宿主测试断言 open 阶段去重真的生效）。 */
+  private readonly lastPublishedDiagnostics = new Map<string, {
+    readonly raw: readonly DocumentDiagnostic[];
+    readonly published: readonly DocumentDiagnostic[];
+  }>();
   private revealSequence = 0;
   private operationQueue: Promise<void> = Promise.resolve();
   private referenceTargetRenamer: ((
@@ -543,6 +548,24 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
 
   public async saveCustomDocument(document: ModuleSourcesCustomDocument): Promise<void> {
     await this.saveToSources(document);
+  }
+
+  /**
+   * 宿主测试用：**不建面板**直接走一次 open 路径，返回 open 阶段诊断的去重前/去重后身份。
+   *
+   * 面板 ready 之后 `state.diagnostics` 会覆盖 open 阶段诊断，只在 ready 之后断言就无法证明
+   * `updateDiagnostics` 的去重真的生效；这里给出可观测的 open 阶段快照。
+   */
+  public async openDiagnosticsForTest(uri: vscode.Uri): Promise<{
+    readonly raw: readonly DocumentDiagnostic[];
+    readonly published: readonly DocumentDiagnostic[];
+  }> {
+    const document = await this.openCustomDocument(
+      uri,
+      {} as vscode.CustomDocumentOpenContext,
+    );
+    document.dispose();
+    return this.lastPublishedDiagnostics.get(uri.toString()) ?? { raw: [], published: [] };
   }
 
   public async applyOperationsForTest(uri: vscode.Uri, operations: unknown): Promise<void> {
@@ -1213,7 +1236,9 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
     document: ModuleSourcesCustomDocument,
     items: readonly DocumentDiagnostic[],
   ): void {
-    this.diagnostics.set(document.uri, dedupeDiagnostics(items).map((item) => {
+    const published = dedupeDiagnostics(items);
+    this.lastPublishedDiagnostics.set(document.uri.toString(), { raw: [...items], published: [...published] });
+    this.diagnostics.set(document.uri, published.map((item) => {
       const diagnostic = new vscode.Diagnostic(
         new vscode.Range(0, 0, 0, 1),
         `${item.path}: ${item.message}`,

@@ -5,7 +5,7 @@
     {
       "file": "Schema/visualbridge-authoring-contracts.schema.json",
       "id": "https://visualbridge.dev/schema/visualbridge-authoring-contracts.schema.json",
-      "sha256": "1e6a9056d13f50826c72a7d47e055089f345b7494ede4b46a0f8f6749e27aca7",
+      "sha256": "acc2cabb154cdad0ee7e0e529ad65e81ac6731b1af971147eb4c34cacf269518",
       "definitions": [
         "applyOperationsRequest",
         "documentOperation",

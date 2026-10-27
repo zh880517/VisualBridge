@@ -1,11 +1,43 @@
 import { createHash } from "node:crypto";
 import * as vscode from "vscode";
 import type {
-  CatalogAdapter,
   CatalogSourceDefinition,
   DocumentDiagnostic,
+  DocumentParseResult,
 } from "@visualbridge/core";
 import type { ProjectContext } from "../project/projectRegistry";
+
+/** 一个可浏览的 Catalog 定义（与领域无关：模块 `catalog` facet 产出）。 */
+export interface CatalogDefinitionEntry {
+  readonly kind: string;
+  readonly id: string;
+  readonly title: string;
+  readonly aliases: readonly string[];
+}
+
+/** Document Type → Catalog 绑定不可解析（Structured/Table 的 type id/alias 校验）。 */
+export interface CatalogBindingIssue {
+  readonly code: string;
+  readonly message: string;
+}
+
+/**
+ * 模块的 `catalog` facet（附录 D.3）：宿主只读这份结构，不知道任何领域类型。
+ *
+ * `definitions` / `registryDefinitions` / `bindingIssue` 让 Catalog 视图与工程校验也走 facet，
+ * 宿主因此没有按 editor 分支的 Catalog 列表。
+ */
+export interface CatalogFacet<TCatalog extends CatalogWithSource = CatalogWithSource, TRegistry = unknown> {
+  readonly editor: string;
+  /** 该 editor 的 Catalog 文件扩展名（含点）；C2 登记进 bundle manifest 后由模块平台消费。 */
+  readonly extensions: readonly string[];
+  parse(text: string): DocumentParseResult<TCatalog>;
+  build(catalogs: readonly TCatalog[]): DocumentParseResult<TRegistry>;
+  createRegistry(): TRegistry;
+  definitions(catalog: TCatalog): readonly CatalogDefinitionEntry[];
+  registryDefinitions(registry: TRegistry): readonly CatalogDefinitionEntry[];
+  bindingIssue?(registry: TRegistry, documentTypeId: string): CatalogBindingIssue | undefined;
+}
 
 export interface CatalogSourceInspection<TCatalog> {
   readonly path: string;
@@ -32,17 +64,16 @@ export interface CatalogWithSource {
 export async function loadCatalogRegistry<TCatalog extends CatalogWithSource, TRegistry>(
   project: ProjectContext,
   catalogPaths: readonly string[],
-  adapter: CatalogAdapter<TCatalog, TRegistry>,
-  createEmptyRegistry: () => TRegistry,
+  facet: CatalogFacet<TCatalog, TRegistry>,
 ): Promise<CatalogRegistryLoadResult<TCatalog, TRegistry>> {
   if (catalogPaths.length === 0) {
     return {
-      registry: createEmptyRegistry(),
+      registry: facet.createRegistry(),
       diagnostics: [{
         severity: "warning",
-        code: `${adapter.editor}.catalogsNotConfigured`,
+        code: `${facet.editor}.catalogsNotConfigured`,
         path: "catalogs",
-        message: `The ${titleCase(adapter.editor)} Document Type does not declare any Catalogs.`,
+        message: `The ${titleCase(facet.editor)} Document Type does not declare any Catalogs.`,
       }],
       sources: [],
       ready: false,
@@ -62,7 +93,7 @@ export async function loadCatalogRegistry<TCatalog extends CatalogWithSource, TR
         : undefined;
       const text = openDocument?.getText()
         ?? new TextDecoder("utf-8", { fatal: true }).decode(diskBytes);
-      const parsed = adapter.parse(text);
+      const parsed = facet.parse(text);
       const sourceDiagnostics = [...parsed.diagnostics];
       if (parsed.success && parsed.document.source.status === "stale") {
         sourceDiagnostics.push({
@@ -90,7 +121,7 @@ export async function loadCatalogRegistry<TCatalog extends CatalogWithSource, TR
     } catch (errorValue) {
       const diagnostic: DocumentDiagnostic = {
         severity: "error",
-        code: `${adapter.editor}.catalogUnavailable`,
+        code: `${facet.editor}.catalogUnavailable`,
         path: "$",
         message: `Unable to load '${catalogPath}': ${formatError(errorValue)}`,
       };
@@ -99,7 +130,7 @@ export async function loadCatalogRegistry<TCatalog extends CatalogWithSource, TR
     }
   }
 
-  const registryResult = adapter.build(catalogs);
+  const registryResult = facet.build(catalogs);
   diagnostics.push(...registryResult.diagnostics.map((diagnostic) => ({
     ...diagnostic,
     path: remapRegistryPath(diagnostic.path, sourceIndexes),
@@ -107,7 +138,7 @@ export async function loadCatalogRegistry<TCatalog extends CatalogWithSource, TR
   const ready = registryResult.success
     && !diagnostics.some((diagnostic) => diagnostic.severity === "error");
   return {
-    registry: ready ? registryResult.document : createEmptyRegistry(),
+    registry: ready ? registryResult.document : facet.createRegistry(),
     diagnostics,
     sources,
     ready,

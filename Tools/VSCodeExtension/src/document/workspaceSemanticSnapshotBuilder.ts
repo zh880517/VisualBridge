@@ -5,6 +5,9 @@ import {
   canonicalJsonStringify,
   compareUtf16CodeUnits,
   type DocumentDiagnostic,
+  type DocumentFacetContext,
+  type DocumentFacetIncomingReference,
+  type DocumentFacetSourceFile,
   type DocumentReferenceDocument,
   type DocumentTypeDefinition,
   type IndexedDocument,
@@ -13,49 +16,16 @@ import {
   type ReferenceOccurrence,
   type SemanticSnapshotSource,
 } from "@visualbridge/core";
-import {
-  collectEntityReferences,
-  parseEntityDocument,
-  validateEntityDocument,
-  type EntityReferenceDocument,
-} from "@visualbridge/entity";
-import {
-  collectGraphReferences,
-  parseGraphDocument,
-  validateGraphDocument,
-  type GraphReferenceDocument,
-} from "@visualbridge/graph";
-import {
-  collectStructuredReferences,
-  parseStructuredDocument,
-  resolveStructuredConfigType,
-  validateStructuredDocument,
-} from "@visualbridge/structured";
-import {
-  collectTableReferences,
-  matchTableSheetDefinitions,
-  parseCsvTable,
-  parseXlsxTable,
-  resolveProjectTableLayout,
-  resolveTableType,
-  validateTableDocument,
-  type TableDocument,
-  type TableLayoutDefinition,
-  type TableReferenceDocument,
-  type TableSheet,
-  type TableTypeDefinition,
-} from "@visualbridge/table";
 import { minimatch } from "minimatch";
-import { loadEntityCatalogRegistry } from "../catalog/entityCatalogLoader";
-import { loadGraphCatalogRegistry } from "../catalog/graphCatalogLoader";
-import { loadStructuredCatalogRegistry } from "../catalog/structuredCatalogLoader";
-import { loadTableCatalogRegistry } from "../catalog/tableCatalogLoader";
 import type { CatalogRegistryLoadResult } from "../catalog/catalogRegistryLoader";
+import {
+  documentFacetFor,
+  loadDocumentTypeCatalogRegistry,
+  type HostDocumentFacet,
+} from "../modules/documentFacetRegistry";
 import type { ProjectContext } from "../project/projectRegistry";
-import type { WorkspaceProjectSemanticSnapshot } from "../reference/workspaceReferenceService";
+import type { WorkspaceProjectSemanticSnapshot, WorkspaceReferenceDataEntry } from "../reference/workspaceReferenceService";
 import { projectSemanticSnapshotDependencyKey } from "./projectSemanticDependency";
-
-const SUPPORTED_EDITORS = new Set(["graph", "entity", "structured", "table"]);
 
 export interface PreparedWorkspaceDocument {
   readonly projectKey: string;
@@ -64,10 +34,12 @@ export interface PreparedWorkspaceDocument {
   readonly diagnostics: readonly DocumentDiagnostic[];
   readonly occurrences: readonly ReferenceOccurrence[];
   readonly providerSnapshot?: ProjectProviderDocumentSnapshot;
+  /** 模块 id → 该模块自己的不透明引用数据（`PreparedWorkspaceDocument` 不再有领域字段）。 */
+  readonly referenceData?: Readonly<Record<string, unknown>>;
+  /** 宿主内建的 `document` Reference kind 的候选数据。 */
   readonly referenceDocument?: DocumentReferenceDocument;
-  readonly entityReferenceDocument?: EntityReferenceDocument;
-  readonly graphReferenceDocument?: GraphReferenceDocument;
-  readonly tableReferenceDocument?: TableReferenceDocument;
+  /** 反向引用视图的定位信息（模块提供；缺失表示该 editor 没有这种导航）。 */
+  readonly incomingReference?: (occurrencePath: string) => DocumentFacetIncomingReference | undefined;
 }
 
 interface CapturedText {
@@ -82,6 +54,11 @@ interface CapturedBytes {
   readonly error?: unknown;
 }
 
+/**
+ * 遍历 Document Type：有 `catalog` + `document` facet 的 editor 才参与语义索引。
+ *
+ * 宿主不再持有领域列表；文档的解析、校验、引用收集与引用数据全部来自 facet。
+ */
 export async function planWorkspaceSemanticSources(
   projects: readonly ProjectContext[],
   signal: AbortSignal,
@@ -90,51 +67,49 @@ export async function planWorkspaceSemanticSources(
   const sources: SemanticSnapshotSource<PreparedWorkspaceDocument>[] = [];
   for (const project of projects) {
     throwIfAborted(signal);
-    for (const documentType of project.definition.documentTypes.filter((entry) => SUPPORTED_EDITORS.has(entry.editor))) {
+    for (const documentType of project.definition.documentTypes) {
       throwIfAborted(signal);
+      const host = documentFacetFor(documentType.editor);
+      if (host === undefined) continue;
       if (isEditorAvailable !== undefined && !isEditorAvailable(project, documentType)) continue;
       const uris = await findDocumentUris(project, documentType);
       throwIfAborted(signal);
-      if (documentType.editor === "graph") {
-        const catalog = await loadGraphCatalogRegistry(project, documentType.catalogs);
-        const catalogKey = catalogDependencyKey(project, documentType, catalog);
-        for (const uri of uris) {
-          const path = relativeProjectPath(project, uri);
-          const captured = await captureText(uri);
-          sources.push(source(project, documentType, path, [path], catalogKey, [captured.hash], async () => (
-            prepareGraph(project, documentType, path, captured, catalog, catalogKey)
-          )));
-        }
-      } else if (documentType.editor === "entity") {
-        const catalog = await loadEntityCatalogRegistry(project, documentType.catalogs);
-        const catalogKey = catalogDependencyKey(project, documentType, catalog);
-        for (const uri of uris) {
-          const path = relativeProjectPath(project, uri);
-          const captured = await captureText(uri);
-          sources.push(source(project, documentType, path, [path], catalogKey, [captured.hash], async () => (
-            prepareEntity(project, documentType, path, captured, catalog, catalogKey)
-          )));
-        }
-      } else if (documentType.editor === "structured") {
-        const catalog = await loadStructuredCatalogRegistry(project, documentType.catalogs);
-        const catalogKey = catalogDependencyKey(project, documentType, catalog);
-        for (const uri of uris) {
-          const path = relativeProjectPath(project, uri);
-          const captured = await captureText(uri);
-          sources.push(source(project, documentType, path, [path], catalogKey, [captured.hash], async () => (
-            prepareStructured(project, documentType, path, captured, catalog, catalogKey)
-          )));
-        }
-      } else {
-        const catalog = await loadTableCatalogRegistry(project, documentType.catalogs);
-        const catalogKey = catalogDependencyKey(project, documentType, catalog);
-        sources.push(...await planTableSources(project, documentType, uris, catalog, catalogKey, signal));
+      const catalog = await loadDocumentTypeCatalogRegistry(project, documentType);
+      if (catalog === undefined) continue;
+      const catalogKey = catalogDependencyKey(project, documentType, catalog);
+      if (host.facet.storage === "sources") {
+        sources.push(...await planSourceDocuments(project, documentType, host, uris, catalog, catalogKey, signal));
+        continue;
+      }
+      for (const uri of uris) {
+        const path = relativeProjectPath(project, uri);
+        const captured = await captureText(uri);
+        sources.push(source(
+          project,
+          documentType,
+          host,
+          path,
+          [path],
+          catalogKey,
+          [captured.hash],
+          async (loadSignal) => prepareTextDocument(
+            project,
+            documentType,
+            host,
+            path,
+            captured,
+            catalog,
+            catalogKey,
+            loadSignal,
+          ),
+        ));
       }
     }
   }
   return sources;
 }
 
+/** 把已 `load` 的结果聚合成每个 Project 的语义快照（模块 id → 引用数据）。 */
 export function buildReferenceSnapshots(
   projects: readonly ProjectContext[],
   prepared: readonly PreparedWorkspaceDocument[],
@@ -142,14 +117,26 @@ export function buildReferenceSnapshots(
   const result = new Map<string, WorkspaceProjectSemanticSnapshot>();
   for (const project of projects) {
     const projectKey = project.markerUri.toString();
-    const projectDocuments = prepared.filter((entry) => entry.projectKey === projectKey);
-    const sort = <T extends { readonly documentTypeId: string; readonly path: string }>(values: readonly T[]): readonly T[] => (
-      [...values].sort((left, right) => compareUtf16CodeUnits(
-        `${left.documentTypeId}\u0000${left.path}`,
-        `${right.documentTypeId}\u0000${right.path}`,
-      ))
-    );
-    result.set(project.markerUri.toString(), {
+    const projectDocuments = prepared
+      .filter((entry) => entry.projectKey === projectKey)
+      .sort((left, right) => compareUtf16CodeUnits(
+        `${left.document.documentTypeId}\u0000${left.document.path}`,
+        `${right.document.documentTypeId}\u0000${right.document.path}`,
+      ));
+    const referenceData = new Map<string, WorkspaceReferenceDataEntry[]>();
+    for (const entry of projectDocuments) {
+      for (const [moduleId, data] of Object.entries(entry.referenceData ?? {})) {
+        const referenceEntry: WorkspaceReferenceDataEntry = {
+          documentTypeId: entry.document.documentTypeId,
+          sourcePaths: entry.document.sourcePaths,
+          data,
+        };
+        const values = referenceData.get(moduleId);
+        if (values === undefined) referenceData.set(moduleId, [referenceEntry]);
+        else values.push(referenceEntry);
+      }
+    }
+    result.set(projectKey, {
       dependencyKey: projectSemanticSnapshotDependencyKey(
         project.definition,
         projectDocuments.map((entry) => ({
@@ -158,18 +145,32 @@ export function buildReferenceSnapshots(
           dependencyKey: entry.dependencyKey,
         })),
       ),
-      documents: sort(projectDocuments.flatMap((entry) => entry.referenceDocument === undefined ? [] : [entry.referenceDocument])),
-      entities: sort(projectDocuments.flatMap((entry) => entry.entityReferenceDocument === undefined ? [] : [entry.entityReferenceDocument])),
-      graphs: sort(projectDocuments.flatMap((entry) => entry.graphReferenceDocument === undefined ? [] : [entry.graphReferenceDocument])),
-      tables: sort(projectDocuments.flatMap((entry) => entry.tableReferenceDocument === undefined ? [] : [entry.tableReferenceDocument])),
+      documents: projectDocuments.flatMap((entry) => (
+        entry.referenceDocument === undefined ? [] : [entry.referenceDocument]
+      )),
+      referenceData: Object.fromEntries(referenceData),
     });
   }
   return result;
 }
 
+/** 没有 Document Index 快照时的按需装载（打开文档早于首次索引刷新时使用）。 */
+export async function loadProjectReferenceSnapshots(
+  projects: readonly ProjectContext[],
+  signal: AbortSignal,
+): Promise<ReadonlyMap<string, WorkspaceProjectSemanticSnapshot>> {
+  const prepared: PreparedWorkspaceDocument[] = [];
+  for (const planned of await planWorkspaceSemanticSources(projects, signal)) {
+    throwIfAborted(signal);
+    prepared.push(await planned.load(signal));
+  }
+  return buildReferenceSnapshots(projects, prepared);
+}
+
 function source(
   project: ProjectContext,
   documentType: DocumentTypeDefinition,
+  host: HostDocumentFacet,
   path: string,
   sourcePaths: readonly string[],
   catalogKey: string,
@@ -179,7 +180,7 @@ function source(
   const dependencyKey = hashText(canonicalJsonStringify({
     project: project.definition,
     documentType,
-    tableLayout: documentType.editor === "table" ? resolveProjectTableLayout(project.definition) : undefined,
+    moduleOptions: moduleOptions(project, host.moduleId) ?? null,
     catalogKey,
     sources: sourcePaths.map((sourcePath, index) => ({ path: sourcePath, hash: sourceHashes[index] })),
   }));
@@ -195,299 +196,192 @@ function source(
   };
 }
 
-async function prepareGraph(
+async function prepareTextDocument(
   project: ProjectContext,
   documentType: DocumentTypeDefinition,
+  host: HostDocumentFacet,
   path: string,
   captured: CapturedText,
-  catalog: Awaited<ReturnType<typeof loadGraphCatalogRegistry>>,
+  catalog: CatalogRegistryLoadResult<unknown, unknown>,
   dependencyKey: string,
+  signal: AbortSignal,
 ): Promise<PreparedWorkspaceDocument> {
   if (captured.text === undefined) return unreadable(project, documentType, path, captured.error, dependencyKey);
-  const parsed = parseGraphDocument(captured.text);
-  if (!parsed.success) return invalid(project, documentType, path, [...catalog.diagnostics, ...parsed.diagnostics], dependencyKey);
-  const root = parsed.document.graphs.find((graph) => graph.id === parsed.document.rootGraphId);
+  const context = facetContext(project, documentType, host, path, [path], catalog);
+  throwIfAborted(signal);
+  const parsed = await host.facet.parseText!(captured.text, context);
+  throwIfAborted(signal);
+  if (!parsed.success) {
+    return invalid(project, documentType, path, [...catalog.diagnostics, ...parsed.diagnostics], dependencyKey);
+  }
+  const description = host.facet.describe(parsed.document, context);
   return {
     projectKey: project.markerUri.toString(),
     dependencyKey,
-    document: baseDocument(project, documentType, path, [path], root?.title ?? fileTitle(path), parsed.document.documentId),
+    document: baseDocument(project, documentType, path, [path], description.title, description.documentId),
     diagnostics: [
       ...parsed.diagnostics,
       ...catalog.diagnostics,
-      ...(catalog.ready ? validateGraphDocument(parsed.document, catalog.registry) : []),
+      ...(catalog.ready ? host.facet.validate(parsed.document, context) : []),
     ],
-    occurrences: catalog.ready ? collectGraphReferences(parsed.document, catalog.registry) : [],
-    providerSnapshot: providerSnapshot(documentType.id, path, captured.hash, parsed.document as unknown as JsonValue),
-    referenceDocument: {
-      projectId: project.definition.projectId,
-      documentTypeId: documentType.id,
-      editor: documentType.editor,
-      path,
-      documentId: parsed.document.documentId,
-      title: root?.title ?? fileTitle(path),
-    },
-    graphReferenceDocument: {
-      projectId: project.definition.projectId,
-      documentTypeId: documentType.id,
-      path,
-      document: parsed.document,
-    },
-  };
-}
-
-async function prepareEntity(
-  project: ProjectContext,
-  documentType: DocumentTypeDefinition,
-  path: string,
-  captured: CapturedText,
-  catalog: Awaited<ReturnType<typeof loadEntityCatalogRegistry>>,
-  dependencyKey: string,
-): Promise<PreparedWorkspaceDocument> {
-  if (captured.text === undefined) return unreadable(project, documentType, path, captured.error, dependencyKey);
-  const parsed = parseEntityDocument(captured.text);
-  if (!parsed.success) return invalid(project, documentType, path, [...catalog.diagnostics, ...parsed.diagnostics], dependencyKey);
-  return {
-    projectKey: project.markerUri.toString(),
-    dependencyKey,
-    document: baseDocument(project, documentType, path, [path], parsed.document.title, parsed.document.documentId),
-    diagnostics: [
-      ...parsed.diagnostics,
-      ...catalog.diagnostics,
-      ...(catalog.ready ? validateEntityDocument(parsed.document, catalog.registry) : []),
-    ],
-    occurrences: catalog.ready ? collectEntityReferences(parsed.document, catalog.registry) : [],
-    providerSnapshot: providerSnapshot(documentType.id, path, captured.hash, parsed.document as unknown as JsonValue),
-    referenceDocument: {
-      projectId: project.definition.projectId,
-      documentTypeId: documentType.id,
-      editor: documentType.editor,
-      path,
-      documentId: parsed.document.documentId,
-      title: parsed.document.title,
-    },
-    ...(catalog.ready ? {
-      entityReferenceDocument: {
+    occurrences: catalog.ready ? host.facet.collectReferences(parsed.document, context) : [],
+    providerSnapshot: providerSnapshot(documentType.id, path, captured.hash, parsed.document as JsonValue),
+    ...(parsed.referenceData === undefined ? {} : { referenceData: { [host.moduleId]: parsed.referenceData } }),
+    ...(host.facet.incomingReference === undefined ? {} : {
+      incomingReference: (occurrencePath: string) => host.facet.incomingReference!(parsed.document, context, occurrencePath),
+    }),
+    ...(description.documentId === undefined ? {} : {
+      referenceDocument: {
         projectId: project.definition.projectId,
         documentTypeId: documentType.id,
+        editor: documentType.editor,
         path,
-        document: parsed.document,
-        registry: catalog.registry,
+        documentId: description.documentId,
+        title: description.title,
       },
-    } : {}),
+    }),
   };
 }
 
-async function prepareStructured(
+/**
+ * 多源文档：宿主只做与领域无关的目录/扩展名候选收集，家族选择与解析交给 `storage: "sources"` facet。
+ */
+async function planSourceDocuments(
   project: ProjectContext,
   documentType: DocumentTypeDefinition,
-  path: string,
-  captured: CapturedText,
-  catalog: Awaited<ReturnType<typeof loadStructuredCatalogRegistry>>,
-  dependencyKey: string,
-): Promise<PreparedWorkspaceDocument> {
-  if (captured.text === undefined) return unreadable(project, documentType, path, captured.error, dependencyKey);
-  const parsed = parseStructuredDocument(captured.text);
-  if (!parsed.success) return invalid(project, documentType, path, [...catalog.diagnostics, ...parsed.diagnostics], dependencyKey);
-  const configType = catalog.ready ? resolveStructuredConfigType(catalog.registry, documentType.id) : undefined;
-  const title = configType?.title ?? fileTitle(path);
-  return {
-    projectKey: project.markerUri.toString(),
-    dependencyKey,
-    document: baseDocument(project, documentType, path, [path], title, parsed.document.documentId),
-    diagnostics: [
-      ...parsed.diagnostics,
-      ...catalog.diagnostics,
-      ...(catalog.ready ? validateStructuredDocument(parsed.document, catalog.registry, documentType.id) : []),
-    ],
-    occurrences: catalog.ready ? collectStructuredReferences(parsed.document, catalog.registry, documentType.id) : [],
-    providerSnapshot: providerSnapshot(documentType.id, path, captured.hash, parsed.document as unknown as JsonValue),
-    referenceDocument: {
-      projectId: project.definition.projectId,
-      documentTypeId: documentType.id,
-      editor: documentType.editor,
-      path,
-      documentId: parsed.document.documentId,
-      title,
-    },
-  };
-}
-
-async function planTableSources(
-  project: ProjectContext,
-  documentType: DocumentTypeDefinition,
+  host: HostDocumentFacet,
   uris: readonly vscode.Uri[],
-  catalog: Awaited<ReturnType<typeof loadTableCatalogRegistry>>,
+  catalog: CatalogRegistryLoadResult<unknown, unknown>,
   catalogKey: string,
   signal: AbortSignal,
 ): Promise<readonly SemanticSnapshotSource<PreparedWorkspaceDocument>[]> {
-  const layout = resolveProjectTableLayout(project.definition);
-  const tableType = catalog.ready ? resolveTableType(catalog.registry, documentType.id) : undefined;
   const captures = new Map<string, CapturedBytes>();
+  const uriByPath = new Map<string, vscode.Uri>();
   for (const uri of uris) {
     throwIfAborted(signal);
-    captures.set(uri.toString(), await captureBytes(uri));
+    const path = relativeProjectPath(project, uri);
+    uriByPath.set(path, uri);
+    captures.set(path, await captureBytes(uri));
   }
-  if (layout === undefined || tableType === undefined) {
-    const diagnostics = tableUnavailableDiagnostics(documentType, catalog, layout === undefined, tableType === undefined);
-    return uris.map((uri) => {
-      const path = relativeProjectPath(project, uri);
-      const captured = captures.get(uri.toString())!;
-      return source(project, documentType, path, [path], catalogKey, [captured.hash], async () => (
-        captured.bytes === undefined
-          ? unreadable(project, documentType, path, captured.error, catalogKey)
-          : invalid(project, documentType, path, diagnostics, catalogKey)
-      ));
-    });
-  }
-  const result: SemanticSnapshotSource<PreparedWorkspaceDocument>[] = [];
-  const remaining = new Map(uris.map((uri) => [uri.toString(), uri]));
+  const planned: SemanticSnapshotSource<PreparedWorkspaceDocument>[] = [];
+  const remaining = new Map([...uriByPath.keys()].map((path) => [path, path]));
   while (remaining.size > 0) {
-    const active = [...remaining.values()].sort((left, right) => compareUtf16CodeUnits(left.path, right.path))[0]!;
-    const activeCapture = captures.get(active.toString())!;
-    if (activeCapture.bytes === undefined || isXlsx(activeCapture.bytes)) {
-      remaining.delete(active.toString());
-      const path = relativeProjectPath(project, active);
-      result.push(source(project, documentType, path, [path], catalogKey, [activeCapture.hash], async (loadSignal) => (
-        prepareXlsx(project, documentType, path, activeCapture, tableType, layout, catalog.diagnostics, catalogKey, loadSignal)
+    const activePath = [...remaining.keys()].sort(compareUtf16CodeUnits)[0]!;
+    const activeCapture = captures.get(activePath)!;
+    if (activeCapture.bytes === undefined) {
+      remaining.delete(activePath);
+      planned.push(source(project, documentType, host, activePath, [activePath], catalogKey, [activeCapture.hash], async () => (
+        unreadable(project, documentType, activePath, activeCapture.error, catalogKey)
       )));
       continue;
     }
-    const family = selectCsvFamily(active, [...remaining.values()], tableType);
-    family.forEach((uri) => remaining.delete(uri.toString()));
-    const sourcePaths = family.map((uri) => relativeProjectPath(project, uri)).sort(compareUtf16CodeUnits);
-    const familyCaptures = family.map((uri) => ({ uri, captured: captures.get(uri.toString())! }));
-    result.push(source(
+    const context = facetContext(project, documentType, host, activePath, [activePath], catalog);
+    const candidatePaths = [...remaining.values()].sort(compareUtf16CodeUnits);
+    const familyPaths = host.facet.planSources === undefined
+      ? [activePath]
+      : [...host.facet.planSources({ path: activePath, bytes: activeCapture.bytes }, candidatePaths, context)];
+    const family = (familyPaths.includes(activePath) ? familyPaths : [activePath, ...familyPaths])
+      .filter((path) => remaining.has(path))
+      .sort(compareUtf16CodeUnits);
+    const selected = family.length === 0 ? [activePath] : family;
+    selected.forEach((path) => remaining.delete(path));
+    const sourcePaths = [...selected].sort(compareUtf16CodeUnits);
+    const hashes = sourcePaths.map((path) => captures.get(path)!.hash);
+    planned.push(source(
       project,
       documentType,
-      sourcePaths[0] ?? "",
+      host,
+      sourcePaths[0]!,
       sourcePaths,
       catalogKey,
-      familyCaptures.map((entry) => entry.captured.hash),
-      async (loadSignal) => prepareCsv(
+      hashes,
+      async (loadSignal) => prepareSourceDocument(
         project,
         documentType,
-        familyCaptures,
-        tableType,
-        layout,
-        catalog.diagnostics,
+        host,
+        sourcePaths,
+        captures,
+        catalog,
         catalogKey,
         loadSignal,
       ),
     ));
   }
-  return result;
+  return planned;
 }
 
-async function prepareXlsx(
+async function prepareSourceDocument(
   project: ProjectContext,
   documentType: DocumentTypeDefinition,
-  path: string,
-  captured: CapturedBytes,
-  tableType: TableTypeDefinition,
-  layout: TableLayoutDefinition,
-  catalogDiagnostics: readonly DocumentDiagnostic[],
-  dependencyKey: string,
-  signal: AbortSignal,
-): Promise<PreparedWorkspaceDocument> {
-  if (captured.bytes === undefined) return unreadable(project, documentType, path, captured.error, dependencyKey);
-  const parsed = await parseXlsxTable(captured.bytes, tableType, layout);
-  throwIfAborted(signal);
-  if (!parsed.success) return invalid(project, documentType, path, [...catalogDiagnostics, ...parsed.diagnostics], dependencyKey);
-  return prepareTable(
-    project,
-    documentType,
-    path,
-    [path],
-    captured.hash,
-    parsed.document,
-    tableType,
-    [...catalogDiagnostics, ...parsed.diagnostics],
-    Object.fromEntries(parsed.document.sheets.map((sheet) => [sheet.id, path])),
-    dependencyKey,
-  );
-}
-
-async function prepareCsv(
-  project: ProjectContext,
-  documentType: DocumentTypeDefinition,
-  entries: readonly { readonly uri: vscode.Uri; readonly captured: CapturedBytes }[],
-  tableType: TableTypeDefinition,
-  layout: TableLayoutDefinition,
-  catalogDiagnostics: readonly DocumentDiagnostic[],
-  dependencyKey: string,
-  signal: AbortSignal,
-): Promise<PreparedWorkspaceDocument> {
-  const diagnostics: DocumentDiagnostic[] = [...catalogDiagnostics];
-  const sheets: TableSheet[] = [];
-  const sourcePaths: string[] = [];
-  const sheetPaths: Record<string, string> = {};
-  for (const { uri, captured } of entries) {
-    throwIfAborted(signal);
-    const path = relativeProjectPath(project, uri);
-    sourcePaths.push(path);
-    const physicalName = nodePath.basename(uri.fsPath, nodePath.extname(uri.fsPath));
-    if (captured.bytes === undefined) {
-      diagnostics.push({ severity: "error", code: "document.unreadable", path: physicalName, message: formatError(captured.error) });
-      continue;
-    }
-    try {
-      const text = new TextDecoder("utf-8", { fatal: true }).decode(captured.bytes);
-      const parsed = parseCsvTable(text, tableType, layout, physicalName);
-      if (!parsed.success) {
-        diagnostics.push(...parsed.diagnostics.map((diagnostic) => ({ ...diagnostic, path: `${physicalName}.${diagnostic.path}` })));
-      } else {
-        sheets.push(...parsed.document.sheets);
-        parsed.document.sheets.forEach((sheet) => { sheetPaths[sheet.id] = path; });
-        diagnostics.push(...parsed.diagnostics);
-      }
-    } catch (errorValue) {
-      diagnostics.push({ severity: "error", code: "document.unreadable", path: physicalName, message: formatError(errorValue) });
-    }
-  }
-  sourcePaths.sort(compareUtf16CodeUnits);
-  const document: TableDocument = { format: "csv", sheets };
-  return prepareTable(
-    project,
-    documentType,
-    sourcePaths[0] ?? "",
-    sourcePaths,
-    hashText(entries.map((entry) => `${relativeProjectPath(project, entry.uri)}\u0000${entry.captured.hash}`).sort(compareUtf16CodeUnits).join("\n")),
-    document,
-    tableType,
-    diagnostics,
-    sheetPaths,
-    dependencyKey,
-  );
-}
-
-function prepareTable(
-  project: ProjectContext,
-  documentType: DocumentTypeDefinition,
-  path: string,
+  host: HostDocumentFacet,
   sourcePaths: readonly string[],
-  sourceHash: string,
-  document: TableDocument,
-  tableType: TableTypeDefinition,
-  diagnostics: readonly DocumentDiagnostic[],
-  sheetPaths: Readonly<Record<string, string>>,
+  captures: ReadonlyMap<string, CapturedBytes>,
+  catalog: CatalogRegistryLoadResult<unknown, unknown>,
   dependencyKey: string,
-): PreparedWorkspaceDocument {
+  signal: AbortSignal,
+): Promise<PreparedWorkspaceDocument> {
+  const path = sourcePaths[0] ?? "";
+  const files: DocumentFacetSourceFile[] = [];
+  for (const sourcePath of sourcePaths) {
+    const captured = captures.get(sourcePath);
+    if (captured?.bytes === undefined) {
+      return unreadable(project, documentType, path, captured?.error ?? new Error(`'${sourcePath}' is unreadable.`), dependencyKey);
+    }
+    files.push({ path: sourcePath, bytes: captured.bytes });
+  }
+  const context = facetContext(project, documentType, host, path, sourcePaths, catalog);
+  throwIfAborted(signal);
+  const parsed = await host.facet.parseSources!(files, context);
+  throwIfAborted(signal);
+  if (!parsed.success) {
+    return invalid(project, documentType, path, [...catalog.diagnostics, ...parsed.diagnostics], dependencyKey);
+  }
+  const description = host.facet.describe(parsed.document, context);
   return {
     projectKey: project.markerUri.toString(),
     dependencyKey,
-    document: baseDocument(project, documentType, path, sourcePaths, tableType.title),
-    diagnostics: [...diagnostics, ...validateTableDocument(document, tableType)],
-    occurrences: collectTableReferences(document, tableType),
-    providerSnapshot: providerSnapshot(documentType.id, path, sourceHash, document as unknown as JsonValue),
-    tableReferenceDocument: {
-      projectId: project.definition.projectId,
-      documentTypeId: documentType.id,
-      path,
-      document,
-      tableType,
-      sheetPaths,
-    },
+    document: baseDocument(project, documentType, path, sourcePaths, description.title, description.documentId),
+    diagnostics: [
+      ...parsed.diagnostics,
+      ...catalog.diagnostics,
+    ],
+    occurrences: catalog.ready ? host.facet.collectReferences(parsed.document, context) : [],
+    providerSnapshot: providerSnapshot(documentType.id, path, combinedHash(sourcePaths, captures), parsed.document as JsonValue),
+    ...(parsed.referenceData === undefined ? {} : { referenceData: { [host.moduleId]: parsed.referenceData } }),
+    ...(description.documentId === undefined ? {} : {
+      referenceDocument: {
+        projectId: project.definition.projectId,
+        documentTypeId: documentType.id,
+        editor: documentType.editor,
+        path,
+        documentId: description.documentId,
+        title: description.title,
+      },
+    }),
   };
+}
+
+function facetContext(
+  project: ProjectContext,
+  documentType: DocumentTypeDefinition,
+  host: HostDocumentFacet,
+  path: string,
+  sourcePaths: readonly string[],
+  catalog: CatalogRegistryLoadResult<unknown, unknown>,
+): DocumentFacetContext<unknown> {
+  return {
+    projectId: project.definition.projectId,
+    documentTypeId: documentType.id,
+    path,
+    sourcePaths,
+    registry: catalog.ready ? catalog.registry : undefined,
+    projectDefinition: project.definition as unknown as JsonValue,
+    moduleOptions: moduleOptions(project, host.moduleId),
+  };
+}
+
+function moduleOptions(project: ProjectContext, moduleId: string): JsonValue | undefined {
+  return project.definition.modules.find((entry) => entry.id === moduleId)?.options;
 }
 
 function invalid(
@@ -535,7 +429,7 @@ function baseDocument(
     editor: documentType.editor,
     path,
     sourcePaths,
-    title,
+    title: title.length === 0 ? fileTitle(path) : title,
     ...(documentId === undefined ? {} : { documentId }),
   };
 }
@@ -549,10 +443,10 @@ function providerSnapshot(
   return { documentTypeId, path, sourceHash, content };
 }
 
-function catalogDependencyKey<TCatalog, TRegistry>(
+function catalogDependencyKey(
   project: ProjectContext,
   documentType: DocumentTypeDefinition,
-  catalog: CatalogRegistryLoadResult<TCatalog, TRegistry>,
+  catalog: CatalogRegistryLoadResult<unknown, unknown>,
 ): string {
   return hashText(canonicalJsonStringify({
     projectId: project.definition.projectId,
@@ -560,29 +454,6 @@ function catalogDependencyKey<TCatalog, TRegistry>(
     editor: documentType.editor,
     catalogs: catalog.sources.map((source) => ({ path: source.path, contentHash: source.contentHash ?? null })),
   }));
-}
-
-function tableUnavailableDiagnostics<TCatalog, TRegistry>(
-  documentType: DocumentTypeDefinition,
-  catalog: CatalogRegistryLoadResult<TCatalog, TRegistry>,
-  layoutMissing: boolean,
-  typeMissing: boolean,
-): readonly DocumentDiagnostic[] {
-  return [
-    ...catalog.diagnostics,
-    ...(layoutMissing ? [{
-      severity: "error" as const,
-      code: "table.layoutNotConfigured",
-      path: "tableLayout",
-      message: "The project does not configure tableLayout.",
-    }] : []),
-    ...(catalog.ready && typeMissing ? [{
-      severity: "error" as const,
-      code: "table.unknownTableType",
-      path: "documentType.id",
-      message: `Document Type '${documentType.id}' does not resolve to a Table Type.`,
-    }] : []),
-  ];
 }
 
 async function findDocumentUris(
@@ -601,24 +472,6 @@ async function findDocumentUris(
     }
   }
   return [...result.values()].sort((left, right) => compareUtf16CodeUnits(left.path, right.path));
-}
-
-function selectCsvFamily(
-  active: vscode.Uri,
-  candidates: readonly vscode.Uri[],
-  tableType: TableTypeDefinition,
-): readonly vscode.Uri[] {
-  if (!tableType.sheets.some((sheet) => sheet.partition !== undefined)) return [active];
-  const activeDirectory = nodePath.dirname(active.fsPath).toLowerCase();
-  const activeExtension = nodePath.extname(active.fsPath).toLowerCase();
-  const physicalName = nodePath.basename(active.fsPath, nodePath.extname(active.fsPath));
-  if (!matchTableSheetDefinitions(tableType, physicalName).some((sheet) => sheet.partition !== undefined)) return [active];
-  return candidates.filter((candidate) => {
-    if (nodePath.dirname(candidate.fsPath).toLowerCase() !== activeDirectory
-      || nodePath.extname(candidate.fsPath).toLowerCase() !== activeExtension) return false;
-    const name = nodePath.basename(candidate.fsPath, nodePath.extname(candidate.fsPath));
-    return matchTableSheetDefinitions(tableType, name).some((sheet) => sheet.partition !== undefined);
-  }).sort((left, right) => compareUtf16CodeUnits(left.path, right.path));
 }
 
 async function captureText(uri: vscode.Uri): Promise<CapturedText> {
@@ -641,16 +494,19 @@ async function captureBytes(uri: vscode.Uri): Promise<CapturedBytes> {
   }
 }
 
+function combinedHash(paths: readonly string[], captures: ReadonlyMap<string, CapturedBytes>): string {
+  return hashText(paths
+    .map((path) => `${path}\u0000${captures.get(path)?.hash ?? ""}`)
+    .sort(compareUtf16CodeUnits)
+    .join("\n"));
+}
+
 function relativeProjectPath(project: ProjectContext, uri: vscode.Uri): string {
   return nodePath.relative(project.rootUri.fsPath, uri.fsPath).replaceAll("\\", "/");
 }
 
 function matches(pattern: string, relativePath: string): boolean {
   return minimatch(relativePath, pattern, { dot: true, nocase: process.platform === "win32" });
-}
-
-function isXlsx(bytes: Uint8Array): boolean {
-  return bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
 }
 
 function fileTitle(path: string): string {
@@ -664,7 +520,6 @@ function hashText(value: string): string {
 function hashBytes(value: Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
-
 
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) throw new DOMException("Workspace semantic snapshot build was cancelled.", "AbortError");

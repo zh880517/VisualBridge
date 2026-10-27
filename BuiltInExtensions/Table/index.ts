@@ -11,3 +11,7 @@ export * from "./src/tableSession";
 export * from "./src/tableSourceFactory";
 export * from "./src/xlsxCodec";
 export * from "./src/moduleSessionContract";
+export * from "./src/tableCatalogFacet";
+export * from "./src/tableCreateFacet";
+export * from "./src/tableDocumentFacet";
+export * from "./src/tableKeyRename";

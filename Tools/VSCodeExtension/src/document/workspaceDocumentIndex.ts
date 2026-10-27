@@ -15,13 +15,12 @@ import type { ProjectRegistry } from "../project/projectRegistry";
 import type { HostModuleRegistry } from "../modules/hostModuleRegistry";
 import type { WorkspaceProjectProviderService } from "../provider/workspaceProjectProviderService";
 import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
+import { documentFacetFor } from "../modules/documentFacetRegistry";
 import {
   buildReferenceSnapshots,
   planWorkspaceSemanticSources,
   type PreparedWorkspaceDocument,
 } from "./workspaceSemanticSnapshotBuilder";
-
-const SUPPORTED_EDITORS = new Set(["graph", "entity", "structured", "table"]);
 
 export interface IncomingDocumentReference {
   readonly source: IndexedDocument;
@@ -128,7 +127,7 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
       }) ? [{
           source,
           reference,
-          ...graphReferenceNavigation(
+          ...incomingReferenceNavigation(
             preparedByDocument.get(indexedDocumentKey(source)),
             reference.occurrence.path,
           ),
@@ -313,7 +312,7 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
     this.disposeWatchers();
     const seen = new Set<string>();
     for (const project of this.projects.projects) {
-      for (const documentType of project.definition.documentTypes.filter((entry) => SUPPORTED_EDITORS.has(entry.editor))) {
+      for (const documentType of project.definition.documentTypes.filter((entry) => documentFacetFor(entry.editor) !== undefined)) {
         for (const pattern of [...documentType.include, ...documentType.catalogs]) {
           const key = `${project.rootUri.toString()}\u0000${pattern}`;
           if (seen.has(key)) continue;
@@ -375,52 +374,19 @@ export class WorkspaceDocumentIndex implements vscode.Disposable {
   }
 }
 
-function graphReferenceNavigation(
+function incomingReferenceNavigation(
   prepared: PreparedWorkspaceDocument | undefined,
   occurrencePath: string,
 ): { readonly navigation: IncomingGraphReferenceNavigation } | Record<string, never> {
-  const source = prepared?.graphReferenceDocument;
-  const graphMatch = /^graphs\[(\d+)\](?:\.(.*))?$/u.exec(occurrencePath);
-  if (source === undefined || graphMatch === null) return {};
-  const graph = source.document.graphs[Number.parseInt(graphMatch[1]!, 10)];
-  if (graph === undefined) return {};
-  const graphRemainder = graphMatch[2];
-  const nodeMatch = graphRemainder === undefined
-    ? null
-    : /^nodes\[(\d+)\](?:\.(.*))?$/u.exec(graphRemainder);
-  const node = nodeMatch === null
-    ? undefined
-    : graph.nodes[Number.parseInt(nodeMatch[1]!, 10)];
-  const fieldPath = (nodeMatch?.[2] ?? graphRemainder)?.replace(/^properties\./u, "");
-  const baseLocation = {
-    projectId: source.projectId,
-    documentTypeId: source.documentTypeId,
-    path: source.path,
-    documentId: source.document.documentId,
-    graphId: graph.id,
-  };
+  const resolved = prepared?.incomingReference?.(occurrencePath);
+  if (resolved === undefined) return {};
   return {
-    navigation: node === undefined
-      ? {
-          graphTitle: graph.title,
-          ...(fieldPath === undefined ? {} : { fieldPath }),
-          location: {
-            ...baseLocation,
-            elementKind: "graph",
-            elementId: graph.id,
-          },
-        }
-      : {
-          graphTitle: graph.title,
-          nodeTitle: node.title,
-          ...(fieldPath === undefined ? {} : { fieldPath }),
-          location: {
-            ...baseLocation,
-            elementKind: "node",
-            elementId: node.id,
-            nodeId: node.id,
-          },
-        },
+    navigation: {
+      graphTitle: resolved.title,
+      ...(resolved.nodeTitle === undefined ? {} : { nodeTitle: resolved.nodeTitle }),
+      ...(resolved.fieldPath === undefined ? {} : { fieldPath: resolved.fieldPath }),
+      location: resolved.location,
+    },
   };
 }
 

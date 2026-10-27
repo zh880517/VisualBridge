@@ -97,12 +97,13 @@ export interface ReferenceProvider {
   resolve(request: ReferenceResolveRequest): Promise<readonly ReferenceCandidate[]>;
 }
 
-export const BUILT_IN_REFERENCE_KINDS = [
-  "document",
-  "entity.component",
-  "graph.element",
-  "table.row",
-] as const;
+/**
+ * 宿主内建的 Reference kind。
+ *
+ * 只有 `document` 由宿主提供；`entity.component` / `graph.element` / `table.row` 由模块的
+ * `references` facet 登记（B3 起），宿主不再把领域 kind 写进契约。
+ */
+export const BUILT_IN_REFERENCE_KINDS = ["document"] as const;
 
 export type ReferenceSearchPage =
   | {

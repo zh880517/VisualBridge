@@ -5,3 +5,6 @@ export * from "./src/graphLifecycle";
 export * from "./src/graphReferences";
 export * from "./src/graphSession";
 export * from "./src/moduleSessionContract";
+export * from "./src/graphCatalogFacet";
+export * from "./src/graphCreateFacet";
+export * from "./src/graphDocumentFacet";

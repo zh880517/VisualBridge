@@ -54,6 +54,18 @@ export interface SemanticDocumentLifecycleAdapter<TDocument, TContext> {
     target: Exclude<DocumentLifecycleDeleteTarget, { readonly kind: "document" }>,
     context: TContext,
   ): DocumentOperationResult<TDocument>;
+  /**
+   * 把一个可寻址目标自身改名（Graph 元素 / Entity 组件 / Table 行键）。
+   *
+   * 引用的批量改写仍由宿主编排（`replaceReferenceValues`），本方法只改目标所在的文档。
+   */
+  renameOwnedTarget?(
+    document: TDocument,
+    target: Exclude<DocumentLifecycleDeleteTarget, { readonly kind: "document" }>,
+    previous: string | number,
+    replacement: string | number,
+    context: TContext,
+  ): DocumentOperationResult<TDocument>;
 }
 
 export interface DocumentCodec<TDocument, TSource, TContext> {

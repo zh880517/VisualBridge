@@ -80,29 +80,15 @@ export interface DocumentLifecycleMoveOperation {
   readonly target: DocumentLifecycleSelector;
 }
 
+/**
+ * 删除目标：`document` 由宿主处理，其余目标交给拥有该 `kind` 的模块校验并改写文档。
+ *
+ * 形状放宽后，宿主不再列举四个领域的 target 字段；非法载荷由模块的
+ * `semantic.deleteOwnedTarget` 报可读诊断（附录 D.3）。
+ */
 export type DocumentLifecycleDeleteTarget =
   | { readonly kind: "document" }
-  | { readonly kind: "entity.component"; readonly componentId: string }
-  | {
-      readonly kind: "graph.element";
-      readonly graphId: string;
-      readonly elementKind: "graph";
-      readonly elementId: string;
-    }
-  | {
-      readonly kind: "graph.element";
-      readonly graphId: string;
-      readonly elementKind: "node" | "interfacePort";
-      readonly elementId: string;
-    }
-  | {
-      readonly kind: "graph.element";
-      readonly graphId: string;
-      readonly elementKind: "dynamicPort";
-      readonly elementId: string;
-      readonly nodeId: string;
-    }
-  | { readonly kind: "table.row"; readonly sheetId: string; readonly rowId: string };
+  | { readonly kind: string; readonly [key: string]: JsonValue };
 
 export interface DocumentLifecycleDeleteOperation {
   readonly kind: "delete";

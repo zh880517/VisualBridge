@@ -1,6 +1,7 @@
 export * from "./Catalog/catalogSource";
 export * from "./Document/document";
 export * from "./Document/documentAdapter";
+export * from "./Document/documentFacet";
 export * from "./Document/documentIndex";
 export * from "./Document/incrementalSemanticSnapshot";
 export * from "./Document/documentLifecycle";

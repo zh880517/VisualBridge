@@ -9,6 +9,7 @@ import {
   applyTableOperations,
   buildTableRowSearchText,
   buildTableCatalogRegistry,
+  checkTableKeyRename,
   collectAddressableTableIdentityKeys,
   collectTableOwnedIdentities,
   formatTableRowDisplayName,
@@ -484,3 +485,74 @@ function addSkillSheet(workbook: ExcelJS.Workbook, name: string, row: readonly u
     fgColor: { argb: "FF224466" },
   };
 }
+
+test("Table key rename accepts a fresh key and rejects stale, unavailable, or duplicate keys", () => {
+  assert.deepEqual(checkTableKeyRename({
+    keyColumnId: "id",
+    currentValue: "hero",
+    oldValue: "hero",
+    newValue: "hero_v2",
+    duplicateExists: false,
+  }), { ok: true });
+
+  assert.deepEqual(checkTableKeyRename({
+    keyColumnId: undefined,
+    currentValue: "hero",
+    oldValue: "hero",
+    newValue: "hero_v2",
+    duplicateExists: false,
+  }), {
+    ok: false,
+    code: "table.keyUnavailable",
+    message: "The target Table row or key column no longer exists.",
+  });
+
+  assert.deepEqual(checkTableKeyRename({
+    keyColumnId: "id",
+    currentValue: "hero",
+    oldValue: "renamed_elsewhere",
+    newValue: "hero_v2",
+    duplicateExists: false,
+  }), {
+    ok: false,
+    code: "table.keyChanged",
+    message: "The target Table key changed after the refactor preview was created.",
+  });
+
+  // 非 string/number 单元格（以及缺失值）按"键已变化"处理，而不是"目标不存在"。
+  assert.deepEqual(checkTableKeyRename({
+    keyColumnId: "id",
+    currentValue: true,
+    oldValue: "hero",
+    newValue: "hero_v2",
+    duplicateExists: false,
+  }), {
+    ok: false,
+    code: "table.keyChanged",
+    message: "The target Table key changed after the refactor preview was created.",
+  });
+
+  assert.deepEqual(checkTableKeyRename({
+    keyColumnId: "id",
+    currentValue: undefined,
+    oldValue: "hero",
+    newValue: "hero_v2",
+    duplicateExists: false,
+  }), {
+    ok: false,
+    code: "table.keyChanged",
+    message: "The target Table key changed after the refactor preview was created.",
+  });
+
+  assert.deepEqual(checkTableKeyRename({
+    keyColumnId: "id",
+    currentValue: "hero",
+    oldValue: "hero",
+    newValue: "villain",
+    duplicateExists: true,
+  }), {
+    ok: false,
+    code: "table.keyDuplicate",
+    message: "Table key 'villain' already exists in a physical row.",
+  });
+});

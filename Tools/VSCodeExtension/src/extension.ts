@@ -4,18 +4,10 @@ import type {
   ProjectProviderDocumentSnapshot,
   ReferenceLocation,
 } from "@visualbridge/core";
-import { ENTITY_EDITOR_ID } from "@visualbridge/entity";
-import { TABLE_EDITOR_ID } from "@visualbridge/table";
-import { GRAPH_EDITOR_ID, parseGraphCatalog } from "@visualbridge/graph";
-import { STRUCTURED_EDITOR_ID } from "@visualbridge/structured";
 import { RuntimeBridgeService } from "./bridge/runtimeBridgeService";
 import { parseRuntimeBridgeDiscoveryRecord, parseRuntimeBridgeMessage, RuntimeBridgeProtocolError } from "./bridge/runtimeBridgeProtocol";
 import { CatalogBrowser } from "./catalog/catalogBrowser";
 import { createDocument } from "./commands/createDocument";
-import { createEntityDocument } from "./commands/createEntityDocument";
-import { createGraphDocument } from "./commands/createGraphDocument";
-import { createStructuredDocument } from "./commands/createStructuredDocument";
-import { createTableDocument } from "./commands/createTableDocument";
 import { DocumentBrowser } from "./document/documentBrowser";
 import { WorkspaceDocumentIndex } from "./document/workspaceDocumentIndex";
 import { WorkspaceDocumentLifecycle, WorkspaceLifecycleError } from "./document/workspaceDocumentLifecycle";
@@ -31,12 +23,13 @@ import {
 } from "./editor/documentEditorProvider";
 import { TABLE_EDITOR_VIEW_TYPE, TableEditorProvider } from "./editor/tableEditorProvider";
 import { TableEditorGate } from "./editor/tableEditorGate";
-import { ProjectRegistry } from "./project/projectRegistry";
+import { ProjectRegistry, type ProjectContext } from "./project/projectRegistry";
 import {
   PROJECT_SETTINGS_EDITOR_VIEW_TYPE,
   ProjectSettingsEditorProvider,
 } from "./project/projectSettingsEditorProvider";
 import { HostModuleRegistry } from "./modules/hostModuleRegistry";
+import { catalogFacetFor, documentFacetEntries, documentFacetFor } from "./modules/documentFacetRegistry";
 import { createInProcessModuleSource } from "./modules/inProcessModuleSource";
 import { WorkspaceProjectProviderService } from "./provider/workspaceProjectProviderService";
 import {
@@ -203,6 +196,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       reason ?? `没有工程声明编辑器 '${editor}'。`,
     );
     return false;
+  };
+
+  /** 模块未加载（未信任 / failed / disabled）时不得执行领域代码。 */
+  const isEditorAvailable = (project: ProjectContext, editor: string): boolean => (
+    modules.editorAvailability(project, editor).kind === "available"
+  );
+
+  /** 历史命令（每个领域一个）走同一条通用创建路径，只是预选 editor。 */
+  const createDocumentForModule = async (moduleId: string): Promise<void> => {
+    const editor = documentFacetEntries().find((entry) => entry.moduleId === moduleId)?.facet.editor;
+    if (editor === undefined || !await requireAvailableEditor(editor)) return;
+    await createDocument(projects, lifecycle, { editor, isEditorAvailable });
   };
 
   if (context.extensionMode !== vscode.ExtensionMode.Production) {
@@ -382,8 +387,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         (uri: vscode.Uri, operations: unknown) => tableEditorProvider.applyOperationsForTest(uri, operations),
       ),
       vscode.commands.registerCommand(
+        "visualbridge.test.getTableOpenDiagnostics",
+        (uri: vscode.Uri) => tableEditorProvider.openDiagnosticsForTest(uri),
+      ),
+      vscode.commands.registerCommand(
         "visualbridge.test.applyDocumentOperations",
-        (uri: vscode.Uri, editor: "entity" | "graph" | "structured", operations: unknown, revision?: number) => (
+        (uri: vscode.Uri, editor: string, operations: unknown, revision?: number) => (
           editorProvider.applyOperationsForTest(uri, editor, operations, revision)
         ),
       ),
@@ -431,7 +440,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       ),
       vscode.commands.registerCommand(
         "visualbridge.test.assertIdentityOperationsAllowed",
-        (uri: vscode.Uri, editor: "entity" | "graph", operations: unknown) => (
+        (uri: vscode.Uri, editor: string, operations: unknown) => (
           editorProvider.assertIdentityOperationsAllowedForTest(uri, editor, operations)
         ),
       ),
@@ -660,7 +669,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await vscode.commands.executeCommand(
         "vscode.openWith",
         uri,
-        match.documentType.editor === TABLE_EDITOR_ID ? TABLE_EDITOR_VIEW_TYPE : OPTIONAL_EDITOR_VIEW_TYPE,
+        viewTypeForEditor(match.documentType.editor),
       );
     }),
     vscode.commands.registerCommand("visualbridge.openProjectSettings", async (resource?: vscode.Uri) => {
@@ -679,27 +688,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("visualbridge.catalogBrowser.open", async (uri?: vscode.Uri) => {
       if (uri !== undefined) await vscode.window.showTextDocument(uri, { preview: true });
     }),
-    vscode.commands.registerCommand("visualbridge.createGraphDocument", async () => {
-      if (!await requireAvailableEditor(GRAPH_EDITOR_ID)) return;
-      await createGraphDocument(projects, lifecycle);
-    }),
-    vscode.commands.registerCommand("visualbridge.createEntityDocument", async () => {
-      if (!await requireAvailableEditor(ENTITY_EDITOR_ID)) return;
-      await createEntityDocument(projects, lifecycle);
-    }),
-    vscode.commands.registerCommand("visualbridge.createStructuredDocument", async () => {
-      if (!await requireAvailableEditor(STRUCTURED_EDITOR_ID)) return;
-      await createStructuredDocument(projects, lifecycle);
-    }),
-    vscode.commands.registerCommand("visualbridge.createTableDocument", async () => {
-      if (!await requireAvailableEditor(TABLE_EDITOR_ID)) return;
-      await createTableDocument(projects, lifecycle);
-    }),
+    vscode.commands.registerCommand("visualbridge.createGraphDocument", () => createDocumentForModule("visualbridge.graph")),
+    vscode.commands.registerCommand("visualbridge.createEntityDocument", () => createDocumentForModule("visualbridge.entity")),
+    vscode.commands.registerCommand("visualbridge.createStructuredDocument", () => createDocumentForModule("visualbridge.structured")),
+    vscode.commands.registerCommand("visualbridge.createTableDocument", () => createDocumentForModule("visualbridge.table")),
     vscode.commands.registerCommand("visualbridge.createDocument", async () => {
       // 候选 Document Type 只保留模块已加载的 editor。
-      await createDocument(projects, lifecycle, undefined, (project, editor) => (
-        modules.editorAvailability(project, editor).kind === "available"
-      ));
+      await createDocument(projects, lifecycle, { isEditorAvailable });
     }),
     vscode.commands.registerCommand("visualbridge.safeDeleteElement", async (request?: LifecycleElementDeleteRequest) => {
       if (request === undefined) {
@@ -756,7 +751,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         );
         if (tableProject === undefined) throw new Error(`VisualBridge Project '${location.projectId}' is not open.`);
         await modules.ensureProject(tableProject);
-        if (modules.editorAvailability(tableProject, TABLE_EDITOR_ID).kind !== "available") {
+        const tableEditor = tableProject.definition.documentTypes
+          .find((documentType) => documentType.id === location.documentTypeId)?.editor;
+        if (tableEditor === undefined || modules.editorAvailability(tableProject, tableEditor).kind !== "available") {
           const shellUri = vscode.Uri.joinPath(tableProject.rootUri, ...location.path.split("/"));
           // 表格一律走 TableEditorGate：模块不可用时它渲染只读 Shell（二进制 XLSX 也适用）。
           await vscode.commands.executeCommand("vscode.openWith", shellUri, TABLE_EDITOR_VIEW_TYPE);
@@ -783,7 +780,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await vscode.commands.executeCommand(
         "vscode.openWith",
         uri,
-        match.documentType.editor === TABLE_EDITOR_ID ? TABLE_EDITOR_VIEW_TYPE : OPTIONAL_EDITOR_VIEW_TYPE,
+        viewTypeForEditor(match.documentType.editor),
       );
     }),
     vscode.window.registerCustomEditorProvider(DEFAULT_EDITOR_VIEW_TYPE, editorProvider, {
@@ -914,8 +911,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           return { ok: false, code: "bridge.internalError", jsonPath: "$" };
         }
       }),
-      vscode.commands.registerCommand("visualbridge.test.parseGraphCatalog", (value: unknown) => {
-        const result = parseGraphCatalog(JSON.stringify(value));
+      vscode.commands.registerCommand("visualbridge.test.parseCatalog", (editor: unknown, value: unknown) => {
+        if (typeof editor !== "string") return { ok: false, code: "catalog.editorMissing" };
+        const facet = catalogFacetFor(editor);
+        if (facet === undefined) return { ok: false, code: "catalog.facetMissing" };
+        const result = facet.parse(JSON.stringify(value));
         return { ok: result.success === true };
       }),
       vscode.commands.registerCommand("visualbridge.test.getRuntimeBridgeState", () => runtimeBridge.state),
@@ -1111,6 +1111,13 @@ function isReferenceLocation(value: unknown): value is ReferenceLocation {
 
 function isTableReferenceLocation(value: unknown): boolean {
   return isReferenceLocation(value) && value.sheetId !== undefined && value.rowId !== undefined;
+}
+
+/** 多源（`storage: "sources"`）文档一律走 TableEditorGate，其余走通用编辑器。 */
+function viewTypeForEditor(editor: string): string {
+  return documentFacetFor(editor)?.facet.storage === "sources"
+    ? TABLE_EDITOR_VIEW_TYPE
+    : OPTIONAL_EDITOR_VIEW_TYPE;
 }
 
 function isGraphElementReferenceLocation(value: unknown): boolean {

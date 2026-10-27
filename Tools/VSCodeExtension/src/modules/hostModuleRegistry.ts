@@ -18,8 +18,10 @@
  *    观测不到它。归属：把领域代码移出宿主 = C1（Modules 工程）+ C2（ModuleLoader）+ B2/B3
  *    （模块驱动会话与语义编排）。
  * 2) 约束：模块 Catalog 能力来自模块（附录 D.3 catalog facet）。
- *    现状：Catalog 解析仍在宿主 bundle 里（catalogBrowser / 四个 loader /
- *    workspaceSemanticSnapshotBuilder），只是按 editor 可用性跳过。归属：C1/C2。
+ *    现状：四个领域包已就地导出 `catalog` facet，宿主 `modules/documentFacetRegistry.ts`
+ *    只做 editor → facet 映射，Catalog 解析/定义浏览/绑定校验都不再按 editor 分支；但解析仍在
+ *    宿主 bundle 内执行，只能按 editor 可用性跳过。归属：C1/C2（facet 由 bundle 登记后彻底
+ *    移出宿主）。
  * 3) 约束：`modules[].entry` 必须校验真实路径（D.1）。
  *    现状：B1 **完全不解析 entry**（只保存字符串），因此 `module.notFound` / `module.invalidPath`
  *    / `module.entryAlias` 永不触发。归属：C2。注意：Entity/Graph/Provider/Structured/Table

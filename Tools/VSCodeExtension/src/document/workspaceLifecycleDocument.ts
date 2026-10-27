@@ -1,61 +1,26 @@
-import * as nodePath from "node:path";
+import { randomUUID } from "node:crypto";
 import * as vscode from "vscode";
 import {
-  compareUtf16CodeUnits,
   type DocumentDiagnostic,
+  type DocumentFacet,
+  type DocumentFacetContext,
+  type DocumentFacetSourceFile,
   type DocumentLifecycleDeleteTarget,
   type DocumentOperationResult,
+  type DocumentTypeDefinition,
+  type IndexedDocument,
+  type JsonValue,
   type OwnedStableIdentity,
   type ReferenceOccurrence,
-  type SemanticDocumentAdapter,
-  type StableIdentityValue,
   type StableIdentityRemap,
+  type StableIdentityValue,
 } from "@visualbridge/core";
 import {
-  createEmptyEntityDocument,
-  entityDocumentAdapter,
-  entityTextDocumentCodec,
-  serializeEntityDocument,
-  type EntityDocument,
-  type EntityDocumentAdapterContext,
-} from "@visualbridge/entity";
-import {
-  createEmptyGraphDocument,
-  graphDocumentAdapter,
-  graphTextDocumentCodec,
-  serializeGraphDocument,
-  type GraphDocument,
-  type GraphDocumentAdapterContext,
-} from "@visualbridge/graph";
-import {
-  createEmptyStructuredDocument,
-  serializeStructuredDocument,
-  structuredDocumentAdapter,
-  structuredTextDocumentCodec,
-  type StructuredDocument,
-  type StructuredDocumentAdapterContext,
-} from "@visualbridge/structured";
-import {
-  createEmptyCsvTableSource,
-  createEmptyXlsxTableSource,
-  parseCsvTable,
-  parseXlsxTable,
-  resolveProjectTableLayout,
-  resolveTableType,
-  serializeCsvTable,
-  serializeXlsxTable,
-  tableDocumentAdapter,
-  type TableDocument,
-  type TableDocumentAdapterContext,
-  type TableLayoutDefinition,
-  type TableTypeDefinition,
-} from "@visualbridge/table";
-import { loadEntityCatalogRegistry } from "../catalog/entityCatalogLoader";
-import { loadGraphCatalogRegistry } from "../catalog/graphCatalogLoader";
-import { loadStructuredCatalogRegistry } from "../catalog/structuredCatalogLoader";
-import { loadTableCatalogRegistry } from "../catalog/tableCatalogLoader";
+  documentFacetFor,
+  loadDocumentTypeCatalogRegistry,
+  type HostDocumentFacet,
+} from "../modules/documentFacetRegistry";
 import type { ProjectContext } from "../project/projectRegistry";
-import type { IndexedDocument } from "@visualbridge/core";
 
 export interface LifecycleRenderedSource {
   readonly path: string;
@@ -94,272 +59,168 @@ export interface CreatedWorkspaceLifecycleDocument {
   readonly ownedIdentities: readonly OwnedStableIdentity[];
 }
 
+/**
+ * 新建文档：只把 parameters 交给模块的 `create` facet，字节与 ownedIdentities 都由模块产出。
+ *
+ * 宿主仍负责 Project / Document Type / Catalog 的解析与 preview/apply（`workspaceDocumentLifecycle`）。
+ */
 export async function createWorkspaceLifecycleDocument(
   project: ProjectContext,
-  documentType: { readonly id: string; readonly editor: string; readonly catalogs: readonly string[] },
+  documentType: DocumentTypeDefinition,
   targetPath: string,
-  parameters: Readonly<Record<string, unknown>>,
+  parameters: Readonly<Record<string, JsonValue>>,
 ): Promise<CreatedWorkspaceLifecycleDocument> {
-  if (documentType.editor === "graph") {
-    assertParameterKeys(parameters, ["documentId", "rootGraphId", "graphTypeId", "initialNodeIds"]);
-    const catalog = await loadGraphCatalogRegistry(project, documentType.catalogs);
-    if (!catalog.ready && documentType.catalogs.length > 0) throw diagnosticsError("Graph Catalog", catalog.diagnostics);
-    const ids = requiredIdentifierArray(parameters.initialNodeIds, "parameters.initialNodeIds");
-    let index = 0;
-    const document = createEmptyGraphDocument(
-      requiredIdentifier(parameters.documentId, "parameters.documentId"),
-      requiredIdentifier(parameters.rootGraphId, "parameters.rootGraphId"),
-      optionalIdentifier(parameters.graphTypeId, "parameters.graphTypeId"),
-      catalog.registry,
-      () => {
-        const id = ids[index];
-        if (id === undefined) throw new Error("Graph create requires an ID for every initial node.");
-        index += 1;
-        return id;
-      },
-    );
-    if (index !== ids.length) throw new Error("Graph create supplied unused initial node IDs.");
-    return {
-      sources: [{ path: targetPath, bytes: new TextEncoder().encode(serializeGraphDocument(document)) }],
-      ownedIdentities: graphDocumentAdapter.lifecycle!.collectOwnedIdentities(document, documentType.id, { registry: catalog.registry }),
-    };
+  const host = documentFacetFor(documentType.editor);
+  if (host === undefined || host.create === undefined) {
+    throw new Error(`Editor '${documentType.editor}' does not expose create lifecycle semantics.`);
   }
-  if (documentType.editor === "entity") {
-    assertParameterKeys(parameters, ["documentId", "entityTypeId", "title"]);
-    const catalog = await loadEntityCatalogRegistry(project, documentType.catalogs);
-    if (!catalog.ready) throw diagnosticsError("Entity Catalog", catalog.diagnostics);
-    const document = createEmptyEntityDocument(
-      requiredIdentifier(parameters.documentId, "parameters.documentId"),
-      requiredIdentifier(parameters.entityTypeId, "parameters.entityTypeId"),
-      catalog.registry,
-      optionalString(parameters.title, "parameters.title") ?? "New Entity",
-    );
-    return {
-      sources: [{ path: targetPath, bytes: new TextEncoder().encode(serializeEntityDocument(document)) }],
-      ownedIdentities: entityDocumentAdapter.lifecycle!.collectOwnedIdentities(document, documentType.id, { registry: catalog.registry }),
-    };
-  }
-  if (documentType.editor === "structured") {
-    assertParameterKeys(parameters, ["documentId"]);
-    const catalog = await loadStructuredCatalogRegistry(project, documentType.catalogs);
-    if (!catalog.ready) throw diagnosticsError("Structured Catalog", catalog.diagnostics);
-    const document = createEmptyStructuredDocument(
-      requiredIdentifier(parameters.documentId, "parameters.documentId"),
-      documentType.id,
-      catalog.registry,
-    );
-    return {
-      sources: [{ path: targetPath, bytes: new TextEncoder().encode(serializeStructuredDocument(document)) }],
-      ownedIdentities: structuredDocumentAdapter.lifecycle!.collectOwnedIdentities(document, documentType.id, {
-        registry: catalog.registry,
-        configTypeId: documentType.id,
-      }),
-    };
-  }
-  if (documentType.editor === "table") {
-    assertParameterKeys(parameters, ["format", "physicalName"]);
-    const layout = resolveProjectTableLayout(project.definition);
-    if (layout === undefined) throw new Error("The Project does not configure tableLayout.");
-    const catalog = await loadTableCatalogRegistry(project, documentType.catalogs);
-    if (!catalog.ready) throw diagnosticsError("Table Catalog", catalog.diagnostics);
-    const tableType = resolveTableType(catalog.registry, documentType.id);
-    if (tableType === undefined) throw new Error(`Document Type '${documentType.id}' does not resolve to a Table Type.`);
-    const format = parameters.format;
-    if (format !== "csv" && format !== "xlsx") throw new Error("parameters.format must be 'csv' or 'xlsx'.");
-    if (format === "xlsx" && parameters.physicalName !== undefined) {
-      throw new Error("parameters.physicalName is only valid when parameters.format is 'csv'.");
-    }
-    const physicalName = optionalString(parameters.physicalName, "parameters.physicalName")
-      ?? nodePath.posix.basename(targetPath, nodePath.posix.extname(targetPath));
-    const created = format === "xlsx"
-      ? await createEmptyXlsxTableSource(tableType, layout)
-      : createEmptyCsvTableSource(tableType, layout, physicalName);
-    if (!created.success) throw diagnosticsError("Table", created.diagnostics);
-    return { sources: [{ path: targetPath, bytes: created.bytes }], ownedIdentities: [] };
-  }
-  throw new Error(`Editor '${documentType.editor}' does not expose create lifecycle semantics.`);
+  const catalog = await loadDocumentTypeCatalogRegistry(project, documentType);
+  const created = await host.create.createDocument({
+    ...facetInput(project, documentType, catalog),
+    parameters,
+    targetPath,
+  });
+  if (!created.success) throw new Error(created.message);
+  return { sources: created.sources, ownedIdentities: created.ownedIdentities };
 }
 
+/** 读取现有文档并交给模块 facet 解析；渲染同样回到 facet，宿主不再有按 editor 的分支。 */
 export async function loadWorkspaceLifecycleDocument(
   project: ProjectContext,
   indexed: IndexedDocument,
 ): Promise<WorkspaceLifecycleDocument> {
+  const host = documentFacetFor(indexed.editor);
+  if (host === undefined) {
+    throw new Error(`Editor '${indexed.editor}' does not expose a built-in lifecycle adapter.`);
+  }
   const documentType = project.definition.documentTypes.find((candidate) => candidate.id === indexed.documentTypeId);
   if (documentType === undefined) throw new Error(`Unknown Document Type '${indexed.documentTypeId}'.`);
-  if (indexed.editor === "graph") {
-    const catalog = await loadGraphCatalogRegistry(project, documentType.catalogs);
-    if (!catalog.ready && documentType.catalogs.length > 0) throw diagnosticsError("Graph Catalog", catalog.diagnostics);
-    return loadTextDocument(
-      project,
-      indexed,
-      graphDocumentAdapter,
-      graphTextDocumentCodec.parse.bind(graphTextDocumentCodec),
-      graphTextDocumentCodec.render.bind(graphTextDocumentCodec),
-      { registry: catalog.registry } satisfies GraphDocumentAdapterContext,
-    );
-  }
-  if (indexed.editor === "entity") {
-    const catalog = await loadEntityCatalogRegistry(project, documentType.catalogs);
-    if (!catalog.ready) throw diagnosticsError("Entity Catalog", catalog.diagnostics);
-    return loadTextDocument(
-      project,
-      indexed,
-      entityDocumentAdapter,
-      entityTextDocumentCodec.parse.bind(entityTextDocumentCodec),
-      entityTextDocumentCodec.render.bind(entityTextDocumentCodec),
-      { registry: catalog.registry } satisfies EntityDocumentAdapterContext,
-    );
-  }
-  if (indexed.editor === "structured") {
-    const catalog = await loadStructuredCatalogRegistry(project, documentType.catalogs);
-    if (!catalog.ready) throw diagnosticsError("Structured Catalog", catalog.diagnostics);
-    return loadTextDocument(
-      project,
-      indexed,
-      structuredDocumentAdapter,
-      structuredTextDocumentCodec.parse.bind(structuredTextDocumentCodec),
-      structuredTextDocumentCodec.render.bind(structuredTextDocumentCodec),
-      { registry: catalog.registry, configTypeId: documentType.id } satisfies StructuredDocumentAdapterContext,
-    );
-  }
-  if (indexed.editor === "table") {
-    const layout = resolveProjectTableLayout(project.definition);
-    if (layout === undefined) throw new Error("The Project does not configure tableLayout.");
-    const catalog = await loadTableCatalogRegistry(project, documentType.catalogs);
-    if (!catalog.ready) throw diagnosticsError("Table Catalog", catalog.diagnostics);
-    const tableType = resolveTableType(catalog.registry, documentType.id);
-    if (tableType === undefined) throw new Error(`Document Type '${documentType.id}' does not resolve to a Table Type.`);
-    return loadTableDocument(project, indexed, tableType, layout);
-  }
-  throw new Error(`Editor '${indexed.editor}' does not expose a built-in lifecycle adapter.`);
-}
-
-async function loadTextDocument<TDocument extends GraphDocument | EntityDocument | StructuredDocument, TContext>(
-  project: ProjectContext,
-  indexed: IndexedDocument,
-  adapter: SemanticDocumentAdapter<TDocument, TContext>,
-  parse: (text: string, context: TContext) => DocumentOperationResult<TDocument> | Promise<DocumentOperationResult<TDocument>>,
-  render: (document: TDocument, source: string, context: TContext) => string | Promise<string>,
-  context: TContext,
-): Promise<WorkspaceLifecycleDocument> {
-  const path = indexed.sourcePaths[0];
-  if (path === undefined || indexed.sourcePaths.length !== 1) throw new Error("Text lifecycle requires exactly one physical source.");
-  const bytes = await vscode.workspace.fs.readFile(projectUri(project, path));
-  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  const parsed = await parse(text, context);
+  const catalog = await loadDocumentTypeCatalogRegistry(project, documentType);
+  const context = facetContext(project, documentType, host, indexed, catalog);
+  const sources = await readSources(project, indexed);
+  const parsed = host.facet.storage === "sources"
+    ? await host.facet.parseSources!(sources, context)
+    : await parseText(host.facet, sources, indexed, context);
   if (!parsed.success) throw diagnosticsError("Document", parsed.diagnostics);
-  return createHandle(adapter, parsed.document, context, indexed.documentTypeId, async (document) => [{
-    path,
-    bytes: new TextEncoder().encode(await render(document, text, context)),
-  }]);
-}
-
-async function loadTableDocument(
-  project: ProjectContext,
-  indexed: IndexedDocument,
-  tableType: TableTypeDefinition,
-  layout: TableLayoutDefinition,
-): Promise<WorkspaceLifecycleDocument> {
-  const sources = await Promise.all(indexed.sourcePaths.map(async (path) => ({
-    path,
-    bytes: await vscode.workspace.fs.readFile(projectUri(project, path)),
-  })));
-  const first = sources[0];
-  if (first === undefined) throw new Error("Table lifecycle source is empty.");
-  const context: TableDocumentAdapterContext = { tableType };
-  if (sources.length === 1 && isXlsx(first.bytes)) {
-    const parsed = await parseXlsxTable(first.bytes, tableType, layout);
-    if (!parsed.success) throw diagnosticsError("Table", parsed.diagnostics);
-    return createHandle(tableDocumentAdapter, parsed.document, context, indexed.documentTypeId, async (document) => [{
-      path: first.path,
-      bytes: await serializeXlsxTable(first.bytes, document, tableType, layout),
-    }]);
-  }
-  const sheets: TableDocument["sheets"][number][] = [];
-  const csvSources: { readonly path: string; readonly text: string; readonly sheetIds: readonly string[] }[] = [];
-  for (const source of sources) {
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(source.bytes);
-    const physicalName = nodePath.posix.basename(source.path, nodePath.posix.extname(source.path));
-    const parsed = parseCsvTable(text, tableType, layout, physicalName);
-    if (!parsed.success) throw diagnosticsError(`Table '${source.path}'`, parsed.diagnostics);
-    sheets.push(...parsed.document.sheets);
-    csvSources.push({ path: source.path, text, sheetIds: parsed.document.sheets.map((sheet) => sheet.id) });
-  }
-  return createHandle(tableDocumentAdapter, { format: "csv", sheets }, context, indexed.documentTypeId, async (document) => (
-    csvSources.map((source) => ({
-      path: source.path,
-      bytes: new TextEncoder().encode(serializeCsvTable({
-        format: "csv",
-        sheets: document.sheets.filter((sheet) => source.sheetIds.includes(sheet.id)),
-      }, tableType, source.text)),
-    }))
+  return createHandle(host.facet, parsed.document, context, indexed.documentTypeId, async (document) => (
+    host.facet.renderSources(document, sources, context)
   ));
 }
 
-function createHandle<TDocument, TContext>(
-  adapter: SemanticDocumentAdapter<TDocument, TContext>,
-  document: TDocument,
-  context: TContext,
+async function parseText(
+  facet: DocumentFacet<unknown, unknown>,
+  sources: readonly DocumentFacetSourceFile[],
+  indexed: IndexedDocument,
+  context: DocumentFacetContext<unknown>,
+) {
+  const source = sources[0];
+  if (source === undefined || indexed.sourcePaths.length !== 1) {
+    throw new Error("Text lifecycle requires exactly one physical source.");
+  }
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(source.bytes);
+  return facet.parseText!(text, context);
+}
+
+function createHandle(
+  facet: DocumentFacet<unknown, unknown>,
+  document: unknown,
+  context: DocumentFacetContext<unknown>,
   documentTypeId: string,
-  render: (document: TDocument) => Promise<readonly LifecycleRenderedSource[]>,
+  render: (document: unknown) => Promise<readonly DocumentFacetSourceFile[]>,
 ): WorkspaceLifecycleDocument {
-  const lifecycle = adapter.lifecycle;
-  if (lifecycle === undefined) throw new Error(`Editor '${adapter.editor}' does not expose lifecycle semantics.`);
-  const ownedIdentities = lifecycle.collectOwnedIdentities(document, documentTypeId, context);
-  const addressableIdentityKeys = lifecycle.collectAddressableIdentityKeys?.(document, documentTypeId, context)
+  const ownedIdentities = facet.collectOwnedIdentities(document, context);
+  const addressableIdentityKeys = facet.collectAddressableIdentityKeys?.(document, context)
     ?? new Set(ownedIdentities.filter((identity) => identity.reference !== undefined).map((identity) => identity.identityKey));
-  const references = adapter.collectReferences(document, context);
+  const references = facet.collectReferences(document, context);
   return {
     ownedIdentities,
     addressableIdentityKeys,
     references,
     async remapOwnedIdentities(remap, internalRetargets) {
-      const remapped = lifecycle.remapOwnedIdentities(document, documentTypeId, remap, context);
+      const remapped = facet.remapOwnedIdentities(document, context, remap);
       if (!remapped.success) return remapped;
-      const retargeted = retargetInternalReferences(adapter, remapped.document, context, internalRetargets);
+      const retargeted = retargetInternalReferences(facet, remapped.document, context, internalRetargets);
       if (!retargeted.success) return retargeted;
       return {
         success: true,
         sources: await render(retargeted.document),
-        references: adapter.collectReferences(retargeted.document, context),
-        ownedIdentities: lifecycle.collectOwnedIdentities(retargeted.document, documentTypeId, context),
+        references: facet.collectReferences(retargeted.document, context),
+        ownedIdentities: facet.collectOwnedIdentities(retargeted.document, context),
       };
     },
     async deleteOwnedTarget(target) {
-      const deleted = lifecycle.deleteOwnedTarget(document, target, context);
+      const deleted = facet.deleteOwnedTarget(document, target, context);
       return deleted.success
         ? {
             success: true,
             sources: await render(deleted.document),
-            references: adapter.collectReferences(deleted.document, context),
-            ownedIdentities: lifecycle.collectOwnedIdentities(deleted.document, documentTypeId, context),
+            references: facet.collectReferences(deleted.document, context),
+            ownedIdentities: facet.collectOwnedIdentities(deleted.document, context),
           }
         : deleted;
     },
   };
 }
 
-function retargetInternalReferences<TDocument, TContext>(
-  adapter: SemanticDocumentAdapter<TDocument, TContext>,
-  document: TDocument,
-  context: TContext,
+function retargetInternalReferences(
+  facet: DocumentFacet<unknown, unknown>,
+  document: unknown,
+  context: DocumentFacetContext<unknown>,
   internalRetargets: readonly LifecycleReferenceRetarget[],
-): DocumentOperationResult<TDocument> {
-  let current: DocumentOperationResult<TDocument> = { success: true, document, diagnostics: [] };
+): DocumentOperationResult<unknown> {
+  let current: DocumentOperationResult<unknown> = { success: true, document, diagnostics: [] };
   for (const retarget of internalRetargets) {
     if (!current.success) break;
-    current = adapter.replaceReferenceValues(current.document, context, new Set([retarget.path]), retarget.replacement);
+    current = facet.replaceReferenceValues(current.document, context, new Set([retarget.path]), retarget.replacement);
   }
   return current;
 }
 
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    return `{${Object.entries(value).sort(([left], [right]) => compareUtf16CodeUnits(left, right))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+async function readSources(
+  project: ProjectContext,
+  indexed: IndexedDocument,
+): Promise<readonly DocumentFacetSourceFile[]> {
+  const sources: DocumentFacetSourceFile[] = [];
+  for (const path of indexed.sourcePaths) {
+    sources.push({ path, bytes: await vscode.workspace.fs.readFile(projectUri(project, path)) });
   }
-  return JSON.stringify(value);
+  if (sources.length === 0) throw new Error("Document lifecycle has no physical source.");
+  return sources;
+}
+
+function facetInput(
+  project: ProjectContext,
+  documentType: DocumentTypeDefinition,
+  catalog: Awaited<ReturnType<typeof loadDocumentTypeCatalogRegistry>>,
+) {
+  return {
+    projectId: project.definition.projectId,
+    projectDefinition: project.definition as unknown as JsonValue,
+    documentType,
+    catalog: catalog === undefined
+      ? { ready: false, registry: undefined, diagnostics: [] }
+      : { ready: catalog.ready, registry: catalog.registry, diagnostics: catalog.diagnostics },
+    newStableId: (prefix: string) => `${prefix}_${randomUUID()}`.replaceAll("-", ""),
+  };
+}
+
+function facetContext(
+  project: ProjectContext,
+  documentType: DocumentTypeDefinition,
+  host: HostDocumentFacet,
+  indexed: IndexedDocument,
+  catalog: Awaited<ReturnType<typeof loadDocumentTypeCatalogRegistry>>,
+): DocumentFacetContext<unknown> {
+  const moduleOptions = project.definition.modules.find((entry) => entry.id === host.moduleId)?.options;
+  return {
+    projectId: project.definition.projectId,
+    documentTypeId: documentType.id,
+    path: indexed.sourcePaths[0] ?? indexed.path,
+    sourcePaths: indexed.sourcePaths,
+    registry: catalog?.ready === true ? catalog.registry : undefined,
+    projectDefinition: project.definition as unknown as JsonValue,
+    moduleOptions,
+  };
 }
 
 function diagnosticsError(scope: string, diagnostics: readonly DocumentDiagnostic[]): Error {
@@ -369,35 +230,4 @@ function diagnosticsError(scope: string, diagnostics: readonly DocumentDiagnosti
 
 function projectUri(project: ProjectContext, path: string): vscode.Uri {
   return vscode.Uri.joinPath(project.rootUri, ...path.split("/"));
-}
-
-function isXlsx(bytes: Uint8Array): boolean {
-  return bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
-}
-
-function assertParameterKeys(parameters: Readonly<Record<string, unknown>>, allowed: readonly string[]): void {
-  const unexpected = Object.keys(parameters).find((key) => !allowed.includes(key));
-  if (unexpected !== undefined) throw new Error(`Unexpected create parameter '${unexpected}'.`);
-}
-
-function requiredIdentifier(value: unknown, path: string): string {
-  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) {
-    throw new Error(`${path} must be a stable identifier.`);
-  }
-  return value;
-}
-
-function optionalIdentifier(value: unknown, path: string): string | undefined {
-  return value === undefined ? undefined : requiredIdentifier(value, path);
-}
-
-function requiredIdentifierArray(value: unknown, path: string): readonly string[] {
-  if (!Array.isArray(value)) throw new Error(`${path} must be an array.`);
-  return value.map((entry, index) => requiredIdentifier(entry, `${path}[${index}]`));
-}
-
-function optionalString(value: unknown, path: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "string") throw new Error(`${path} must be a string.`);
-  return value;
 }
