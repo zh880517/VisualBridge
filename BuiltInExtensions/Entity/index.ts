@@ -8,3 +8,5 @@ export * from "./src/moduleSessionContract";
 export * from "./src/entityCatalogFacet";
 export * from "./src/entityCreateFacet";
 export * from "./src/entityDocumentFacet";
+export * from "./src/entityMcpFacet";
+export * from "./src/entityOperationSchema";

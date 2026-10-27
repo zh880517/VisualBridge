@@ -17,6 +17,7 @@ const check = process.argv.includes("--check");
 const schemaFiles = (await readdir(schemaRoot)).filter((name) => name.endsWith(".schema.json")).sort(compareOrdinal);
 const schemas = await Promise.all(schemaFiles.map(async (name) => {
   const bytes = await readFile(path.join(schemaRoot, name));
+  assertLfOnly(name, bytes);
   return { name, bytes, schema: JSON.parse(bytes.toString("utf8")) };
 }));
 const contractManifest = JSON.parse(await readFile(path.join(repositoryRoot, "Protocol", "contract-manifest.json"), "utf8"));
@@ -88,6 +89,21 @@ async function emit(target, content) {
   }
   await mkdir(path.dirname(target), { recursive: true });
   await writeFile(target, content, "utf8");
+}
+
+/**
+ * Schema 哈希取自**工作区原始字节**，而提交时 git 按 `.gitattributes` 把 `Protocol/Schema/*.json`
+ * 归一成 LF。工作区一旦写成 CRLF，登记的哈希就只在本机成立，干净 checkout / CI 上
+ * `check:protocol` 必红（`emit()` 报 Generated artifact drift）。这里直接拒绝 CR 字节，
+ * 让"CRLF 工作区假绿"无法再被提交。
+ */
+function assertLfOnly(name, bytes) {
+  const offset = bytes.indexOf(0x0d);
+  if (offset >= 0) {
+    throw new Error(
+      `Protocol/Schema/${name} contains a CR byte at offset ${offset}; schema hashes and generated artifacts are derived from workspace bytes, so every schema must be LF-only.`,
+    );
+  }
 }
 
 async function compileDeclarations() {
@@ -164,7 +180,31 @@ function verifyContractExamples(compiler) {
   assertValid(lifecycle, { action: "preview", projectFile: "VisualBridge.project.vbjson", operation }, "lifecycle preview");
   assertInvalid(lifecycle, { action: "preview", projectFile: "VisualBridge.project.vbjson", operation, previewHash: hash }, "lifecycle preview with apply fields");
   assertInvalid(lifecycle, { action: "apply", projectFile: "VisualBridge.project.vbjson", operation }, "lifecycle apply without manifest");
-  assertInvalid(lifecycle, { action: "preview", projectFile: "VisualBridge.project.vbjson", operation: { ...operation, parameters: { documentId: "graph.a", rootGraphId: "root", unexpected: true } } }, "lifecycle unknown create parameter");
+  // B4 起 create 的 parameters 由模块 create facet 校验：契约只要求它是 JSON 对象，
+  // 因此 domain-owned 参数（含未来模块的额外键）必须合法，而 delete target 仍必须带 kind。
+  assertValid(lifecycle, {
+    action: "preview",
+    projectFile: "VisualBridge.project.vbjson",
+    operation: { ...operation, parameters: { documentId: "graph.a", rootGraphId: "root", moduleOwned: true } },
+  }, "lifecycle module-owned create parameter");
+  assertValid(lifecycle, {
+    action: "preview",
+    projectFile: "VisualBridge.project.vbjson",
+    operation: {
+      kind: "delete",
+      source: { projectId: "sample", documentTypeId: "game.graph", editor: "graph", path: "Graph/A.vbgraph" },
+      target: { kind: "custom.moduleTarget", payload: { nested: [1, 2] } },
+    },
+  }, "lifecycle module-owned delete target");
+  assertInvalid(lifecycle, {
+    action: "preview",
+    projectFile: "VisualBridge.project.vbjson",
+    operation: {
+      kind: "delete",
+      source: { projectId: "sample", documentTypeId: "game.graph", editor: "graph", path: "Graph/A.vbgraph" },
+      target: { rowId: "missing-kind" },
+    },
+  }, "lifecycle delete target without kind");
 
   const graphId = "https://visualbridge.dev/schema/visualbridge-graph.schema.json";
   const interfacePort = requireValidator(compiler, `${graphId}#/$defs/interfacePort`);

@@ -1,70 +1,62 @@
+/**
+ * MCP 的 Reference 服务（B4）。
+ *
+ * Reference Provider 全部来自 facet：宿主持有的 `document` kind + 每个模块 `references[]` 的
+ * Provider + Project Provider。索引与引用数据都通过 `McpDocumentService` 装载模块自己的
+ * `referenceData`，因此这里没有"哪个 editor 的表/组件/元素"分支。
+ */
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import path from "node:path";
 import {
   compareUtf16CodeUnits,
   createDocumentReferenceProvider,
   documentIndexKey,
   ReferenceService,
-  type DocumentReferenceDocument,
   type DocumentDiagnostic,
-  type JsonValue,
+  type DocumentReferenceDocument,
   type IndexedDocument,
+  type JsonValue,
   type ProjectProviderDocumentSnapshot,
   type ReferenceDefinition,
   type ReferenceOccurrence,
+  type ReferenceProvider,
   type ReferenceResolution,
   type ReferenceSearchCursor,
 } from "@visualbridge/core";
-import {
-  createEntityComponentReferenceProvider,
-  collectEntityReferences,
-  parseEntityDocument,
-  validateEntityDocument,
-  type EntityReferenceDocument,
-  type EntityCatalogRegistry,
-} from "@visualbridge/entity";
-import {
-  buildGraphCatalogRegistry,
-  collectGraphReferences,
-  createGraphElementReferenceProvider,
-  parseGraphCatalog,
-  parseGraphDocument,
-  validateGraphDocument,
-  type GraphCatalog,
-  type GraphCatalogRegistry,
-  type GraphReferenceDocument,
-} from "@visualbridge/graph";
-import {
-  buildStructuredCatalogRegistry,
-  collectStructuredReferences,
-  parseStructuredCatalog,
-  parseStructuredDocument,
-  validateStructuredDocument,
-  type StructuredCatalog,
-  type StructuredCatalogRegistry,
-} from "@visualbridge/structured";
-import { collectTableReferences, createTableRowReferenceProvider } from "@visualbridge/table";
+import type { McpDocumentService, SkippedReferenceSource } from "./documentService.js";
+import type { ActiveModule, McpModuleRegistry } from "./moduleRegistry.js";
+import type { McpProjectProviderService } from "./projectProviderService.js";
 import {
   VisualBridgeMcpError,
   resolveExistingProjectPath,
-  type DeclaredDocumentContext,
   type ProjectContext,
   type VisualBridgeWorkspace,
 } from "./projectWorkspace.js";
-import type { TableService } from "./tableService.js";
-import { loadMcpEntityRegistry } from "./entityRegistry.js";
-import type { McpProjectProviderService } from "./projectProviderService.js";
 import { referenceSemanticSnapshotDependencyKey } from "./referenceSnapshot.js";
 
-const BUILT_IN_SEMANTIC_REFERENCE_KINDS = new Set(["document", "entity.component", "graph.element"]);
-
 export class VisualBridgeReferenceService {
+  private documents: McpDocumentService | undefined;
+
+  /**
+   * 模块引用数据里被跳过的源（B4 第 2 轮 P2-2）。按 `ReferenceService` 实例挂载，避免把
+   * "装载不完整"藏在可变实例字段里跨请求串味。
+   */
+  private readonly sourceDiagnostics = new WeakMap<ReferenceService, readonly DocumentDiagnostic[]>();
+
   public constructor(
     private readonly workspace: VisualBridgeWorkspace,
-    private readonly tables: TableService,
+    private readonly modules: McpModuleRegistry,
     private readonly providers?: McpProjectProviderService,
   ) {}
+
+  public setDocumentService(documents: McpDocumentService): void {
+    this.documents = documents;
+  }
+
+  private requireDocuments(): McpDocumentService {
+    if (this.documents === undefined) throw new Error("McpDocumentService has not been attached.");
+    return this.documents;
+  }
 
   public async query(options: {
     readonly projectFile?: string;
@@ -119,10 +111,11 @@ export class VisualBridgeReferenceService {
     projectFile: string,
     occurrences: readonly ReferenceOccurrence[],
   ): Promise<readonly DocumentDiagnostic[]> {
-    return this.createProjectService(
+    const service = await this.createProjectService(
       projectFile,
       occurrences.map((occurrence) => occurrence.definition.kind),
-    ).then((service) => service.validate(occurrences));
+    );
+    return [...this.sourceDiagnosticsOf(service), ...await service.validate(occurrences)];
   }
 
   public async resolve(
@@ -145,8 +138,9 @@ export class VisualBridgeReferenceService {
       projectFile,
       [...before, ...after].map((occurrence) => occurrence.definition.kind),
     );
+    const sourceDiagnostics = this.sourceDiagnosticsOf(service);
     const baseline = diagnosticCounts(await service.validate(before));
-    const diagnostics = await service.validate(after);
+    const diagnostics = [...sourceDiagnostics, ...await service.validate(after)];
     const introducedErrors = diagnostics.filter((diagnostic) => {
       if (diagnostic.severity !== "error") {
         return false;
@@ -184,37 +178,95 @@ export class VisualBridgeReferenceService {
   public async createProjectService(
     projectFile: string,
     requestedKinds?: readonly string[],
+    options: { readonly strictReferenceDataCode?: string } = {},
   ): Promise<ReferenceService> {
     const project = await this.workspace.resolveProject(projectFile);
     const kinds = requestedKinds === undefined ? undefined : new Set(requestedKinds);
-    const needsSemanticDocuments = kinds === undefined
-      || [...kinds].some((kind) => BUILT_IN_SEMANTIC_REFERENCE_KINDS.has(kind));
-    const needsTableDocuments = kinds === undefined || kinds.has("table.row");
-    const semanticDocuments: {
-      readonly documents: readonly DocumentReferenceDocument[];
-      readonly entities: readonly EntityReferenceDocument[];
-      readonly graphs: readonly GraphReferenceDocument[];
-    } = needsSemanticDocuments
-      ? await this.loadSemanticDocuments(project)
-      : { documents: [], entities: [], graphs: [] };
-    const tableDocuments = needsTableDocuments
-      ? await this.tables.loadReferenceDocuments(project.projectFile)
-      : [];
+    const documents = this.requireDocuments();
+    const modules = (await this.modules.modulesFor(project)).active;
+    const needsDocumentProvider = kinds === undefined || kinds.has("document");
+    const documentSources = needsDocumentProvider
+      ? await this.loadDocumentDescriptors(project, documents, modules, options)
+      : { descriptors: [], skipped: [] };
+    const documentDescriptors: DocumentReferenceDocument[] = [...documentSources.descriptors];
+    const moduleReferenceData: Record<string, unknown> = {};
+    const skippedDiagnostics: DocumentDiagnostic[] = [
+      ...skippedReferenceSourceDiagnostics(documentSources.skipped),
+    ];
+    const providers: ReferenceProvider[] = [];
+    if (needsDocumentProvider) {
+      providers.push(createDocumentReferenceProvider(async () => documentDescriptors));
+    }
+    for (const module of modules) {
+      const registered = module.facet.references.filter((entry) => kinds === undefined || kinds.has(entry.kind));
+      if (registered.length === 0) continue;
+      const loaded = await documents.loadModuleReferenceData(project, module, {
+        ...(options.strictReferenceDataCode === undefined
+          ? {}
+          : { strictErrorCode: options.strictReferenceDataCode }),
+      });
+      moduleReferenceData[module.id] = loaded.data;
+      skippedDiagnostics.push(...skippedReferenceSourceDiagnostics(loaded.skipped));
+      registered.forEach((entry) => providers.push(entry.createProvider(async () => loaded.data)));
+    }
+    providers.push(...await this.providers?.referenceProviders(project) ?? []);
     const sourceDependencyKey = await this.captureSnapshotDependencyKey(project);
     const snapshotDependencyKey = referenceSemanticSnapshotDependencyKey(sourceDependencyKey, {
       project: project.definition,
-      ...(kinds === undefined || kinds.has("document") ? { documents: semanticDocuments.documents } : {}),
-      ...(kinds === undefined || kinds.has("entity.component") ? { entities: semanticDocuments.entities } : {}),
-      ...(kinds === undefined || kinds.has("graph.element") ? { graphs: semanticDocuments.graphs } : {}),
-      ...(needsTableDocuments ? { tables: tableDocuments } : {}),
+      modules: moduleReferenceData,
+      ...(needsDocumentProvider ? { documents: documentDescriptors } : {}),
     });
-    return new ReferenceService([
-      createDocumentReferenceProvider(async () => semanticDocuments.documents),
-      createEntityComponentReferenceProvider(async () => semanticDocuments.entities),
-      createGraphElementReferenceProvider(async () => semanticDocuments.graphs),
-      createTableRowReferenceProvider(async () => tableDocuments),
-      ...await this.providers?.referenceProviders(project) ?? [],
-    ], snapshotDependencyKey);
+    const service = new ReferenceService(providers, snapshotDependencyKey);
+    if (skippedDiagnostics.length > 0) {
+      this.sourceDiagnostics.set(service, skippedDiagnostics);
+    }
+    return service;
+  }
+
+  private sourceDiagnosticsOf(service: ReferenceService): readonly DocumentDiagnostic[] {
+    return this.sourceDiagnostics.get(service) ?? [];
+  }
+
+  private async loadDocumentDescriptors(
+    project: ProjectContext,
+    documents: McpDocumentService,
+    modules: readonly ActiveModule[],
+    options: { readonly strictReferenceDataCode?: string },
+  ): Promise<{
+    readonly descriptors: readonly DocumentReferenceDocument[];
+    readonly skipped: readonly SkippedReferenceSource[];
+  }> {
+    const descriptors: DocumentReferenceDocument[] = [];
+    const skipped: SkippedReferenceSource[] = [];
+    for (const module of modules) {
+      const loaded = await documents.loadDeclaredSources(project, module.editor, {
+        ...(options.strictReferenceDataCode === undefined
+          ? {}
+          : { strictErrorCode: options.strictReferenceDataCode }),
+      });
+      skipped.push(...loaded.skipped);
+      for (const entry of loaded.loaded) {
+        if (entry.document === undefined) continue;
+        const descriptor = module.facet.describe(entry.document, entry.context);
+        // `document` Reference kind 只覆盖有文档 ID 的语义文档（Table 文档按路径定位，不参与）。
+        if (descriptor.documentId === undefined) continue;
+        descriptors.push({
+          projectId: project.definition.projectId,
+          documentTypeId: entry.documentType.id,
+          editor: entry.documentType.editor,
+          path: entry.path,
+          documentId: descriptor.documentId,
+          title: descriptor.title,
+        });
+      }
+    }
+    return {
+      descriptors: descriptors.sort((left, right) => compareUtf16CodeUnits(
+        `${left.documentTypeId}\u0000${left.path}`,
+        `${right.documentTypeId}\u0000${right.path}`,
+      )),
+      skipped,
+    };
   }
 
   private async captureSnapshotDependencyKey(project: ProjectContext): Promise<string> {
@@ -229,172 +281,61 @@ export class VisualBridgeReferenceService {
       .digest("hex");
   }
 
-  public async buildProjectIndex(projectFile: string): Promise<readonly IndexedDocument[]> {
+  /**
+   * 建立 Project 文档索引。
+   *
+   * `strict`（默认）用于 Lifecycle：任何语义或 Reference 错误都会让索引失败。Refactor 用
+   * `strict: false`：只要文档能解析就参与索引，与改造前"重命名不因无关文档的语义错误失败"一致。
+   * `errorCode` 由调用方给出：两个工具对"源不可用"报不同的错误码，索引本身不猜领域归属。
+   */
+  public async buildProjectIndex(
+    projectFile: string,
+    options: { readonly strict?: boolean; readonly errorCode?: string } = {},
+  ): Promise<readonly IndexedDocument[]> {
+    const strict = options.strict ?? true;
+    const errorCode = options.errorCode ?? "refactor.invalidSource";
     const project = await this.workspace.resolveProject(projectFile);
     const references = await this.createProjectService(project.projectFile);
+    const documents = this.requireDocuments();
     const declared = await this.workspace.listDeclaredDocuments(project);
-    const documents: IndexedDocument[] = [];
-    const graphRegistries = new Map<string, Promise<GraphCatalogRegistry>>();
-    const entityRegistries = new Map<string, Promise<EntityCatalogRegistry>>();
-    const structuredRegistries = new Map<string, Promise<StructuredCatalogRegistry>>();
+    const families = new Set<string>();
+    const result: IndexedDocument[] = [];
     for (const source of declared) {
-      if (source.documentType.editor === "table") continue;
-      const text = decodeUtf8(await readFile(source.absolutePath), source.path);
-      let documentId: string;
-      let title: string;
-      let occurrences: readonly ReferenceOccurrence[];
-      let semanticDiagnostics: readonly DocumentDiagnostic[];
-      if (source.documentType.editor === "graph") {
-        const parsed = parseGraphDocument(text);
-        if (!parsed.success) throw invalidIndexedSource(source.path, parsed.diagnostics);
-        const registry = await cachedRegistry(
-          graphRegistries,
-          source.documentType.id,
-          () => loadMcpGraphRegistry(project, source),
-        );
-        documentId = parsed.document.documentId;
-        title = parsed.document.graphs.find((graph) => graph.id === parsed.document.rootGraphId)?.title
-          ?? fileTitle(source.path);
-        semanticDiagnostics = validateGraphDocument(parsed.document, registry);
-        occurrences = collectGraphReferences(parsed.document, registry);
-      } else if (source.documentType.editor === "entity") {
-        const parsed = parseEntityDocument(text);
-        if (!parsed.success) throw invalidIndexedSource(source.path, parsed.diagnostics);
-        const registry = await cachedRegistry(
-          entityRegistries,
-          source.documentType.id,
-          () => loadMcpEntityRegistry(project, source.documentType),
-        );
-        documentId = parsed.document.documentId;
-        title = parsed.document.title;
-        semanticDiagnostics = validateEntityDocument(parsed.document, registry);
-        occurrences = collectEntityReferences(parsed.document, registry);
-      } else if (source.documentType.editor === "structured") {
-        const parsed = parseStructuredDocument(text);
-        if (!parsed.success) throw invalidIndexedSource(source.path, parsed.diagnostics);
-        const registry = await cachedRegistry(
-          structuredRegistries,
-          source.documentType.id,
-          () => loadMcpStructuredRegistry(project, source),
-        );
-        documentId = parsed.document.documentId;
-        title = fileTitle(source.path);
-        semanticDiagnostics = validateStructuredDocument(parsed.document, registry, source.documentType.id);
-        occurrences = collectStructuredReferences(parsed.document, registry, source.documentType.id);
-      } else {
-        continue;
+      const loaded = await documents.loadDocument({
+        path: source.path,
+        editor: source.documentType.editor,
+        projectFile: project.projectFile,
+        documentTypeId: source.documentType.id,
+        includeProviderValidation: false,
+        skipReferenceValidation: true,
+      });
+      if (loaded.document === undefined) {
+        throw invalidIndexedSource(errorCode, source.path, loaded.diagnostics);
       }
-      assertIndexable(source.path, semanticDiagnostics);
-      const referenceDiagnostics = await references.validate(occurrences);
-      assertIndexable(source.path, referenceDiagnostics);
-      documents.push({
+      if (loaded.module.facet.storage === "sources") {
+        // 多源文档在 `listDeclaredDocuments` 里会按物理文件重复出现；按源集合去重。
+        const familyKey = `${source.documentType.id}\u0000${loaded.sources.map((entry) => entry.path).join("\u0000")}`;
+        if (families.has(familyKey)) continue;
+        families.add(familyKey);
+      }
+      if (strict) assertIndexable(errorCode, source.path, loaded.structuralDiagnostics);
+      const referenceDiagnostics = strict ? await references.validate(loaded.occurrences) : [];
+      if (strict) assertIndexable(errorCode, source.path, referenceDiagnostics);
+      const descriptor = loaded.module.facet.describe(loaded.document, loaded.context);
+      result.push({
         projectId: project.definition.projectId,
         documentTypeId: source.documentType.id,
         editor: source.documentType.editor,
-        path: source.path,
-        sourcePaths: [source.path],
-        documentId,
-        title,
-        diagnostics: [...semanticDiagnostics, ...referenceDiagnostics],
-        references: await resolveOccurrences(references, occurrences),
+        path: loaded.path,
+        sourcePaths: loaded.sources.map((entry) => entry.path),
+        ...(descriptor.documentId === undefined ? {} : { documentId: descriptor.documentId }),
+        title: descriptor.title,
+        diagnostics: strict ? [...loaded.structuralDiagnostics, ...referenceDiagnostics] : [],
+        references: await resolveOccurrences(references, loaded.occurrences),
       });
     }
-    for (const table of await this.tables.loadReferenceDocuments(project.projectFile, true)) {
-      const sourcePaths = [...new Set([table.path, ...Object.values(table.sheetPaths ?? {})])].sort(compareUtf16CodeUnits);
-      const occurrences = collectTableReferences(table.document, table.tableType);
-      const referenceDiagnostics = await references.validate(occurrences);
-      assertIndexable(sourcePaths[0] ?? table.path, referenceDiagnostics);
-      documents.push({
-        projectId: table.projectId,
-        documentTypeId: table.documentTypeId,
-        editor: "table",
-        path: sourcePaths[0] ?? table.path,
-        sourcePaths,
-        title: table.tableType.title,
-        diagnostics: referenceDiagnostics,
-        references: await resolveOccurrences(
-          references,
-          occurrences,
-        ),
-      });
-    }
-    return documents.sort((left, right) => compareUtf16CodeUnits(documentIndexKey(left), documentIndexKey(right)));
+    return result.sort((left, right) => compareUtf16CodeUnits(documentIndexKey(left), documentIndexKey(right)));
   }
-
-  private async loadSemanticDocuments(project: ProjectContext): Promise<{
-    readonly documents: readonly DocumentReferenceDocument[];
-    readonly entities: readonly EntityReferenceDocument[];
-    readonly graphs: readonly GraphReferenceDocument[];
-  }> {
-    const declared = await this.workspace.listDeclaredDocuments(project);
-    const documents: DocumentReferenceDocument[] = [];
-    const entities: EntityReferenceDocument[] = [];
-    const graphs: GraphReferenceDocument[] = [];
-    const entityRegistries = new Map<string, ReturnType<typeof loadMcpEntityRegistry>>();
-    for (const source of declared) {
-      if (source.documentType.editor !== "graph"
-        && source.documentType.editor !== "entity"
-        && source.documentType.editor !== "structured") continue;
-      const text = new TextDecoder("utf-8", { fatal: true }).decode(await readFile(source.absolutePath));
-      if (source.documentType.editor === "graph") {
-        const parsed = parseGraphDocument(text);
-        if (!parsed.success) continue;
-        const title = parsed.document.graphs.find((graph) => graph.id === parsed.document.rootGraphId)?.title
-          ?? path.basename(source.path, path.extname(source.path));
-        documents.push(documentReference(project.definition.projectId, source.documentType.id, source.documentType.editor, source.path, parsed.document.documentId, title));
-        graphs.push({
-          projectId: project.definition.projectId,
-          documentTypeId: source.documentType.id,
-          path: source.path,
-          document: parsed.document,
-        });
-      } else if (source.documentType.editor === "entity") {
-        const parsed = parseEntityDocument(text);
-        if (parsed.success) {
-          documents.push(documentReference(project.definition.projectId, source.documentType.id, source.documentType.editor, source.path, parsed.document.documentId, parsed.document.title));
-          let registry = entityRegistries.get(source.documentType.id);
-          if (registry === undefined) {
-            registry = loadMcpEntityRegistry(project, source.documentType);
-            entityRegistries.set(source.documentType.id, registry);
-          }
-          entities.push({
-            projectId: project.definition.projectId,
-            documentTypeId: source.documentType.id,
-            path: source.path,
-            document: parsed.document,
-            registry: await registry,
-          });
-        }
-      } else {
-        const parsed = parseStructuredDocument(text);
-        if (parsed.success) {
-          documents.push(documentReference(
-            project.definition.projectId,
-            source.documentType.id,
-            source.documentType.editor,
-            source.path,
-            parsed.document.documentId,
-            path.basename(source.path, path.extname(source.path)),
-          ));
-        }
-      }
-    }
-    documents.sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
-    entities.sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
-    graphs.sort((left, right) => compareUtf16CodeUnits(`${left.documentTypeId}\u0000${left.path}`, `${right.documentTypeId}\u0000${right.path}`));
-    return { documents, entities, graphs };
-  }
-}
-
-function documentReference(
-  projectId: string,
-  documentTypeId: string,
-  editor: string,
-  sourcePath: string,
-  documentId: string,
-  title: string,
-): DocumentReferenceDocument {
-  return { projectId, documentTypeId, editor, path: sourcePath, documentId, title };
 }
 
 export function referenceDefinition(
@@ -418,13 +359,17 @@ function diagnosticKey(diagnostic: DocumentDiagnostic): string {
   return `${diagnostic.code}\u0000${diagnostic.path}\u0000${diagnostic.message}`;
 }
 
-function assertIndexable(sourcePath: string, diagnostics: readonly DocumentDiagnostic[]): void {
+function assertIndexable(
+  errorCode: string,
+  sourcePath: string,
+  diagnostics: readonly DocumentDiagnostic[],
+): void {
   const blocking = diagnostics.filter((diagnostic) => (
     diagnostic.severity === "error"
     || diagnostic.code === "reference.providerUnavailable"
     || diagnostic.code === "reference.invalidTarget"
   ));
-  if (blocking.length > 0) throw invalidIndexedSource(sourcePath, blocking);
+  if (blocking.length > 0) throw invalidIndexedSource(errorCode, sourcePath, blocking);
 }
 
 async function resolveOccurrences(
@@ -437,89 +382,51 @@ async function resolveOccurrences(
   })));
 }
 
-export async function loadMcpGraphRegistry(
-  project: ProjectContext,
-  source: DeclaredDocumentContext,
-): Promise<GraphCatalogRegistry> {
-  if (source.documentType.catalogs.length === 0) {
-    throw new VisualBridgeMcpError(
-      "lifecycle.catalogUnavailable",
-      `Graph Document Type '${source.documentType.id}' has no Catalogs.`,
-    );
-  }
-  const catalogs: GraphCatalog[] = [];
-  for (const catalogPath of source.documentType.catalogs) {
-    const parsed = parseGraphCatalog(decodeUtf8(
-      await readFile(await resolveExistingProjectPath(project, catalogPath)),
-      catalogPath,
-    ));
-    if (!parsed.success) throw invalidIndexedSource(catalogPath, parsed.diagnostics);
-    catalogs.push(parsed.document);
-  }
-  const built = buildGraphCatalogRegistry(catalogs);
-  if (!built.success) throw invalidIndexedSource(`${source.documentType.id} Graph Catalog Registry`, built.diagnostics);
-  return built.document;
-}
-
-export async function loadMcpStructuredRegistry(
-  project: ProjectContext,
-  source: DeclaredDocumentContext,
-): Promise<StructuredCatalogRegistry> {
-  if (source.documentType.catalogs.length === 0) {
-    throw new VisualBridgeMcpError(
-      "lifecycle.catalogUnavailable",
-      `Structured Document Type '${source.documentType.id}' has no Catalogs.`,
-    );
-  }
-  const catalogs: StructuredCatalog[] = [];
-  for (const catalogPath of source.documentType.catalogs) {
-    const parsed = parseStructuredCatalog(decodeUtf8(
-      await readFile(await resolveExistingProjectPath(project, catalogPath)),
-      catalogPath,
-    ));
-    if (!parsed.success) throw invalidIndexedSource(catalogPath, parsed.diagnostics);
-    catalogs.push(parsed.document);
-  }
-  const built = buildStructuredCatalogRegistry(catalogs);
-  if (!built.success) {
-    throw invalidIndexedSource(`${source.documentType.id} Structured Catalog Registry`, built.diagnostics);
-  }
-  return built.document;
-}
-
-async function cachedRegistry<T>(
-  cache: Map<string, Promise<T>>,
-  key: string,
-  load: () => Promise<T>,
-): Promise<T> {
-  const existing = cache.get(key);
-  if (existing !== undefined) return existing;
-  const loading = load();
-  cache.set(key, loading);
-  return loading;
-}
-
-function invalidIndexedSource(sourcePath: string, diagnostics: readonly unknown[]): VisualBridgeMcpError {
+function invalidIndexedSource(
+  errorCode: string,
+  sourcePath: string,
+  diagnostics: readonly unknown[],
+): VisualBridgeMcpError {
   return new VisualBridgeMcpError(
-    "lifecycle.invalidSource",
-    `Source '${sourcePath}' is invalid and cannot participate in Document Lifecycle.`,
+    errorCode,
+    `Source '${sourcePath}' is invalid and cannot participate in the projection${blockingDiagnosticSummary(diagnostics)}.`,
     diagnostics,
   );
 }
 
-function fileTitle(sourcePath: string): string {
-  return path.basename(sourcePath, path.extname(sourcePath));
+/**
+ * 索引失败必须点名**真正缺的那一项**，而不只是"某个源无效"。
+ *
+ * 典型场景（B4 第 2 轮 P2-5）：Project 未配置 `tableLayout` 时，create 会在投影索引阶段撞上
+ * 另一个已声明表的解析失败；只报 `Source 'Tables/Skills.xlsx' is invalid` 会让用户以为是
+ * 自己请求的目标文件有问题，而真正缺的是 `tableLayout.nameKeyRow/dataStartRow`。
+ */
+function blockingDiagnosticSummary(diagnostics: readonly unknown[]): string {
+  const entries = diagnostics.filter((entry): entry is Readonly<Record<string, unknown>> => (
+    typeof entry === "object" && entry !== null && !Array.isArray(entry)
+  ));
+  const first = entries.find((entry) => entry.severity === "error") ?? entries[0];
+  if (first === undefined) return "";
+  const code = typeof first.code === "string" ? first.code : "error";
+  const path = typeof first.path === "string" ? ` at ${first.path}` : "";
+  const message = typeof first.message === "string" ? ` — ${first.message}` : "";
+  return `: ${code}${path}${message}`;
 }
 
-function decodeUtf8(bytes: Uint8Array, sourcePath: string): string {
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch (errorValue) {
-    throw new VisualBridgeMcpError(
-      "file.invalidUtf8",
-      `File '${sourcePath}' is not valid UTF-8: ${errorValue instanceof Error ? errorValue.message : String(errorValue)}`,
-    );
-  }
+/**
+ * 被跳过的引用源必须是**可见**的：非 strict 调用方（read/search/validate/apply）会把它们
+ * 作为引用快照诊断返回，而不是像 B4 第 1 轮那样静默丢掉（P2-2）。用 warning 是因为"另一个
+ * 文件坏了"不应把当前文档判成 invalid；需要强一致的调用方（Refactor）走 strict 直接失败。
+ */
+function skippedReferenceSourceDiagnostics(
+  skipped: readonly SkippedReferenceSource[],
+): readonly DocumentDiagnostic[] {
+  return skipped.map((source) => ({
+    severity: "warning",
+    code: "reference.sourceNotIndexed",
+    path: source.path,
+    message: `Reference source '${source.path}' (${source.documentTypeId}) was not indexed: ${source.message}`,
+  }));
 }
 
 function encodeReferenceSearchCursor(cursor: ReferenceSearchCursor): string {

@@ -142,7 +142,14 @@ export function deleteGraphOwnedTarget(
   registry: GraphCatalogRegistry,
 ): DocumentOperationResult<GraphDocument> {
   if (target.kind !== "graph.element") {
-    return { success: false, diagnostics: [error("target", `Graph lifecycle cannot delete '${target.kind}'.`)] };
+    return {
+      success: false,
+      diagnostics: [deleteTargetError(
+        "lifecycle.invalidDeleteTarget",
+        "target",
+        `Graph lifecycle cannot delete '${target.kind}'.`,
+      )],
+    };
   }
   if (target.elementKind === "node") {
     return applyGraphOperations(document, [{
@@ -166,13 +173,38 @@ export function deleteGraphOwnedTarget(
       portId: target.elementId,
     }], registry);
   }
+  if (target.elementKind !== "graph") {
+    // 未知 elementKind 不是"找不到"，而是删除目标本身不成立。
+    return {
+      success: false,
+      diagnostics: [deleteTargetError(
+        "lifecycle.invalidDeleteTarget",
+        "target.elementKind",
+        `Graph lifecycle cannot delete '${String(target.elementKind)}' elements.`,
+      )],
+    };
+  }
   if (target.elementId === document.rootGraphId) {
-    return { success: false, diagnostics: [error("target.elementId", "The root graph cannot be deleted.")] };
+    return {
+      success: false,
+      diagnostics: [deleteTargetError(
+        "lifecycle.rootGraphDeleteForbidden",
+        "target.elementId",
+        "The root graph cannot be deleted.",
+      )],
+    };
   }
   const owner = document.graphs.flatMap((graph) => graph.nodes.map((node) => ({ graph, node })))
     .find(({ node }) => node.kind === "subgraph" && node.subgraphId === target.elementId);
   if (owner === undefined) {
-    return { success: false, diagnostics: [error("target.elementId", `Graph '${target.elementId}' has no owning subgraph node.`)] };
+    return {
+      success: false,
+      diagnostics: [deleteTargetError(
+        "lifecycle.deleteTargetNotFound",
+        "target.elementId",
+        `Graph '${target.elementId}' has no owning subgraph node.`,
+      )],
+    };
   }
   return applyGraphOperations(document, [{
     type: "graph.removeNode",
@@ -263,4 +295,12 @@ function isStableIdentifier(value: string): boolean {
 
 function error(path: string, message: string): DocumentDiagnostic {
   return { severity: "error", code: "lifecycle.invalidStableIdRemap", path, message };
+}
+
+/**
+ * 删除目标的诊断码不共用 `lifecycle.invalidStableIdRemap`：stableId remap 与 delete target 是
+ * 两类不同的失败，用同一个码会让 `details.diagnostics` 里只剩 message 可区分（B4 第 2 轮 P2-1）。
+ */
+function deleteTargetError(code: string, path: string, message: string): DocumentDiagnostic {
+  return { severity: "error", code, path, message };
 }

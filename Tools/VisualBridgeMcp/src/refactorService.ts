@@ -1,3 +1,9 @@
+/**
+ * MCP 的 Reference Refactor 服务（B4）。
+ *
+ * "重命名" 全部落在模块 facet 上：`replaceReferenceValues` 改引用、`renameDocumentId` 改文档 ID、
+ * `renameTarget` 改领域内稳定身份（Graph element / Entity component / Table row key）。
+ */
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -7,60 +13,25 @@ import {
   documentIndexKey,
   referenceValuesEqual,
   type IndexedDocument,
+  type DocumentLifecycleDeleteTarget,
   type ReferenceDefinition,
   type ReferenceOccurrence,
   type ReferenceService,
   type ReferenceValueRenamePlan,
 } from "@visualbridge/core";
-import {
-  applyEntityOperations,
-  collectEntityReferences,
-  parseEntityDocument,
-  renameEntityDocumentId,
-  replaceEntityReferenceValues,
-  serializeEntityDocument,
-  type EntityCatalogRegistry,
-} from "@visualbridge/entity";
-import {
-  applyGraphOperations,
-  buildGraphCatalogRegistry,
-  collectGraphReferences,
-  parseGraphCatalog,
-  parseGraphDocument,
-  renameGraphDocumentId,
-  replaceGraphReferenceValues,
-  serializeGraphDocument,
-  type GraphCatalog,
-  type GraphCatalogRegistry,
-} from "@visualbridge/graph";
-import {
-  buildStructuredCatalogRegistry,
-  collectStructuredReferences,
-  parseStructuredCatalog,
-  parseStructuredDocument,
-  renameStructuredDocumentId,
-  replaceStructuredReferenceValues,
-  serializeStructuredDocument,
-  type StructuredCatalog,
-  type StructuredCatalogRegistry,
-} from "@visualbridge/structured";
-import { collectTableReferences } from "@visualbridge/table";
-import {
-  VisualBridgeMcpError,
-  VisualBridgeWorkspace,
-  resolveExistingProjectPath,
-  type DeclaredDocumentContext,
-  type ProjectContext,
-} from "./projectWorkspace.js";
-import type { VisualBridgeReferenceService } from "./referenceService.js";
-import type { TableService } from "./tableService.js";
-import { hashBytes } from "./atomicTextFile.js";
-import { loadMcpEntityRegistry } from "./entityRegistry.js";
+import type { McpDocumentService } from "./documentService.js";
 import {
   ProjectTransactionConflict,
   ProjectTransactionFailure,
   withProjectTransaction,
 } from "./projectTransaction.js";
+import {
+  VisualBridgeMcpError,
+  resolveExistingProjectPath,
+  type ProjectContext,
+  type VisualBridgeWorkspace,
+} from "./projectWorkspace.js";
+import type { VisualBridgeReferenceService } from "./referenceService.js";
 
 interface PreparedWrite {
   readonly path: string;
@@ -91,7 +62,7 @@ export class ReferenceRefactorService {
   public constructor(
     private readonly workspace: VisualBridgeWorkspace,
     private readonly references: VisualBridgeReferenceService,
-    private readonly tables: TableService,
+    private readonly documents: McpDocumentService,
   ) {}
 
   public async execute(request: ReferenceRefactorRequest): Promise<Record<string, unknown>> {
@@ -165,12 +136,6 @@ export class ReferenceRefactorService {
   }
 
   private async prepare(request: ReferenceRefactorRequest): Promise<PreparedRefactor> {
-    if (!SUPPORTED_KINDS.has(request.definition.kind)) {
-      throw new VisualBridgeMcpError(
-        "refactor.unsupportedKind",
-        `Reference Provider '${request.definition.kind}' does not expose a rename adapter.`,
-      );
-    }
     if (typeof request.oldValue !== typeof request.newValue || referenceValuesEqual(request.oldValue, request.newValue)) {
       throw new VisualBridgeMcpError(
         "refactor.invalidValue",
@@ -178,7 +143,11 @@ export class ReferenceRefactorService {
       );
     }
     const project = await this.workspace.resolveProject(request.projectFile);
-    const references = await this.references.createProjectService(project.projectFile);
+    // 引用数据必须完整：改造前 Table 的引用装载就是 strict（坏源直接失败），否则重命名会
+    // 漏掉坏源里的引用并静默产生悬空（B4 第 2 轮 P2-2）。
+    const references = await this.references.createProjectService(project.projectFile, undefined, {
+      strictReferenceDataCode: "refactor.invalidSource",
+    });
     const resolution = await references.resolve(request.definition, request.oldValue);
     if (resolution.status !== "resolved" || resolution.candidates.length !== 1) {
       throw new VisualBridgeMcpError("refactor.unresolvedTarget", "Only a uniquely resolved reference target can be renamed.", resolution);
@@ -190,18 +159,21 @@ export class ReferenceRefactorService {
         `The new value '${String(request.newValue)}' already resolves to ${collision.candidates.length} target(s).`,
       );
     }
-    const documents = await this.buildIndex(project, references);
+    const documents = await this.references.buildProjectIndex(project.projectFile, {
+      strict: false,
+      errorCode: "refactor.invalidSource",
+    });
     const selected = {
       occurrence: { definition: request.definition, value: request.oldValue, path: "$refactor" },
       resolution,
     };
     const planned = createReferenceValueRenamePlan(documents, selected, request.newValue);
     if (!planned.success) throw new VisualBridgeMcpError(`refactor.${planned.reason}`, planned.message);
-    const location = planned.plan.target.location!;
     const targetDocument = documents.find((document) => (
-      document.projectId === location.projectId
-      && document.documentTypeId === location.documentTypeId
-      && document.sourcePaths.includes(location.path)
+      document.projectId === resolution.candidates[0]?.location?.projectId
+      && document.documentTypeId === resolution.candidates[0]?.location?.documentTypeId
+      && resolution.candidates[0]?.location?.path !== undefined
+      && document.sourcePaths.includes(resolution.candidates[0]!.location!.path)
     ));
     if (targetDocument === undefined) {
       throw new VisualBridgeMcpError("refactor.targetNotIndexed", "The resolved target is no longer an indexed document.");
@@ -221,7 +193,8 @@ export class ReferenceRefactorService {
         .map((change) => change.occurrencePath)),
       planned.plan,
       documentIndexKey(document) === documentIndexKey(targetDocument),
-    )))).flat().filter((write) => !write.before.equals(write.after))
+    )))).flat()
+      .filter((write) => !write.before.equals(write.after))
       .sort((left, right) => compareUtf16CodeUnits(left.path, right.path));
     if (writes.length === 0) throw new VisualBridgeMcpError("refactor.noChanges", "The refactor did not produce source changes.");
     const dependencies = await loadDependencyHashes(project);
@@ -237,81 +210,6 @@ export class ReferenceRefactorService {
     return { project, plan: planned.plan, writes, dependencies, previewHash };
   }
 
-  private async buildIndex(project: ProjectContext, references: ReferenceService): Promise<readonly IndexedDocument[]> {
-    const declared = await this.workspace.listDeclaredDocuments(project);
-    const documents: IndexedDocument[] = [];
-    const graphRegistries = new Map<string, Promise<GraphCatalogRegistry>>();
-    const entityRegistries = new Map<string, Promise<EntityCatalogRegistry>>();
-    const structuredRegistries = new Map<string, Promise<StructuredCatalogRegistry>>();
-    for (const source of declared) {
-      if (source.documentType.editor === "table") continue;
-      const bytes = await readFile(source.absolutePath);
-      const text = decodeUtf8(bytes, source.path);
-      let documentId: string;
-      let title: string;
-      let occurrences: readonly ReferenceOccurrence[];
-      if (source.documentType.editor === "graph") {
-        const parsed = parseGraphDocument(text);
-        if (!parsed.success) throw invalidSource(source.path, parsed.diagnostics);
-        const registry = await cachedRegistry(graphRegistries, source.documentType.id, () => loadGraphRegistry(project, source));
-        documentId = parsed.document.documentId;
-        title = parsed.document.graphs.find((graph) => graph.id === parsed.document.rootGraphId)?.title ?? fileTitle(source.path);
-        occurrences = collectGraphReferences(parsed.document, registry);
-      } else if (source.documentType.editor === "entity") {
-        const parsed = parseEntityDocument(text);
-        if (!parsed.success) throw invalidSource(source.path, parsed.diagnostics);
-        const registry = await cachedRegistry(entityRegistries, source.documentType.id, () => loadMcpEntityRegistry(project, source.documentType));
-        documentId = parsed.document.documentId;
-        title = parsed.document.title;
-        occurrences = collectEntityReferences(parsed.document, registry);
-      } else if (source.documentType.editor === "structured") {
-        const parsed = parseStructuredDocument(text);
-        if (!parsed.success) throw invalidSource(source.path, parsed.diagnostics);
-        const registry = await cachedRegistry(structuredRegistries, source.documentType.id, () => loadStructuredRegistry(project, source));
-        documentId = parsed.document.documentId;
-        title = fileTitle(source.path);
-        occurrences = collectStructuredReferences(parsed.document, registry, source.documentType.id);
-      } else {
-        continue;
-      }
-      documents.push({
-        projectId: project.definition.projectId,
-        documentTypeId: source.documentType.id,
-        editor: source.documentType.editor,
-        path: source.path,
-        sourcePaths: [source.path],
-        documentId,
-        title,
-        diagnostics: [],
-        references: await this.resolveOccurrences(references, occurrences),
-      });
-    }
-    for (const table of await this.tables.loadReferenceDocuments(project.projectFile, true)) {
-      const sourcePaths = [...new Set([table.path, ...Object.values(table.sheetPaths ?? {})])].sort(compareUtf16CodeUnits);
-      documents.push({
-        projectId: table.projectId,
-        documentTypeId: table.documentTypeId,
-        editor: "table",
-        path: sourcePaths[0] ?? table.path,
-        sourcePaths,
-        title: table.tableType.title,
-        diagnostics: [],
-        references: await this.resolveOccurrences(
-          references,
-          collectTableReferences(table.document, table.tableType),
-        ),
-      });
-    }
-    return documents.sort((left, right) => compareUtf16CodeUnits(documentIndexKey(left), documentIndexKey(right)));
-  }
-
-  private async resolveOccurrences(references: ReferenceService, occurrences: readonly ReferenceOccurrence[]) {
-    return Promise.all(occurrences.map(async (occurrence) => ({
-      occurrence,
-      resolution: await references.resolve(occurrence.definition, occurrence.value),
-    })));
-  }
-
   private async prepareDocument(
     project: ProjectContext,
     indexed: IndexedDocument,
@@ -319,137 +217,70 @@ export class ReferenceRefactorService {
     plan: ReferenceValueRenamePlan,
     isTarget: boolean,
   ): Promise<readonly PreparedWrite[]> {
-    if (indexed.editor === "table") {
-      if (isTarget && plan.kind !== "table.row") throw incompatibleTarget(plan.kind, indexed.editor);
-      return this.tables.prepareReferenceRename({
-        projectFile: project.projectFile,
-        documentTypeId: indexed.documentTypeId,
-        tablePath: indexed.path,
-        occurrencePaths,
-        oldValue: plan.oldValue,
-        newValue: plan.newValue,
-        ...(isTarget ? { targetLocation: plan.target.location } : {}),
-      });
+    const loaded = await this.documents.loadDocument({
+      path: indexed.path,
+      editor: indexed.editor,
+      projectFile: project.projectFile,
+      documentTypeId: indexed.documentTypeId,
+      includeProviderValidation: false,
+      skipReferenceValidation: true,
+    });
+    if (loaded.document === undefined) throw invalidSource(indexed.path, loaded.parsed.diagnostics);
+    const facet = loaded.module.facet;
+    let document: unknown = loaded.document;
+    if (occurrencePaths.size > 0) {
+      assertOccurrenceValues(loaded.occurrences, occurrencePaths, plan.oldValue, indexed.path);
+      const replaced = facet.replaceReferenceValues(document, loaded.context, occurrencePaths, plan.newValue);
+      if (!replaced.success) throw invalidSource(indexed.path, replaced.diagnostics);
+      document = replaced.document;
     }
-    const declared = (await this.workspace.listDeclaredDocuments(project)).find((source) => (
-      source.path === indexed.path && source.documentType.id === indexed.documentTypeId
-    ));
-    if (declared === undefined) throw new VisualBridgeMcpError("refactor.sourceNotDeclared", `'${indexed.path}' is no longer declared.`);
-    const before = await readFile(declared.absolutePath);
-    const text = decodeUtf8(before, indexed.path);
-    let after: Buffer;
-    if (indexed.editor === "graph") {
-      const registry = await loadGraphRegistry(project, declared);
-      const parsed = parseGraphDocument(text);
-      if (!parsed.success) throw invalidSource(indexed.path, parsed.diagnostics);
-      let next = parsed.document;
-      if (occurrencePaths.size > 0) {
-        assertOccurrenceValues(collectGraphReferences(next, registry), occurrencePaths, plan.oldValue, indexed.path);
-        const replaced = replaceGraphReferenceValues(next, registry, occurrencePaths, plan.newValue);
-        if (!replaced.success) throw invalidSource(indexed.path, replaced.diagnostics);
-        next = replaced.document;
-      }
-      if (isTarget && plan.kind === "document") {
-        assertDocumentTarget(next.documentId, plan, indexed.path);
-        const renamed = renameGraphDocumentId(next, requireString(plan.newValue), registry);
+    if (isTarget) {
+      const location = plan.target.location!;
+      if (plan.kind === "document") {
+        const descriptor = facet.describe(document, loaded.context);
+        assertDocumentTarget(descriptor.documentId, plan, indexed.path);
+        if (facet.renameDocumentId === undefined) throw incompatibleTarget(plan.kind, indexed.editor);
+        const renamed = facet.renameDocumentId(document, requireString(plan.newValue), loaded.context);
         if (!renamed.success) throw invalidSource(indexed.path, renamed.diagnostics);
-        next = renamed.document;
-      } else if (isTarget && plan.kind === "graph.element") {
-        const location = plan.target.location!;
-        const elementKind = readGraphElementKind(location.elementKind);
-        if (location.graphId === undefined || location.elementId !== plan.oldValue || elementKind === undefined) {
-          throw new VisualBridgeMcpError("refactor.targetChanged", "The Graph element location is incomplete or changed.");
-        }
-        const renamed = applyGraphOperations(next, [{
-          type: "graph.renameElement",
-          graphId: location.graphId,
-          elementKind,
-          elementId: requireString(plan.oldValue),
-          newElementId: requireString(plan.newValue),
-          ...(location.nodeId === undefined ? {} : { nodeId: location.nodeId }),
-        }], registry);
-        if (!renamed.success) throw invalidSource(indexed.path, renamed.diagnostics);
-        next = renamed.document;
-      } else if (isTarget) {
-        throw incompatibleTarget(plan.kind, indexed.editor);
-      }
-      after = Buffer.from(serializeGraphDocument(next), "utf8");
-    } else if (indexed.editor === "entity") {
-      const registry = await loadMcpEntityRegistry(project, declared.documentType);
-      const parsed = parseEntityDocument(text);
-      if (!parsed.success) throw invalidSource(indexed.path, parsed.diagnostics);
-      let next = parsed.document;
-      if (occurrencePaths.size > 0) {
-        assertOccurrenceValues(collectEntityReferences(next, registry), occurrencePaths, plan.oldValue, indexed.path);
-        const replaced = replaceEntityReferenceValues(next, registry, occurrencePaths, plan.newValue);
-        if (!replaced.success) throw invalidSource(indexed.path, replaced.diagnostics);
-        next = replaced.document;
-      }
-      if (isTarget && plan.kind === "document") {
-        assertDocumentTarget(next.documentId, plan, indexed.path);
-        const renamed = renameEntityDocumentId(next, requireString(plan.newValue), registry);
-        if (!renamed.success) throw invalidSource(indexed.path, renamed.diagnostics);
-        next = renamed.document;
-      } else if (isTarget && plan.kind === "entity.component") {
-        const location = plan.target.location!;
-        if (location.documentId !== next.documentId
-          || location.elementKind !== "component"
-          || location.componentId !== plan.oldValue
-          || location.elementId !== plan.oldValue) {
+        document = renamed.document;
+      } else {
+        if (facet.renameTarget === undefined) throw incompatibleTarget(plan.kind, indexed.editor);
+        // 引用定位（location）没有 `kind`：模块用 `plan.kind` 判定自己能否处理这个目标。
+        const target = {
+          ...location,
+          kind: plan.kind,
+        } as unknown as Exclude<DocumentLifecycleDeleteTarget, { readonly kind: "document" }>;
+        const renamed = facet.renameTarget(
+          document,
+          target,
+          plan.oldValue,
+          plan.newValue,
+          loaded.context,
+        );
+        if (!renamed.success) {
           throw new VisualBridgeMcpError(
             "refactor.targetChanged",
-            "The Entity component location is incomplete or changed.",
+            `Reference target '${plan.kind}' at '${indexed.path}' could not be renamed.`,
+            renamed.diagnostics,
           );
         }
-        const renamed = applyEntityOperations(next, [{
-          type: "entity.renameComponent",
-          componentId: requireString(plan.oldValue),
-          newComponentId: requireString(plan.newValue),
-        }], registry);
-        if (!renamed.success) throw invalidSource(indexed.path, renamed.diagnostics);
-        next = renamed.document;
-      } else if (isTarget) {
-        throw incompatibleTarget(plan.kind, indexed.editor);
+        document = renamed.document;
       }
-      after = Buffer.from(serializeEntityDocument(next), "utf8");
-    } else if (indexed.editor === "structured") {
-      const registry = await loadStructuredRegistry(project, declared);
-      const parsed = parseStructuredDocument(text);
-      if (!parsed.success) throw invalidSource(indexed.path, parsed.diagnostics);
-      let next = parsed.document;
-      if (occurrencePaths.size > 0) {
-        assertOccurrenceValues(
-          collectStructuredReferences(next, registry, indexed.documentTypeId),
-          occurrencePaths,
-          plan.oldValue,
-          indexed.path,
-        );
-        const replaced = replaceStructuredReferenceValues(next, registry, indexed.documentTypeId, occurrencePaths, plan.newValue);
-        if (!replaced.success) throw invalidSource(indexed.path, replaced.diagnostics);
-        next = replaced.document;
-      }
-      if (isTarget && plan.kind === "document") {
-        assertDocumentTarget(next.documentId, plan, indexed.path);
-        const renamed = renameStructuredDocumentId(next, requireString(plan.newValue), registry, indexed.documentTypeId);
-        if (!renamed.success) throw invalidSource(indexed.path, renamed.diagnostics);
-        next = renamed.document;
-      } else if (isTarget) {
-        throw incompatibleTarget(plan.kind, indexed.editor);
-      }
-      after = Buffer.from(serializeStructuredDocument(next), "utf8");
-    } else {
-      throw new VisualBridgeMcpError("refactor.unsupportedEditor", `Editor '${indexed.editor}' cannot participate in refactors.`);
     }
-    return [{ path: indexed.path, absolutePath: declared.absolutePath, before, after }];
+    const rendered = await this.documents.renderDocument(loaded, document);
+    return rendered.map((entry) => ({
+      path: entry.path,
+      absolutePath: entry.absolutePath,
+      before: entry.before,
+      after: entry.after,
+    }));
   }
 }
 
-const SUPPORTED_KINDS = new Set(["document", "entity.component", "graph.element", "table.row"]);
 const PREVIEW_INVALIDATION_CODES = new Set([
   "file.invalidUtf8",
   "path.notFound",
   "project.notFound",
-  "refactor.catalogUnavailable",
   "refactor.duplicateTarget",
   "refactor.invalidSource",
   "refactor.noChanges",
@@ -459,7 +290,7 @@ const PREVIEW_INVALIDATION_CODES = new Set([
 ]);
 
 function isPreviewInvalidation(code: string): boolean {
-  return PREVIEW_INVALIDATION_CODES.has(code) || code.startsWith("document.");
+  return PREVIEW_INVALIDATION_CODES.has(code) || code.startsWith("document.") || code.startsWith("catalog.");
 }
 
 function previewResult(prepared: PreparedRefactor): Record<string, unknown> {
@@ -493,48 +324,6 @@ async function loadDependencyHashes(
   return [{ path: project.projectFile, baseHash: hashBytes(await readFile(project.absoluteProjectFile)) }, ...catalogs];
 }
 
-async function loadGraphRegistry(project: ProjectContext, source: DeclaredDocumentContext): Promise<GraphCatalogRegistry> {
-  if (source.documentType.catalogs.length === 0) {
-    throw new VisualBridgeMcpError("refactor.catalogUnavailable", `Graph Document Type '${source.documentType.id}' has no Catalogs.`);
-  }
-  const catalogs: GraphCatalog[] = [];
-  for (const catalogPath of source.documentType.catalogs) {
-    const parsed = parseGraphCatalog(decodeUtf8(await readFile(await resolveExistingProjectPath(project, catalogPath)), catalogPath));
-    if (!parsed.success) throw invalidSource(catalogPath, parsed.diagnostics);
-    catalogs.push(parsed.document);
-  }
-  const built = buildGraphCatalogRegistry(catalogs);
-  if (!built.success) throw invalidSource(`${source.documentType.id} Graph Catalog Registry`, built.diagnostics);
-  return built.document;
-}
-
-async function loadStructuredRegistry(project: ProjectContext, source: DeclaredDocumentContext): Promise<StructuredCatalogRegistry> {
-  if (source.documentType.catalogs.length === 0) {
-    throw new VisualBridgeMcpError("refactor.catalogUnavailable", `Structured Document Type '${source.documentType.id}' has no Catalogs.`);
-  }
-  const catalogs: StructuredCatalog[] = [];
-  for (const catalogPath of source.documentType.catalogs) {
-    const parsed = parseStructuredCatalog(decodeUtf8(await readFile(await resolveExistingProjectPath(project, catalogPath)), catalogPath));
-    if (!parsed.success) throw invalidSource(catalogPath, parsed.diagnostics);
-    catalogs.push(parsed.document);
-  }
-  const built = buildStructuredCatalogRegistry(catalogs);
-  if (!built.success) throw invalidSource(`${source.documentType.id} Structured Catalog Registry`, built.diagnostics);
-  return built.document;
-}
-
-async function cachedRegistry<T>(
-  cache: Map<string, Promise<T>>,
-  key: string,
-  load: () => Promise<T>,
-): Promise<T> {
-  const existing = cache.get(key);
-  if (existing !== undefined) return existing;
-  const loading = load();
-  cache.set(key, loading);
-  return loading;
-}
-
 function uniqueDocuments(documents: readonly IndexedDocument[]): readonly IndexedDocument[] {
   return [...new Map(documents.map((document) => [documentIndexKey(document), document])).values()]
     .sort((left, right) => compareUtf16CodeUnits(documentIndexKey(left), documentIndexKey(right)));
@@ -558,7 +347,7 @@ function assertOccurrenceValues(
   }
 }
 
-function assertDocumentTarget(currentId: string, plan: ReferenceValueRenamePlan, sourcePath: string): void {
+function assertDocumentTarget(currentId: string | undefined, plan: ReferenceValueRenamePlan, sourcePath: string): void {
   if (plan.target.location?.documentId !== plan.oldValue || currentId !== plan.oldValue) {
     throw new VisualBridgeMcpError("refactor.targetChanged", `The document ID in '${sourcePath}' changed after indexing.`);
   }
@@ -569,10 +358,6 @@ function requireString(value: string | number): string {
   return value;
 }
 
-function readGraphElementKind(value: string | undefined): "graph" | "node" | "interfacePort" | "dynamicPort" | undefined {
-  return value === "graph" || value === "node" || value === "interfacePort" || value === "dynamicPort" ? value : undefined;
-}
-
 function incompatibleTarget(kind: string, editor: string): VisualBridgeMcpError {
   return new VisualBridgeMcpError("refactor.incompatibleTarget", `Reference target '${kind}' cannot be stored in a ${editor} document.`);
 }
@@ -581,16 +366,8 @@ function invalidSource(sourcePath: string, diagnostics: readonly unknown[]): Vis
   return new VisualBridgeMcpError("refactor.invalidSource", `Source '${sourcePath}' is invalid and cannot participate in a project refactor.`, diagnostics);
 }
 
-function decodeUtf8(bytes: Uint8Array, sourcePath: string): string {
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch (errorValue) {
-    throw new VisualBridgeMcpError("file.invalidUtf8", `File '${sourcePath}' is not valid UTF-8: ${formatError(errorValue)}`);
-  }
-}
-
-function fileTitle(sourcePath: string): string {
-  return path.basename(sourcePath, path.extname(sourcePath));
+function hashBytes(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 function hashStable(value: unknown): string {

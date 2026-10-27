@@ -15,3 +15,5 @@ export * from "./src/tableCatalogFacet";
 export * from "./src/tableCreateFacet";
 export * from "./src/tableDocumentFacet";
 export * from "./src/tableKeyRename";
+export * from "./src/tableMcpFacet";
+export * from "./src/tableOperationSchema";

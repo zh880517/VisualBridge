@@ -16,6 +16,7 @@ import type {
 import { referenceValuesEqual } from "@visualbridge/core";
 import {
   createEmptyTableCatalogRegistry,
+  resolveTableColumn,
   resolveTableSheet,
   resolveTableType,
   type TableCatalogRegistry,
@@ -126,6 +127,35 @@ export const tableDocumentFacet: DocumentFacet<TableDocument, TableCatalogRegist
       columnId: keyColumnId,
       value: replacement,
     }], tableType);
+  },
+
+  guardOperations(document, operations, context) {
+    const tableType = context.registry === undefined
+      ? undefined
+      : resolveTableType(context.registry, context.documentTypeId);
+    if (tableType === undefined || !Array.isArray(operations)) return [];
+    return operations.flatMap((raw, index): readonly DocumentDiagnostic[] => {
+      if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return [];
+      const operation = raw as Readonly<Record<string, unknown>>;
+      // 行删除不受守卫（单文件 Operation，悬空引用由持有方校验兜底）；
+      // 仅键列修改仍必须走 Reference Refactor。
+      if (operation.type !== "table.setCell"
+        || typeof operation.sheetId !== "string"
+        || typeof operation.columnId !== "string") return [];
+      const sheet = document.sheets.find((candidate) => candidate.id === operation.sheetId);
+      const definition = sheet === undefined ? undefined : resolveTableSheet(tableType, sheet.definitionId);
+      const column = definition === undefined ? undefined : resolveTableColumn(definition, operation.columnId);
+      const keyColumn = definition?.keyColumnId === undefined
+        ? undefined
+        : resolveTableColumn(definition, definition.keyColumnId);
+      if (column === undefined || keyColumn === undefined || column.id !== keyColumn.id) return [];
+      return [{
+        severity: "error",
+        code: "lifecycle.required",
+        path: `operations[${index}].type`,
+        message: "Changing a Table row key requires visualbridge_refactor_reference so every exact semantic reference is updated atomically.",
+      }];
+    });
   },
 
   collectOwnedIdentities(document, context) {

@@ -915,7 +915,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (typeof editor !== "string") return { ok: false, code: "catalog.editorMissing" };
         const facet = catalogFacetFor(editor);
         if (facet === undefined) return { ok: false, code: "catalog.facetMissing" };
-        const result = facet.parse(JSON.stringify(value));
+        const result = facet.parse(JSON.stringify(value), "test.catalog.json");
         return { ok: result.success === true };
       }),
       vscode.commands.registerCommand("visualbridge.test.getRuntimeBridgeState", () => runtimeBridge.state),

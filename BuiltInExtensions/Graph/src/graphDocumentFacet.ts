@@ -11,7 +11,14 @@ import type {
   DocumentFacetSourceFile,
   DocumentOperationResult,
 } from "@visualbridge/core";
-import { applyGraphOperations, parseGraphDocument, serializeGraphDocument, GRAPH_EDITOR_ID, type GraphDocument } from "./graphDocument";
+import {
+  applyGraphOperations,
+  findDanglingGraphElementReferenceDiagnostics,
+  parseGraphDocument,
+  serializeGraphDocument,
+  GRAPH_EDITOR_ID,
+  type GraphDocument,
+} from "./graphDocument";
 import {
   createEmptyGraphCatalogRegistry,
   type GraphCatalogRegistry,
@@ -103,6 +110,30 @@ export const graphDocumentFacet: DocumentFacet<GraphDocument, GraphCatalogRegist
       newElementId,
       ...(nodeId === undefined ? {} : { nodeId }),
     }], registry);
+  },
+
+  guardOperations(_document, operations) {
+    if (!Array.isArray(operations)) return [];
+    // 元素删除不受守卫（单文件 Operation，悬空引用由 validateTransition 兜底）；
+    // 仅稳定 ID 重命名仍必须走 Reference Refactor。
+    return operations.flatMap((entry, index) => (
+      typeof entry === "object"
+        && entry !== null
+        && (entry as { readonly type?: unknown }).type === "graph.renameElement"
+        ? [{
+            severity: "error" as const,
+            code: "lifecycle.required",
+            path: `operations[${index}].type`,
+            message: "Stable Graph element IDs must be changed through visualbridge_refactor_reference.",
+          }]
+        : []
+    ));
+  },
+
+  validateTransition(before, after, context) {
+    return context.registry === undefined
+      ? []
+      : findDanglingGraphElementReferenceDiagnostics(before, after, context.registry);
   },
 
   collectOwnedIdentities(document, context) {

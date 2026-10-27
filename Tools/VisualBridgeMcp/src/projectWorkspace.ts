@@ -74,21 +74,6 @@ export interface DeclaredDocumentContext {
   readonly absolutePath: string;
 }
 
-export interface GraphDocumentContext extends DeclaredDocumentContext {
-  readonly graphPath: string;
-  readonly absoluteGraphPath: string;
-}
-
-export interface TableDocumentContext extends DeclaredDocumentContext {
-  readonly tablePath: string;
-  readonly absoluteTablePath: string;
-}
-
-export interface StructuredDocumentContext extends DeclaredDocumentContext {
-  readonly structuredPath: string;
-  readonly absoluteStructuredPath: string;
-}
-
 export class VisualBridgeMcpError extends Error {
   public constructor(
     public readonly code: string,
@@ -262,33 +247,6 @@ export class VisualBridgeWorkspace {
       );
     }
     return { project, documentType: candidates[0]! };
-  }
-
-  public async resolveGraphDocument(
-    graphPath: string,
-    projectFile?: string,
-    documentTypeId?: string,
-  ): Promise<GraphDocumentContext> {
-    const context = await this.resolveDocument(graphPath, "graph", projectFile, documentTypeId);
-    return { ...context, graphPath: context.path, absoluteGraphPath: context.absolutePath };
-  }
-
-  public async resolveTableDocument(
-    tablePath: string,
-    projectFile?: string,
-    documentTypeId?: string,
-  ): Promise<TableDocumentContext> {
-    const context = await this.resolveDocument(tablePath, "table", projectFile, documentTypeId);
-    return { ...context, tablePath: context.path, absoluteTablePath: context.absolutePath };
-  }
-
-  public async resolveStructuredDocument(
-    structuredPath: string,
-    projectFile?: string,
-    documentTypeId?: string,
-  ): Promise<StructuredDocumentContext> {
-    const context = await this.resolveDocument(structuredPath, "structured", projectFile, documentTypeId);
-    return { ...context, structuredPath: context.path, absoluteStructuredPath: context.absolutePath };
   }
 
   public async listDeclaredDocuments(

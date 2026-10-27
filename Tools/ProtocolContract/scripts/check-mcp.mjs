@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
+/** 真实 traversal 的域边界命中计数（见 `assertDomainBoundaryCoverage`）。 */
+const domainBoundaryHits = new Map();
+
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = path.resolve(packageRoot, "../..");
 const schemaPath = path.join(repositoryRoot, "Protocol", "Schema", "visualbridge-mcp-tools.schema.json");
@@ -19,6 +22,7 @@ const primitives = JSON.parse(await readFile(
 ));
 await readFile(serverPath);
 verifyComparatorRejectsSemanticDrift();
+verifyDomainBoundaryAnchors();
 
 const transport = new StdioClientTransport({
   command: process.execPath,
@@ -30,6 +34,7 @@ const client = new Client({ name: "visualbridge-protocol-contract-check", versio
 await client.connect(transport);
 try {
   const listed = await client.listTools();
+  domainBoundaryHits.clear();
   const expectedNames = Object.keys(protocol.$defs)
     .filter((name) => name.endsWith(".input"))
     .map((name) => name.slice(0, -".input".length))
@@ -41,6 +46,7 @@ try {
     compareSchema(expected, actual, `${tool.name}.input`, protocol, actual);
     compareSchema(resolve(protocol.$defs[`${tool.name}.output`], protocol), tool.outputSchema, `${tool.name}.output`, protocol, tool.outputSchema);
   }
+  assertDomainBoundaryCoverage({ hits: domainBoundaryHits, toolCount: listed.tools.length }, "live");
   await verifyLiveNegativeExamples(client);
   console.log(`Checked ${listed.tools.length} live MCP tool schemas against Protocol.`);
 } finally {
@@ -66,10 +72,14 @@ function compareSchema(expectedValue, actualValue, contractPath, expectedRoot, a
   const expected = resolve(expectedValue, expectedRoot);
   const actual = resolveLocal(actualValue, actualRoot);
   if (isOpaquePayload(contractPath)) return;
-  if (isDomainObjectBoundary(contractPath)) {
+  const boundary = domainBoundaryKind(contractPath);
+  if (boundary !== undefined) {
+    recordDomainBoundary(boundary);
     assert.equal(inferredType(expected), "object", `${contractPath} formal boundary must be an object.`);
     assert.equal(inferredType(actual), "object", `${contractPath} live boundary must be an object.`);
     assert.notEqual(actual?.additionalProperties, false, `${contractPath} must admit domain-owned keys.`);
+    if (boundary === "deleteTarget") assertLiveDeleteTarget(expected, actual, contractPath);
+    if (boundary === "createParameters") assertLiveCreateParameters(actual, contractPath);
     return;
   }
   if (contractPath === "visualbridge_apply_operations.input.operations.items") {
@@ -119,7 +129,7 @@ function compareSchema(expectedValue, actualValue, contractPath, expectedRoot, a
     expectedUnion.forEach((branch, index) => compareSchema(
       branch,
       actualUnion[index],
-      `${contractPath}.union[${index}]`,
+      `${contractPath}.union[${unionBranchLabel(branch, expectedRoot, index)}]`,
       expectedRoot,
       actualRoot,
     ));
@@ -229,10 +239,58 @@ function inferredType(schema) {
   return types.length === 1 ? types[0] : undefined;
 }
 
-function isDomainObjectBoundary(value) {
-  return value.endsWith(".selector")
-    || value === "visualbridge_references.input.target"
-    || (value.startsWith("visualbridge_refactor_reference.input.") && value.endsWith(".target"));
+/**
+ * 域自有对象的边界（宿主只冻结"边界"而不冻结内部字段）。
+ *
+ * 定位一律用**结构锚点**（工具路径 + 判别字段 `kind` 的 const），不用 `union[n]` 下标：
+ * 分支顺序可以调，语义锚点不能。
+ */
+function domainBoundaryKind(value) {
+  if (isLifecyclePath(value) && value.endsWith("operation.union[delete].target")) return "deleteTarget";
+  // B4：create 的 parameters 由模块 create facet 解释，契约只冻结"JSON 对象"。
+  if (isLifecyclePath(value) && value.endsWith("operation.union[create].parameters")) return "createParameters";
+  if (value.endsWith(".selector")) return "selector";
+  if (value === "visualbridge_references.input.target") return "referenceTarget";
+  if (value.startsWith("visualbridge_refactor_reference.input.") && value.endsWith(".target")) return "referenceTarget";
+  return undefined;
+}
+
+function isLifecyclePath(value) {
+  return value === "visualbridge_document_lifecycle.input"
+    || value.startsWith("visualbridge_document_lifecycle.input.");
+}
+
+/** delete 目标只冻结 `kind`：live 侧丢了 `required: ["kind"]` 或属性集被撑开都必须变红。 */
+function assertLiveDeleteTarget(expected, actual, contractPath) {
+  assert.ok(
+    Array.isArray(actual?.required) && actual.required.includes("kind"),
+    `${contractPath} live schema must require 'kind'.`,
+  );
+  assert.deepEqual(
+    Object.keys(actual?.properties ?? {}),
+    ["kind"],
+    `${contractPath} live schema may only freeze 'kind'.`,
+  );
+  compareSchema(expected?.properties?.kind, actual?.properties?.kind, `${contractPath}.kind`, authoring, actual);
+}
+
+/** create 的 parameters 是模块自有的开放 JSON 对象：live 侧不得冻结字段或要求固定键。 */
+function assertLiveCreateParameters(actual, contractPath) {
+  assert.deepEqual(
+    Object.keys(actual?.properties ?? {}),
+    [],
+    `${contractPath} live schema must not freeze create parameter fields.`,
+  );
+  assert.deepEqual(
+    actual?.required ?? [],
+    [],
+    `${contractPath} live schema must not require create parameter fields.`,
+  );
+  assert.equal(
+    typeof actual?.additionalProperties,
+    "object",
+    `${contractPath} live schema must admit arbitrary JSON parameters.`,
+  );
 }
 
 function isOpaquePayload(value) {
@@ -242,11 +300,43 @@ function isOpaquePayload(value) {
 function compareOrdinal(left, right) { return left < right ? -1 : left > right ? 1 : 0; }
 function normalizePattern(value) { return typeof value === "string" ? value.replaceAll("\\/", "/") : value; }
 
+/** union 分支的路径标签：优先用判别字段的 `const`（`kind`，其次 `action`），否则退回下标。 */
+function unionBranchLabel(branch, root, index) {
+  const resolved = resolve(branch, root);
+  const discriminator = resolved?.properties?.kind?.const ?? resolved?.properties?.action?.const;
+  return typeof discriminator === "string" ? discriminator : String(index);
+}
+
 function normalizeRequiredMap(value) {
   if (value === undefined) return undefined;
   return Object.fromEntries(Object.entries(value)
     .sort(([left], [right]) => compareOrdinal(left, right))
     .map(([key, required]) => [key, [...required].sort(compareOrdinal)]));
+}
+
+/**
+ * 本轮真实 traversal 的域边界命中计数（B4 第 2 轮 P2-3）。
+ *
+ * 只用硬编码字符串自检证明不了"真实 formal schema 仍会走到这些边界"：契约结构一变，
+ * 自检照样绿而覆盖已经消失。这里让自检消费真实 traversal 的计数。
+ */
+function recordDomainBoundary(kind) {
+  domainBoundaryHits.set(kind, (domainBoundaryHits.get(kind) ?? 0) + 1);
+}
+
+function assertDomainBoundaryCoverage({ hits, toolCount }, label) {
+  assert.ok(toolCount > 0, `${label} traversal must list at least one tool.`);
+  const total = [...hits.values()].reduce((sum, count) => sum + count, 0);
+  assert.ok(
+    total > 0,
+    `${label} traversal never hit a domain boundary; boundary anchors cannot be verified against real data.`,
+  );
+  for (const kind of ["deleteTarget", "createParameters"]) {
+    assert.ok(
+      (hits.get(kind) ?? 0) > 0,
+      `${label} traversal must hit the '${kind}' boundary at least once (hits=${JSON.stringify([...hits])}).`,
+    );
+  }
 }
 
 function verifyComparatorRejectsSemanticDrift() {
@@ -264,6 +354,37 @@ function verifyComparatorRejectsSemanticDrift() {
       `Live MCP comparison must reject a dropped ${keyword} constraint.`,
     );
   }
+}
+
+/**
+ * 边界断言自检：证明"锚点 + live 侧必填判别字段"确实能变红，而不是随结构漂移静默失效。
+ */
+function verifyDomainBoundaryAnchors() {
+  const deletePath = "visualbridge_document_lifecycle.input.union[preview].operation.union[delete].target";
+  const createPath = "visualbridge_document_lifecycle.input.union[apply].operation.union[create].parameters";
+  assert.equal(domainBoundaryKind(deletePath), "deleteTarget", "The delete target must be anchored by its kind discriminator.");
+  assert.equal(domainBoundaryKind(createPath), "createParameters", "Create parameters must be anchored by their kind discriminator.");
+  assert.equal(
+    domainBoundaryKind("visualbridge_document_lifecycle.input.union[preview].operation.union[copy].target"),
+    undefined,
+    "Create/copy/move targets must stay strict selectors.",
+  );
+  assert.throws(
+    () => assertLiveDeleteTarget({ properties: { kind: {} } }, { type: "object", properties: { kind: {} }, additionalProperties: {} }, "self.check"),
+    { name: "AssertionError" },
+    "A live delete target that lost required:kind must fail the contract check.",
+  );
+  assert.throws(
+    () => assertLiveCreateParameters({ type: "object", properties: { documentId: {} }, required: ["documentId"] }, "self.check"),
+    { name: "AssertionError" },
+    "A live create parameters schema that froze fields must fail the contract check.",
+  );
+  // 计数自检的牙齿：真实 traversal 若一个边界都没命中，必须整体变红。
+  assert.throws(
+    () => assertDomainBoundaryCoverage({ hits: new Map(), toolCount: 1 }, "self.check"),
+    { name: "AssertionError" },
+    "A traversal that never hits a domain boundary must fail the contract check.",
+  );
 }
 
 async function verifyLiveNegativeExamples(client) {

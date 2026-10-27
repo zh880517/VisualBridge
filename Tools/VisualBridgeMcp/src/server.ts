@@ -1,18 +1,17 @@
+/**
+ * VisualBridge MCP Server（B4 起为模块驱动）。
+ *
+ * 启动时读取 `VISUALBRIDGE_MODULES_ENABLED` 并登记模块；所有工具都通过 `McpDocumentService`
+ * 与模块 facet 工作，本文件不含 editor 分支，只保留契约 Schema 与工具装配。
+ */
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
-import {
-  McpDocumentAdapterRegistry,
-  type DocumentCatalogRequest,
-  type DocumentRequest,
-} from "./documentAdapterRegistry.js";
-import { EntityService } from "./entityService.js";
-import { GraphService } from "./graphService.js";
-import {
-  DocumentLifecycleService,
-  type DocumentLifecycleHostRequest,
-} from "./lifecycleService.js";
+import type { DocumentCatalogRequest, DocumentRequest } from "./documentRequests.js";
+import { McpDocumentService } from "./documentService.js";
+import { DocumentLifecycleService, type DocumentLifecycleHostRequest } from "./lifecycleService.js";
+import { McpModuleRegistry } from "./moduleRegistry.js";
 import { pageItems } from "./pagination.js";
 import { readProjectProviderAuthorization } from "./providerAuthorization.js";
 import { McpProjectProviderService } from "./projectProviderService.js";
@@ -20,49 +19,25 @@ import { VisualBridgeMcpError, VisualBridgeWorkspace } from "./projectWorkspace.
 import { ReferenceRefactorService } from "./refactorService.js";
 import { VisualBridgeReferenceService, referenceDefinition } from "./referenceService.js";
 import { RuntimeService } from "./runtimeService.js";
-import { StructuredService } from "./structuredService.js";
-import { TableService } from "./tableService.js";
 
 const CONTRACT_VERSION = 2 as const;
 const workspaceRoot = process.env.VISUALBRIDGE_WORKSPACE === undefined
   ? process.cwd()
   : path.resolve(process.env.VISUALBRIDGE_WORKSPACE);
 const workspace = await VisualBridgeWorkspace.create(workspaceRoot);
+const modules = McpModuleRegistry.fromEnvironment(process.env, workspace.root);
 const providerService = new McpProjectProviderService(
   workspace,
   readProjectProviderAuthorization(process.env),
 );
-const tableService = new TableService(workspace);
-const referenceService = new VisualBridgeReferenceService(workspace, tableService, providerService);
-tableService.setReferenceService(referenceService);
-const graphService = new GraphService(workspace, referenceService);
-const entityService = new EntityService(workspace, referenceService);
-const structuredService = new StructuredService(workspace, referenceService);
-const refactorService = new ReferenceRefactorService(workspace, referenceService, tableService);
-const lifecycleService = new DocumentLifecycleService(workspace, referenceService, tableService);
+const documents = new McpDocumentService(workspace, modules);
+const referenceService = new VisualBridgeReferenceService(workspace, modules, providerService);
+const refactorService = new ReferenceRefactorService(workspace, referenceService, documents);
+const lifecycleService = new DocumentLifecycleService(workspace, referenceService, documents, modules);
 const runtimeService = new RuntimeService(workspace);
-const adapters = new McpDocumentAdapterRegistry([
-  {
-    editor: "entity",
-    queryCatalog: (request) => entityService.queryCatalog(request),
-    executeDocument: (request) => entityService.executeDocument(request),
-  },
-  {
-    editor: "graph",
-    queryCatalog: (request) => graphService.queryCatalog(request),
-    executeDocument: (request) => graphService.executeDocument(request),
-  },
-  {
-    editor: "structured",
-    queryCatalog: (request) => structuredService.queryCatalog(request),
-    executeDocument: (request) => structuredService.executeDocument(request),
-  },
-  {
-    editor: "table",
-    queryCatalog: (request) => tableService.queryCatalog(request),
-    executeDocument: (request) => tableService.executeDocument(request),
-  },
-]);
+// 双向注入：Document 读/写要校验 Reference，Reference 装载要读文档。
+documents.setReferenceService(referenceService);
+referenceService.setDocumentService(documents);
 
 function createServer(): McpServer {
   const server = new McpServer(
@@ -78,7 +53,7 @@ function createServer(): McpServer {
     {
       title: "Discover and inspect VisualBridge Projects",
       description:
-        "Discovers Projects, reads one Project definition and adapter capabilities, or lists its declared semantic documents with stable cursor pagination.",
+        "Discovers Projects, reads one Project definition, module status and editor capabilities, or lists its declared semantic documents with stable cursor pagination.",
       inputSchema: projectInputSchema,
       outputSchema: toolOutputSchema,
       annotations: { readOnlyHint: true },
@@ -100,14 +75,36 @@ function createServer(): McpServer {
       }
       const project = await workspace.resolveProject(projectFile);
       if (action === "read") {
+        const moduleSet = await modules.modulesFor(project);
+        const editorStatus = new Map(moduleSet.reports.flatMap((report) => (
+          report.editors.map((entry) => [entry, report.status] as const)
+        )));
+        const supportedEditors = moduleSet.active.map((entry) => entry.editor).sort();
         return {
           projectFile: project.projectFile,
           definition: project.definition,
           documentTypes: project.definition.documentTypes.map((documentType) => ({
             ...documentType,
-            adapterAvailable: adapters.get(documentType.editor) !== undefined,
+            adapterAvailable: supportedEditors.includes(documentType.editor),
+            moduleStatus: editorStatus.get(documentType.editor) ?? "disabled",
           })),
-          supportedEditors: adapters.listEditors(),
+          modulesEnabled: moduleSet.enabled,
+          supportedEditors,
+          modules: moduleSet.reports.map((report) => {
+            const registration = modules.registrations().find((entry) => entry.id === report.id);
+            return {
+              id: report.id,
+              entry: report.entry,
+              status: report.status,
+              ...(report.version === undefined ? {} : { version: report.version }),
+              ...(report.sha256 === undefined ? {} : { sha256: report.sha256 }),
+              editors: report.editors.map((entry) => ({
+                editor: entry,
+                ...(registration === undefined ? {} : { operationSchema: registration.operationSchema }),
+              })),
+              diagnostics: report.diagnostics,
+            };
+          }),
           projectProviders: {
             enabled: providerService.authorization.enabled,
             declared: project.definition.providers.map((provider) => ({
@@ -118,6 +115,8 @@ function createServer(): McpServer {
           },
         };
       }
+      const moduleSet = await modules.modulesFor(project);
+      const supportedEditors = moduleSet.active.map((entry) => entry.editor);
       const declared = await workspace.listDeclaredDocuments(project);
       const normalizedQuery = query.toLowerCase();
       const results = declared
@@ -129,7 +128,7 @@ function createServer(): McpServer {
           documentTypeId: entry.documentType.id,
           editor: entry.documentType.editor,
           path: entry.path,
-          adapterAvailable: adapters.get(entry.documentType.editor) !== undefined,
+          adapterAvailable: supportedEditors.includes(entry.documentType.editor),
         }));
       const page = pageItems(results, cursor, limit, {
         tool: "visualbridge_project",
@@ -148,7 +147,7 @@ function createServer(): McpServer {
     {
       title: "Read or search a VisualBridge Catalog Registry",
       description:
-        "Uses the Project-selected built-in adapter to read one Registry section or search Catalog definitions. Catalog search is distinct from Document instance search.",
+        "Routes the Document Type through its module's Catalog facet to read one Registry section or search Catalog definitions. Catalog search is distinct from Document instance search.",
       inputSchema: catalogInputSchema,
       outputSchema: toolOutputSchema,
       annotations: { readOnlyHint: true },
@@ -156,7 +155,6 @@ function createServer(): McpServer {
     async ({ action, projectFile, documentTypeId, editor, kind, query, cursor, limit, selector }) =>
       handle(async () => {
         const resolved = await workspace.resolveDocumentType(editor, projectFile, documentTypeId);
-        const adapter = adapters.require(resolved.documentType.editor);
         const request: DocumentCatalogRequest = {
           action,
           projectFile: resolved.project.projectFile,
@@ -167,7 +165,7 @@ function createServer(): McpServer {
           limit,
           selector,
         };
-        return adapter.queryCatalog(request);
+        return documents.queryCatalog(request);
       }),
   );
 
@@ -176,7 +174,7 @@ function createServer(): McpServer {
     {
       title: "Read, search or validate a VisualBridge Document",
       description:
-        "Routes a declared path through its Project Document Type and shared built-in adapter. Search queries semantic instances; read and validate return the authoritative physical baseHash and diagnostics.",
+        "Routes a declared path through its Project Document Type and module facets. Search queries semantic instances; read and validate return the authoritative physical baseHash and diagnostics.",
       inputSchema: documentInputSchema,
       outputSchema: toolOutputSchema,
       annotations: { readOnlyHint: true },
@@ -184,7 +182,6 @@ function createServer(): McpServer {
     async ({ action, projectFile, documentTypeId, editor, path: documentPath, query, cursor, limit, selector }) =>
       handle(async () => {
         const resolved = await workspace.resolveDocument(documentPath, editor, projectFile, documentTypeId);
-        const adapter = adapters.require(resolved.documentType.editor);
         const request: DocumentRequest = {
           action,
           projectFile: resolved.project.projectFile,
@@ -195,7 +192,7 @@ function createServer(): McpServer {
           limit,
           selector,
         };
-        return adapter.executeDocument(request);
+        return documents.executeDocument(request);
       }),
   );
 
@@ -204,7 +201,7 @@ function createServer(): McpServer {
     {
       title: "Atomically apply VisualBridge Document Operations",
       description:
-        "Routes one ordered, non-empty Operation batch through the declared Document Type. Requires the exact physical baseHash and rejects conflicts or invalid batches without partial semantic writes.",
+        "Routes one ordered, non-empty Operation batch through the declared Document Type's module. Requires the exact physical baseHash and rejects conflicts or invalid batches without partial semantic writes.",
       inputSchema: applyOperationsInputSchema,
       outputSchema: toolOutputSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
@@ -212,8 +209,7 @@ function createServer(): McpServer {
     async ({ projectFile, documentTypeId, editor, path: documentPath, baseHash, operations }) =>
       handle(async () => {
         const resolved = await workspace.resolveDeclaredDocument(documentPath, editor, projectFile, documentTypeId);
-        const adapter = adapters.require(resolved.documentType.editor);
-        return adapter.executeDocument({
+        return documents.executeDocument({
           action: "apply",
           projectFile: resolved.project.projectFile,
           documentTypeId: resolved.documentType.id,
@@ -277,7 +273,7 @@ function createServer(): McpServer {
     {
       title: "Preview or apply a VisualBridge Document Lifecycle operation",
       description:
-        "Creates, copies, path-moves, or safely deletes a declared Document or supported contained target. Apply requires the exact canonical preview payload, base hashes, and Project/Catalog/index dependencies, then commits every physical mutation atomically.",
+        "Creates, copies, path-moves, or safely deletes a declared Document or module-owned contained target. Apply requires the exact canonical preview payload, base hashes, and Project/Catalog/index dependencies, then commits every physical mutation atomically.",
       inputSchema: documentLifecycleInputSchema,
       outputSchema: toolOutputSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
@@ -300,8 +296,8 @@ function createServer(): McpServer {
         return { instances: await runtimeService.listInstances() };
       }
       if (action === "getSnapshot") {
-        const documents = await runtimeService.getSnapshot(instanceId!, documentTypeIds);
-        return { instanceId: instanceId!, documents };
+        const snapshotDocuments = await runtimeService.getSnapshot(instanceId!, documentTypeIds);
+        return { instanceId: instanceId!, documents: snapshotDocuments };
       }
       const sources = await runtimeService.getDocumentSources(instanceId!);
       return { instanceId: instanceId!, sources };
@@ -382,7 +378,7 @@ const documentInputSchema = z.object({
 const applyOperationsInputSchema = z.object({
   projectFile: normalizedPath,
   documentTypeId: stableId,
-  editor: z.enum(["graph", "entity", "structured", "table"]),
+  editor: stableId,
   path: normalizedPath,
   baseHash: z.string().regex(/^[a-f0-9]{64}$/),
   operations: z.array(operationSchema).min(1),
@@ -409,7 +405,7 @@ const referenceInputSchema = z.object({
 
 const refactorInputBase = {
   projectFile: normalizedPath,
-  kind: z.enum(["document", "entity.component", "graph.element", "table.row"]),
+  kind: stableId,
   target: z.record(z.string(), z.json()),
 };
 const refactorApplyBase = {
@@ -450,7 +446,7 @@ const lifecycleSelectorBase = {
 };
 const lifecycleSelectorSchema = z.object({
   ...lifecycleSelectorBase,
-  editor: z.enum(["graph", "entity", "structured", "table"]),
+  editor: stableId,
 }).strict();
 const stableIdentityValueSchema = z.union([z.string().max(4096), z.number().finite()]);
 const stableIdentityRemapSchema = z.object({
@@ -462,43 +458,12 @@ const stableIdentityRemapSchema = z.object({
     context.addIssue({ code: "custom", path: ["to"], message: "Stable identity value type must not change." });
   }
 });
-const lifecycleCreateOperationSchema = z.union([
-  z.object({
-    kind: z.literal("create"),
-    target: z.object({ ...lifecycleSelectorBase, editor: z.literal("graph") }).strict(),
-    parameters: z.object({
-      documentId: stableId,
-      rootGraphId: stableId,
-      graphTypeId: stableId.optional(),
-      initialNodeIds: z.array(stableId).default([]),
-    }).strict(),
-  }).strict(),
-  z.object({
-    kind: z.literal("create"),
-    target: z.object({ ...lifecycleSelectorBase, editor: z.literal("entity") }).strict(),
-    parameters: z.object({
-      documentId: stableId,
-      entityTypeId: stableId,
-      title: z.string().min(1).max(512).optional(),
-    }).strict(),
-  }).strict(),
-  z.object({
-    kind: z.literal("create"),
-    target: z.object({ ...lifecycleSelectorBase, editor: z.literal("structured") }).strict(),
-    parameters: z.object({ documentId: stableId }).strict(),
-  }).strict(),
-  z.object({
-    kind: z.literal("create"),
-    target: z.object({ ...lifecycleSelectorBase, editor: z.literal("table") }).strict(),
-    parameters: z.union([
-      z.object({
-        format: z.literal("csv"),
-        physicalName: z.string().min(1).max(255).optional(),
-      }).strict(),
-      z.object({ format: z.literal("xlsx") }).strict(),
-    ]),
-  }).strict(),
-]);
+// Create 的 parameters 由模块 create facet 校验：MCP 契约只要求是 JSON 对象。
+const lifecycleCreateOperationSchema = z.object({
+  kind: z.literal("create"),
+  target: lifecycleSelectorSchema,
+  parameters: z.record(z.string(), z.json()),
+}).strict();
 const lifecycleCopyOperationSchema = z.object({
   kind: z.literal("copy"),
   source: lifecycleSelectorSchema,
@@ -510,34 +475,8 @@ const lifecycleMoveOperationSchema = z.object({
   source: lifecycleSelectorSchema,
   target: lifecycleSelectorSchema,
 }).strict();
-const lifecycleDeleteTargetSchema = z.union([
-  z.object({ kind: z.literal("document") }).strict(),
-  z.object({ kind: z.literal("entity.component"), componentId: stableId }).strict(),
-  z.object({
-    kind: z.literal("graph.element"),
-    graphId: stableId,
-    elementKind: z.literal("graph"),
-    elementId: stableId,
-  }).strict(),
-  z.object({
-    kind: z.literal("graph.element"),
-    graphId: stableId,
-    elementKind: z.enum(["node", "interfacePort"]),
-    elementId: stableId,
-  }).strict(),
-  z.object({
-    kind: z.literal("graph.element"),
-    graphId: stableId,
-    elementKind: z.literal("dynamicPort"),
-    elementId: stableId,
-    nodeId: stableId,
-  }).strict(),
-  z.object({
-    kind: z.literal("table.row"),
-    sheetId: z.string().min(1).max(1024),
-    rowId: z.string().min(1).max(1024),
-  }).strict(),
-]);
+// Delete 目标由模块 facet 解释：契约只要求带 kind 的 JSON 对象。
+const lifecycleDeleteTargetSchema = z.object({ kind: stableId }).loose();
 const lifecycleDeleteOperationSchema = z.object({
   kind: z.literal("delete"),
   source: lifecycleSelectorSchema,

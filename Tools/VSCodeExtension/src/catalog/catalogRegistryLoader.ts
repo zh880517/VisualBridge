@@ -1,43 +1,20 @@
 import { createHash } from "node:crypto";
 import * as vscode from "vscode";
 import type {
+  CatalogFacet,
   CatalogSourceDefinition,
+  CatalogWithSource,
   DocumentDiagnostic,
-  DocumentParseResult,
 } from "@visualbridge/core";
 import type { ProjectContext } from "../project/projectRegistry";
 
-/** 一个可浏览的 Catalog 定义（与领域无关：模块 `catalog` facet 产出）。 */
-export interface CatalogDefinitionEntry {
-  readonly kind: string;
-  readonly id: string;
-  readonly title: string;
-  readonly aliases: readonly string[];
-}
-
-/** Document Type → Catalog 绑定不可解析（Structured/Table 的 type id/alias 校验）。 */
-export interface CatalogBindingIssue {
-  readonly code: string;
-  readonly message: string;
-}
-
-/**
- * 模块的 `catalog` facet（附录 D.3）：宿主只读这份结构，不知道任何领域类型。
- *
- * `definitions` / `registryDefinitions` / `bindingIssue` 让 Catalog 视图与工程校验也走 facet，
- * 宿主因此没有按 editor 分支的 Catalog 列表。
- */
-export interface CatalogFacet<TCatalog extends CatalogWithSource = CatalogWithSource, TRegistry = unknown> {
-  readonly editor: string;
-  /** 该 editor 的 Catalog 文件扩展名（含点）；C2 登记进 bundle manifest 后由模块平台消费。 */
-  readonly extensions: readonly string[];
-  parse(text: string): DocumentParseResult<TCatalog>;
-  build(catalogs: readonly TCatalog[]): DocumentParseResult<TRegistry>;
-  createRegistry(): TRegistry;
-  definitions(catalog: TCatalog): readonly CatalogDefinitionEntry[];
-  registryDefinitions(registry: TRegistry): readonly CatalogDefinitionEntry[];
-  bindingIssue?(registry: TRegistry, documentTypeId: string): CatalogBindingIssue | undefined;
-}
+// Catalog facet 的结构契约在 Core（B4 起 MCP 与 VS Code 共用同一份），这里只做再导出。
+export type {
+  CatalogBindingIssue,
+  CatalogDefinitionEntry,
+  CatalogFacet,
+  CatalogWithSource,
+} from "@visualbridge/core";
 
 export interface CatalogSourceInspection<TCatalog> {
   readonly path: string;
@@ -53,12 +30,6 @@ export interface CatalogRegistryLoadResult<TCatalog, TRegistry> {
   readonly diagnostics: readonly DocumentDiagnostic[];
   readonly sources: readonly CatalogSourceInspection<TCatalog>[];
   readonly ready: boolean;
-}
-
-export interface CatalogWithSource {
-  readonly catalogId: string;
-  readonly title: string;
-  readonly source: CatalogSourceDefinition;
 }
 
 export async function loadCatalogRegistry<TCatalog extends CatalogWithSource, TRegistry>(
@@ -93,7 +64,7 @@ export async function loadCatalogRegistry<TCatalog extends CatalogWithSource, TR
         : undefined;
       const text = openDocument?.getText()
         ?? new TextDecoder("utf-8", { fatal: true }).decode(diskBytes);
-      const parsed = facet.parse(text);
+      const parsed = facet.parse(text, catalogPath);
       const sourceDiagnostics = [...parsed.diagnostics];
       if (parsed.success && parsed.document.source.status === "stale") {
         sourceDiagnostics.push({

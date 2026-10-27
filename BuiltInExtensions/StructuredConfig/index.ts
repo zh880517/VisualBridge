@@ -7,3 +7,5 @@ export * from "./src/moduleSessionContract";
 export * from "./src/structuredCatalogFacet";
 export * from "./src/structuredCreateFacet";
 export * from "./src/structuredDocumentFacet";
+export * from "./src/structuredMcpFacet";
+export * from "./src/structuredOperationSchema";

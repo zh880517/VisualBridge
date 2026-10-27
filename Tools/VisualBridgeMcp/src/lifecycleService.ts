@@ -1,4 +1,10 @@
-import { createHash } from "node:crypto";
+/**
+ * MCP 的 Document Lifecycle 宿主编排（B4）。
+ *
+ * 快照装载、稳定身份、改名与删除目标都来自模块 facet；本文件只保留与语义无关的编排：
+ * Project 索引、身份冲突索引、依赖清单、Project Transaction 与 preview/apply 幂等。
+ */
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -8,7 +14,6 @@ import {
   compareUtf16CodeUnits,
   prepareDocumentLifecycleApply,
   referenceLocationKey,
-  referenceValuesEqual,
   remapOwnedStableIdentityCollisionTargets,
   validateCompleteStableIdentityRemap,
   validateOwnedStableIdentityTargetCollisions,
@@ -32,54 +37,9 @@ import {
   type ReferenceOccurrence,
   type StableIdentityRemap,
 } from "@visualbridge/core";
-import {
-  collectEntityReferences,
-  createEmptyEntityDocument,
-  parseEntityDocument,
-  replaceEntityReferenceValues,
-  serializeEntityDocument,
-  validateEntityDocument,
-  type EntityCatalogRegistry,
-  type EntityDocument,
-  entityDocumentAdapter,
-} from "@visualbridge/entity";
-import {
-  collectGraphReferences,
-  createEmptyGraphDocument,
-  parseGraphDocument,
-  replaceGraphReferenceValues,
-  serializeGraphDocument,
-  validateGraphDocument,
-  type GraphCatalogRegistry,
-  type GraphDocument,
-  graphDocumentAdapter,
-} from "@visualbridge/graph";
-import {
-  collectStructuredReferences,
-  createEmptyStructuredDocument,
-  parseStructuredDocument,
-  replaceStructuredReferenceValues,
-  serializeStructuredDocument,
-  validateStructuredDocument,
-  type StructuredCatalogRegistry,
-  type StructuredDocument,
-  structuredDocumentAdapter,
-} from "@visualbridge/structured";
-import {
-  collectAddressableTableIdentityKeys,
-  collectTableReferences,
-  replaceTableReferenceValues,
-  resolveEffectiveTableRows,
-  resolveTableColumn,
-  resolveTableSheet,
-  tableDedupIdentityKey,
-  tableRowIdentityKey,
-  type TableDocument,
-  type TableTypeDefinition,
-  tableDocumentAdapter,
-} from "@visualbridge/table";
-import { hashBytes } from "./atomicTextFile.js";
-import { loadMcpEntityRegistry } from "./entityRegistry.js";
+import type { LoadedDocument, LoadedSourceFile, RenderedSource } from "./documentService.js";
+import { McpDocumentService } from "./documentService.js";
+import type { McpModuleRegistry } from "./moduleRegistry.js";
 import {
   VisualBridgeMcpError,
   resolveAbsentProjectPath,
@@ -95,30 +55,11 @@ import {
   type ProjectTransactionMutation,
   type ProjectTransactionPrecondition,
 } from "./projectTransaction.js";
-import {
-  loadMcpGraphRegistry,
-  loadMcpStructuredRegistry,
-  type VisualBridgeReferenceService,
-} from "./referenceService.js";
-import {
-  type LoadedTable,
-  type PreparedTableLifecycleSource,
-  type TableService,
-} from "./tableService.js";
+import type { VisualBridgeReferenceService } from "./referenceService.js";
 
 export type DocumentLifecycleHostRequest = DocumentLifecycleRequest & {
   readonly projectFile?: string;
 };
-
-type TextSnapshot = GraphSnapshot | EntitySnapshot | StructuredSnapshot;
-
-interface SnapshotBase {
-  readonly selector: DocumentLifecycleSelector;
-  readonly context: DeclaredDocumentContext;
-  readonly sourcePaths: readonly SourceBytes[];
-  readonly occurrences: readonly ReferenceOccurrence[];
-  readonly ownedIdentities: readonly PlannedOwnedStableIdentity[];
-}
 
 type PlannedOwnedStableIdentity = Omit<OwnedStableIdentity, "reference"> & {
   readonly reference?: {
@@ -127,37 +68,11 @@ type PlannedOwnedStableIdentity = Omit<OwnedStableIdentity, "reference"> & {
   };
 };
 
-interface GraphSnapshot extends SnapshotBase {
-  readonly editor: "graph";
-  readonly document: GraphDocument;
-  readonly registry: GraphCatalogRegistry;
-}
-
-interface EntitySnapshot extends SnapshotBase {
-  readonly editor: "entity";
-  readonly document: EntityDocument;
-  readonly registry: EntityCatalogRegistry;
-}
-
-interface StructuredSnapshot extends SnapshotBase {
-  readonly editor: "structured";
-  readonly document: StructuredDocument;
-  readonly registry: StructuredCatalogRegistry;
-}
-
-interface TableSnapshot extends SnapshotBase {
-  readonly editor: "table";
-  readonly document: TableDocument;
-  readonly tableType: TableTypeDefinition;
-  readonly loaded: LoadedTable;
-}
-
-type LifecycleSnapshot = TextSnapshot | TableSnapshot;
-
-interface SourceBytes {
-  readonly path: string;
-  readonly absolutePath: string;
-  readonly bytes: Buffer;
+interface LifecycleSnapshot {
+  readonly selector: DocumentLifecycleSelector;
+  readonly loaded: LoadedDocument;
+  readonly occurrences: readonly ReferenceOccurrence[];
+  readonly ownedIdentities: readonly PlannedOwnedStableIdentity[];
 }
 
 interface HostMutation extends ProjectTransactionMutation {
@@ -174,14 +89,15 @@ interface PreparedLifecycle {
 interface DeletePreparation {
   readonly ownedIdentities: readonly PlannedOwnedStableIdentity[];
   readonly internalOccurrencePaths: ReadonlySet<string>;
-  readonly nextDocument?: GraphDocument | EntityDocument | TableDocument;
+  readonly nextDocument?: unknown;
 }
 
 export class DocumentLifecycleService {
   public constructor(
     private readonly workspace: VisualBridgeWorkspace,
     private readonly references: VisualBridgeReferenceService,
-    private readonly tables: TableService,
+    private readonly documents: McpDocumentService,
+    private readonly modules: McpModuleRegistry,
   ) {}
 
   public async execute(input: unknown): Promise<Record<string, unknown>> {
@@ -205,7 +121,10 @@ export class DocumentLifecycleService {
             message: formatError(errorValue),
           };
         }
-        const readiness = prepareDocumentLifecycleApply(request, prepared.preview);
+        const readiness = prepareDocumentLifecycleApply(
+          request as DocumentLifecycleApplyRequest,
+          prepared.preview,
+        );
         if (!readiness.success) {
           return readiness.status === "blocked"
             ? { ...previewResult(prepared), status: "blocked", blockers: readiness.blockers }
@@ -240,7 +159,9 @@ export class DocumentLifecycleService {
   private async prepare(request: DocumentLifecycleHostRequest): Promise<PreparedLifecycle> {
     const project = await this.workspace.resolveProject(request.projectFile);
     validateOperationProject(request.operation, project);
-    const indexed = await this.references.buildProjectIndex(project.projectFile);
+    const indexed = await this.references.buildProjectIndex(project.projectFile, {
+      errorCode: "lifecycle.invalidSource",
+    });
     const referenceService = await this.references.createProjectService(project.projectFile);
     const dependencies = await buildDependencies(project, indexed);
     const preconditions = await buildDependencyPreconditions(project, dependencies);
@@ -304,75 +225,40 @@ export class DocumentLifecycleService {
   ) {
     const target = await this.resolveTarget(project, operation.target);
     const context = target.context;
-    let sources: readonly PreparedTableLifecycleSource[];
-    let owned: readonly OwnedStableIdentity[] = [];
-    if (context.documentType.editor === "graph") {
-      assertParameterKeys(operation.parameters, ["documentId", "rootGraphId", "graphTypeId", "initialNodeIds"]);
-      const registry = await loadMcpGraphRegistry(project, context);
-      const documentId = requiredIdentifier(operation.parameters.documentId, "parameters.documentId");
-      const rootGraphId = requiredIdentifier(operation.parameters.rootGraphId, "parameters.rootGraphId");
-      const graphTypeId = optionalIdentifier(operation.parameters.graphTypeId, "parameters.graphTypeId");
-      const initialNodeIds = identifierArray(operation.parameters.initialNodeIds, "parameters.initialNodeIds");
-      let nodeIndex = 0;
-      const document = createEmptyGraphDocument(
-        documentId,
-        rootGraphId,
-        graphTypeId,
-        registry,
-        () => {
-          const id = initialNodeIds[nodeIndex];
-          if (id === undefined) throw new VisualBridgeMcpError("lifecycle.invalidCreate", "Graph create requires an ID for every initial node.");
-          nodeIndex += 1;
-          return id;
-        },
-      );
-      if (nodeIndex !== initialNodeIds.length) {
-        throw new VisualBridgeMcpError("lifecycle.invalidCreate", "Graph create supplied unused initial node IDs.");
-      }
-      assertNoErrors("Graph", validateGraphDocument(document, registry));
-      owned = graphDocumentAdapter.lifecycle!.collectOwnedIdentities(document, context.documentType.id, { registry });
-      sources = [createdTextSource(context, serializeGraphDocument(document))];
-    } else if (context.documentType.editor === "entity") {
-      assertParameterKeys(operation.parameters, ["documentId", "entityTypeId", "title"]);
-      const registry = await loadMcpEntityRegistry(project, context.documentType);
-      const document = createEmptyEntityDocument(
-        requiredIdentifier(operation.parameters.documentId, "parameters.documentId"),
-        requiredIdentifier(operation.parameters.entityTypeId, "parameters.entityTypeId"),
-        registry,
-        optionalString(operation.parameters.title, "parameters.title") ?? "New Entity",
-      );
-      assertNoErrors("Entity", validateEntityDocument(document, registry));
-      owned = entityDocumentAdapter.lifecycle!.collectOwnedIdentities(document, context.documentType.id, { registry });
-      sources = [createdTextSource(context, serializeEntityDocument(document))];
-    } else if (context.documentType.editor === "structured") {
-      assertParameterKeys(operation.parameters, ["documentId"]);
-      const registry = await loadMcpStructuredRegistry(project, context);
-      const document = createEmptyStructuredDocument(
-        requiredIdentifier(operation.parameters.documentId, "parameters.documentId"),
-        context.documentType.id,
-        registry,
-      );
-      assertNoErrors("Structured", validateStructuredDocument(document, registry, context.documentType.id));
-      owned = structuredDocumentAdapter.lifecycle!.collectOwnedIdentities(document, context.documentType.id, {
-        registry,
-        configTypeId: context.documentType.id,
-      });
-      sources = [createdTextSource(context, serializeStructuredDocument(document))];
-    } else if (context.documentType.editor === "table") {
-      assertParameterKeys(operation.parameters, ["format", "physicalName"]);
-      const format = requiredTableFormat(operation.parameters.format, "parameters.format");
-      const physicalName = optionalString(operation.parameters.physicalName, "parameters.physicalName");
-      sources = await this.tables.createLifecycleDocument(context, {
-        format,
-        ...(physicalName === undefined ? {} : { physicalName }),
-      });
-    } else {
-      throw unsupportedEditor(context.documentType.editor);
+    const module = await this.modules.requireModule(project, context.documentType.editor);
+    const catalog = await this.documents.loadCatalog(
+      project,
+      context.documentType.editor,
+      context.documentType,
+      module,
+    );
+    const created = await module.create.createDocument({
+      projectId: project.definition.projectId,
+      projectDefinition: project.definition as unknown as JsonValue,
+      documentType: context.documentType,
+      catalog: {
+        ready: catalog.registry !== undefined,
+        registry: catalog.registry,
+        diagnostics: catalog.diagnostics,
+      },
+      newStableId: defaultStableId,
+      parameters: operation.parameters,
+      targetPath: context.path,
+    });
+    if (!created.success) {
+      throw new VisualBridgeMcpError("lifecycle.invalidCreate", created.message);
     }
+    const sources: readonly PreparedLifecycleSource[] = created.sources.map((file) => ({
+      path: file.path,
+      absolutePath: path.isAbsolute(file.path)
+        ? file.path
+        : path.resolve(project.projectRoot, ...file.path.split("/")),
+      after: Buffer.from(file.bytes),
+    }));
     const blockers: DocumentLifecycleBlocker[] = target.blocker === undefined ? [] : [target.blocker];
-    blockers.push(...validateOwnedStableIdentityTargetCollisions(identityCollisions, owned));
+    blockers.push(...validateOwnedStableIdentityTargetCollisions(identityCollisions, created.ownedIdentities));
     return {
-      ownedIdentities: owned,
+      ownedIdentities: created.ownedIdentities,
       stableIdRemap: [],
       impacts: [],
       blockers,
@@ -387,7 +273,7 @@ export class DocumentLifecycleService {
     identityCollisions: OwnedStableIdentityCollisionIndex,
   ) {
     const source = await this.loadSnapshot(project, operation.source, references);
-    const targets = await this.resolveMappedTargets(project, operation.source, operation.target, source.sourcePaths);
+    const targets = await this.resolveMappedTargets(project, operation.source, operation.target, source.loaded.sources);
     const remapValidation = validateCompleteStableIdentityRemap(source.ownedIdentities, operation.stableIdRemap);
     if (!remapValidation.success) {
       return emptyPreparation(
@@ -450,9 +336,9 @@ export class DocumentLifecycleService {
     if (classificationBlocked) {
       return emptyPreparation(blockers, source.ownedIdentities, operation.stableIdRemap, impacts);
     }
-    const remapped = await remapSnapshot(source, operation.stableIdRemap, internal);
-    const rendered = await this.renderSnapshot(source, remapped.document);
-    const targetSources = rendered.map((entry): PreparedTableLifecycleSource => ({
+    const remapped = await this.remapSnapshot(source, operation.stableIdRemap, internal);
+    const rendered = await this.documents.renderDocument(source.loaded, remapped);
+    const targetSources = rendered.map((entry): PreparedLifecycleSource => ({
       after: entry.after,
       path: targets.pathMap.get(entry.path)!,
       absolutePath: targets.absolutePathMap.get(entry.path)!,
@@ -472,7 +358,7 @@ export class DocumentLifecycleService {
     references: Awaited<ReturnType<VisualBridgeReferenceService["createProjectService"]>>,
   ) {
     const source = await this.loadSnapshot(project, operation.source, references);
-    const targets = await this.resolveMappedTargets(project, operation.source, operation.target, source.sourcePaths);
+    const targets = await this.resolveMappedTargets(project, operation.source, operation.target, source.loaded.sources);
     const impacts = source.ownedIdentities.flatMap((identity): DocumentLifecycleReferenceImpact[] => {
       if (identity.reference?.location === undefined) return [];
       const targetPath = targets.pathMap.get(identity.reference.location.path);
@@ -483,13 +369,12 @@ export class DocumentLifecycleService {
         to: { ...identity.reference.location, path: targetPath },
       }];
     });
-    const mutations: HostMutation[] = source.sourcePaths.map((entry) => {
+    const mutations: HostMutation[] = source.loaded.sources.map((entry) => {
       const targetPath = targets.pathMap.get(entry.path)!;
-      const targetAbsolutePath = targets.absolutePathMap.get(entry.path)!;
       return {
         path: entry.path,
         absolutePath: entry.absolutePath,
-        before: entry.bytes,
+        before: Buffer.from(entry.bytes),
         core: {
           kind: "move",
           sourcePath: entry.path,
@@ -499,10 +384,10 @@ export class DocumentLifecycleService {
         },
       };
     });
-    mutations.push(...source.sourcePaths.map((entry): HostMutation => ({
+    mutations.push(...source.loaded.sources.map((entry): HostMutation => ({
       path: targets.pathMap.get(entry.path)!,
       absolutePath: targets.absolutePathMap.get(entry.path)!,
-      after: entry.bytes,
+      after: Buffer.from(entry.bytes),
     })));
     return {
       ownedIdentities: source.ownedIdentities,
@@ -520,7 +405,7 @@ export class DocumentLifecycleService {
     references: Awaited<ReturnType<VisualBridgeReferenceService["createProjectService"]>>,
   ) {
     const source = await this.loadSnapshot(project, operation.source, references);
-    const deletion = prepareDeleteClosure(source, narrowDeleteTarget(operation.target));
+    const deletion = this.prepareDeleteClosure(source, operation.target);
     const closureLocations = new Map(deletion.ownedIdentities.flatMap((identity) => (
       identity.reference?.location === undefined
         ? []
@@ -535,7 +420,7 @@ export class DocumentLifecycleService {
           const targetIdentity = closureLocations.get(referenceLocationKey(candidate.location));
           if (targetIdentity === undefined) continue;
           const internal = document.documentTypeId === source.selector.documentTypeId
-            && document.sourcePaths.some((sourcePath) => source.sourcePaths.some((entry) => entry.path === sourcePath))
+            && document.sourcePaths.some((sourcePath) => source.loaded.sources.some((entry) => entry.path === sourcePath))
             && deletion.internalOccurrencePaths.has(reference.occurrence.path);
           if (internal) continue;
           const occurrence = lifecycleOccurrence({
@@ -556,17 +441,18 @@ export class DocumentLifecycleService {
     }
     let mutations: HostMutation[];
     if (operation.target.kind === "document") {
-      mutations = source.sourcePaths.map((entry) => ({
+      mutations = source.loaded.sources.map((entry) => ({
         path: entry.path,
         absolutePath: entry.absolutePath,
-        before: entry.bytes,
+        before: Buffer.from(entry.bytes),
         core: { kind: "delete", path: entry.path, baseHash: hashBytes(entry.bytes) },
       }));
     } else {
       if (deletion.nextDocument === undefined) {
         throw new VisualBridgeMcpError("lifecycle.invalidDeleteTarget", "Delete target did not produce a document change.");
       }
-      mutations = (await this.renderSnapshot(source, deletion.nextDocument)).map(replaceHostMutation);
+      const rendered = await this.documents.renderDocument(source.loaded, deletion.nextDocument);
+      mutations = rendered.map(replaceHostMutation);
     }
     return {
       ownedIdentities: deletion.ownedIdentities,
@@ -577,149 +463,86 @@ export class DocumentLifecycleService {
     };
   }
 
+  private prepareDeleteClosure(source: LifecycleSnapshot, target: DocumentLifecycleDeleteTarget): DeletePreparation {
+    if (target.kind === "document") {
+      return {
+        ownedIdentities: source.ownedIdentities,
+        internalOccurrencePaths: new Set(source.occurrences.map((occurrence) => occurrence.path)),
+      };
+    }
+    const facet = source.loaded.module.facet;
+    const result = facet.deleteOwnedTarget!(source.loaded.document, target, source.loaded.context);
+    if (!result.success) {
+      throw new VisualBridgeMcpError(
+        "lifecycle.invalidDeleteTarget",
+        `Delete target '${target.kind}' cannot be applied to '${source.selector.path}'.`,
+        result.diagnostics,
+      );
+    }
+    const remainingKeys = new Set(
+      facet.collectOwnedIdentities(result.document, source.loaded.context).map((identity) => identity.identityKey),
+    );
+    const remainingOccurrencePaths = new Set(
+      facet.collectReferences(result.document, source.loaded.context).map((occurrence) => occurrence.path),
+    );
+    return {
+      ownedIdentities: source.ownedIdentities.filter((identity) => !remainingKeys.has(identity.identityKey)),
+      // 删除自身会一并移除的同文档引用：不能在 inbound 扫描里被当成"外部引用"。
+      internalOccurrencePaths: new Set(source.occurrences
+        .filter((occurrence) => !remainingOccurrencePaths.has(occurrence.path))
+        .map((occurrence) => occurrence.path)),
+      nextDocument: result.document,
+    };
+  }
+
   private async loadSnapshot(
     project: ProjectContext,
     selector: DocumentLifecycleSelector,
     references: Awaited<ReturnType<VisualBridgeReferenceService["createProjectService"]>>,
   ): Promise<LifecycleSnapshot> {
-    const context = await this.workspace.resolveDocument(
-      selector.path,
-      selector.editor,
-      project.projectFile,
-      selector.documentTypeId,
-    );
-    assertSelectorMatches(selector, context);
-    if (selector.editor === "table") {
-      const loaded = await this.tables.loadLifecycleDocument(selector.path, project.projectFile, selector.documentTypeId);
-      assertNoErrors("Table", loaded.diagnostics);
-      const raw = tableDocumentAdapter.lifecycle!.collectOwnedIdentities(
-        loaded.document,
-        selector.documentTypeId,
-        { tableType: loaded.catalog.tableType },
-      );
-      const addressableIdentityKeys = collectAddressableTableIdentityKeys(
-        loaded.document,
-        loaded.catalog.tableType,
-      );
-      return {
-        editor: "table",
-        selector,
-        context,
-        sourcePaths: loaded.sources.map((source) => ({
-          path: source.path,
-          absolutePath: source.absolutePath,
-          bytes: source.bytes,
-        })),
-        document: loaded.document,
-        tableType: loaded.catalog.tableType,
-        loaded,
-        occurrences: collectTableReferences(loaded.document, loaded.catalog.tableType),
-        ownedIdentities: await hydrateOwnedIdentities(raw, references, addressableIdentityKeys),
-      };
+    const loaded = await this.documents.loadDocument({
+      path: selector.path,
+      editor: selector.editor,
+      projectFile: project.projectFile,
+      documentTypeId: selector.documentTypeId,
+      includeProviderValidation: false,
+      skipReferenceValidation: true,
+    });
+    if (loaded.path !== selector.path
+      || loaded.documentType.id !== selector.documentTypeId
+      || loaded.documentType.editor !== selector.editor) {
+      throw new VisualBridgeMcpError("lifecycle.selectorMismatch", "Lifecycle selector no longer matches Project Registry declaration.");
     }
-    const bytes = await readFile(context.absolutePath);
-    const text = decodeUtf8(bytes, context.path);
-    if (selector.editor === "graph") {
-      const registry = await loadMcpGraphRegistry(project, context);
-      const parsed = parseGraphDocument(text);
-      if (!parsed.success) throw invalidSource(context.path, parsed.diagnostics);
-      assertNoErrors("Graph", validateGraphDocument(parsed.document, registry));
-      return {
-        editor: "graph",
-        selector,
-        context,
-        sourcePaths: [{ path: context.path, absolutePath: context.absolutePath, bytes }],
-        document: parsed.document,
-        registry,
-        occurrences: collectGraphReferences(parsed.document, registry),
-        ownedIdentities: await hydrateOwnedIdentities(
-          graphDocumentAdapter.lifecycle!.collectOwnedIdentities(
-            parsed.document,
-            selector.documentTypeId,
-            { registry },
-          ),
-          references,
-        ),
-      };
+    if (!loaded.parsed.success || loaded.document === undefined) {
+      throw invalidSource(selector.path, loaded.parsed.diagnostics);
     }
-    if (selector.editor === "entity") {
-      const registry = await loadMcpEntityRegistry(project, context.documentType);
-      const parsed = parseEntityDocument(text);
-      if (!parsed.success) throw invalidSource(context.path, parsed.diagnostics);
-      assertNoErrors("Entity", validateEntityDocument(parsed.document, registry));
-      return {
-        editor: "entity",
-        selector,
-        context,
-        sourcePaths: [{ path: context.path, absolutePath: context.absolutePath, bytes }],
-        document: parsed.document,
-        registry,
-        occurrences: collectEntityReferences(parsed.document, registry),
-        ownedIdentities: await hydrateOwnedIdentities(
-          entityDocumentAdapter.lifecycle!.collectOwnedIdentities(
-            parsed.document,
-            selector.documentTypeId,
-            { registry },
-          ),
-          references,
-        ),
-      };
-    }
-    if (selector.editor === "structured") {
-      const registry = await loadMcpStructuredRegistry(project, context);
-      const parsed = parseStructuredDocument(text);
-      if (!parsed.success) throw invalidSource(context.path, parsed.diagnostics);
-      assertNoErrors("Structured", validateStructuredDocument(parsed.document, registry, selector.documentTypeId));
-      return {
-        editor: "structured",
-        selector,
-        context,
-        sourcePaths: [{ path: context.path, absolutePath: context.absolutePath, bytes }],
-        document: parsed.document,
-        registry,
-        occurrences: collectStructuredReferences(parsed.document, registry, selector.documentTypeId),
-        ownedIdentities: await hydrateOwnedIdentities(
-          structuredDocumentAdapter.lifecycle!.collectOwnedIdentities(
-            parsed.document,
-            selector.documentTypeId,
-            { registry, configTypeId: selector.documentTypeId },
-          ),
-          references,
-        ),
-      };
-    }
-    throw unsupportedEditor(selector.editor);
+    assertNoErrors(loaded.documentType.editor, loaded.structuralDiagnostics);
+    const facet = loaded.module.facet;
+    const raw = facet.collectOwnedIdentities(loaded.document, loaded.context);
+    const addressable = facet.collectAddressableIdentityKeys?.(loaded.document, loaded.context);
+    return {
+      selector,
+      loaded,
+      occurrences: loaded.occurrences,
+      ownedIdentities: await hydrateOwnedIdentities(raw, references, addressable),
+    };
   }
 
-  private async renderSnapshot(
+  private async remapSnapshot(
     source: LifecycleSnapshot,
-    document: GraphDocument | EntityDocument | StructuredDocument | TableDocument,
-  ): Promise<readonly PreparedTableLifecycleSource[]> {
-    switch (source.editor) {
-      case "graph":
-        return [{
-          path: source.context.path,
-          absolutePath: source.context.absolutePath,
-          before: source.sourcePaths[0]!.bytes,
-          after: Buffer.from(serializeGraphDocument(document as GraphDocument), "utf8"),
-        }];
-      case "entity":
-        return [{
-          path: source.context.path,
-          absolutePath: source.context.absolutePath,
-          before: source.sourcePaths[0]!.bytes,
-          after: Buffer.from(serializeEntityDocument(document as EntityDocument), "utf8"),
-        }];
-      case "structured":
-        return [{
-          path: source.context.path,
-          absolutePath: source.context.absolutePath,
-          before: source.sourcePaths[0]!.bytes,
-          after: Buffer.from(serializeStructuredDocument(document as StructuredDocument), "utf8"),
-        }];
-      case "table":
-        return this.tables.renderLifecycleDocument(source.loaded, document as TableDocument);
+    remap: readonly StableIdentityRemap[],
+    internal: ReadonlyMap<string, StableIdentityRemap>,
+  ): Promise<unknown> {
+    const facet = source.loaded.module.facet;
+    const result = facet.remapOwnedIdentities(source.loaded.document, source.loaded.context, remap);
+    if (!result.success) throw invalidSource(source.selector.path, result.diagnostics);
+    let document = result.document;
+    for (const [occurrencePath, entry] of internal) {
+      const replaced = facet.replaceReferenceValues(document, source.loaded.context, new Set([occurrencePath]), entry.to);
+      if (!replaced.success) throw invalidSource(source.selector.path, replaced.diagnostics);
+      document = replaced.document;
     }
+    return document;
   }
 
   private async buildIdentityCollisionIndex(
@@ -770,7 +593,7 @@ export class DocumentLifecycleService {
     project: ProjectContext,
     sourceSelector: DocumentLifecycleSelector,
     targetSelector: DocumentLifecycleSelector,
-    sources: readonly SourceBytes[],
+    sources: readonly LoadedSourceFile[],
   ): Promise<{
     readonly pathMap: ReadonlyMap<string, string>;
     readonly absolutePathMap: ReadonlyMap<string, string>;
@@ -787,7 +610,7 @@ export class DocumentLifecycleService {
     const pathMap = new Map<string, string>();
     const absolutePathMap = new Map<string, string>();
     const blockers: DocumentLifecycleBlocker[] = [];
-    for (const source of sources) {
+    for (const source of [...sources].sort((left, right) => compareUtf16CodeUnits(left.path, right.path))) {
       const targetPath = isFamily
         ? targetDirectory === "."
           ? path.posix.basename(source.path)
@@ -803,244 +626,11 @@ export class DocumentLifecycleService {
   }
 }
 
-async function remapSnapshot(
-  source: LifecycleSnapshot,
-  remap: readonly StableIdentityRemap[],
-  internal: ReadonlyMap<string, StableIdentityRemap>,
-): Promise<{ readonly document: GraphDocument | EntityDocument | StructuredDocument | TableDocument }> {
-  let document: GraphDocument | EntityDocument | StructuredDocument | TableDocument;
-  if (source.editor === "graph") {
-    const result = graphDocumentAdapter.lifecycle!.remapOwnedIdentities(
-      source.document,
-      source.selector.documentTypeId,
-      remap,
-      { registry: source.registry },
-    );
-    if (!result.success) throw invalidSource(source.selector.path, result.diagnostics);
-    document = result.document;
-    for (const [occurrencePath, entry] of internal) {
-      const replaced = replaceGraphReferenceValues(document, source.registry, new Set([occurrencePath]), entry.to);
-      if (!replaced.success) throw invalidSource(source.selector.path, replaced.diagnostics);
-      document = replaced.document;
-    }
-  } else if (source.editor === "entity") {
-    const result = entityDocumentAdapter.lifecycle!.remapOwnedIdentities(
-      source.document,
-      source.selector.documentTypeId,
-      remap,
-      { registry: source.registry },
-    );
-    if (!result.success) throw invalidSource(source.selector.path, result.diagnostics);
-    let entityDocument = result.document;
-    for (const [occurrencePath, entry] of internal) {
-      const replaced = replaceEntityReferenceValues(entityDocument, source.registry, new Set([occurrencePath]), entry.to);
-      if (!replaced.success) throw invalidSource(source.selector.path, replaced.diagnostics);
-      entityDocument = replaced.document;
-    }
-    document = entityDocument;
-  } else if (source.editor === "structured") {
-    const result = structuredDocumentAdapter.lifecycle!.remapOwnedIdentities(
-      source.document,
-      source.selector.documentTypeId,
-      remap,
-      { registry: source.registry, configTypeId: source.selector.documentTypeId },
-    );
-    if (!result.success) throw invalidSource(source.selector.path, result.diagnostics);
-    document = result.document;
-    for (const [occurrencePath, entry] of internal) {
-      const replaced = replaceStructuredReferenceValues(
-        document,
-        source.registry,
-        source.selector.documentTypeId,
-        new Set([occurrencePath]),
-        entry.to,
-      );
-      if (!replaced.success) throw invalidSource(source.selector.path, replaced.diagnostics);
-      document = replaced.document;
-    }
-  } else {
-    const result = tableDocumentAdapter.lifecycle!.remapOwnedIdentities(
-      source.document,
-      source.selector.documentTypeId,
-      remap,
-      { tableType: source.tableType },
-    );
-    if (!result.success) throw invalidSource(source.selector.path, result.diagnostics);
-    document = result.document;
-    for (const [occurrencePath, entry] of internal) {
-      const replaced = replaceTableReferenceValues(document, source.tableType, new Set([occurrencePath]), entry.to);
-      if (!replaced.success) throw invalidSource(source.selector.path, replaced.diagnostics);
-      document = replaced.document;
-    }
-  }
-  return { document };
-}
-
-function prepareDeleteClosure(
-  source: LifecycleSnapshot,
-  target: DomainDeleteTarget | { readonly kind: "document" },
-): DeletePreparation {
-  if (target.kind === "document") {
-    return {
-      ownedIdentities: source.ownedIdentities,
-      internalOccurrencePaths: new Set(source.occurrences.map((occurrence) => occurrence.path)),
-    };
-  }
-  if (target.kind === "entity.component") {
-    if (source.editor !== "entity") throw incompatibleDeleteTarget(target.kind, source.editor);
-    const componentIndex = source.document.components.findIndex((component) => component.id === target.componentId);
-    if (componentIndex < 0) throw missingDeleteTarget(target.componentId);
-    const result = entityDocumentAdapter.lifecycle!.deleteOwnedTarget(
-      source.document,
-      target,
-      { registry: source.registry },
-    );
-    if (!result.success) throw invalidSource(source.selector.path, result.diagnostics);
-    return {
-      ownedIdentities: source.ownedIdentities.filter((identity) => identity.identityKey === `component:${target.componentId}`),
-      internalOccurrencePaths: new Set(source.occurrences
-        .filter((occurrence) => occurrence.path.startsWith(`components[${componentIndex}].`))
-        .map((occurrence) => occurrence.path)),
-      nextDocument: result.document,
-    };
-  }
-  if (target.kind === "table.row") {
-    if (source.editor !== "table") throw incompatibleDeleteTarget(target.kind, source.editor);
-    const sheet = source.document.sheets.find((candidate) => candidate.id === target.sheetId);
-    const row = sheet?.rows.find((candidate) => candidate.id === target.rowId);
-    const definition = sheet === undefined ? undefined : resolveTableSheet(source.tableType, sheet.definitionId);
-    if (sheet === undefined || row === undefined || definition === undefined) throw missingDeleteTarget(target.rowId);
-    const keys = new Set<string>();
-    const keyColumn = definition.keyColumnId === undefined
-      ? undefined
-      : resolveTableColumn(definition, definition.keyColumnId);
-    if (keyColumn !== undefined) {
-      const value = row.cells[keyColumn.id];
-      if (typeof value === "string" || typeof value === "number") keys.add(tableRowIdentityKey(definition.id, value));
-    }
-    const dedupColumn = definition.partition?.deduplicateByColumnId === undefined
-      ? undefined
-      : resolveTableColumn(definition, definition.partition.deduplicateByColumnId);
-    if (dedupColumn !== undefined && dedupColumn.id !== keyColumn?.id) {
-      const value = row.cells[dedupColumn.id];
-      if (typeof value === "string" || typeof value === "number") keys.add(tableDedupIdentityKey(definition.id, value));
-    }
-    const result = tableDocumentAdapter.lifecycle!.deleteOwnedTarget(
-      source.document,
-      target,
-      { tableType: source.tableType },
-    );
-    if (!result.success) throw invalidSource(source.selector.path, result.diagnostics);
-    const remainingIdentityKeys = new Set(tableDocumentAdapter.lifecycle!.collectOwnedIdentities(
-      result.document,
-      source.selector.documentTypeId,
-      { tableType: source.tableType },
-    ).map((identity) => identity.identityKey));
-    const prefix = `sheets.${target.sheetId}.rows.${target.rowId}.`;
-    return {
-      ownedIdentities: source.ownedIdentities.filter((identity) => (
-        keys.has(identity.identityKey) && !remainingIdentityKeys.has(identity.identityKey)
-      )),
-      internalOccurrencePaths: new Set(source.occurrences
-        .filter((occurrence) => occurrence.path.startsWith(prefix))
-        .map((occurrence) => occurrence.path)),
-      nextDocument: result.document,
-    };
-  }
-  if (source.editor !== "graph") throw incompatibleDeleteTarget(target.kind, source.editor);
-  const graphIndex = source.document.graphs.findIndex((graph) => graph.id === target.graphId);
-  const graph = source.document.graphs[graphIndex];
-  if (graph === undefined) throw missingDeleteTarget(target.graphId);
-  let ownerGraphId: string;
-  let nodeId: string;
-  const closureGraphIds = new Set<string>();
-  const closureNodeKeys = new Set<string>();
-  const internalPrefixes: string[] = [];
-  if (target.elementKind === "graph") {
-    if (target.elementId !== target.graphId) throw missingDeleteTarget(target.elementId);
-    if (target.graphId === source.document.rootGraphId) {
-      throw new VisualBridgeMcpError("lifecycle.rootGraphDeleteForbidden", "The root Graph cannot be deleted as an element.");
-    }
-    const owner = findGraphOwner(source.document, target.graphId);
-    if (owner === undefined) throw missingDeleteTarget(target.graphId);
-    ownerGraphId = owner.graphId;
-    nodeId = owner.nodeId;
-    collectGraphClosure(source.document, target.graphId, closureGraphIds, closureNodeKeys);
-    closureNodeKeys.add(`${ownerGraphId}\u0000${nodeId}`);
-  } else if (target.elementKind === "node") {
-    const node = graph.nodes.find((candidate) => candidate.id === target.elementId);
-    if (node === undefined) throw missingDeleteTarget(target.elementId);
-    ownerGraphId = graph.id;
-    nodeId = node.id;
-    closureNodeKeys.add(`${graph.id}\u0000${node.id}`);
-    if (node.kind === "subgraph") collectGraphClosure(source.document, node.subgraphId, closureGraphIds, closureNodeKeys);
-  } else if (target.elementKind === "interfacePort") {
-    if (!graph.interfacePorts.some((port) => port.id === target.elementId)) throw missingDeleteTarget(target.elementId);
-  } else if ("nodeId" in target) {
-    const node = graph.nodes.find((candidate) => candidate.id === target.nodeId);
-    if (node === undefined || !node.dynamicPorts.some((port) => port.id === target.elementId)) throw missingDeleteTarget(target.elementId);
-  } else {
-    throw new VisualBridgeMcpError("lifecycle.invalidDeleteTarget", "Unknown Graph element delete target.");
-  }
-  const result = graphDocumentAdapter.lifecycle!.deleteOwnedTarget(
-    source.document,
-    target,
-    { registry: source.registry },
-  );
-  if (!result.success) throw invalidSource(source.selector.path, result.diagnostics);
-  source.document.graphs.forEach((candidate, candidateIndex) => {
-    if (closureGraphIds.has(candidate.id)) internalPrefixes.push(`graphs[${candidateIndex}].`);
-    candidate.nodes.forEach((node, nodeIndex) => {
-      if (closureNodeKeys.has(`${candidate.id}\u0000${node.id}`)) {
-        internalPrefixes.push(`graphs[${candidateIndex}].nodes[${nodeIndex}].`);
-      }
-    });
-  });
-  if (target.elementKind === "dynamicPort") {
-    const nodeIndex = graph.nodes.findIndex((node) => node.id === target.nodeId);
-    const portIndex = graph.nodes[nodeIndex]!.dynamicPorts.findIndex((port) => port.id === target.elementId);
-    internalPrefixes.push(`graphs[${graphIndex}].nodes[${nodeIndex}].dynamicPorts[${portIndex}].`);
-  }
-  const ownedKeys = new Set<string>();
-  if (target.elementKind === "interfacePort") {
-    ownedKeys.add(`interfacePort:${target.graphId}:${target.elementId}`);
-    graph.edges.filter((edge) => endpointUsesInterfacePort(edge.source, target.elementId)
-      || endpointUsesInterfacePort(edge.target, target.elementId))
-      .forEach((edge) => ownedKeys.add(`edge:${graph.id}:${edge.id}`));
-  }
-  if (target.elementKind === "dynamicPort") {
-    ownedKeys.add(`dynamicPort:${target.graphId}:${target.nodeId}:${target.elementId}`);
-    graph.edges.filter((edge) => endpointUsesNodePort(edge.source, target.nodeId, target.elementId)
-      || endpointUsesNodePort(edge.target, target.nodeId, target.elementId))
-      .forEach((edge) => ownedKeys.add(`edge:${graph.id}:${edge.id}`));
-  }
-  for (const graphId of closureGraphIds) {
-    ownedKeys.add(`graph:${graphId}`);
-    const ownedGraph = source.document.graphs.find((candidate) => candidate.id === graphId)!;
-    ownedGraph.interfacePorts.forEach((port) => ownedKeys.add(`interfacePort:${graphId}:${port.id}`));
-    ownedGraph.edges.forEach((edge) => ownedKeys.add(`edge:${graphId}:${edge.id}`));
-    ownedGraph.nodes.forEach((node) => {
-      ownedKeys.add(`node:${graphId}:${node.id}`);
-      node.dynamicPorts.forEach((port) => ownedKeys.add(`dynamicPort:${graphId}:${node.id}:${port.id}`));
-    });
-  }
-  for (const key of closureNodeKeys) {
-    const [graphId, deletedNodeId] = key.split("\u0000");
-    ownedKeys.add(`node:${graphId}:${deletedNodeId}`);
-    const deletedNode = source.document.graphs.find((candidate) => candidate.id === graphId)?.nodes
-      .find((candidate) => candidate.id === deletedNodeId);
-    deletedNode?.dynamicPorts.forEach((port) => ownedKeys.add(`dynamicPort:${graphId}:${deletedNodeId}:${port.id}`));
-    source.document.graphs.find((candidate) => candidate.id === graphId)?.edges
-      .filter((edge) => endpointUsesNode(edge.source, deletedNodeId!) || endpointUsesNode(edge.target, deletedNodeId!))
-      .forEach((edge) => ownedKeys.add(`edge:${graphId}:${edge.id}`));
-  }
-  return {
-    ownedIdentities: source.ownedIdentities.filter((identity) => ownedKeys.has(identity.identityKey)),
-    internalOccurrencePaths: new Set(source.occurrences
-      .filter((occurrence) => internalPrefixes.some((prefix) => occurrence.path.startsWith(prefix)))
-      .map((occurrence) => occurrence.path)),
-    nextDocument: result.document,
-  };
+interface PreparedLifecycleSource {
+  readonly path: string;
+  readonly absolutePath: string;
+  readonly before?: Buffer;
+  readonly after: Buffer;
 }
 
 async function hydrateOwnedIdentities(
@@ -1075,16 +665,16 @@ async function buildDependencies(
   indexed: readonly IndexedDocument[],
 ): Promise<readonly DocumentLifecycleDependency[]> {
   const projectPath = path.relative(project.projectRoot, project.absoluteProjectFile).replaceAll("\\", "/");
-  const projectHash = hashBytes(await readFile(project.absoluteProjectFile));
+  const projectHash = hashBytes(await readFileAbsolute(project.absoluteProjectFile));
   const catalogPaths = [...new Set(project.definition.documentTypes.flatMap((documentType) => documentType.catalogs))].sort(compareUtf16CodeUnits);
   const catalogManifest = await Promise.all(catalogPaths.map(async (catalogPath) => ({
     path: catalogPath,
-    hash: hashBytes(await readFile(await resolveExistingProjectPath(project, catalogPath))),
+    hash: hashBytes(await readFileAbsolute(await resolveExistingProjectPath(project, catalogPath))),
   })));
   const documentPaths = [...new Set(indexed.flatMap((document) => document.sourcePaths))].sort(compareUtf16CodeUnits);
   const documentManifest = await Promise.all(documentPaths.map(async (documentPath) => ({
     path: documentPath,
-    hash: hashBytes(await readFile(await resolveExistingProjectPath(project, documentPath))),
+    hash: hashBytes(await readFileAbsolute(await resolveExistingProjectPath(project, documentPath))),
   })));
   return buildCanonicalDocumentLifecycleDependencies({
     projectId: project.definition.projectId,
@@ -1105,7 +695,7 @@ async function buildSourceBaseHashes(
     document.projectId === operation.source.projectId
     && document.documentTypeId === operation.source.documentTypeId
     && document.editor === operation.source.editor
-    && document.path === operation.source.path
+    && (document.path === operation.source.path || document.sourcePaths.includes(operation.source.path))
   ));
   if (source === undefined) {
     throw new VisualBridgeMcpError(
@@ -1115,7 +705,7 @@ async function buildSourceBaseHashes(
   }
   const hashes = await Promise.all([...new Set(source.sourcePaths)].sort(compareUtf16CodeUnits).map(async (sourcePath) => [
     sourcePath,
-    hashBytes(await readFile(await resolveExistingProjectPath(project, sourcePath))),
+    hashBytes(await readFileAbsolute(await resolveExistingProjectPath(project, sourcePath))),
   ] as const));
   return Object.fromEntries(hashes);
 }
@@ -1124,12 +714,13 @@ async function buildDependencyPreconditions(
   project: ProjectContext,
   dependencies: readonly DocumentLifecycleDependency[],
 ): Promise<readonly ProjectTransactionPrecondition[]> {
+  const projectPath = path.relative(project.projectRoot, project.absoluteProjectFile).replaceAll("\\", "/");
   const paths = [...new Set(dependencies.flatMap((dependency) => dependency.paths))].sort(compareUtf16CodeUnits);
   return Promise.all(paths.map(async (sourcePath) => {
-    const absolutePath = sourcePath === path.relative(project.projectRoot, project.absoluteProjectFile).replaceAll("\\", "/")
+    const absolutePath = sourcePath === projectPath
       ? project.absoluteProjectFile
       : await resolveExistingProjectPath(project, sourcePath);
-    return { path: sourcePath, absolutePath, hash: hashBytes(await readFile(absolutePath)) };
+    return { path: sourcePath, absolutePath, hash: hashBytes(await readFileAbsolute(absolutePath)) };
   }));
 }
 
@@ -1161,7 +752,7 @@ function assertSelectorMatches(selector: DocumentLifecycleSelector, context: Dec
   }
 }
 
-function createHostMutation(source: PreparedTableLifecycleSource): HostMutation {
+function createHostMutation(source: PreparedLifecycleSource): HostMutation {
   return {
     path: source.path,
     absolutePath: source.absolutePath,
@@ -1173,13 +764,13 @@ function createHostMutation(source: PreparedTableLifecycleSource): HostMutation 
   };
 }
 
-function replaceHostMutation(source: PreparedTableLifecycleSource): HostMutation {
-  if (source.before === undefined) throw new Error("Replace source is missing baseline bytes.");
-  return createHostMutation(source);
-}
-
-function createdTextSource(context: DeclaredDocumentContext, text: string): PreparedTableLifecycleSource {
-  return { path: context.path, absolutePath: context.absolutePath, after: Buffer.from(text, "utf8") };
+function replaceHostMutation(source: RenderedSource): HostMutation {
+  return createHostMutation({
+    path: source.path,
+    absolutePath: source.absolutePath,
+    before: source.before,
+    after: source.after,
+  });
 }
 
 function emptyPreparation(
@@ -1210,47 +801,6 @@ function previewResult(prepared: PreparedLifecycle): Record<string, unknown> {
   };
 }
 
-function assertParameterKeys(parameters: Readonly<Record<string, JsonValue>>, allowed: readonly string[]): void {
-  const allowedKeys = new Set(allowed);
-  const unexpected = Object.keys(parameters).filter((key) => !allowedKeys.has(key));
-  if (unexpected.length > 0) {
-    throw new VisualBridgeMcpError("lifecycle.invalidParameters", `Unexpected create parameter '${unexpected.sort(compareUtf16CodeUnits)[0]}'.`);
-  }
-}
-
-function requiredIdentifier(value: JsonValue | undefined, label: string): string {
-  const result = optionalIdentifier(value, label);
-  if (result === undefined) throw new VisualBridgeMcpError("lifecycle.invalidParameters", `${label} is required.`);
-  return result;
-}
-
-function optionalIdentifier(value: JsonValue | undefined, label: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) {
-    throw new VisualBridgeMcpError("lifecycle.invalidParameters", `${label} must be a stable identifier.`);
-  }
-  return value;
-}
-
-function identifierArray(value: JsonValue | undefined, label: string): readonly string[] {
-  if (value === undefined) return [];
-  if (!Array.isArray(value)) throw new VisualBridgeMcpError("lifecycle.invalidParameters", `${label} must be an array.`);
-  return value.map((entry, index) => requiredIdentifier(entry, `${label}[${index}]`));
-}
-
-function optionalString(value: JsonValue | undefined, label: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "string") throw new VisualBridgeMcpError("lifecycle.invalidParameters", `${label} must be a string.`);
-  return value;
-}
-
-function requiredTableFormat(value: JsonValue | undefined, label: string): "csv" | "xlsx" {
-  if (value !== "csv" && value !== "xlsx") {
-    throw new VisualBridgeMcpError("lifecycle.invalidParameters", `${label} must be 'csv' or 'xlsx'.`);
-  }
-  return value;
-}
-
 function assertNoErrors(subject: string, diagnostics: readonly { readonly severity: string }[]): void {
   if (diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
     throw new VisualBridgeMcpError("lifecycle.invalidSource", `${subject} semantic validation failed.`, diagnostics);
@@ -1265,137 +815,9 @@ function invalidSource(sourcePath: string, diagnostics: readonly unknown[]): Vis
   );
 }
 
-function unsupportedEditor(editor: string): VisualBridgeMcpError {
-  return new VisualBridgeMcpError("lifecycle.unsupportedEditor", `Editor '${editor}' has no Lifecycle Adapter.`);
-}
-
-function incompatibleDeleteTarget(kind: string, editor: string): VisualBridgeMcpError {
-  return new VisualBridgeMcpError("lifecycle.invalidDeleteTarget", `Delete target '${kind}' is incompatible with '${editor}'.`);
-}
-
-/** Core 的删除目标已按模块开放（`kind` + 任意字段），MCP 在这里按自身 Schema 收窄。 */
-type DomainDeleteTarget =
-  | { readonly kind: "entity.component"; readonly componentId: string }
-  | {
-      readonly kind: "graph.element";
-      readonly graphId: string;
-      readonly elementKind: "graph" | "node" | "interfacePort";
-      readonly elementId: string;
-    }
-  | {
-      readonly kind: "graph.element";
-      readonly graphId: string;
-      readonly elementKind: "dynamicPort";
-      readonly elementId: string;
-      readonly nodeId: string;
-    }
-  | { readonly kind: "table.row"; readonly sheetId: string; readonly rowId: string };
-
-function narrowDeleteTarget(
-  target: DocumentLifecycleDeleteTarget,
-): DomainDeleteTarget | { readonly kind: "document" } {
-  // Core 的删除目标是开放形状（`kind` + 任意字段）；具体形状由 MCP 的 zod Schema 先行校验，
-  // 这里是唯一的收窄点。
-  const payload = target as Readonly<Record<string, JsonValue>>;
-  if (payload.kind === "document") return { kind: "document" };
-  const readString = (key: string): string | undefined => {
-    const value = payload[key];
-    return typeof value === "string" && value.length > 0 ? value : undefined;
-  };
-  const kind = payload.kind;
-  if (kind === "entity.component") {
-    const componentId = readString("componentId");
-    if (componentId !== undefined) return { kind, componentId };
-  } else if (kind === "table.row") {
-    const sheetId = readString("sheetId");
-    const rowId = readString("rowId");
-    if (sheetId !== undefined && rowId !== undefined) return { kind, sheetId, rowId };
-  } else if (kind === "graph.element") {
-    const graphId = readString("graphId");
-    const elementId = readString("elementId");
-    const elementKind = readString("elementKind");
-    if (graphId !== undefined && elementId !== undefined) {
-      if (elementKind === "graph" || elementKind === "node" || elementKind === "interfacePort") {
-        return { kind, graphId, elementKind, elementId };
-      }
-      const nodeId = readString("nodeId");
-      if (elementKind === "dynamicPort" && nodeId !== undefined) {
-        return { kind, graphId, elementKind, elementId, nodeId };
-      }
-    }
-  }
-  throw new VisualBridgeMcpError(
-    "lifecycle.invalidDeleteTarget",
-    `Delete target '${payload.kind}' is missing required selector fields.`,
-  );
-}
-
-function missingDeleteTarget(id: string): VisualBridgeMcpError {
-  return new VisualBridgeMcpError("lifecycle.deleteTargetNotFound", `Delete target '${id}' does not exist.`);
-}
-
-function findGraphOwner(document: GraphDocument, graphId: string): { readonly graphId: string; readonly nodeId: string } | undefined {
-  for (const graph of document.graphs) {
-    const node = graph.nodes.find((candidate) => candidate.kind === "subgraph" && candidate.subgraphId === graphId);
-    if (node !== undefined) return { graphId: graph.id, nodeId: node.id };
-  }
-  return undefined;
-}
-
-function collectGraphClosure(
-  document: GraphDocument,
-  graphId: string,
-  graphs: Set<string>,
-  nodes: Set<string>,
-): void {
-  if (graphs.has(graphId)) return;
-  graphs.add(graphId);
-  const graph = document.graphs.find((candidate) => candidate.id === graphId);
-  graph?.nodes.forEach((node) => {
-    nodes.add(`${graphId}\u0000${node.id}`);
-    if (node.kind === "subgraph") collectGraphClosure(document, node.subgraphId, graphs, nodes);
-  });
-}
-
-function endpointUsesNode(endpoint: { readonly kind: string; readonly nodeId?: string }, nodeId: string): boolean {
-  return endpoint.kind === "node" && endpoint.nodeId === nodeId;
-}
-
-function endpointUsesInterfacePort(
-  endpoint: { readonly kind: string; readonly portId: string },
-  portId: string,
-): boolean {
-  return endpoint.kind === "interface" && endpoint.portId === portId;
-}
-
-function endpointUsesNodePort(
-  endpoint: { readonly kind: string; readonly nodeId?: string; readonly portId: string },
-  nodeId: string,
-  portId: string,
-): boolean {
-  return endpoint.kind === "node" && endpoint.nodeId === nodeId && endpoint.portId === portId;
-}
-
-function hashStable(value: unknown): string {
-  return createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(sortJson(value))).digest("hex");
-}
-
-function sortJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortJson);
-  if (typeof value === "object" && value !== null) {
-    return Object.fromEntries(Object.entries(value)
-      .sort(([left], [right]) => compareUtf16CodeUnits(left, right))
-      .map(([key, entry]) => [key, sortJson(entry)]));
-  }
-  return value;
-}
-
-function decodeUtf8(bytes: Uint8Array, sourcePath: string): string {
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch (errorValue) {
-    throw new VisualBridgeMcpError("file.invalidUtf8", `File '${sourcePath}' is not valid UTF-8: ${formatError(errorValue)}`);
-  }
+/** MCP 的 create 参数由 facet 校验；这里只在 CreateFacet 需要时提供稳定 ID 生成器。 */
+function defaultStableId(prefix: string): string {
+  return `${prefix}-${randomUUID()}`;
 }
 
 function isPreviewInvalidation(code: string): boolean {
@@ -1403,10 +825,32 @@ function isPreviewInvalidation(code: string): boolean {
     || code.startsWith("path.")
     || code.startsWith("project.")
     || code.startsWith("lifecycle.")
-    || code.startsWith("table.")
+    || code.startsWith("catalog.")
     || code === "file.invalidUtf8";
 }
 
 function formatError(errorValue: unknown): string {
   return errorValue instanceof Error ? errorValue.message : String(errorValue);
+}
+
+async function readFileAbsolute(absolutePath: string): Promise<Buffer> {
+  return readFile(absolutePath);
+}
+
+function hashBytes(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function hashStable(value: unknown): string {
+  return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  return `{${Object.entries(value as Readonly<Record<string, unknown>>)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([left], [right]) => compareUtf16CodeUnits(left, right))
+    .map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`)
+    .join(",")}}`;
 }

@@ -7,6 +7,8 @@ export interface ReferenceSemanticSnapshot {
   readonly entities?: unknown;
   readonly graphs?: unknown;
   readonly tables?: unknown;
+  /** B4 起引用数据按模块聚合（模块 id → 该模块登记的 `referenceData` 列表）。 */
+  readonly modules?: Readonly<Record<string, unknown>>;
 }
 
 export function referenceSemanticSnapshotDependencyKey(

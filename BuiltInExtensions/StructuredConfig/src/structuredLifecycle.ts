@@ -69,7 +69,12 @@ export function deleteStructuredOwnedTarget(
 ): DocumentOperationResult<StructuredDocument> {
   return {
     success: false,
-    diagnostics: [error("target", `Structured lifecycle cannot delete '${target.kind}'.`)],
+    diagnostics: [{
+      severity: "error",
+      code: "lifecycle.invalidDeleteTarget",
+      path: "target",
+      message: `Structured lifecycle cannot delete '${target.kind}'.`,
+    }],
   };
 }
 

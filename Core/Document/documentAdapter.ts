@@ -75,7 +75,7 @@ export interface DocumentCodec<TDocument, TSource, TContext> {
 
 export interface CatalogAdapter<TCatalog, TRegistry> {
   readonly editor: string;
-  parse(text: string): DocumentParseResult<TCatalog>;
+  parse(text: string, sourcePath: string): DocumentParseResult<TCatalog>;
   build(catalogs: readonly TCatalog[]): DocumentParseResult<TRegistry>;
 }
 
@@ -98,7 +98,7 @@ export function buildCatalogBundle<TCatalog, TRegistry>(
   const sourceIndexes: number[] = [];
   const diagnostics: DocumentDiagnostic[] = [];
   sources.forEach((source, sourceIndex) => {
-    const parsed = adapter.parse(source.text);
+    const parsed = adapter.parse(source.text, source.path);
     diagnostics.push(...parsed.diagnostics.map((diagnostic) => ({
       ...diagnostic,
       path: `catalogs[${sourceIndex}].${diagnostic.path}`,

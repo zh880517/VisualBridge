@@ -145,6 +145,28 @@ export interface DocumentFacet<TDocument = unknown, TRegistry = unknown> {
     context: DocumentFacetContext<TRegistry>,
     occurrencePath: string,
   ): DocumentFacetIncomingReference | undefined;
+  /**
+   * Operations 预检：返回非空表示整批拒绝（例如稳定身份改名必须走 Reference Refactor）。
+   *
+   * 与 B2 会话控制器的 `checkOperations` 同义；宿主在解析文档之后、应用 Operations 之前调用，
+   * 因此可以给出指向具体 operation 的诊断而不依赖任何领域类型。
+   */
+  guardOperations?(
+    document: TDocument,
+    operations: unknown,
+    context: DocumentFacetContext<TRegistry>,
+  ): readonly DocumentDiagnostic[];
+  /**
+   * apply 之后、写盘之前的语义不变量校验（例如删除元素后同文档不得残留指向它的引用）。
+   *
+   * Reference 校验解析目标时读取写入前的字节，拦不住"同一次 apply 内目标消失"；这类不变量
+   * 只能由持有文档语义的模块比较前后文档得出。
+   */
+  validateTransition?(
+    before: TDocument,
+    after: TDocument,
+    context: DocumentFacetContext<TRegistry>,
+  ): readonly DocumentDiagnostic[];
 
   collectOwnedIdentities(
     document: TDocument,

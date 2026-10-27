@@ -162,7 +162,15 @@ export function deleteTableOwnedTarget(
 ): ReturnType<typeof applyTableOperations> {
   return target.kind === "table.row"
     ? applyTableOperations(document, [{ type: "table.removeRow", sheetId: target.sheetId, rowId: target.rowId }], tableType)
-    : { success: false, diagnostics: [error("target", `Table lifecycle cannot delete '${target.kind}'.`)] };
+    : {
+        success: false,
+        diagnostics: [{
+          severity: "error",
+          code: "lifecycle.invalidDeleteTarget",
+          path: "target",
+          message: `Table lifecycle cannot delete '${target.kind}'.`,
+        }],
+      };
 }
 
 export function tableRowIdentityKey(sheetDefinitionId: string, value: string | number): string {

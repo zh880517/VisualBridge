@@ -14,6 +14,7 @@ import { createEmptyEntityCatalogRegistry, ENTITY_EDITOR_ID, type EntityCatalogR
 import { parseEntityDocument, serializeEntityDocument, type EntityDocument } from "./entityDocument";
 import { entityDocumentAdapter } from "./entityDocumentAdapter";
 import { collectEntityOwnedIdentities } from "./entityLifecycle";
+import { findDanglingComponentReferenceDiagnostics } from "./entityReferences";
 import {
   createEntityComponentReferenceProvider,
   ENTITY_COMPONENT_REFERENCE_KIND,
@@ -90,6 +91,30 @@ export const entityDocumentFacet: DocumentFacet<EntityDocument, EntityCatalogReg
       componentId,
       newComponentId: requiredString(replacement, "replacement"),
     }], requireRegistry(context, "Entity"));
+  },
+
+  guardOperations(_document, operations) {
+    if (!Array.isArray(operations)) return [];
+    // entity.removeComponent 不受守卫：组件没有跨文件引用语义，删除是普通单文件 Operation；
+    // 仅稳定 Component ID 改名仍必须走 Reference Refactor。
+    return operations.flatMap((entry, index) => {
+      const type = typeof entry === "object" && entry !== null
+        ? (entry as { readonly type?: unknown }).type
+        : undefined;
+      if (type !== "entity.renameComponent") return [];
+      return [{
+        severity: "error" as const,
+        code: "lifecycle.required",
+        path: `operations[${index}].type`,
+        message: "Stable Component IDs must be changed through visualbridge_refactor_reference.",
+      }];
+    });
+  },
+
+  validateTransition(before, after, context) {
+    return context.registry === undefined
+      ? []
+      : findDanglingComponentReferenceDiagnostics(before, after, context.registry);
   },
 
   collectOwnedIdentities(document, context) {

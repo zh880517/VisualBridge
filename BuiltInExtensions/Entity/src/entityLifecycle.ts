@@ -76,7 +76,15 @@ export function deleteEntityOwnedTarget(
 ): DocumentOperationResult<EntityDocument> {
   return target.kind === "entity.component"
     ? applyEntityOperations(document, [{ type: "entity.removeComponent", componentId: target.componentId }], registry)
-    : { success: false, diagnostics: [error("target", `Entity lifecycle cannot delete '${target.kind}'.`)] };
+    : {
+        success: false,
+        diagnostics: [{
+          severity: "error",
+          code: "lifecycle.invalidDeleteTarget",
+          path: "target",
+          message: `Entity lifecycle cannot delete '${target.kind}'.`,
+        }],
+      };
 }
 
 function requireCompleteRemap(

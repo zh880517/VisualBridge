@@ -5,7 +5,7 @@
     {
       "file": "Schema/visualbridge-authoring-contracts.schema.json",
       "id": "https://visualbridge.dev/schema/visualbridge-authoring-contracts.schema.json",
-      "sha256": "acc2cabb154cdad0ee7e0e529ad65e81ac6731b1af971147eb4c34cacf269518",
+      "sha256": "b3c19b88b50aff0c03ed48114ecb5c167130bc0a8d610b96b2c12c76ba022d8a",
       "definitions": [
         "applyOperationsRequest",
         "documentOperation",
@@ -177,7 +177,7 @@
     {
       "file": "Schema/visualbridge-mcp-tools.schema.json",
       "id": "https://visualbridge.dev/schema/visualbridge-mcp-tools.schema.json",
-      "sha256": "d4fd045458aaf620f18624d319d61d47a915cfbf8c94cb2ba9b54d528ecf8cb4",
+      "sha256": "3e3a3a3c04c126ee048970922e5e255875f520ececf7af0ece91b2ab8f9972d0",
       "definitions": [
         "mcpLifecycleCreateOperation",
         "mcpLifecycleDeleteTarget",

@@ -57,7 +57,27 @@ test("MCP V2 exposes eight stable tools and routes Graph semantics with real cro
     const projectFile = discovery.projects[0].projectFile;
     const project = await call(client, "visualbridge_project", { action: "read", projectFile });
     assert.equal(project.definition.projectId, "GraphSemanticProject");
-    assert.deepEqual(project.supportedEditors, ["entity", "graph", "structured", "table"]);
+    // supportedEditors 由生效模块给出：该工程只声明 graph + table 两个模块。
+    assert.deepEqual(project.supportedEditors, ["graph", "table"]);
+    assert.equal(project.modulesEnabled, true);
+    assert.deepEqual(project.modules.map((module) => [module.id, module.status]), [
+      ["visualbridge.graph", "loaded"],
+      ["visualbridge.table", "loaded"],
+    ]);
+    for (const module of project.modules) {
+      assert.equal(module.version, "0.1.0");
+      assert.equal(module.editors.length, 1);
+      assert.equal(module.editors[0].editor, module.id.split(".")[1]);
+      // entry bundle 由 C1 产出；当前只有进程内 facet，所以不能伪造 sha256。
+      assert.equal(Object.hasOwn(module, "sha256"), false);
+      const operationSchema = module.editors[0].operationSchema;
+      assert.equal(operationSchema.type, "object");
+      assert.deepEqual(operationSchema.required, ["type"]);
+      assert.ok(operationSchema.properties.type.enum.length > 0);
+      assert.ok(operationSchema.properties.type.enum.every((type) => (
+        type.startsWith(`${module.editors[0].editor}.`)
+      )));
+    }
     const documents = await call(client, "visualbridge_project", {
       action: "listDocuments",
       projectFile,
@@ -1219,6 +1239,10 @@ test("MCP V2 Table adapter preserves CSV families and XLSX through the shared co
       selector: { sheetDefinitionId: "skills", effectiveOnly: true },
     });
     assert.deepEqual(rowSearch.results.map((entry) => entry.rowId), ["Skills_A:key-102", "Skills_B:key-202"]);
+    // 搜索响应顶层回显表身份与生效行范围（改造前的响应形状）。
+    assert.equal(rowSearch.format, "csv");
+    assert.equal(rowSearch.sheetDefinitionId, "skills");
+    assert.equal(rowSearch.effectiveOnly, true);
     const firstPage = await call(client, "visualbridge_document", {
       ...selector,
       action: "search",
@@ -2196,6 +2220,176 @@ test("MCP rejects non-allowlisted Provider entries and reports direct Authoring 
   }
 });
 
+// ── 模块平台授权（B4 / 附录 D.6） ────────────────────────────────────────────
+
+test("MCP refuses domain requests when the module platform is disabled", async () => {
+  await withFixture(
+    "GraphSemanticProject",
+    async ({ client }) => {
+      const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+      const project = await call(client, "visualbridge_project", { action: "read", projectFile });
+      assert.equal(project.modulesEnabled, false);
+      // 关掉模块平台后没有生效模块：领域 editor 一律不可用，但 Project 自身仍完整可读。
+      assert.deepEqual(project.supportedEditors, []);
+      assert.deepEqual(project.modules.map((module) => [module.id, module.status]), [
+        ["visualbridge.graph", "disabled"],
+        ["visualbridge.table", "disabled"],
+      ]);
+      assert.deepEqual(
+        project.documentTypes.map((documentType) => [
+          documentType.id,
+          documentType.adapterAvailable,
+          documentType.moduleStatus,
+        ]),
+        [
+          ["logicGraph", false, "disabled"],
+          ["sample.table.skills", false, "disabled"],
+        ],
+      );
+
+      const document = await client.callTool({
+        name: "visualbridge_document",
+        arguments: {
+          action: "read",
+          projectFile,
+          documentTypeId: "logicGraph",
+          editor: "graph",
+          path: "Graph/SemanticSample.vbgraph",
+        },
+      });
+      assert.equal(document.isError, true);
+      assert.equal(document.structuredContent.error.code, "document.editorUnsupported");
+      assert.equal(document.structuredContent.error.details.reason, "modulesDisabled");
+
+      const catalog = await client.callTool({
+        name: "visualbridge_catalog",
+        arguments: {
+          action: "read",
+          projectFile,
+          documentTypeId: "sample.table.skills",
+          editor: "table",
+          kind: "summary",
+        },
+      });
+      assert.equal(catalog.isError, true);
+      assert.equal(catalog.structuredContent.error.code, "document.editorUnsupported");
+      assert.equal(catalog.structuredContent.error.details.reason, "modulesDisabled");
+    },
+    { environment: { VISUALBRIDGE_MODULES_ENABLED: "0" } },
+  );
+});
+
+test("MCP rejects module entries that leave the workspace or are not readable files", async () => {
+  // ① 目录 junction 逃逸：词法路径在工程内，真实路径在工作区外 ⇒ untrusted（不是警告）。
+  const outsideRoot = await mkdtemp(path.join(tmpdir(), "visualbridge-mcp-module-outside-"));
+  try {
+    for (const name of ["graph.vbmodule.js", "table.vbmodule.js"]) {
+      await writeFile(path.join(outsideRoot, name), "export {};\n", "utf8");
+    }
+    await withFixture("GraphSemanticProject", async ({ projectRoot, client }) => {
+      try {
+        await symlink(outsideRoot, path.join(projectRoot, "Modules"), process.platform === "win32" ? "junction" : "dir");
+      } catch (error) {
+        if (!["EPERM", "EACCES", "ENOSYS", "ENOTSUP"].includes(error?.code)) throw error;
+        return;
+      }
+      const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+      const project = await call(client, "visualbridge_project", { action: "read", projectFile });
+      assert.equal(project.modulesEnabled, true);
+      assert.deepEqual(project.supportedEditors, []);
+      assert.deepEqual(project.modules.map((module) => [module.id, module.status]), [
+        ["visualbridge.graph", "untrusted"],
+        ["visualbridge.table", "untrusted"],
+      ]);
+      for (const module of project.modules) {
+        assert.ok(module.diagnostics.some((diagnostic) => diagnostic.code === "module.entryAlias"));
+        assert.equal(Object.hasOwn(module, "sha256"), false);
+      }
+      const document = await client.callTool({
+        name: "visualbridge_document",
+        arguments: {
+          action: "read",
+          projectFile,
+          documentTypeId: "logicGraph",
+          editor: "graph",
+          path: "Graph/SemanticSample.vbgraph",
+        },
+      });
+      assert.equal(document.isError, true);
+      assert.equal(document.structuredContent.error.code, "document.editorUnsupported");
+      assert.equal(document.structuredContent.error.details.reason, "moduleUntrusted");
+    });
+  } finally {
+    await rm(outsideRoot, { recursive: true, force: true });
+  }
+
+  // ② realpath 成功但不可读（entry 是目录，readFile 报 EISDIR）⇒ failed，不能被当成"待构建"。
+  await withFixture("GraphSemanticProject", async ({ projectRoot, client }) => {
+    await mkdir(path.join(projectRoot, "Modules", "graph.vbmodule.js"), { recursive: true });
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const project = await call(client, "visualbridge_project", { action: "read", projectFile });
+    assert.deepEqual(project.modules.map((module) => [module.id, module.status]), [
+      ["visualbridge.graph", "failed"],
+      ["visualbridge.table", "loaded"],
+    ]);
+    const graph = project.modules.find((module) => module.id === "visualbridge.graph");
+    assert.ok(graph.diagnostics.some((diagnostic) => diagnostic.code === "module.loadFailed"));
+    assert.equal(Object.hasOwn(graph, "sha256"), false);
+    // 缺失的 entry 仍是"待构建"：同一工程里 table 保持 loaded 且无 sha256。
+    const table = project.modules.find((module) => module.id === "visualbridge.table");
+    assert.equal(project.supportedEditors.includes("table"), true);
+    assert.deepEqual(table.diagnostics, []);
+    assert.equal(Object.hasOwn(table, "sha256"), false);
+
+    const document = await client.callTool({
+      name: "visualbridge_document",
+      arguments: {
+        action: "read",
+        projectFile,
+        documentTypeId: "logicGraph",
+        editor: "graph",
+        path: "Graph/SemanticSample.vbgraph",
+      },
+    });
+    assert.equal(document.isError, true);
+    assert.equal(document.structuredContent.error.details.reason, "moduleFailed");
+  });
+});
+
+test("MCP reports module sha256 and per-editor operationSchema for built entries", async () => {
+  await withFixture("GraphSemanticProject", async ({ projectRoot, client }) => {
+    const entries = new Map([
+      ["graph.vbmodule.js", Buffer.from("export const manifest = { id: 'visualbridge.graph' };\n", "utf8")],
+      ["table.vbmodule.js", Buffer.from("export const manifest = { id: 'visualbridge.table' };\n", "utf8")],
+    ]);
+    await mkdir(path.join(projectRoot, "Modules"), { recursive: true });
+    for (const [name, bytes] of entries) {
+      await writeFile(path.join(projectRoot, "Modules", name), bytes);
+    }
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const project = await call(client, "visualbridge_project", { action: "read", projectFile });
+    assert.deepEqual(project.supportedEditors, ["graph", "table"]);
+    assert.deepEqual(project.modules.map((module) => [module.id, module.status]), [
+      ["visualbridge.graph", "loaded"],
+      ["visualbridge.table", "loaded"],
+    ]);
+    assert.equal(project.modules[0].sha256, hash(entries.get("graph.vbmodule.js")));
+    assert.equal(project.modules[1].sha256, hash(entries.get("table.vbmodule.js")));
+    for (const module of project.modules) {
+      assert.equal(module.entry, `Modules/${module.editors[0].editor}.vbmodule.js`);
+      assert.equal(module.editors.length, 1);
+      const operationSchema = module.editors[0].operationSchema;
+      assert.equal(operationSchema.type, "object");
+      assert.equal(operationSchema.additionalProperties, true);
+      assert.ok(operationSchema.properties.type.enum.every((type) => (
+        type.startsWith(`${module.editors[0].editor}.`)
+      )));
+    }
+    assert.ok(project.modules[0].editors[0].operationSchema.properties.type.enum.includes("graph.addNode"));
+    assert.ok(project.modules[1].editors[0].operationSchema.properties.type.enum.includes("table.setCell"));
+  });
+});
+
 // 假 Runtime 实例：实现 Runtime Bridge V1 协议子集（hello/welcome + 四个 request action + 断开自动释放租约）。
 function startFakeRuntime({ instanceId, token, documents, sources }) {
   const startedAt = new Date().toISOString();
@@ -2391,6 +2585,373 @@ async function assertNoActiveTransactionArtifacts(projectRoot) {
   }
 }
 
+test("MCP document search keeps Graph facet request errors public instead of internal", async () => {
+  await withFixture("GraphSemanticProject", async ({ client }) => {
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const selector = { projectFile, documentTypeId: "logicGraph", editor: "graph" };
+    const graphPath = "Graph/SemanticSample.vbgraph";
+
+    // 改造前省略 `selector.kind` 等于全量搜索；B4 曾把它误判成参数错误。
+    const all = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "search",
+      path: graphPath,
+      query: "step_b",
+    });
+    const nodes = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "search",
+      path: graphPath,
+      query: "step_b",
+      selector: { kind: "node" },
+    });
+    const edges = await call(client, "visualbridge_document", {
+      ...selector,
+      action: "search",
+      path: graphPath,
+      query: "step_b",
+      selector: { kind: "edge" },
+    });
+    assert.ok(nodes.results.length > 0 && edges.results.length > 0, "Fixture must produce both node and edge hits.");
+    assert.deepEqual(
+      all.results.map((entry) => `${entry.kind}:${entry.path}`).sort(),
+      [...nodes.results, ...edges.results].map((entry) => `${entry.kind}:${entry.path}`).sort(),
+      "An omitted selector.kind must search every kind, exactly like the pre-B4 `?? \"all\"`.",
+    );
+
+    assert.equal(
+      await expectToolError(client, "visualbridge_document", {
+        ...selector,
+        action: "search",
+        path: graphPath,
+        query: "step_b",
+        selector: { kind: 5 },
+      }),
+      "request.invalidSelector",
+    );
+    assert.equal(
+      await expectToolError(client, "visualbridge_document", {
+        ...selector,
+        action: "search",
+        path: graphPath,
+        query: "step_b",
+        selector: { kind: "bogus" },
+      }),
+      "document.searchKindUnsupported",
+    );
+  });
+});
+
+test("MCP document read/search keeps Table selector errors public instead of internal", async () => {
+  await withFixture("TableSemanticProject", async ({ client }) => {
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const selector = { projectFile, documentTypeId: "game.table.skills", editor: "table" };
+    const csvPath = "Tables/Skills_A.csv";
+    assert.equal(
+      await expectToolError(client, "visualbridge_document", {
+        ...selector,
+        action: "read",
+        path: csvPath,
+        selector: { sheetId: "skills:Missing" },
+      }),
+      "table.sheetNotFound",
+    );
+    assert.equal(
+      await expectToolError(client, "visualbridge_document", {
+        ...selector,
+        action: "read",
+        path: csvPath,
+        selector: { sheetId: 7 },
+      }),
+      "request.invalidSelector",
+    );
+    assert.equal(
+      await expectToolError(client, "visualbridge_document", {
+        ...selector,
+        action: "search",
+        path: csvPath,
+        query: "",
+        selector: { sheetDefinitionId: "missing.sheet" },
+      }),
+      "table.sheetDefinitionNotFound",
+    );
+    assert.equal(
+      await expectToolError(client, "visualbridge_document", {
+        ...selector,
+        action: "search",
+        path: csvPath,
+        query: "",
+        selector: { sheetDefinitionId: 7 },
+      }),
+      "request.invalidSelector",
+    );
+    assert.equal(
+      await expectToolError(client, "visualbridge_document", {
+        ...selector,
+        action: "search",
+        path: csvPath,
+        query: "",
+        selector: { sheetDefinitionId: "skills", effectiveOnly: "yes" },
+      }),
+      "request.invalidSelector",
+    );
+  });
+});
+
+test("MCP lifecycle keeps module-owned create and delete validation after the contract relaxation", async () => {
+  await withFixture("GraphSemanticProject", async ({ client }) => {
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const source = {
+      projectId: "GraphSemanticProject",
+      documentTypeId: "logicGraph",
+      editor: "graph",
+      path: "Graph/SemanticSample.vbgraph",
+    };
+    // create 的 parameters 已放宽成开放 JSON 对象：非法参数只能靠模块 create facet 拦，码是 invalidCreate。
+    assert.equal(
+      await expectToolError(client, "visualbridge_document_lifecycle", {
+        action: "preview",
+        projectFile,
+        operation: {
+          kind: "create",
+          target: { ...source, path: "Graph/InvalidCreate.vbgraph" },
+          parameters: { unexpectedParameter: true },
+        },
+      }),
+      "lifecycle.invalidCreate",
+    );
+    // delete 的 target 已放宽成"带 kind 的任意对象"：模块认不出的目标必须回 invalidDeleteTarget。
+    for (const target of [
+      { kind: "custom.moduleTarget" },
+      { kind: "graph.element", graphId: "root", elementId: "missing" },
+      { kind: "graph.element", graphId: "root", elementKind: "component", elementId: "missing" },
+      { kind: "table.row", sheetId: "skills:Skills_A", rowId: "key-101" },
+    ]) {
+      assert.equal(
+        await expectToolError(client, "visualbridge_document_lifecycle", {
+          action: "preview",
+          projectFile,
+          operation: { kind: "delete", source, target },
+        }),
+        "lifecycle.invalidDeleteTarget",
+        `delete target ${JSON.stringify(target)} must be rejected by the module facet`,
+      );
+    }
+    // 缺 `kind` 由 live Schema 直接拒（结构化错误不存在，说明没进到生命周期服务）。
+    const missingKind = await client.callTool({
+      name: "visualbridge_document_lifecycle",
+      arguments: {
+        action: "preview",
+        projectFile,
+        operation: { kind: "delete", source, target: { elementId: "missing" } },
+      },
+    });
+    assert.equal(missingKind.isError, true);
+    assert.equal(
+      missingKind.structuredContent,
+      undefined,
+      "A delete target without `kind` must be rejected by the live Schema before dispatch.",
+    );
+    assert.match(textContent(missingKind), /Invalid arguments/);
+  });
+});
+
+test("MCP Graph delete target diagnostics keep two distinct lifecycle codes", async () => {
+  await withFixture("GraphSemanticProject", async ({ client }) => {
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const source = {
+      projectId: "GraphSemanticProject",
+      documentTypeId: "logicGraph",
+      editor: "graph",
+      path: "Graph/SemanticSample.vbgraph",
+    };
+    const previewDelete = async (target) => client.callTool({
+      name: "visualbridge_document_lifecycle",
+      arguments: { action: "preview", projectFile, operation: { kind: "delete", source, target } },
+    });
+    const cases = [
+      {
+        target: { kind: "graph.element", graphId: "root", elementKind: "graph", elementId: "root" },
+        code: "lifecycle.rootGraphDeleteForbidden",
+        path: "target.elementId",
+      },
+      {
+        target: { kind: "graph.element", graphId: "root", elementKind: "graph", elementId: "missing-graph" },
+        code: "lifecycle.deleteTargetNotFound",
+        path: "target.elementId",
+      },
+      {
+        target: { kind: "graph.element", graphId: "root", elementKind: "component", elementId: "missing" },
+        code: "lifecycle.invalidDeleteTarget",
+        path: "target.elementKind",
+      },
+    ];
+    for (const entry of cases) {
+      const result = await previewDelete(entry.target);
+      assert.equal(result.isError, true, JSON.stringify(entry.target));
+      // 顶层码仍是公开的 lifecycle.invalidDeleteTarget，但原因必须以可区分的诊断码留在 details。
+      assert.equal(result.structuredContent.error.code, "lifecycle.invalidDeleteTarget");
+      const codes = result.structuredContent.error.details.map((diagnostic) => diagnostic.code);
+      assert.deepEqual(codes, [entry.code], `delete target ${JSON.stringify(entry.target)} reason drift`);
+      assert.ok(
+        !codes.includes("lifecycle.invalidStableIdRemap"),
+        "A delete target must never be reported with the stableId remap code.",
+      );
+      assert.equal(result.structuredContent.error.details[0].path, entry.path);
+    }
+  });
+});
+
+test("MCP catalog errors name the editor, the Document Type and the catalog paths", async () => {
+  await withFixture("EntitySemanticProject", async ({ projectRoot, client }) => {
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const argumentsForCatalog = {
+      action: "read",
+      kind: "summary",
+      projectFile,
+      documentTypeId: "hero-config",
+      editor: "entity",
+    };
+    const projectPath = path.join(projectRoot, "VisualBridge.project.vbjson");
+    const projectDefinition = JSON.parse(await readFile(projectPath, "utf8"));
+    const heroConfig = projectDefinition.documentTypes.find((entry) => entry.id === "hero-config");
+    const declaredCatalogs = [...heroConfig.catalogs];
+
+    heroConfig.catalogs = [];
+    await writeFile(projectPath, `${JSON.stringify(projectDefinition, undefined, 2)}\n`, "utf8");
+    const notConfigured = await client.callTool({ name: "visualbridge_catalog", arguments: argumentsForCatalog });
+    assert.equal(notConfigured.isError, true);
+    assert.equal(notConfigured.structuredContent.error.code, "catalog.notConfigured");
+    assert.equal(notConfigured.structuredContent.error.details.editor, "entity");
+    assert.equal(notConfigured.structuredContent.error.details.documentTypeId, "hero-config");
+    assert.deepEqual(notConfigured.structuredContent.error.details.catalogPaths, []);
+
+    heroConfig.catalogs = declaredCatalogs;
+    await writeFile(projectPath, `${JSON.stringify(projectDefinition, undefined, 2)}\n`, "utf8");
+    await writeFile(path.join(projectRoot, "Catalog", "Common.vbentitycatalog"), "{ not a catalog\n", "utf8");
+    const invalid = await client.callTool({ name: "visualbridge_catalog", arguments: argumentsForCatalog });
+    assert.equal(invalid.isError, true);
+    assert.equal(invalid.structuredContent.error.code, "catalog.invalid");
+    assert.equal(invalid.structuredContent.error.details.editor, "entity");
+    assert.equal(invalid.structuredContent.error.details.documentTypeId, "hero-config");
+    assert.deepEqual(invalid.structuredContent.error.details.catalogPaths, declaredCatalogs);
+    assert.ok(
+      invalid.structuredContent.error.details.diagnostics.some((diagnostic) => diagnostic.severity === "error"),
+      JSON.stringify(invalid.structuredContent.error.details.diagnostics),
+    );
+  });
+});
+
+test("MCP Table create names the missing tableLayout instead of an unrelated declared source", async () => {
+  await withFixture("TableSemanticProject", async ({ projectRoot, client }) => {
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const projectPath = path.join(projectRoot, "VisualBridge.project.vbjson");
+    const projectDefinition = JSON.parse(await readFile(projectPath, "utf8"));
+    const tableModule = projectDefinition.modules.find((entry) => entry.id === "visualbridge.table");
+    delete tableModule.options.tableLayout;
+    await writeFile(projectPath, `${JSON.stringify(projectDefinition, undefined, 2)}\n`, "utf8");
+    const result = await client.callTool({
+      name: "visualbridge_document_lifecycle",
+      arguments: {
+        action: "preview",
+        projectFile,
+        operation: {
+          kind: "create",
+          target: {
+            projectId: "visualbridge.table-semantics",
+            documentTypeId: "game.table.skills",
+            editor: "table",
+            path: "Tables/Skills_New.skillstable",
+          },
+          parameters: {},
+        },
+      },
+    });
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.error.code, "lifecycle.invalidSource");
+    // 索引失败必须点名真正缺的配置项，而不只是"另一个已声明源无效"。
+    assert.match(result.structuredContent.error.message, /table\.layoutNotConfigured/);
+    assert.match(result.structuredContent.error.message, /tableLayout/);
+    assert.ok(
+      result.structuredContent.error.details.some((diagnostic) => diagnostic.code === "table.layoutNotConfigured"),
+      JSON.stringify(result.structuredContent.error.details),
+    );
+  });
+});
+
+test("MCP surfaces declared reference sources that could not be indexed instead of dropping them", async () => {
+  await withFixture("EntitySemanticProject", async ({ projectRoot, client }) => {
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const entity = {
+      projectFile,
+      documentTypeId: "hero-config",
+      editor: "entity",
+      path: "Config/Entities/Player.herojson",
+    };
+    const clean = await call(client, "visualbridge_document", { ...entity, action: "validate" });
+    assert.equal(clean.valid, true, JSON.stringify(clean.diagnostics));
+    assert.ok(!clean.diagnostics.some((diagnostic) => diagnostic.code === "reference.sourceNotIndexed"));
+
+    const tablePath = path.join(projectRoot, "Tables", "Skills_Main.skillstable");
+    const original = await readFile(tablePath);
+    await writeFile(tablePath, "broken\n", "utf8");
+    try {
+      const validated = await call(client, "visualbridge_document", { ...entity, action: "validate" });
+      const skipped = validated.diagnostics.find((diagnostic) => diagnostic.code === "reference.sourceNotIndexed");
+      assert.ok(skipped, JSON.stringify(validated.diagnostics));
+      assert.equal(skipped.severity, "warning", "A broken sibling source must not invalidate the requested document.");
+      assert.equal(skipped.path, "Tables/Skills_Main.skillstable");
+      assert.match(skipped.message, /Skills_Main\.skillstable/);
+      const read = await call(client, "visualbridge_document", { ...entity, action: "read" });
+      assert.ok(
+        read.diagnostics.some((diagnostic) => diagnostic.code === "reference.sourceNotIndexed"),
+        "read must carry the same visible reference-snapshot diagnostic",
+      );
+
+      // Refactor 必须 fail-closed：坏源里的引用若被静默跳过，改名会留下悬空引用。
+      const refactor = await client.callTool({
+        name: "visualbridge_refactor_reference",
+        arguments: {
+          projectFile,
+          action: "preview",
+          kind: "table.row",
+          target: { documentTypeId: "sample.table.skills" },
+          oldValue: "Fireball",
+          newValue: "Fireball II",
+        },
+      });
+      assert.equal(refactor.isError, true);
+      assert.equal(refactor.structuredContent.error.code, "refactor.invalidSource");
+      assert.match(refactor.structuredContent.error.message, /Skills_Main\.skillstable/);
+    } finally {
+      await writeFile(tablePath, original);
+    }
+  });
+});
+
+test("MCP refactor reports refactor.invalidSource when a declared source cannot be parsed", async () => {
+  await withFixture("GraphSemanticProject", async ({ projectRoot, client }) => {
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const argumentsForPreview = {
+      projectFile,
+      action: "preview",
+      kind: "graph.element",
+      target: { documentTypeId: "logicGraph", elementKind: "node" },
+      oldValue: "step_b",
+      newValue: "step_second",
+    };
+    // 控制组：干净的工程能出 preview，证明下面的报错只来自新增的坏源。
+    const clean = await call(client, "visualbridge_refactor_reference", argumentsForPreview);
+    assert.match(clean.previewHash, /^[a-f0-9]{64}$/);
+    await writeFile(path.join(projectRoot, "Graph", "Corrupt.vbgraph"), "{ not a graph\n", "utf8");
+    const failure = await client.callTool({ name: "visualbridge_refactor_reference", arguments: argumentsForPreview });
+    assert.equal(failure.isError, true);
+    assert.equal(failure.structuredContent.error.code, "refactor.invalidSource");
+    // 引用数据装载是 strict：坏源必须出现在消息里，而不是被当作"没有这个源"。
+    assert.match(failure.structuredContent.error.message, /Graph\/Corrupt\.vbgraph/);
+  });
+});
+
 async function withFixture(name, action, options = {}) {
   const physicalTemporaryRoot = await mkdtemp(path.join(tmpdir(), "visualbridge-mcp-v2-"));
   const physicalProjectRoot = path.join(physicalTemporaryRoot, name);
@@ -2416,7 +2977,7 @@ async function withFixture(name, action, options = {}) {
     }
   }
   const projectRoot = path.join(temporaryRoot, name);
-  const running = await startClient(temporaryRoot);
+  const running = await startClient(temporaryRoot, options.environment ?? {});
   try {
     await action({ temporaryRoot, projectRoot, client: running.client, stderr: running.stderr });
   } catch (error) {
@@ -2431,6 +2992,8 @@ async function withFixture(name, action, options = {}) {
 async function startClient(workspaceRoot, environmentOverrides = {}) {
   const environment = Object.fromEntries(Object.entries(process.env).filter((entry) => entry[1] !== undefined));
   environment.VISUALBRIDGE_WORKSPACE = workspaceRoot;
+  // 模块平台默认开启：验收面是"启用后的四域行为"，只有显式传 "0" / "" 的用例才关闭。
+  environment.VISUALBRIDGE_MODULES_ENABLED = "1";
   Object.assign(environment, environmentOverrides);
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -2459,6 +3022,21 @@ async function call(client, name, args) {
     assert.equal(Object.hasOwn(envelope.data, "status"), false, "Envelope status must not be duplicated in data.");
   }
   return { ...envelope.data, status: envelope.status === "ok" ? envelope.data.status : envelope.status };
+}
+
+/**
+ * 断言工具返回**公开错误**且码值精确匹配。
+ *
+ * facet 的 `invalidRequest` / `unsupported` 被宿主吞成 `internal` 时这里必须变红：既比较具体
+ * 码值，也显式拒绝 `internal`（后者是 facade 违反契约时的兜底码，不是请求错误）。
+ */
+async function expectToolError(client, name, args, message) {
+  const result = await client.callTool({ name, arguments: args });
+  assert.equal(result.isError, true, `${message ?? name}: expected an error, got ${textContent(result)}`);
+  assert.equal(typeof result.structuredContent, "object", `${message ?? name}: expected a structured error`);
+  const code = result.structuredContent.error.code;
+  assert.notEqual(code, "internal", `${message ?? name}: a facet request error must not be downgraded to internal`);
+  return code;
 }
 
 function lifecycleApply(projectFile, operation, preview) {
