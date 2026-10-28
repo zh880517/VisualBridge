@@ -2439,16 +2439,10 @@ test("MCP disables a module whose declared hash does not match the bundle bytes"
   });
 });
 
-test("MCP reports module sha256 and per-editor operationSchema for built entries", async () => {
+test("MCP reports module sha256 and per-editor operationSchema for loaded bundles", async () => {
+  // C2：注册面来自 bundle 的 `activate`，因此这里用夹具里真实分发好的 bundle，
+  // 断言"报告的 sha256 就是磁盘字节"以及"operationSchema 来自该模块的注册面"。
   await withFixture("GraphSemanticProject", async ({ projectRoot, client }) => {
-    const entries = new Map([
-      ["graph.vbmodule.js", Buffer.from("export const manifest = { id: 'visualbridge.graph' };\n", "utf8")],
-      ["table.vbmodule.js", Buffer.from("export const manifest = { id: 'visualbridge.table' };\n", "utf8")],
-    ]);
-    await mkdir(path.join(projectRoot, "Modules"), { recursive: true });
-    for (const [name, bytes] of entries) {
-      await writeFile(path.join(projectRoot, "Modules", name), bytes);
-    }
     const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
     const project = await call(client, "visualbridge_project", { action: "read", projectFile });
     assert.deepEqual(project.supportedEditors, ["graph", "table"]);
@@ -2456,9 +2450,11 @@ test("MCP reports module sha256 and per-editor operationSchema for built entries
       ["visualbridge.graph", "loaded"],
       ["visualbridge.table", "loaded"],
     ]);
-    assert.equal(project.modules[0].sha256, hash(entries.get("graph.vbmodule.js")));
-    assert.equal(project.modules[1].sha256, hash(entries.get("table.vbmodule.js")));
     for (const module of project.modules) {
+      assert.equal(
+        module.sha256,
+        hash(await readFile(path.join(projectRoot, ...module.entry.split("/")))),
+      );
       assert.equal(module.entry, `Modules/${module.editors[0].editor}.vbmodule.js`);
       assert.equal(module.editors.length, 1);
       const operationSchema = module.editors[0].operationSchema;
@@ -2470,6 +2466,38 @@ test("MCP reports module sha256 and per-editor operationSchema for built entries
     }
     assert.ok(project.modules[0].editors[0].operationSchema.properties.type.enum.includes("graph.addNode"));
     assert.ok(project.modules[1].editors[0].operationSchema.properties.type.enum.includes("table.setCell"));
+  });
+});
+
+test("MCP does not fall back to a static registration when a bundle lacks activate", async () => {
+  // 反证：宿主里没有"editor → 领域包"的静态表。只有 manifest、没有 activate 的 bundle
+  // 必须是失败态，且不能再提供 operationSchema。
+  await withFixture("GraphSemanticProject", async ({ projectRoot, client }) => {
+    await mkdir(path.join(projectRoot, "Modules"), { recursive: true });
+    await writeFile(
+      path.join(projectRoot, "Modules", "graph.vbmodule.js"),
+      Buffer.from("export const manifest = { id: 'visualbridge.graph', version: '0.1.0', apiVersion: 1, editors: ['graph'] };\n", "utf8"),
+    );
+    const projectFile = (await call(client, "visualbridge_project", { action: "discover" })).projects[0].projectFile;
+    const project = await call(client, "visualbridge_project", { action: "read", projectFile });
+    const graph = project.modules.find((module) => module.id === "visualbridge.graph");
+    assert.notEqual(graph.status, "loaded");
+    assert.deepEqual(graph.editors, []);
+    assert.ok(project.supportedEditors.includes("table"));
+    assert.equal(project.supportedEditors.includes("graph"), false);
+    const document = await client.callTool({
+      name: "visualbridge_document",
+      arguments: {
+        action: "read",
+        projectFile,
+        documentTypeId: "logicGraph",
+        editor: "graph",
+        path: "Graph/SemanticSample.vbgraph",
+      },
+    });
+    assert.equal(document.isError, true);
+    assert.equal(document.structuredContent.error.code, "document.editorUnsupported");
+    assert.equal(document.structuredContent.error.details.reason, "moduleFailed");
   });
 });
 

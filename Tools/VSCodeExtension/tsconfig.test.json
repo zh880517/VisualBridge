@@ -15,7 +15,10 @@
   "include": [
     "src/bridge/bridgeProtocol.ts",
     "src/bridge/runtimeBridgeProtocol.ts",
+    "src/editor/moduleWebviewHtml.ts",
+    "src/modules/moduleRegistration.ts",
     "src/editor/webviewEpoch.ts",
+    "src/modules/webviewAssets.ts",
     "src/document/projectSemanticDependency.ts",
     "src/reference/openDocumentOverrides.ts",
     "src/refactor/workspaceReferenceRefactorPlan.ts",

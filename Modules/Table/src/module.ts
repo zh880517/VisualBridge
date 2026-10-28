@@ -8,6 +8,7 @@
 import {
   MODULE_API_VERSION,
   type EditorRegistration,
+  type JsonValue,
   type ModuleHost,
   type ModuleRegistration,
 } from "@visualbridge/module-sdk";
@@ -19,6 +20,11 @@ import {
   tableMcpFacet,
   tableOperationSchema,
 } from "../index";
+import {
+  TABLE_REVEAL_MESSAGE_TYPE,
+  TABLE_REVEAL_RESULT_MESSAGE_TYPE,
+  TableRevealMailbox,
+} from "./tableReveal";
 
 export const manifest = {
   id: "visualbridge.table",
@@ -36,6 +42,17 @@ const editor: EditorRegistration = {
   webview: "table",
   webviewTitle: "Table",
   operationSchema: tableOperationSchema,
+  reveal: {
+    messageType: TABLE_REVEAL_MESSAGE_TYPE,
+    resultMessageType: TABLE_REVEAL_RESULT_MESSAGE_TYPE,
+    // Table 的行定位只需要分表 id 与行 id；平台在 ReferenceLocation 里就带这两项。
+    readTarget: (location) => (
+      location.sheetId === undefined || location.rowId === undefined
+        ? undefined
+        : { sheetId: location.sheetId, rowId: location.rowId } as JsonValue
+    ),
+    createMailbox: () => new TableRevealMailbox(),
+  },
   session: {
     // 工厂：宿主打开文档时调用，得到本次会话的控制器。
     createController: () => createTableSessionController(),

@@ -286,7 +286,9 @@ export class WorkspaceReferenceService implements vscode.Disposable {
       createDocumentReferenceProvider(async () => (await loadSnapshot()).documents),
     ];
     for (const entry of documentFacetEntries()) {
-      for (const kind of entry.facet.references) {
+      // `references` 在契约里是必填，但 bundle 求值后宿主无法强制：缺失时按"没有引用 kind"
+      // 处理，避免一个不合规模块让整个文档索引失败（契约校验属于 Loader 的 `registrationInvalid`）。
+      for (const kind of entry.facet.references ?? []) {
         providers.push(kind.createProvider(async () => (
           this.withOpenDocuments(project, entry.moduleId, await loadSnapshot())
         )));

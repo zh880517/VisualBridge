@@ -71,6 +71,7 @@ exports.run = async function run() {
 
   await test("runs trusted Project Provider reference and validator requests out of process", async () => {
     assert.equal(vscode.workspace.isTrusted, true);
+
     await vscode.commands.executeCommand("visualbridge.documentBrowser.validateAll");
     const events = await waitForAsync(
       async () => readProviderEvents(providerStatePath),
@@ -2867,8 +2868,18 @@ exports.run = async function run() {
     assert.ok(state.activationCount > 0, "No module activation was observed in the trusted workspace.");
     // 已信任时注册源 activate 了四个模块（只观测注册源路径；bundle 级静态 init 不在观测范围，
     // 归 C1/C2 把领域代码移出宿主，Restricted Mode 下这个列表必须为空）。
+    // C2 起 bundle 由 ModuleLoader 求值：测试工作区里 TestData/ModuleLoaderProject 的 fixture
+    // bundle 也会被求值（它们的 loaded/failed 状态由各自的断言覆盖）。这里只排除**那个 fixture
+    // Project 自己声明的模块 id**，而不是任意 `visualbridge.fixture.` 前缀——否则新增一个 fixture
+    // 模块就会悄悄通过。
+    const fixtureProject = JSON.parse(new TextDecoder("utf-8").decode(
+      await vscode.workspace.fs.readFile(
+        vscode.Uri.file(path.join(workspacePath, "ModuleLoaderProject", "VisualBridge.project.vbjson")),
+      ),
+    ));
+    const fixtureModuleIds = new Set((fixtureProject.modules ?? []).map((module) => module.id));
     assert.deepEqual(
-      [...state.evaluatedModuleIds].sort(),
+      [...state.evaluatedModuleIds].filter((id) => !fixtureModuleIds.has(id)).sort(),
       ["visualbridge.entity", "visualbridge.graph", "visualbridge.structured", "visualbridge.table"],
     );
     const expectLoaded = (projectId, modules) => {
@@ -2930,6 +2941,335 @@ exports.run = async function run() {
     const tableShell = await vscode.commands.executeCommand("visualbridge.test.getTableReadonlyShellState", tableUri);
     assert.equal(tableShell.active, false);
     await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  });
+
+  await test("reloads a changed module bundle from stale back to loaded", async () => {
+    // 验收第 4 条：bundle 在磁盘上变化后进入 stale，用户确认重载必须真的重新装载
+    // （注册源在模块定义未变时会复用旧 loader，reload 必须带 force）。
+    const projectRoot = path.join(workspacePath, "TableSemanticProject");
+    const projectUri = vscode.Uri.file(path.join(projectRoot, "VisualBridge.project.vbjson"));
+    const bundleUri = vscode.Uri.file(path.join(projectRoot, "Modules", "table.vbmodule.js"));
+    const bundleBefore = await vscode.workspace.fs.readFile(bundleUri);
+    const projectBefore = await vscode.workspace.fs.readFile(projectUri);
+    const moduleState = async () => {
+      const state = await vscode.commands.executeCommand("visualbridge.test.getModuleRegistryState");
+      const project = state.projects.find((entry) => entry.projectId === "visualbridge.table-semantics");
+      assert.ok(project, "The Table project is missing from the module registry snapshot.");
+      const module = project.modules.find((entry) => entry.id === "visualbridge.table");
+      assert.ok(module, "The Table module is missing from the module registry snapshot.");
+      return module;
+    };
+    try {
+      const replaced = Buffer.concat([Buffer.from(bundleBefore), Buffer.from("\n/* updated bundle */\n")]);
+      await vscode.workspace.fs.writeFile(bundleUri, replaced);
+
+      const stale = await vscode.commands.executeCommand("visualbridge.test.refreshStaleModules");
+      assert.ok(
+        stale.includes("visualbridge.table"),
+        `refreshStale did not report the changed bundle: ${JSON.stringify(stale)}`,
+      );
+      assert.equal((await moduleState()).status, "stale", "A changed bundle must be reported as stale.");
+
+      // 用户点"重新加载模块"：注册源在模块定义未变时会复用旧 loader，重载必须带 force，
+      // 所以这里唯一可信的判据是 `stale → loaded`（不带 force 时状态会停在 `stale`）。
+      await vscode.commands.executeCommand("visualbridge.test.reloadModules");
+      const afterReload = await moduleState();
+      assert.equal(afterReload.status, "loaded", "Reload must bring the changed Table module back to loaded.");
+      assert.deepEqual(afterReload.diagnostics, [], "A reloaded module must not keep diagnostics.");
+    } finally {
+      await vscode.workspace.fs.writeFile(bundleUri, bundleBefore);
+      await vscode.workspace.fs.writeFile(projectUri, projectBefore);
+      await vscode.commands.executeCommand("visualbridge.test.reloadModules");
+      assert.equal((await moduleState()).status, "loaded", "The restored Table bundle must load again.");
+    }
+  });
+
+  await test("keeps activate alive, isolates a real unpack failure, and reclaims the loader", async () => {
+    // 注入点必须是**真实抛错点**：解包目录被一个同名文件占住时 `mkdir` 抛错（P2-3）。
+    // 断言：只有命中的 Project 落到 failed 并给出原因、其余 Project 照常、条目与 loader 被回收、
+    // 清掉障碍后同一条重载路径能恢复。
+    const projectRoot = path.join(workspacePath, "EntitySemanticProject");
+    const bundleUri = vscode.Uri.file(path.join(projectRoot, "Modules", "entity.vbmodule.js"));
+    const bundleBefore = await vscode.workspace.fs.readFile(bundleUri);
+    const storageRoot = await vscode.commands.executeCommand("visualbridge.test.getModuleStorageRoot");
+    const modulesRoot = path.join(storageRoot, "modules");
+    const replaced = Buffer.concat([Buffer.from(bundleBefore), Buffer.from("\n/* unpack failure probe */\n")]);
+    const blockedHash = createHash("sha256").update(replaced).digest("hex");
+    const blockerPath = path.join(modulesRoot, blockedHash);
+    const entityState = async () => {
+      const state = await vscode.commands.executeCommand("visualbridge.test.getModuleRegistryState");
+      return {
+        state,
+        entity: state.projects.find((entry) => entry.projectId === "visualbridge.entity-semantics"),
+      };
+    };
+    try {
+      await fsPromises.mkdir(modulesRoot, { recursive: true });
+      await fsPromises.writeFile(blockerPath, "not a directory");
+      await vscode.workspace.fs.writeFile(bundleUri, replaced);
+      // 计数器是会话累计量：取**差值**才可证伪（历史 reload 早已把同一 marker 记过多次）。
+      const disposedBefore = (await entityState()).state.disposedProjectKeys.length;
+      await vscode.commands.executeCommand("visualbridge.test.reloadModules");
+
+      const { state, entity } = await entityState();
+      assert.ok(entity, "The Entity project is missing from the module registry snapshot.");
+      // 本次加载里该 Project 的 marker key 必须被释放两次：先释放上一个条目，再释放解包失败的这个
+      // loader。只在 buildEntry 之后登记条目的写法下，失败时一次都不会发生（loader 永久泄漏）。
+      const entityMarker = vscode.Uri.file(path.join(projectRoot, "VisualBridge.project.vbjson")).toString();
+      const entityDisposals = state.disposedProjectKeys
+        .slice(disposedBefore)
+        .filter((key) => key === entityMarker).length;
+      assert.ok(
+        entityDisposals >= 2,
+        `A failed preparation must dispose its loader and registration (disposed the Entity project ${entityDisposals} time(s) in this reload).`,
+      );
+      for (const module of entity.modules) {
+        assert.equal(module.status, "failed", `Module '${module.id}' must fail when its webview assets cannot be unpacked.`);
+        assert.ok(
+          module.diagnostics.some((entry) => entry.code === "module.loadFailed"),
+          `Module '${module.id}' must explain the preparation failure: ${JSON.stringify(module.diagnostics)}`,
+        );
+        assert.equal(module.webviewDirectory, undefined, "A failed module must not expose a webview directory.");
+      }
+      assert.ok(
+        !state.evaluatedModuleIds.includes("visualbridge.entity"),
+        "A failed preparation must be removed from the source entries (otherwise the disposed loader still reports loaded).",
+      );
+      const table = state.projects.find((entry) => entry.projectId === "visualbridge.table-semantics");
+      assert.deepEqual(
+        table.modules.map((module) => [module.id, module.status]),
+        [["visualbridge.table", "loaded"]],
+        "Other projects must keep loading when one project fails to unpack.",
+      );
+      assert.equal((await fsPromises.stat(blockerPath)).isFile(), true, "The blocker must still be a file (no partial directory).");
+
+      // 其它 Project 的编辑器照常可用：activate 没有被这一次失败打挂。
+      const tableUri = vscode.Uri.file(path.join(workspacePath, "TableSemanticProject", "Tables", "Skills_A.csv"));
+      await withTimeout(
+        vscode.commands.executeCommand("vscode.openWith", tableUri, "visualbridge.tableEditor"),
+        20_000,
+        "The Table editor did not open while another project failed to unpack.",
+      );
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", tableUri),
+        (ready) => ready === true,
+        20_000,
+        "The Table editor did not become ready while another project failed to unpack.",
+      );
+      const shell = await vscode.commands.executeCommand("visualbridge.test.getTableReadonlyShellState", tableUri);
+      assert.equal(shell.active, false, "The Table editor must stay usable when another module fails to unpack.");
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    } finally {
+      await fsPromises.rm(blockerPath, { force: true });
+      await vscode.workspace.fs.writeFile(bundleUri, bundleBefore);
+      await vscode.commands.executeCommand("visualbridge.test.reloadModules");
+    }
+    const recovered = await entityState();
+    assert.deepEqual(
+      recovered.entity.modules.map((module) => module.status),
+      ["loaded", "loaded"],
+      "The Entity project must recover after the unpack blocker is removed.",
+    );
+  });
+
+  await test("keeps old webview assets alive across a reload and points at the new bundle", async () => {
+    // P1-b：重载后在本次会话内**不删**旧 `<hash>` 目录（否则已打开面板隐藏再显示会 404），
+    // 并且给用户一条"模块已更新，请重新打开该文档"的可见提示。
+    const projectRoot = path.join(workspacePath, "GraphSemanticProject");
+    const bundleUri = vscode.Uri.file(path.join(projectRoot, "Modules", "graph.vbmodule.js"));
+    const bundleBefore = await vscode.workspace.fs.readFile(bundleUri);
+    const graphUri = vscode.Uri.file(path.join(projectRoot, "Graph", "SemanticSample.vbgraph"));
+    const graphModule = async () => {
+      const state = await vscode.commands.executeCommand("visualbridge.test.getModuleRegistryState");
+      const project = state.projects.find((entry) => entry.projectId === "GraphSemanticProject");
+      assert.ok(project, "The Graph project is missing from the module registry snapshot.");
+      const module = project.modules.find((entry) => entry.id === "visualbridge.graph");
+      assert.ok(module, "The Graph module is missing from the module registry snapshot.");
+      return { state, module };
+    };
+    let oldDirectory;
+    try {
+      const before = await graphModule();
+      oldDirectory = before.module.webviewDirectory;
+      assert.ok(oldDirectory, "The loaded Graph module must expose its webview directory.");
+
+      await vscode.commands.executeCommand("visualbridge.openDocument", graphUri);
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", graphUri),
+        (ready) => ready === true,
+        20_000,
+        "The Graph editor did not become ready before the bundle changed.",
+      );
+
+      const replaced = Buffer.concat([Buffer.from(bundleBefore), Buffer.from("\n/* updated bundle */\n")]);
+      const replacedHash = createHash("sha256").update(replaced).digest("hex");
+      const newDirectory = path.join(path.dirname(oldDirectory), replacedHash);
+      await vscode.workspace.fs.writeFile(bundleUri, replaced);
+
+      const stale = await vscode.commands.executeCommand("visualbridge.test.refreshStaleModules");
+      assert.ok(stale.includes("visualbridge.graph"), `refreshStale did not report the changed bundle: ${JSON.stringify(stale)}`);
+
+      await vscode.commands.executeCommand("visualbridge.test.reloadModules");
+      const after = await graphModule();
+      assert.equal(after.module.status, "loaded", "The changed Graph bundle must reload.");
+      assert.equal(after.module.webviewDirectory, newDirectory, "The reloaded module must point at the new hash directory.");
+      assert.equal((await fsPromises.stat(oldDirectory)).isDirectory(), true, "The old hash directory must survive this session.");
+      assert.ok(
+        after.state.reloadNotices.some((notice) => notice.includes("graph") && notice.includes("重新打开")),
+        `A reload must tell the user to reopen the document: ${JSON.stringify(after.state.reloadNotices)}`,
+      );
+
+      // 隐藏面板再显示：面板不可见时 Webview 上下文被销毁，重新可见时会重新请求旧目录里的脚本。
+      // 旧目录若在重载时被删，这里必然拿不到 ready 会话（404/空白）。
+      const projectFileUri = vscode.Uri.file(path.join(projectRoot, "VisualBridge.project.vbjson"));
+      const projectDocument = await vscode.workspace.openTextDocument(projectFileUri);
+      await vscode.window.showTextDocument(projectDocument);
+      // 用扩展自己的命令回到 Graph 面板：它按模块注册的 viewType 打开（直接写 viewType 会开出另一个 tab）。
+      await vscode.commands.executeCommand("visualbridge.openDocument", graphUri);
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorState", graphUri),
+        (state) => state.sessionCount === 0 || (state.visibleSessionCount >= 1 && state.readySessionCount >= 1),
+        20_000,
+        "Showing the Graph panel again left it without a ready Webview session (old assets deleted too early).",
+      );
+      const shown = await vscode.commands.executeCommand("visualbridge.test.getGraphEditorState", graphUri);
+      assert.equal((await fsPromises.stat(oldDirectory)).isDirectory(), true, "Showing the panel again must not require deleting old assets.");
+
+      // 重新打开文档则切到新版本：新目录存在，编辑器可用。
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      await vscode.commands.executeCommand("visualbridge.openDocument", graphUri);
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", graphUri),
+        (ready) => ready === true,
+        20_000,
+        "Reopening the document after a module update must bring the Graph editor back.",
+      );
+      assert.equal((await fsPromises.stat(newDirectory)).isDirectory(), true, "Reopening must use the new hash directory.");
+      // 观察值：重载后隐藏再显示时是否真有 ready 会话（报告里如实给出）。
+      console.log(`[vscode-host] Graph panel after hide/show: sessions=${shown.sessionCount} ready=${shown.readySessionCount}`);
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      await vscode.workspace.fs.writeFile(bundleUri, bundleBefore);
+      await vscode.commands.executeCommand("visualbridge.test.reloadModules");
+      await vscode.commands.executeCommand("visualbridge.test.reloadModules");
+      if (oldDirectory !== undefined) {
+        assert.equal((await fsPromises.stat(oldDirectory)).isDirectory(), true, "The restored module must reuse its original assets.");
+      }
+    }
+  });
+
+  await test("clears module entries when trust is revoked mid-session", async () => {
+    // P2-2：会话中撤回信任后，注册源必须把条目删干净（`evaluatedModuleIds` 不能继续报 loaded）。
+    const before = await vscode.commands.executeCommand("visualbridge.test.getModuleRegistryState");
+    assert.equal(before.trusted, true);
+    assert.ok(before.evaluatedModuleIds.includes("visualbridge.entity"), "The trusted baseline must have loaded modules.");
+    try {
+      await vscode.commands.executeCommand("visualbridge.test.setModuleTrustOverride", false);
+      const revoked = await vscode.commands.executeCommand("visualbridge.test.getModuleRegistryState");
+      assert.equal(revoked.trusted, false);
+      assert.deepEqual(revoked.evaluatedModuleIds, [], "Revoking trust must clear every source entry.");
+      for (const project of revoked.projects) {
+        for (const module of project.modules) {
+          assert.equal(module.status, "untrusted", `Module '${module.id}' must be reported untrusted after revocation.`);
+        }
+      }
+    } finally {
+      await vscode.commands.executeCommand("visualbridge.test.setModuleTrustOverride", undefined);
+    }
+    const restored = await vscode.commands.executeCommand("visualbridge.test.getModuleRegistryState");
+    assert.equal(restored.trusted, true);
+    assert.ok(
+      restored.evaluatedModuleIds.includes("visualbridge.entity"),
+      "Restoring trust must reload the modules.",
+    );
+  });
+
+  await test("drops modules on the production ensureProject path when trust is revoked", async () => {
+    // P1-3：生产路径是 `ensureProject`（`reloadProject` 默认 force=false），不是测试专用的强制重载。
+    // 注册源必须在幂等短路**之前**比较授权态，否则会话中撤回信任后条目/facet/loader 全都留着。
+    const projectRoot = path.join(workspacePath, "EntitySemanticProject");
+    const entityUri = vscode.Uri.file(path.join(projectRoot, "Config", "Entities", "Player.herojson"));
+    const entityMarker = vscode.Uri.file(path.join(projectRoot, "VisualBridge.project.vbjson")).toString();
+    const state = async () => vscode.commands.executeCommand("visualbridge.test.getModuleRegistryState");
+    const facetSources = async () => vscode.commands.executeCommand("visualbridge.test.getDocumentFacetSources");
+    const entityFacet = (sources) => sources.find((entry) => entry.editor === "entity");
+    const before = await state();
+    assert.equal(before.trusted, true);
+    assert.ok(before.evaluatedModuleIds.includes("visualbridge.entity"), "The trusted baseline must have loaded modules.");
+    assert.ok(entityFacet(await facetSources()) !== undefined, "The entity facet must be registered while trusted.");
+    try {
+      // 只改 Trust 状态，不触发重载：随后用生产命令打开文档，让 ensureProject(force=false) 自己发现漂移。
+      await vscode.commands.executeCommand("visualbridge.test.setModuleTrustWithoutReload", false);
+      const disposedBefore = (await state()).disposedProjectKeys.length;
+      await vscode.commands.executeCommand("visualbridge.openDocument", entityUri);
+
+      const revoked = await state();
+      assert.equal(revoked.trusted, false);
+      // 生产路径只 `ensureProject` 被访问的那个 Project（VS Code 没有撤销 Trust 的事件），
+      // 因此断言该 Project 的模块退出 `evaluatedModuleIds`，而不是要求整张表为空。
+      assert.ok(
+        !revoked.evaluatedModuleIds.includes("visualbridge.entity"),
+        `The touched project must leave evaluatedModuleIds: ${JSON.stringify(revoked.evaluatedModuleIds)}`,
+      );
+      const entityModules = revoked.projects.find((entry) => entry.projectId === "visualbridge.entity-semantics").modules;
+      for (const module of entityModules) {
+        assert.equal(module.status, "untrusted", `Module '${module.id}' must be untrusted after revocation.`);
+      }
+      assert.equal(entityFacet(await facetSources()), undefined, "Revoking trust must unregister the entity facet.");
+      assert.ok(
+        revoked.disposedProjectKeys.slice(disposedBefore).includes(entityMarker),
+        "The old loader of the revoked project must be disposed on the production path.",
+      );
+    } finally {
+      await vscode.commands.executeCommand("visualbridge.test.setModuleTrustWithoutReload", undefined);
+      await vscode.commands.executeCommand("visualbridge.test.reloadModules");
+    }
+    const restored = await state();
+    assert.equal(restored.trusted, true);
+    assert.ok(restored.evaluatedModuleIds.includes("visualbridge.entity"), "Restoring trust must reload the modules again.");
+  });
+
+  await test("publishes the newest facet when a shared editor is reloaded", async () => {
+    // P1-2：同一 editor 被多个 Project 声明时，重载其中一个必须让**新** bundle 的 facet 成为当前项，
+    // 否则编辑器会话用新 facet、语义索引/Catalog/创建/引用重构仍用旧 facet。
+    const projectRoot = path.join(workspacePath, "TableSemanticProject");
+    const bundleUri = vscode.Uri.file(path.join(projectRoot, "Modules", "table.vbmodule.js"));
+    const bundleBefore = await vscode.workspace.fs.readFile(bundleUri);
+    const marker = vscode.Uri.file(path.join(projectRoot, "VisualBridge.project.vbjson")).toString();
+    const facetSources = async () => vscode.commands.executeCommand("visualbridge.test.getDocumentFacetSources");
+    const tableFacet = async () => (await facetSources()).find((entry) => entry.editor === "table");
+    let previousHash;
+    try {
+      const initial = await tableFacet();
+      assert.ok(initial?.current, "The table facet must be registered while trusted.");
+      // 同一 editor 至少有 3 个 Project 声明（TestData 里的三个 Table 工程），这是本条的前提。
+      assert.ok(initial.all.length >= 2, `Expected a shared editor, got ${JSON.stringify(initial.all)}`);
+      assert.ok(initial.all.some((entry) => entry.ownerKey === marker), "The Table project must be one of the owners.");
+      previousHash = initial.current.hash;
+
+      const replaced = Buffer.concat([Buffer.from(bundleBefore), Buffer.from("\n/* facet version probe */\n")]);
+      await vscode.workspace.fs.writeFile(bundleUri, replaced);
+      await vscode.commands.executeCommand("visualbridge.test.reloadModules");
+
+      const reloaded = await tableFacet();
+      assert.ok(reloaded?.current, "The table facet must stay registered after a reload.");
+      assert.notEqual(reloaded.current.hash, previousHash, "The current facet must come from the new bundle.");
+      assert.equal(reloaded.current.ownerKey, marker, "The reloaded Project's facet must win.");
+      const stillOld = reloaded.all.find((entry) => entry.ownerKey !== marker);
+      assert.ok(stillOld, "The other Projects' facets must stay registered as fallbacks.");
+
+      // 撤销新条目后要回退到剩余条目，而不是变 undefined。
+      const afterDispose = await vscode.commands.executeCommand("visualbridge.test.disposeProjectModulesForTest", marker);
+      assert.equal(afterDispose, true, "Disposing the project modules must report success.");
+      const fallback = await tableFacet();
+      assert.ok(fallback?.current, "The table facet must fall back to another Project instead of disappearing.");
+      assert.notEqual(fallback.current.ownerKey, marker, "The fallback must not be the disposed owner.");
+    } finally {
+      await vscode.workspace.fs.writeFile(bundleUri, bundleBefore);
+      await vscode.commands.executeCommand("visualbridge.test.reloadModules");
+      const restored = await tableFacet();
+      assert.ok(restored?.current, "The restored module must publish its facet again.");
+    }
   });
 
   await test("isolates a failed module and reports module.activateFailed at modules[i]", async () => {
@@ -3196,15 +3536,15 @@ exports.run = async function run() {
         "Project Settings did not expose module runtime state.",
       );
       const table = settings.modules.find((module) => module.id === "visualbridge.table");
-      assert.equal(table.status, "loaded");
-      // B1 没有 bundle 字节，hash 只记录并展示、不做比对（module.hashMismatch 由 C2 补）；
-      // 这里显式固定这个过渡行为，避免以后误把它当"已实现 hash 校验"。
+      // C2：hash 由 ModuleLoader 逐字节校验（B1 只记录不比对）。声明的 hash 与 bundle 字节不符
+      // 时模块按 D.1 语义停用（disabled），并在 Project File 的 modules[].hash 上给出诊断。
+      assert.equal(table.status, "disabled");
       assert.equal(table.hash, tableHash);
       assert.equal(table.hashShort, "ab12cd34ef56");
       assert.equal(
         vscode.languages.getDiagnostics(markerUri).filter((entry) => entry.code === "module.hashMismatch").length,
-        0,
-        "B1 must not report module.hashMismatch without bundle bytes.",
+        1,
+        "A declared module hash that differs from the bundle bytes must produce one module.hashMismatch.",
       );
       const structured = settings.modules.find((module) => module.id === "visualbridge.structured");
       assert.equal(structured.hash, undefined);

@@ -447,7 +447,7 @@ function supportsRenameKind(kind: string): boolean {
   }
   return documentFacetEntries().some((entry) => (
     entry.facet.renameTarget !== undefined
-    && entry.facet.references.some((facet) => facet.kind === kind)
+    && (entry.facet.references ?? []).some((facet) => facet.kind === kind)
   ));
 }
 

@@ -58,8 +58,10 @@ exports.run = async function run() {
     assert.deepEqual(project.modules.map((module) => [module.id, module.status]), [
       ["visualbridge.structured", "untrusted"],
     ]);
-    // manifest 只读信息仍可用于定位 editor，但不表示模块已 activate。
-    assert.deepEqual(project.modules[0].editors, ["structured"]);
+    // C2：manifest 只存在于 bundle 内部，未信任时宿主不得求值 bundle，因此这里拿不到声明的
+    // editor 列表（B1 的 in-process 静态 import 才能读到 manifest）。editor 可用性由
+    // editorAvailability 直接返回"需要信任工作区"的说明，不依赖 manifest。
+    assert.deepEqual(project.modules[0].editors, []);
     assert.equal(project.modules[0].diagnostics[0].code, "module.untrusted");
     assert.equal(project.modules[0].diagnostics[0].path, "modules[0]");
 

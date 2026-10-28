@@ -85,7 +85,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
       return;
     }
 
-    const facets = await this.loadFacets(availability.moduleId);
+    const facets = await this.loadFacets(match, availability.moduleId);
     if (facets === undefined) {
       webviewPanel.webview.options = { enableScripts: true, localResourceRoots: [] };
       webviewPanel.title = `${match.documentType.id}: ${nodePath.basename(document.uri.fsPath)}`;
@@ -332,7 +332,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
       await vscode.commands.executeCommand("vscode.openWith", uri, OPTIONAL_EDITOR_VIEW_TYPE);
       return;
     }
-    const facets = await this.loadFacets(availability.moduleId);
+    const facets = await this.loadFacets(match, availability.moduleId);
     const target = facets?.reveal?.readTarget(location);
     if (target === undefined) {
       throw new Error(facets?.reveal?.invalidLocationMessage ?? "Invalid VisualBridge reference location.");
@@ -354,9 +354,17 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     }
   }
 
-  private async loadFacets(moduleId: string): Promise<ModuleEditorFacets | undefined> {
+  private async loadFacets(match: DocumentMatch, moduleId: string): Promise<ModuleEditorFacets | undefined> {
     try {
-      return await loadModuleEditorFacets(moduleId, { references: this.references });
+      const bundle = this.modules.modulesFor(match.project)
+        .find((module) => module.id === moduleId)?.bundle;
+      return await loadModuleEditorFacets(
+        match.project,
+        moduleId,
+        match.documentType.editor,
+        bundle,
+        { references: this.references, log: (line) => this.output.appendLine(line) },
+      );
     } catch (errorValue) {
       this.output.appendLine(`[modules] Editor facets for '${moduleId}' failed to load: ${String(errorValue)}`);
       return undefined;

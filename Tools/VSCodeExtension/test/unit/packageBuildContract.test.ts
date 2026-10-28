@@ -5,6 +5,8 @@ import test from "node:test";
 
 interface PackageManifest {
   readonly scripts?: Readonly<Record<string, string>>;
+  readonly dependencies?: Readonly<Record<string, string>>;
+  readonly devDependencies?: Readonly<Record<string, string>>;
 }
 
 interface TypeScriptConfig {
@@ -29,19 +31,39 @@ test("VSIX packaging bootstraps every host runtime dependency from a clean check
     "npm run prepare:package",
     "vsce package --no-dependencies --out artifacts/visualbridge.vsix",
   ]);
+  // C2：宿主 bundle 不再静态包含四个领域包，因此打包只需构建 Core 与 NodeHost；
+  // 领域代码改为在运行期由 ModuleLoader 求值 `.vbmodule.js`（附录 D.6）。
   assertCommandsInOrder(extensionManifest, "build:host-dependencies", [
     "npm run build --workspace @visualbridge/core",
     "npm run build --workspace @visualbridge/node-host",
-    "npm run build --workspace @visualbridge/entity",
-    "npm run build --workspace @visualbridge/graph",
-    "npm run build --workspace @visualbridge/structured",
-    "npm run build --workspace @visualbridge/table",
   ]);
   assert.equal(
     nodeHostTsconfig.compilerOptions?.tsBuildInfoFile,
     "dist/tsconfig.tsbuildinfo",
     "NodeHost incremental state must be removed together with dist so a missing runtime entry point is rebuilt.",
   );
+});
+
+test("the extension manifest no longer depends on domain or domain-editor packages", async () => {
+  const extensionManifest = await readManifest("Tools/VSCodeExtension/package.json");
+  const declared = { ...extensionManifest.dependencies, ...extensionManifest.devDependencies };
+  for (const forbidden of [
+    "@visualbridge/entity",
+    "@visualbridge/graph",
+    "@visualbridge/structured",
+    "@visualbridge/table",
+    "@visualbridge/entity-editor",
+    "@visualbridge/graph-editor",
+    "@visualbridge/project-editor",
+    "@visualbridge/structured-editor",
+    "@visualbridge/table-editor",
+  ]) {
+    assert.equal(declared[forbidden], undefined, `'${forbidden}' must not be a host dependency after C2.`);
+  }
+  // 宿主仍是 SDK 契约的消费者（`EditorRegistration`），因此这一条依赖必须保留。
+  assert.notEqual(declared["@visualbridge/module-sdk"], undefined);
+  const build = extensionManifest.scripts?.build ?? "";
+  assert.doesNotMatch(build, /@visualbridge\/(?:entity|graph|structured|table)(?:-editor)?\b/u);
 });
 
 test("packaged VS Code CLI validation always rebuilds the VSIX first", async () => {

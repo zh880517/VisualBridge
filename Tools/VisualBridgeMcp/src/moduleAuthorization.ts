@@ -16,7 +16,7 @@ import type { ProjectContext } from "./projectWorkspace.js";
 
 export const MODULES_ENABLED_ENVIRONMENT_VARIABLE = "VISUALBRIDGE_MODULES_ENABLED";
 
-export type ModuleStatus = "loaded" | "failed" | "untrusted" | "disabled";
+export type ModuleStatus = "loaded" | "failed" | "untrusted" | "disabled" | "stale";
 
 /** 一个已声明模块的装载结果；`disabled` 表示模块平台整体关闭（此时不校验 entry）。 */
 export interface ModuleEntryReport {

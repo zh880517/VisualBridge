@@ -315,8 +315,22 @@ export interface EditorRegistration<TDocument = unknown, TRegistry = unknown> {
   /** bundle `webviews` 中的 key。 */
   readonly webview: string;
   readonly webviewTitle: string;
+  /**
+   * 定位面（附录 D.3）：把引用位置翻译成 Webview 认识的定位消息，并负责"已就绪才投递"。
+   *
+   * 为什么需要消息类型：Webview 脚本是模块自己打的，它只监听自己那两个字面量
+   * （例如 `revealEntityComponent` / `entityRevealResult`）。宿主零领域知识，只能由模块把
+   * 两个类型名一起登记，否则宿主发什么 Webview 都不认。`readTarget` 只做"位置 → 目标"的
+   * 纯翻译，真正的"目标是否存在"校验留在模块 Webview 里（C2 之前就是这样分工的）。
+   */
   readonly reveal?: {
+    /** Webview 监听的定位请求消息类型。 */
+    readonly messageType: string;
+    /** Webview 回传结果的类型。 */
+    readonly resultMessageType: string;
+    /** 位置不合法时返回 undefined（宿主据此报只读提示）。 */
     readTarget(location: ReferenceLocation): JsonValue | undefined;
+    createMailbox(): RevealMailbox;
   };
   readonly mcp?: McpFacet<TDocument, TRegistry>;
   /** 该 editor 的 Operation JSON Schema；由 `visualbridge_project` 返回。 */
@@ -332,4 +346,27 @@ export interface ModuleRegistration {
   readonly editors: readonly EditorRegistration<any, any>[];
   validateOptions?(options: JsonObject | undefined): readonly DocumentDiagnostic[];
   dispose?(): void;
+}
+
+/**
+ * 定位消息信箱（附录 D.3 `reveal.createMailbox`）。
+ *
+ * 宿主在 Webview 就绪前后都可能拿到定位请求，信箱的职责就是"先攒着、就绪再投递"：
+ * - `enqueue` 只记录待投递目标（返回什么宿主不解释）；
+ * - `markReady` / `markUnavailable` 由宿主在握手/隐藏时调用；
+ * - `deliverable` 是**当前可投递**的请求（未就绪时必须是 undefined）；
+ * - `acknowledge(requestId)` 在收到 Webview 结果后确认，返回 false 表示不是它发的那一条。
+ *
+ * `isReady` / `pendingTarget` / `cancel` 是 Table（多面板）用到的可选成员；其它域不实现。
+ * 参数用 `unknown` 是刻意的：目标类型是各域自己的 interface，`JsonValue` 的索引签名会拒绝它们。
+ */
+export interface RevealMailbox {
+  enqueue(target: unknown): unknown;
+  markReady(): void;
+  markUnavailable(): void;
+  readonly deliverable: unknown;
+  acknowledge(requestId: string): boolean;
+  readonly isReady?: boolean;
+  readonly pendingTarget?: unknown;
+  cancel?(): void;
 }

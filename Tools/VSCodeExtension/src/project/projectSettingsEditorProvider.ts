@@ -5,8 +5,7 @@ import {
   parseProjectFile,
   type ProjectFileIssue,
 } from "@visualbridge/core";
-import { createProjectEditorHtml, moduleHashShort } from "@visualbridge/project-editor";
-import type { ProjectModuleRuntime } from "@visualbridge/project-editor";
+import { createModuleWebviewHtml } from "../editor/moduleWebviewHtml";
 import { validateCatalogBindings } from "../catalog/catalogBrowser";
 import type { HostModuleRegistry } from "../modules/hostModuleRegistry";
 import { WebviewEpoch } from "../editor/webviewEpoch";
@@ -104,6 +103,35 @@ export class ProjectSettingsEditorProvider implements vscode.CustomTextEditorPro
   }
 }
 
+/**
+ * 模块区的运行时视图（Project Settings 的"模块"表格）。
+ *
+ * 定义留在宿主：这是宿主注册表快照的投影，不再是编辑器包的类型（C2 后宿主不 import 编辑器包）。
+ */
+interface ProjectModuleRuntimeDiagnostic {
+  readonly code: string;
+  readonly severity: "error" | "warning";
+  readonly message: string;
+  readonly path: string;
+}
+
+interface ProjectModuleRuntime {
+  readonly id: string;
+  readonly index: number;
+  readonly status: "loaded" | "failed" | "untrusted" | "disabled" | "stale";
+  readonly hash?: string;
+  readonly hashShort: string;
+  readonly editors: readonly string[];
+  readonly diagnostics: readonly ProjectModuleRuntimeDiagnostic[];
+}
+
+/** `sha256:<hex>` 去前缀后的前 12 位；未声明时为空字符串。 */
+function moduleHashShort(hash: string | undefined): string {
+  if (hash === undefined || hash.length === 0) return "";
+  const hex = hash.startsWith("sha256:") ? hash.slice("sha256:".length) : hash;
+  return hex.slice(0, 12);
+}
+
 interface ProjectSettingsTestState {
   readonly ready: boolean;
   readonly documentVersion: number;
@@ -136,9 +164,11 @@ class ProjectSettingsEditorSession {
     this.baseDiskHash = await this.readDiskHash();
     this.webviewEpoch.begin(createNonce());
     const nonce = createNonce();
+    // 项目设置页不再使用编辑器包的模板：与四个领域编辑器共用 C2 的统一生成器（附录 D.6 CSP）。
     const webviewRoot = vscode.Uri.joinPath(this.extensionUri, "dist", "webview");
     this.panel.webview.options = { enableScripts: true, localResourceRoots: [webviewRoot] };
-    this.panel.webview.html = createProjectEditorHtml({
+    this.panel.webview.html = createModuleWebviewHtml({
+      title: "VisualBridge Project Settings",
       cspSource: this.panel.webview.cspSource,
       nonce,
       scriptUri: this.panel.webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, "projectEditor.js")).toString(),

@@ -21,6 +21,7 @@ import type {
   ModuleHostMessageHandler,
   ModuleRevealMailbox,
 } from "./moduleEditorFacets";
+import { stampRevealMessage } from "./moduleEditorFacets";
 import { WebviewEpoch } from "./webviewEpoch";
 import type {
   ModuleSessionCatalog,
@@ -35,6 +36,8 @@ import type {
 const OVERWRITE = "覆盖";
 const DISCARD_AND_RELOAD = "放弃并刷新";
 const STALE_REVISION_MESSAGE = "文档已发生变化，编辑器已刷新，请重试刚才的操作。";
+const READY_RETRY_INTERVAL_MS = 250;
+const READY_RETRY_LIMIT = 40;
 let nextTextSessionId = 0;
 
 interface WebviewMessage extends Readonly<Record<string, unknown>> {
@@ -73,6 +76,10 @@ export class ModuleTextEditorSession {
   private disposed = false;
   private webviewReady = false;
   private readyGeneration = 0;
+  /** `requestReady` 的有界重发（与 sources 面板同一套策略：首帧消息可能丢）。 */
+  private readyRetry: NodeJS.Timeout | undefined;
+  private readyAttempts = 0;
+  private readyExhausted = false;
   private readonly webviewEpoch = new WebviewEpoch();
   private readonly revealMailbox: ModuleRevealMailbox | undefined;
   private readonly hostMessageHandler: ModuleHostMessageHandler | undefined;
@@ -90,6 +97,7 @@ export class ModuleTextEditorSession {
     this.match = options.match;
     this.revealMailbox = options.facets.reveal?.createMailbox();
     this.hostMessageHandler = options.facets.createHostMessageHandler?.({
+      match: options.match,
       postMessage: (message) => this.postMessage(message),
       getText: () => options.document.getText(),
       log: (line) => options.output.appendLine(`[${options.facets.editor}-debug] ${line}`),
@@ -102,9 +110,14 @@ export class ModuleTextEditorSession {
     this.webviewEpoch.begin(createNonce());
     const nonce = createNonce();
     const webviewRoot = vscode.Uri.joinPath(this.options.extensionUri, "dist", "webview");
-    const scriptUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, facets.webview.script));
-    const styleUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, facets.webview.style));
-    panel.webview.options = { enableScripts: true, localResourceRoots: [webviewRoot] };
+    // 脚本/样式来自模块 bundle 的解包目录（`<globalStorage>/modules/<sha256>/`），
+    // 不再是 `dist/webview` 下按 editor 命名的静态文件；两者都要进 localResourceRoots。
+    const scriptUri = panel.webview.asWebviewUri(facets.webview.script);
+    const styleUri = panel.webview.asWebviewUri(facets.webview.style);
+    panel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [webviewRoot, facets.webview.resourceRoot],
+    };
     panel.webview.html = facets.webview.createHtml({
       cspSource: panel.webview.cspSource,
       nonce,
@@ -177,6 +190,9 @@ export class ModuleTextEditorSession {
           this.revealMailbox?.markUnavailable();
         } else if (visible && !webviewWasVisible) {
           this.webviewEpoch.begin(createNonce());
+          // 新 epoch 重新计时：旧 epoch 的耗尽状态不能带过来。
+          this.readyAttempts = 0;
+          this.readyExhausted = false;
           void this.requestWebviewReady();
         }
         webviewWasVisible = visible;
@@ -632,7 +648,8 @@ export class ModuleTextEditorSession {
   private async sendPendingReveal(): Promise<void> {
     const pendingReveal = this.revealMailbox?.deliverable;
     if (this.disposed || pendingReveal === undefined) return;
-    if (!await this.postMessage(pendingReveal)) {
+    // 消息类型以模块登记的类型为准（附录 D.3），不信任 mailbox 自造的类型。
+    if (!await this.postMessage(stampRevealMessage(this.options.facets.reveal, pendingReveal))) {
       this.revealMailbox?.markUnavailable();
     }
   }
@@ -667,6 +684,12 @@ export class ModuleTextEditorSession {
     }
     this.webviewReady = true;
     this.readyGeneration += 1;
+    if (this.readyRetry !== undefined) {
+      clearTimeout(this.readyRetry);
+      this.readyRetry = undefined;
+    }
+    this.readyAttempts = 0;
+    this.readyExhausted = false;
     this.revealMailbox?.markReady();
     await this.sendPendingReveal();
   }
@@ -674,7 +697,27 @@ export class ModuleTextEditorSession {
   private async requestWebviewReady(): Promise<void> {
     const token = this.webviewEpoch.currentToken;
     if (this.disposed || !this.options.panel.visible || token === undefined) return;
+    if (this.readyRetry !== undefined) {
+      clearTimeout(this.readyRetry);
+      this.readyRetry = undefined;
+    }
     await this.postMessage({ type: "requestReady", webviewToken: token });
+    if (this.webviewReady || this.readyAttempts >= READY_RETRY_LIMIT) {
+      if (this.webviewReady) return;
+      if (!this.readyExhausted) {
+        this.readyExhausted = true;
+        const reason = `模块 Webview 在 ${READY_RETRY_LIMIT} 次 requestReady 内没有回 ready（${editorLabel(this.options.facets.editor)}），面板会停在空白页。`;
+        this.options.output.appendLine(`[modules] ${reason}`);
+        vscode.window.setStatusBarMessage(`VisualBridge: ${reason} 请重新打开该编辑器。`, 8_000);
+      }
+      return;
+    }
+    this.readyAttempts += 1;
+    this.readyRetry = setTimeout(() => {
+      this.readyRetry = undefined;
+      void this.requestWebviewReady();
+    }, READY_RETRY_INTERVAL_MS);
+    this.readyRetry.unref?.();
   }
 
   private async postMessage(message: unknown): Promise<boolean> {
@@ -712,6 +755,10 @@ export class ModuleTextEditorSession {
     this.disposed = true;
     this.webviewEpoch.invalidate();
     this.webviewReady = false;
+    if (this.readyRetry !== undefined) {
+      clearTimeout(this.readyRetry);
+      this.readyRetry = undefined;
+    }
     this.hostMessageHandler?.dispose?.();
     this.options.controller.dispose?.();
     for (const disposable of this.catalogDisposables.splice(0)) {

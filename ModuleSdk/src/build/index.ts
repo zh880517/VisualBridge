@@ -228,6 +228,11 @@ async function buildWebviews(
       format: "iife",
       platform: "browser",
       target: "es2022",
+      // 模块 Webview 源码用自动 JSX runtime（与 Editors/* 的 `jsx: react-jsx` 一致），
+      // 不 import React。esbuild 默认是 classic transform，会生成裸的 `React.createElement`，
+      // 浏览器里没有 `React` 全局，脚本在入口就抛 ReferenceError、永远不回 `ready`。
+      // 模块 tsconfig 没开 jsx，所以这里必须显式指定，不能指望 tsconfig 发现。
+      jsx: "automatic",
       minify: true,
       write: false,
       absWorkingDir: workingDirectory,

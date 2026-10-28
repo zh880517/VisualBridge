@@ -215,6 +215,128 @@ test("PreUnityAuthoring sample passes official project, catalog, document, and P
   ]);
 });
 
+test("PreUnityAuthoring modules load through ModuleLoader and reproduce the sample semantics", async (context) => {
+  // C2：SampleValidation 也必须经 Loader 取模块（不再假定领域包在进程内）。
+  // 缺 bundle、hash 不符、注册面不合法都会在这一步失败，因此它同时是"分发产物可用"的门禁。
+  const nodeHost = require("../../../Tools/NodeHost/dist/index.js");
+  const projectText = await read("VisualBridge.project.vbjson");
+  const projectResult = core.parseProjectFile(projectText);
+  assert.equal(projectResult.success, true, formatProjectIssues(projectResult));
+  if (!projectResult.success) return;
+  const project = projectResult.value;
+
+  if (process.env.VB_SKIP_MODULES === "1") {
+    // 与宿主同名的开关：CI 不得设置（C2 评审清单 P1），本地排查时可跳过。
+    context.diagnostic("VB_SKIP_MODULES=1: skipping bundled module checks for Samples/PreUnityAuthoring.");
+    return;
+  }
+
+  const loader = await nodeHost.ModuleLoader.create({
+    projectRoot: sampleRoot,
+    projectId: project.projectId,
+    modules: project.modules,
+    trusted: true,
+  });
+  context.after(() => loader.dispose());
+
+  assert.deepEqual(
+    loader.result.modules.map((module) => [module.id, module.status]),
+    [
+      ["visualbridge.graph", "loaded"],
+      ["visualbridge.entity", "loaded"],
+      ["visualbridge.structured", "loaded"],
+      ["visualbridge.table", "loaded"],
+    ],
+    formatDiagnostics(loader.result.modules.flatMap((module) => module.diagnostics)),
+  );
+
+  const facets = new Map();
+  for (const module of loader.result.modules) {
+    for (const editor of module.registration?.editors ?? []) facets.set(editor.editor, editor);
+  }
+  assert.deepEqual([...facets.keys()].sort(), ["entity", "graph", "structured", "table"]);
+
+  const declared = [
+    ["graph", "Logic/Opening.encounter", "sample.encounter", "Catalog/Gameplay.vbgraphcatalog"],
+    ["entity", "Entities/Hero.character", "sample.hero", "Catalog/Gameplay.vbentitycatalog"],
+    ["structured", "Config/Game.settingsdata", "sample.settings", "Catalog/Gameplay.vbstructuredcatalog"],
+  ];
+  for (const [editor, documentPath, documentTypeId, catalogPath] of declared) {
+    const registration = facets.get(editor);
+    const catalogText = await read(catalogPath);
+    const catalog = parseOrThrow(`${editor} catalog`, registration.catalog.parse(catalogText, catalogPath));
+    const registry = buildOrThrow(`${editor} catalog registry`, registration.catalog.build([catalog]));
+    const parsed = await registration.semantic.parseText(await read(documentPath), {
+      projectId: project.projectId,
+      documentTypeId,
+      path: documentPath,
+      sourcePaths: [documentPath],
+      registry,
+      projectDefinition: project,
+      moduleOptions: moduleOptionsOf(project, registration.editor),
+    });
+    assert.equal(
+      parsed.success,
+      true,
+      `${editor} document: ${formatDiagnostics(parsed.diagnostics ?? [])}`,
+    );
+    const diagnostics = await registration.semantic.validate(parsed.document, {
+      projectId: project.projectId,
+      documentTypeId,
+      path: documentPath,
+      sourcePaths: [documentPath],
+      registry,
+      projectDefinition: project,
+      moduleOptions: moduleOptionsOf(project, registration.editor),
+    });
+    assertNoErrors(`${editor} document`, diagnostics);
+    const references = await registration.semantic.collectReferences(parsed.document, {
+      projectId: project.projectId,
+      documentTypeId,
+      path: documentPath,
+      sourcePaths: [documentPath],
+      registry,
+      projectDefinition: project,
+      moduleOptions: moduleOptionsOf(project, registration.editor),
+    });
+    assert.ok(Array.isArray(references));
+  }
+
+  // Table 是多源文档：`parseSources` 是它唯一的入口，`sheetsBySource` 必须回填。
+  const table = facets.get("table");
+  const tableCatalogText = await read("Catalog/Gameplay.vbtablecatalog");
+  const tableCatalog = parseOrThrow(
+    "table catalog",
+    table.catalog.parse(tableCatalogText, "Catalog/Gameplay.vbtablecatalog"),
+  );
+  const tableRegistry = buildOrThrow("table catalog registry", table.catalog.build([tableCatalog]));
+  const tableParsed = await table.semantic.parseSources(
+    [{ path: "Tables/Skills_A.csv", bytes: Buffer.from(await read("Tables/Skills_A.csv"), "utf8") }],
+    {
+      projectId: project.projectId,
+      documentTypeId: "sample.skills",
+      path: "Tables/Skills_A.csv",
+      sourcePaths: ["Tables/Skills_A.csv"],
+      registry: tableRegistry,
+      projectDefinition: project,
+      moduleOptions: moduleOptionsOf(project, "table"),
+    },
+  );
+  assert.equal(tableParsed.success, true, formatDiagnostics(tableParsed.diagnostics ?? []));
+  // 物理分表 id 带 Table 类型前缀（`skills:Skills_A`），宿主据此把引用定位回源文件与分表。
+  assert.deepEqual(tableParsed.sheetsBySource, { "Tables/Skills_A.csv": ["skills:Skills_A"] });
+  assert.deepEqual(
+    tableParsed.document.sheets[0].rows.map((row) => row.cells.id),
+    [101, 102],
+  );
+});
+
+/** 该 editor 所属模块在 Project File 里声明的 `options`（Table 的 `tableLayout` 从这里进 facet）。 */
+function moduleOptionsOf(project, editor) {
+  const moduleId = project.modules.find((module) => module.id.endsWith(`.${editor}`))?.id;
+  return project.modules.find((module) => module.id === moduleId)?.options;
+}
+
 async function createSchemaCompiler() {
   const schemas = await Promise.all((await readdir(schemaRoot))
     .filter((name) => name.endsWith(".schema.json"))

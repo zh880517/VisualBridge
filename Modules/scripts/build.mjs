@@ -27,7 +27,21 @@ import { cp, mkdir, readFile, readdir, rm, access } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildModule } from "@visualbridge/module-sdk/build";
+
+/**
+ * `Modules/` 是独立 npm 根：没装依赖时 `@visualbridge/module-sdk` 解析不到，
+ * 直接报 "Cannot find package" 对使用者没有指向性，这里先给出该跑哪条命令。
+ */
+try {
+  await import("@visualbridge/module-sdk/build");
+} catch (error) {
+  console.error(
+    "缺少 Modules/ 依赖（@visualbridge/module-sdk / esbuild）；请先运行 npm run build:modules（或 npm ci --prefix Modules）。",
+  );
+  console.error(String(error));
+  process.exit(1);
+}
+const { buildModule } = await import("@visualbridge/module-sdk/build");
 
 const modulesRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const repositoryRoot = path.dirname(modulesRoot);
@@ -213,7 +227,9 @@ for (const projectRoot of targetProjects) {
         throw new Error(`${projectRoot}: declares '${module.entry}' but no module builds as '${module.id}'.`);
       }
       if (!(await pathExists(targetPath))) {
-        console.error(`DRIFT ${projectRoot}: missing ${module.entry}`);
+        // 缺产物不是"字节漂移"，而是"从没分发过"——干净 clone 的默认状态。
+        // 只丢一行 DRIFT 会让人以为是内容差异而去对比 hash，故显式给可执行的动作。
+        console.error(`缺少分发产物 ${path.relative(repositoryRoot, targetPath)}；请先运行 npm run build:modules（或 npm run build:bundles）`);
         drift += 1;
         continue;
       }

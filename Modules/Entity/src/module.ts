@@ -8,6 +8,7 @@
 import {
   MODULE_API_VERSION,
   type EditorRegistration,
+  type JsonValue,
   type ModuleHost,
   type ModuleRegistration,
 } from "@visualbridge/module-sdk";
@@ -19,6 +20,12 @@ import {
   entityMcpFacet,
   entityOperationSchema,
 } from "../index";
+import {
+  ENTITY_REVEAL_MESSAGE_TYPE,
+  ENTITY_REVEAL_RESULT_MESSAGE_TYPE,
+  EntityRevealMailbox,
+  readEntityRevealTarget,
+} from "./entityReveal";
 
 export const manifest = {
   id: "visualbridge.entity",
@@ -36,6 +43,13 @@ const editor: EditorRegistration = {
   webview: "entity",
   webviewTitle: "Entity",
   operationSchema: entityOperationSchema,
+  reveal: {
+    messageType: ENTITY_REVEAL_MESSAGE_TYPE,
+    resultMessageType: ENTITY_REVEAL_RESULT_MESSAGE_TYPE,
+    // facet 边界：`ReferenceLocation` 已带 target 校验器需要的字段，返回值在这里收窄回 JSON。
+    readTarget: (location) => readEntityRevealTarget(location) as JsonValue | undefined,
+    createMailbox: () => new EntityRevealMailbox(),
+  },
   session: {
     // 工厂：宿主打开文档时调用，得到本次会话的控制器。
     createController: () => createEntitySessionController(),

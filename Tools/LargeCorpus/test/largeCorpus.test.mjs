@@ -4,13 +4,90 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  buildModuleCatalogRegistry,
   createCorpusSemanticSources,
   generateCorpus,
+  installCorpusModules,
+  loadCorpusModules,
   loadCorpusValidation,
   mutateOneStructuredDocument,
   validateCorpus,
   verifyCorpusManifest,
 } from "../src/corpus.mjs";
+
+test("corpus documents load through ModuleLoader with identical semantics", async (context) => {
+  // C2：大语料工具也经 Loader 取模块，证明分发产物在真实生成工程上可用。
+  if (process.env.VB_SKIP_MODULES === "1") {
+    context.diagnostic("VB_SKIP_MODULES=1: skipping bundled module checks for the generated corpus.");
+    return;
+  }
+  const rootPath = await mkdtemp(join(tmpdir(), "visualbridge-corpus-modules-"));
+  context.after(() => rm(rootPath, { recursive: true, force: true }));
+  const manifest = await generateCorpus(rootPath, { profile: "correctness", seed: 8675309 });
+  await installCorpusModules(rootPath);
+  const modules = await loadCorpusModules(rootPath);
+  context.after(() => modules.loader.dispose());
+
+  assert.deepEqual([...modules.editors.keys()].sort(), ["entity", "graph", "structured", "table"]);
+  assert.deepEqual(
+    modules.loader.result.modules.map((module) => [module.id, module.status]),
+    [
+      ["visualbridge.graph", "loaded"],
+      ["visualbridge.entity", "loaded"],
+      ["visualbridge.structured", "loaded"],
+      ["visualbridge.table", "loaded"],
+    ],
+  );
+
+  // 每个 editor 取一份生成文档，用 facet 解析 + 校验；诊断必须为空。
+  const documentTypes = new Map(modules.project.documentTypes.map((type) => [type.editor, type]));
+  const documentEntries = manifest.files.filter((entry) => /^(Graph|Entity|Structured|Table)\//u.test(entry.path));
+  const byEditor = new Map();
+  for (const entry of documentEntries) {
+    const editor = entry.path.startsWith("Graph/")
+      ? "graph"
+      : entry.path.startsWith("Entity/")
+        ? "entity"
+        : entry.path.startsWith("Structured/")
+          ? "structured"
+          : "table";
+    if (!byEditor.has(editor)) byEditor.set(editor, entry);
+  }
+  for (const editor of ["graph", "entity", "structured", "table"]) {
+    const entry = byEditor.get(editor);
+    assert.notEqual(entry, undefined, `Corpus must contain a ${editor} document.`);
+    const documentType = documentTypes.get(editor);
+    assert.notEqual(documentType, undefined, `Corpus Project must declare a ${editor} Document Type.`);
+    const built = await buildModuleCatalogRegistry(modules, documentType);
+    const context = {
+      projectId: modules.project.projectId,
+      documentTypeId: documentType.id,
+      path: entry.path,
+      sourcePaths: [entry.path],
+      registry: built.registry,
+      projectDefinition: modules.project,
+      moduleOptions: built.entry.options,
+    };
+    const bytes = await readFile(join(rootPath, ...entry.path.split("/")));
+    const parsed = editor === "table"
+      ? await built.entry.registration.semantic.parseSources(
+        [{ path: entry.path, bytes }],
+        context,
+      )
+      : await built.entry.registration.semantic.parseText(bytes.toString("utf8"), context);
+    assert.equal(
+      parsed.success,
+      true,
+      `${entry.path}: ${(parsed.diagnostics ?? []).map((diagnostic) => diagnostic.code).join(",")}`,
+    );
+    const diagnostics = await built.entry.registration.semantic.validate(parsed.document, context);
+    assert.deepEqual(
+      diagnostics.filter((diagnostic) => diagnostic.severity === "error"),
+      [],
+      `${entry.path} must validate through the module facet.`,
+    );
+  }
+});
 
 test("same integer seed produces a byte-identical corpus manifest", async (context) => {
   const firstRoot = await mkdtemp(join(tmpdir(), "visualbridge-corpus-a-"));

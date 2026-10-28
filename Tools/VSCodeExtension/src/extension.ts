@@ -29,8 +29,13 @@ import {
   ProjectSettingsEditorProvider,
 } from "./project/projectSettingsEditorProvider";
 import { HostModuleRegistry } from "./modules/hostModuleRegistry";
-import { catalogFacetFor, documentFacetEntries, documentFacetFor } from "./modules/documentFacetRegistry";
-import { createInProcessModuleSource } from "./modules/inProcessModuleSource";
+import {
+  catalogFacetFor,
+  documentFacetEntries,
+  documentFacetFor,
+  documentFacetSourcesForTest,
+} from "./modules/documentFacetRegistry";
+import { createBundleModuleSource } from "./modules/bundleModuleSource";
 import { WorkspaceProjectProviderService } from "./provider/workspaceProjectProviderService";
 import {
   REVEAL_REFERENCE_COMMAND,
@@ -56,8 +61,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const workspaceDiagnostics = vscode.languages.createDiagnosticCollection("visualbridge-workspace");
   const catalogDiagnostics = vscode.languages.createDiagnosticCollection("visualbridge-catalog");
   const projects = new ProjectRegistry(projectDiagnostics, output);
-  // 宿主模块注册表：B1 用进程内注册源（C2 换成 ModuleLoader）；装载受 Workspace Trust 门禁。
-  const modules = new HostModuleRegistry(projects, createInProcessModuleSource(), output);
+  // 宿主模块注册表：C2 起由 ModuleLoader 支撑（`Tools/NodeHost` 里唯一一份装载实现）。
+  // 装载受 Workspace Trust 门禁；未受信任时注册源不求值任何 bundle。
+  // 注册源的信任判定要跟宿主一致（含测试 override），因此延迟绑定到 registry 本身。
+  const modules: HostModuleRegistry = new HostModuleRegistry(
+    projects,
+    createBundleModuleSource({
+      modulesRoot: vscode.Uri.joinPath(context.globalStorageUri, "modules"),
+      output,
+      isTrusted: () => modules.isTrusted(),
+    }),
+    output,
+  );
   const projectProviders = new WorkspaceProjectProviderService(projects, output);
   const references = new WorkspaceReferenceService(projects, output, projectProviders);
   const documents = new WorkspaceDocumentIndex(
@@ -115,6 +130,42 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await projects.initialize();
   // 模块首次装载也必须在注册 Custom Editor 之前完成，否则首批文档会错误回退只读 Shell。
   await modules.initialize();
+
+  // `VB_SKIP_MODULES=1`：受信任也跳过装载，用于把"编辑器自身的问题"与"模块的问题"分开排查。
+  if (modules.authorization === "skipped") {
+    void vscode.window.showWarningMessage(
+      "VB_SKIP_MODULES=1：已跳过模块装载，领域编辑器回退为只读视图。",
+    );
+  }
+
+  /**
+   * 模块 bundle 变更后提示重载。
+   *
+   * 只标 `stale` 不动正在运行的实例：重载会重建 loader 与解包资产，用户可能在编辑中，
+   * 因此必须由用户确认（VS Code 自己在文件变化时也不强杀面板）。
+   */
+  const moduleWatcher = vscode.workspace.createFileSystemWatcher("**/*.vbmodule.js");
+  let pendingModuleReload = false;
+  const promptModuleReload = async (): Promise<void> => {
+    if (pendingModuleReload) return;
+    pendingModuleReload = true;
+    try {
+      const stale = await modules.refreshStale();
+      if (stale.length === 0) return;
+      output.appendLine(`[modules] 模块字节已变化：${stale.join(", ")}`);
+      const choice = await vscode.window.showWarningMessage(
+        `检测到模块文件变化（${stale.join(", ")}）。重新加载模块？`,
+        "重新加载模块",
+      );
+      if (choice !== "重新加载模块") return;
+      // force：注册源在模块定义未变时会复用旧 loader，不强制丢弃就等于"点了没反应"。
+      await modules.reloadAllProjects("moduleFileChanged", true);
+    } finally {
+      pendingModuleReload = false;
+    }
+  };
+  moduleWatcher.onDidChange(() => void promptModuleReload());
+  moduleWatcher.onDidCreate(() => void promptModuleReload());
   const catalogTree = vscode.window.createTreeView("visualbridge.catalogs", {
     treeDataProvider: catalogBrowser,
     showCollapseAll: true,
@@ -203,6 +254,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     modules.editorAvailability(project, editor).kind === "available"
   );
 
+  context.subscriptions.push(moduleWatcher);
+
   /** 历史命令（每个领域一个）走同一条通用创建路径，只是预选 editor。 */
   const createDocumentForModule = async (moduleId: string): Promise<void> => {
     const editor = documentFacetEntries().find((entry) => entry.moduleId === moduleId)?.facet.editor;
@@ -244,12 +297,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         (moduleId: string | undefined) => modules.setActivationFailureForTest(moduleId ?? undefined),
       ),
       vscode.commands.registerCommand(
+        "visualbridge.test.getModuleStorageRoot",
+        () => context.globalStorageUri.fsPath,
+      ),
+      vscode.commands.registerCommand(
         "visualbridge.test.setModuleTrustOverride",
         (trusted: boolean | undefined) => modules.setTrustOverrideForTest(trusted ?? undefined),
+      ),
+      // 只改 Trust 状态、**不**触发重载：用来验证生产路径（ensureProject 的默认 force=false）
+      // 真的会在授权漂移时释放旧 loader 并注销 facet。
+      vscode.commands.registerCommand(
+        "visualbridge.test.setModuleTrustWithoutReload",
+        (trusted: boolean | undefined) => modules.setTrustOverrideWithoutReloadForTest(trusted ?? undefined),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.getDocumentFacetSources",
+        () => documentFacetSourcesForTest(),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.disposeProjectModulesForTest",
+        (markerKey: string) => modules.disposeProjectModulesForTest(markerKey),
       ),
       vscode.commands.registerCommand(
         "visualbridge.test.simulateWorkspaceTrustGranted",
         () => modules.simulateGrantedTrustForTest(),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.refreshStaleModules",
+        () => modules.refreshStale(),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.reloadModules",
+        () => modules.reloadAllProjects("testReload", true),
       ),
       vscode.commands.registerCommand(
         "visualbridge.test.applyProjectOperations",

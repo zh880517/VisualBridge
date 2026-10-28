@@ -47,7 +47,10 @@ import { MODULE_API_VERSION } from "@visualbridge/node-host";
 import type { JsonValue, VisualBridgeProjectDefinition } from "@visualbridge/core";
 import type { ProjectContext, ProjectRegistry } from "../project/projectRegistry";
 import type {
+  HostLoadedModule,
+  HostModuleBundle,
   HostModuleRegistration,
+  ModuleSourceAuthorization,
   ModuleDiagnostic,
   ModuleEdgeDiagnostic,
   ModuleEditorAvailability,
@@ -55,6 +58,7 @@ import type {
   ModuleRegistrationSource,
   ModuleStatus,
 } from "./moduleRegistration";
+import { moduleUnavailableAuthorization } from "./moduleRegistration";
 
 /** 单个模块在一个 Project 内的状态快照。 */
 export interface HostModuleState {
@@ -65,6 +69,8 @@ export interface HostModuleState {
   readonly declaredHash: string | undefined;
   readonly manifest: ModuleManifestView | undefined;
   readonly registration: HostModuleRegistration | undefined;
+  /** 已装载 bundle 的完整注册面（注册面 + 解包后的 webview 资产）；未装载时 undefined。 */
+  readonly bundle: HostModuleBundle | undefined;
   readonly diagnostics: readonly ModuleDiagnostic[];
 }
 
@@ -83,10 +89,20 @@ export interface HostModuleRegistryTestState {
       readonly index: number;
       readonly status: ModuleStatus;
       readonly hash: string | undefined;
+      /** 实际装载的 bundle hash（与声明 hash 区分）；重载后用它判断"版本变了"。 */
+      readonly loadedHash: string | undefined;
+      /** 该模块解包目录；用于断言旧目录在本次会话内仍存在。 */
+      readonly webviewDirectory: string | undefined;
       readonly editors: readonly string[];
       readonly diagnostics: readonly ModuleDiagnostic[];
     }[];
   }[];
+  /** 重载后给用户的可见提示（"模块已更新，请重新打开该文档"），按出现顺序保留最近 20 条。 */
+  readonly reloadNotices: readonly string[];
+  /** 注册源释放过的条目数（测试用：解包失败后 loader 必须被真释放）。 */
+  readonly disposedModuleEntries: number;
+  /** 注册源释放过的 Project marker key（按顺序）；用来断言"这一次失败的那个 Project 也被释放"。 */
+  readonly disposedProjectKeys: readonly string[];
 }
 
 interface ProjectModuleSet {
@@ -94,21 +110,12 @@ interface ProjectModuleSet {
   readonly markerUri: vscode.Uri;
   readonly projectId: string;
   readonly definitionKey: string;
+  /** 装载这份状态时的授权态；用来发现"读过一次就不再重读"的授权漂移（尤其撤回）。 */
+  readonly authorized: boolean;
   readonly modules: readonly HostModuleState[];
   /** editor id → 首个声明它的模块（含 failed/untrusted/disabled）。 */
   readonly editorOwners: ReadonlyMap<string, HostModuleState>;
   readonly documentDiagnostics: readonly ModuleEdgeDiagnostic[];
-}
-
-interface ModuleDraft {
-  readonly id: string;
-  readonly index: number;
-  readonly entry: string;
-  status: ModuleStatus;
-  readonly declaredHash: string | undefined;
-  manifest: ModuleManifestView | undefined;
-  registration: HostModuleRegistration | undefined;
-  readonly diagnostics: ModuleDiagnostic[];
 }
 
 export class HostModuleRegistry implements vscode.Disposable {
@@ -119,6 +126,8 @@ export class HostModuleRegistry implements vscode.Disposable {
   private readonly activationFailures = new Set<string>();
   private activationCountValue = 0;
   private trustOverride: boolean | undefined;
+  /** 最近的重载可见提示（测试快照与用户提示共用）。 */
+  private readonly reloadNotices: string[] = [];
   private disposed = false;
 
   public readonly onDidChange = this.changeEmitter.event;
@@ -138,6 +147,9 @@ export class HostModuleRegistry implements vscode.Disposable {
           this.output.appendLine(`[modules] Project reload failed: ${formatError(errorValue)}`);
         });
       }),
+      // VS Code 只有 `onDidGrantWorkspaceTrust`，没有撤销事件（撤销信任会重启扩展宿主）。
+      // 授予走这里；撤回（以及 Project Root 变成远端 scheme）由 `ensureProject` 的授权漂移检测兜住：
+      // 注册源在幂等短路**之前**就比较授权态，一旦不同就释放旧 loader、注销 facet 并重走装载。
       vscode.workspace.onDidGrantWorkspaceTrust(() => {
         void this.handleGrantedTrust().catch((errorValue: unknown) => {
           this.output.appendLine(`[modules] Trust reload failed: ${formatError(errorValue)}`);
@@ -145,6 +157,11 @@ export class HostModuleRegistry implements vscode.Disposable {
       }),
     );
     await this.syncProjects("initialize");
+    // `<hash>` 目录的清理**只在激活时**做一次：装载/重载期间清理会删掉已打开面板正在加载的
+    // 旧目录（面板隐藏再显示会重新请求 `<oldhash>/xxx.js`，删早了就是 404/空白）。
+    await this.source.cleanStaleWebviews?.().catch((errorValue: unknown) => {
+      this.output.appendLine(`[modules] webview asset cleanup failed: ${formatError(errorValue)}`);
+    });
   }
 
   /** 新发现或刚变化的 Project 在打开文档前先完成一次装载。 */
@@ -156,7 +173,11 @@ export class HostModuleRegistry implements vscode.Disposable {
       return;
     }
     const existing = this.byProject.get(markerKey);
-    if (existing === undefined || existing.definitionKey !== moduleDefinitionKey(project.definition)) {
+    if (existing === undefined
+      || existing.definitionKey !== moduleDefinitionKey(project.definition)
+      // 授权撤回（Trust 失效 / Project Root 变成远端 scheme）没有事件：每次按需装载时重读授权，
+      // 一旦和上次记录的授权态不同就强制重载，把旧 loader 与注册面拆掉（编辑器因此回退只读）。
+      || existing.authorized !== this.isAuthorized(project)) {
       await this.reloadProject(project, "ensureProject");
     }
   }
@@ -166,11 +187,59 @@ export class HostModuleRegistry implements vscode.Disposable {
   }
 
   /**
+   * 当前授权态：未授予 Workspace Trust 时报 `untrusted`，否则透传注册源（可能是 `skipped`）。
+   *
+   * 供不按 editor 分支的 UI（文档浏览树）判断"要不要按 Project File 原样列出 Document Type"。
+   */
+  /** 进程级授权提示（不区分 Project）；Project 级判断一律用 `authorizationFor(project)`。 */
+  public get authorization(): ModuleSourceAuthorization {
+    if (!this.resolveTrust()) return "untrusted";
+    return this.source.authorization;
+  }
+
+  /**
+   * 某个 Project 的授权态（Project 级判断必须用这个）。
+   *
+   * Project Root 的 scheme 决定是否允许装载，所以 `vscode-remote`/devcontainer 下即使工作区
+   * 已信任也不能用进程级的 `authorization` 判定。
+   */
+  public authorizationFor(project: ProjectContext): ModuleSourceAuthorization {
+    if (!this.resolveTrust()) return "untrusted";
+    return this.source.authorizationFor(project);
+  }
+
+  /**
+   * 当前信任判定（含仅测试用的 override）。
+   *
+   * 注册源的 `isTrusted` 必须走这里，而不能直接读 `vscode.workspace.isTrusted`：测试用
+   * `simulateGrantedTrustForTest` 模拟授权时，宿主与注册源必须看到同一个判定。
+   */
+  public isTrusted(): boolean {
+    return this.resolveTrust();
+  }
+
+  /** 已装载模块的 bundle（注册面 + 解包后的 webview 资产）；未装载时 undefined。 */
+  public bundleFor(project: ProjectContext, moduleId: string): HostModuleBundle | undefined {
+    return this.modulesFor(project).find((module) => module.id === moduleId)?.bundle;
+  }
+
+  /**
    * 某个 editor 在当前 Project 内的可用性。
+   *
+   * 未受信任（或 `VB_SKIP_MODULES=1`）时**不查 manifest**：注册源在那里根本不求值 bundle，
+   * 也就没有 manifest 可查（C2 之前靠静态 id→editor 表，那是 D.6 禁止的）。因此这两种情况下
+   * 直接返回原因，不需要任何领域清单。
    *
    * 状态未知（尚未装载）返回 `stale`：调用方应先 `ensureProject`，这里保留兜底。
    */
   public editorAvailability(project: ProjectContext, editor: string): ModuleEditorAvailability {
+    // 判据与文案都来自注册源/同一纯函数：`VB_SKIP_MODULES=1` 不能落成"需要信任工作区"。
+    const authorization = this.authorizationFor(project);
+    if (authorization !== "trusted") {
+      const unavailable = moduleUnavailableAuthorization(authorization, project.rootUri.scheme);
+      return { kind: "unavailable", ...unavailable };
+    }
+
     const set = this.byProject.get(project.markerUri.toString());
     if (set === undefined) {
       return {
@@ -242,25 +311,76 @@ export class HostModuleRegistry implements vscode.Disposable {
             index: module.index,
             status: module.status,
             hash: module.declaredHash,
+            loadedHash: module.bundle?.hash,
+            webviewDirectory: firstWebviewDirectory(module),
             editors: editorsOf(module),
             diagnostics: module.diagnostics,
           })),
         };
       }),
+      reloadNotices: [...this.reloadNotices],
+      disposedModuleEntries: this.source.testCounters?.().disposedEntries ?? 0,
+      disposedProjectKeys: [...this.source.testCounters?.().disposedProjectKeys ?? []],
     };
+  }
+
+  /**
+   * 重读已装载模块的字节，把实际 hash 变化的模块标成 `stale`，返回受影响的模块 id。
+   *
+   * 不求值新 bundle：宿主据此提示用户重载（`reloadAllProjects`），由用户决定何时切换。
+   */
+  public async refreshStale(): Promise<readonly string[]> {
+    if (this.disposed) return [];
+    const stale: string[] = [];
+    for (const project of this.projects.projects) {
+      if (!this.isAuthorized(project)) continue;
+      const affected = await this.source.refreshStale?.(project) ?? [];
+      if (affected.length === 0) continue;
+      stale.push(...affected);
+      const set = this.byProject.get(project.markerUri.toString());
+      if (set === undefined) continue;
+      const byId = new Map(this.source.modules(project).map((module) => [module.id, module]));
+      this.byProject.set(project.markerUri.toString(), {
+        ...set,
+        modules: set.modules.map((module) => {
+          const refreshed = byId.get(module.id);
+          return refreshed === undefined ? module : { ...module, status: refreshed.status, diagnostics: refreshed.diagnostics };
+        }),
+      });
+    }
+    if (stale.length > 0) this.changeEmitter.fire();
+    return stale;
   }
 
   /** 仅测试用：模拟 Workspace Trust 授予，走与 `onDidGrantWorkspaceTrust` 相同的重载路径。 */
   public async setTrustOverrideForTest(value: boolean | undefined): Promise<void> {
     this.trustOverride = value;
-    await this.reloadAllProjects("trustOverride");
+    await this.reloadAllProjects("trustOverride", true);
   }
 
   /** 仅测试用：让某个模块的 `activate` 抛错（验证失败隔离），传 undefined 清除。 */
   public async setActivationFailureForTest(moduleId: string | undefined): Promise<void> {
     this.activationFailures.clear();
     if (moduleId !== undefined) this.activationFailures.add(moduleId);
-    await this.reloadAllProjects("activationFailure");
+    await this.reloadAllProjects("activationFailure", true);
+  }
+
+  /**
+   * 仅测试用：只改 Trust 状态、不主动重载。
+   *
+   * 用来验证生产路径（`ensureProject` 的默认 `force=false`）真的会在授权漂移时释放旧 loader
+   * 并注销 facet——`setTrustOverrideForTest` 会强制 `force=true`，覆盖不到那条短路。
+   */
+  public setTrustOverrideWithoutReloadForTest(value: boolean | undefined): void {
+    this.trustOverride = value;
+  }
+
+  /** 仅测试用：按 marker key 释放某个 Project 的模块与 facet（模拟关闭该工程）。 */
+  public disposeProjectModulesForTest(markerKey: string): boolean {
+    const existed = this.byProject.delete(markerKey);
+    this.source.disposeProject(markerKey);
+    if (existed) this.changeEmitter.fire();
+    return existed;
   }
 
   /**
@@ -278,16 +398,15 @@ export class HostModuleRegistry implements vscode.Disposable {
     if (this.disposed) return;
     this.disposed = true;
     this.disposables.splice(0).forEach((disposable) => disposable.dispose());
-    for (const set of this.byProject.values()) {
-      for (const module of set.modules) disposeRegistration(module.registration);
-    }
+    // 模块注册与 bundle 求值都由注册源持有；这里只负责停止观察。
+    this.source.dispose();
     this.byProject.clear();
     this.changeEmitter.dispose();
   }
 
   private async handleGrantedTrust(): Promise<void> {
     // 真实 Trust 事件与测试覆盖共用同一条重载路径：授予信任后无需重载窗口。
-    await this.reloadAllProjects("workspaceTrustGranted");
+    await this.reloadAllProjects("workspaceTrustGranted", true);
   }
 
   private async syncProjects(reason: string): Promise<void> {
@@ -296,7 +415,7 @@ export class HostModuleRegistry implements vscode.Disposable {
 
     for (const [markerKey, set] of [...this.byProject]) {
       if (activeProjects.has(markerKey)) continue;
-      for (const module of set.modules) disposeRegistration(module.registration);
+      this.source.disposeProject(markerKey);
       this.byProject.delete(markerKey);
       this.projects.setModuleDiagnostics(set.markerUri, []);
       this.output.appendLine(`[modules] Project '${set.projectId}' closed; module registrations disposed.`);
@@ -314,23 +433,30 @@ export class HostModuleRegistry implements vscode.Disposable {
     await Promise.all(reloads);
   }
 
-  private async reloadAllProjects(reason: string): Promise<void> {
-    await Promise.all([...this.projects.projects].map((project) => this.reloadProject(project, reason)));
+  /**
+   * 重新装载全部 Project 的模块（模块文件变化、信任授予等宿主级事件）。
+   *
+   * `force` 必须由"用户确认重载 / Trust 授予"这类路径传 true：注册源在模块定义未变时会
+   * 复用旧 loader（`definitionKey` 短路），不强制丢弃就等于什么也没重载——`stale` 仍是
+   * `stale`，`editorAvailability` 反而降级。
+   */
+  public async reloadAllProjects(reason: string, force = false): Promise<void> {
+    await Promise.all([...this.projects.projects].map((project) => this.reloadProject(project, reason, force)));
   }
 
-  private reloadProject(project: ProjectContext, reason: string): Promise<void> {
+  private reloadProject(project: ProjectContext, reason: string, force = false): Promise<void> {
     const markerKey = project.markerUri.toString();
     const previous = this.pending.get(markerKey) ?? Promise.resolve();
     const current = previous
       .catch(() => undefined)
-      .then(() => this.loadProject(project, reason));
+      .then(() => this.loadProject(project, reason, force));
     this.pending.set(markerKey, current);
     return current.finally(() => {
       if (this.pending.get(markerKey) === current) this.pending.delete(markerKey);
     });
   }
 
-  private async loadProject(project: ProjectContext, reason: string): Promise<void> {
+  private async loadProject(project: ProjectContext, reason: string, force = false): Promise<void> {
     if (this.disposed) return;
     const markerKey = project.markerUri.toString();
     const previous = this.byProject.get(markerKey);
@@ -348,145 +474,126 @@ export class HostModuleRegistry implements vscode.Disposable {
       this.changeEmitter.fire();
     }
 
-    const authorized = this.isAuthorized(project);
-    const drafts: ModuleDraft[] = project.definition.modules.map((module, index) => ({
-      id: module.id,
-      index,
-      entry: module.entry,
-      status: "failed",
-      declaredHash: module.hash,
-      manifest: undefined,
-      registration: undefined,
-      diagnostics: [],
-    }));
-
-    for (const draft of drafts) {
-      const module = project.definition.modules[draft.index]!;
-      if (!authorized) {
-        draft.status = "untrusted";
-        draft.manifest = this.source.manifest(module.id);
-        draft.diagnostics.push(createDiagnostic(
-          "module.untrusted",
-          "warning",
-          "需要信任工作区才能加载模块。",
-          modulePath(draft.index),
-        ));
-        continue;
-      }
-
-      const manifest = this.source.manifest(module.id);
-      if (!this.source.provides(module.id) || manifest === undefined) {
-        draft.status = "failed";
-        draft.diagnostics.push(createDiagnostic(
-          "module.loadFailed",
-          "error",
-          `No in-process module registration is available for '${module.id}'.`,
-          modulePath(draft.index),
-        ));
-        continue;
-      }
-      draft.manifest = manifest;
-
-      if (manifest.id !== module.id) {
-        draft.status = "failed";
-        draft.diagnostics.push(createDiagnostic(
-          "module.idMismatch",
-          "error",
-          `Module manifest id '${manifest.id}' does not match '${module.id}'.`,
-          modulePath(draft.index),
-        ));
-        continue;
-      }
-      if (manifest.apiVersion !== MODULE_API_VERSION) {
-        draft.status = "disabled";
-        draft.diagnostics.push(createDiagnostic(
-          "module.apiVersionMismatch",
-          "error",
-          `Module apiVersion ${manifest.apiVersion} is not supported (expected ${MODULE_API_VERSION}).`,
-          modulePath(draft.index),
-        ));
-        continue;
-      }
-
-      this.activationCountValue += 1;
-      try {
-        if (this.activationFailures.has(module.id)) {
-          throw new Error("Injected module activation failure (test hook).");
-        }
-        // 授权通过后才执行模块代码。
-        draft.registration = await this.source.activate(module.id);
-      } catch (errorValue) {
-        draft.status = "failed";
-        draft.diagnostics.push(createDiagnostic(
-          "module.activateFailed",
-          "error",
-          `Module '${module.id}' failed to activate: ${formatError(errorValue)}`,
-          modulePath(draft.index),
-        ));
-        continue;
-      }
-
-      const invalid = validateRegistration(draft.registration);
-      if (invalid !== undefined) {
-        draft.status = "failed";
-        draft.diagnostics.push(createDiagnostic(
-          "module.registrationInvalid",
-          "error",
-          `Module '${module.id}' returned an invalid registration: ${invalid}`,
-          modulePath(draft.index),
-        ));
-        disposeRegistration(draft.registration);
-        draft.registration = undefined;
-        continue;
-      }
-
-      const optionsIssues = await validateOptions(draft.registration, module.options);
-      if (optionsIssues !== undefined) {
-        draft.status = "failed";
-        draft.diagnostics.push(createDiagnostic(
-          "module.optionsInvalid",
-          "error",
-          `Module '${module.id}' rejected modules[${draft.index}].options: ${optionsIssues}`,
-          `${modulePath(draft.index)}.options`,
-        ));
-        disposeRegistration(draft.registration);
-        draft.registration = undefined;
-        continue;
-      }
-
-      draft.status = "loaded";
+    // 未受信任或 VB_SKIP_MODULES=1 时注册源不会求值任何 bundle，这里也不会向它要 manifest。
+    // 授权判据由注册源给出（与 `prepare` 内部同一个函数）：Trusted 且本地 file scheme。
+    const authorization = this.source.authorizationFor(project);
+    let loaderModules: readonly HostLoadedModule[] = [];
+    let prepareFailure: string | undefined;
+    try {
+      loaderModules = await this.prepareModules(project, force);
+    } catch (errorValue) {
+      // 单个 Project 的装载失败（例如 webview 解包目录不可写）不得打挂 activate：
+      // 只让该 Project 的模块落到 failed，其余 Project 与编辑器照常工作。
+      prepareFailure = errorValue instanceof Error ? errorValue.message : String(errorValue);
+      this.output.appendLine(
+        `[modules] Project '${project.definition.projectId}' module preparation failed: ${prepareFailure}`,
+      );
+      this.source.disposeProject(markerKey);
+      loaderModules = [];
     }
 
-    // 同一 editor 被多个已加载模块声明：按 modules 顺序保留第一个，其余停用（附录 D.1）。
+    const modules: HostModuleState[] = project.definition.modules.map((declared, index) => {
+      const loaded = loaderModules[index];
+      if (authorization !== "trusted") {
+        const disabled = authorization === "skipped";
+        return {
+          id: declared.id,
+          index,
+          entry: declared.entry,
+          status: disabled ? "disabled" : "untrusted",
+          declaredHash: declared.hash,
+          manifest: undefined,
+          registration: undefined,
+          bundle: undefined,
+          diagnostics: [createDiagnostic(
+            disabled ? "module.disabled" : "module.untrusted",
+            "warning",
+            disabled
+              ? "VB_SKIP_MODULES=1：本进程跳过模块装载。"
+              : project.rootUri.scheme === "file"
+                ? "需要信任工作区才能加载模块。"
+                : `Project Root 不是本地 file scheme（当前 '${project.rootUri.scheme}'），模块不会装载。`,
+            modulePath(index),
+          )],
+        };
+      }
+      if (prepareFailure !== undefined) {
+        return {
+          id: declared.id,
+          index,
+          entry: declared.entry,
+          status: "failed",
+          declaredHash: declared.hash,
+          manifest: undefined,
+          registration: undefined,
+          bundle: undefined,
+          diagnostics: [createDiagnostic(
+            "module.loadFailed",
+            "error",
+            `模块装载失败：${prepareFailure}。该编辑器回退只读，其余编辑器不受影响。`,
+            modulePath(index),
+          )],
+        };
+      }
+      if (loaded === undefined) {
+        return {
+          id: declared.id,
+          index,
+          entry: declared.entry,
+          status: "failed",
+          declaredHash: declared.hash,
+          manifest: undefined,
+          registration: undefined,
+          bundle: undefined,
+          diagnostics: [createDiagnostic(
+            "module.loadFailed",
+            "error",
+            `Module '${declared.id}' was not processed by the loader.`,
+            modulePath(index),
+          )],
+        };
+      }
+      if (loaded.status === "loaded" && this.activationFailures.has(loaded.id)) {
+        this.activationCountValue += 1;
+        this.source.rejectModule?.(markerKey, loaded.id);
+        return {
+          id: loaded.id,
+          index,
+          entry: loaded.entry,
+          status: "failed",
+          declaredHash: loaded.declaredHash,
+          manifest: loaded.manifest,
+          registration: undefined,
+          bundle: undefined,
+          diagnostics: [createDiagnostic(
+            "module.activateFailed",
+            "error",
+            `Module '${loaded.id}' failed to activate: Injected module activation failure (test hook).`,
+            modulePath(index),
+          )],
+        };
+      }
+      if (loaded.status === "loaded") this.activationCountValue += 1;
+      return {
+        id: loaded.id,
+        index,
+        entry: loaded.entry,
+        status: loaded.status,
+        declaredHash: loaded.declaredHash,
+        manifest: loaded.manifest,
+        registration: loaded.registration,
+        bundle: loaded.bundle,
+        diagnostics: [...loaded.diagnostics],
+      };
+    });
+
+    // 同一 editor 由多个模块声明属于配置冲突，loader 已把后面的模块判为 disabled 并给出诊断，
+    // 这里的 `editorOwners` 只按状态优先级挑出真正可用的那一个。
     const claimedEditors = new Map<string, string>();
-    for (const draft of drafts) {
-      if (draft.status !== "loaded" || draft.registration === undefined) continue;
-      const conflict = draft.registration.editors.find((editor) => claimedEditors.has(editor.editor));
-      if (conflict !== undefined) {
-        draft.status = "disabled";
-        draft.diagnostics.push(createDiagnostic(
-          "module.editorConflict",
-          "error",
-          `Editor '${conflict.editor}' is already provided by module '${claimedEditors.get(conflict.editor)}'.`,
-          modulePath(draft.index),
-        ));
-        disposeRegistration(draft.registration);
-        draft.registration = undefined;
-        continue;
-      }
-      for (const editor of draft.registration.editors) claimedEditors.set(editor.editor, draft.id);
+    for (const module of modules) {
+      if (module.status !== "loaded" || module.registration === undefined) continue;
+      for (const editor of module.registration.editors) claimedEditors.set(editor.editor, module.id);
     }
-
-    const modules: HostModuleState[] = drafts.map((draft) => ({
-      id: draft.id,
-      index: draft.index,
-      entry: draft.entry,
-      status: draft.status,
-      declaredHash: draft.declaredHash,
-      manifest: draft.manifest,
-      registration: draft.registration,
-      diagnostics: draft.diagnostics,
-    }));
 
     // editor 归属按状态优先级：已加载模块优先于 failed/disabled/untrusted 的同名声明，
     // 否则先声明的失败模块会遮蔽后面真正可用的模块。
@@ -503,40 +610,69 @@ export class HostModuleRegistry implements vscode.Disposable {
     // 第二段校验（附录 D.1）：documentTypes[].editor 必须由一个已加载模块提供。
     // 只有"根本没有模块声明该 editor"才在这里报；模块存在但 failed/disabled/untrusted
     // 时已由该模块自己的诊断说明，避免同一故障重复计入 Problems。
+    // 未受信任时不做这段：那时没有任何 manifest，无法区分"未声明"和"声明了但没装载"。
     const documentDiagnostics: ModuleEdgeDiagnostic[] = [];
-    for (const [index, documentType] of project.definition.documentTypes.entries()) {
-      if (claimedEditors.has(documentType.editor) || editorOwners.has(documentType.editor)) continue;
-      documentDiagnostics.push({
-        index,
-        diagnostic: createDiagnostic(
-          "module.notFound",
-          "warning",
-          `No declared module provides editor '${documentType.editor}'.`,
-          documentTypeEditorPath(index),
-        ),
-      });
+    if (authorization === "trusted") {
+      for (const [index, documentType] of project.definition.documentTypes.entries()) {
+        if (claimedEditors.has(documentType.editor) || editorOwners.has(documentType.editor)) continue;
+        documentDiagnostics.push({
+          index,
+          diagnostic: createDiagnostic(
+            "module.notFound",
+            "warning",
+            `No declared module provides editor '${documentType.editor}'.`,
+            documentTypeEditorPath(index),
+          ),
+        });
+      }
     }
 
-    // 新注册已就绪，替换旧注册前先释放旧模块。
-    if (previous !== undefined) {
-      for (const module of previous.modules) disposeRegistration(module.registration);
-    }
+    // 旧 loader 的注册由注册源在 `prepare` 里连同 loader 一起释放，这里不再重复 dispose。
 
     const set: ProjectModuleSet = {
       markerKey,
       markerUri: project.markerUri,
       projectId: project.definition.projectId,
       definitionKey,
+      authorized: authorization === "trusted",
       modules,
       editorOwners,
       documentDiagnostics,
     };
     this.byProject.set(markerKey, set);
     await this.publishDiagnostics(set);
+    this.notifyReloadedModules(previous, set);
 
     const summary = modules.map((module) => `${module.id}=${module.status}`).join(", ");
     this.output.appendLine(`[modules] ${project.definition.projectId}: ${summary || "no declared modules"} (${reason}).`);
     this.changeEmitter.fire();
+  }
+
+  /**
+   * 重载后模块 bundle 版本变了的那些 editor，给用户一条可操作的可见提示。
+   *
+   * 已打开的面板仍持旧 facet/旧 controller，而宿主不会重建会话（`documentEditorProvider` 对
+   * `stale` 只重开只读壳），所以必须明确告诉用户"重新打开文档才会用新版本"。
+   * 旧 `<hash>` 目录在本次会话内保留（清理只在激活时做），所以旧面板不会 404。
+   */
+  private notifyReloadedModules(previous: ProjectModuleSet | undefined, next: ProjectModuleSet): void {
+    if (previous === undefined || this.disposed) return;
+    const previousHashes = new Map(
+      previous.modules.map((module) => [module.id, module.bundle?.hash] as const),
+    );
+    const reloadedEditors = new Set<string>();
+    for (const module of next.modules) {
+      const before = previousHashes.get(module.id);
+      const after = module.bundle?.hash;
+      if (before === undefined || after === undefined || before === after) continue;
+      for (const editor of editorsOf(module)) reloadedEditors.add(editor);
+    }
+    if (reloadedEditors.size === 0) return;
+    const message = `模块已更新（${[...reloadedEditors].sort().join(", ")}），请重新打开该文档以使用新版本。`;
+    this.reloadNotices.push(message);
+    if (this.reloadNotices.length > 20) this.reloadNotices.shift();
+    this.output.appendLine(`[modules] ${message}`);
+    void vscode.window.showInformationMessage(message);
   }
 
   private async publishDiagnostics(set: ProjectModuleSet): Promise<void> {
@@ -565,8 +701,15 @@ export class HostModuleRegistry implements vscode.Disposable {
     this.projects.setModuleDiagnostics(project.markerUri, items);
   }
 
+  private async prepareModules(project: ProjectContext, force = false): Promise<readonly HostLoadedModule[]> {
+    // 授权判断交给注册源：未受信任时它会释放该 Project 的 loader 并立即返回。
+    await this.source.prepare(project, force);
+    return this.source.modules(project);
+  }
+
   private isAuthorized(project: ProjectContext): boolean {
-    return this.resolveTrust() && project.rootUri.scheme === "file";
+    // 与 `prepare` 用的是同一个判据（Trusted 且本地 file scheme），不在这里重写一遍。
+    return this.source.authorizationFor(project) === "trusted";
   }
 
   private resolveTrust(): boolean {
@@ -600,6 +743,14 @@ function editorsOf(module: HostModuleState): readonly string[] {
   return module.manifest?.editors ?? [];
 }
 
+/** 该模块的解包目录（取第一个 webview 资产的 resource root）；无 bundle 时 undefined。 */
+function firstWebviewDirectory(module: HostModuleState): string | undefined {
+  const webviews = module.bundle?.webviews;
+  if (webviews === undefined) return undefined;
+  for (const asset of Object.values(webviews)) return asset.resourceRoot.fsPath;
+  return undefined;
+}
+
 function createDiagnostic(
   code: ModuleDiagnostic["code"],
   severity: ModuleDiagnostic["severity"],
@@ -624,44 +775,6 @@ function createVsCodeDiagnostic(
   item.code = diagnostic.code;
   item.source = "VisualBridge Modules";
   return item;
-}
-
-function validateRegistration(registration: HostModuleRegistration): string | undefined {
-  if (typeof registration !== "object" || registration === null) return "registration must be an object.";
-  if (!Array.isArray(registration.editors) || registration.editors.length === 0) {
-    return "registration.editors must be a non-empty array.";
-  }
-  const seen = new Set<string>();
-  for (const editor of registration.editors) {
-    if (typeof editor !== "object" || editor === null || typeof editor.editor !== "string" || editor.editor.length === 0) {
-      return "every editor registration needs a non-empty editor id.";
-    }
-    if (seen.has(editor.editor)) return `editor '${editor.editor}' is registered twice.`;
-    seen.add(editor.editor);
-  }
-  return undefined;
-}
-
-async function validateOptions(
-  registration: HostModuleRegistration,
-  options: Readonly<Record<string, JsonValue>> | undefined,
-): Promise<string | undefined> {
-  if (typeof registration.validateOptions !== "function") return undefined;
-  try {
-    const issues = registration.validateOptions(options);
-    return issues.length === 0 ? undefined : issues.map((issue) => `${issue.path}: ${issue.message}`).join("; ");
-  } catch (errorValue) {
-    return formatError(errorValue);
-  }
-}
-
-function disposeRegistration(registration: HostModuleRegistration | undefined): void {
-  if (registration === undefined || typeof registration.dispose !== "function") return;
-  try {
-    registration.dispose();
-  } catch {
-    // dispose 失败不应阻断注册表替换；宿主只在 Output 里看到状态。
-  }
 }
 
 function formatError(errorValue: unknown): string {

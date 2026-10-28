@@ -1,53 +1,60 @@
 /**
- * 进程内模块 editor 面（B2 的临时适配层，C2 接入 ModuleLoader 后整文件删除）。
+ * 模块 editor 面（C2：完全由 ModuleLoader 的注册面装配）。
  *
- * 唯一按 `modules[].id` 把 `@visualbridge/entity|graph|structured|table` 的 session/storage facet
- * 与 Webview 资产、Catalog facet 装配起来的地方。`documentEditorProvider` /
- * `moduleSourcesEditorProvider` 只认 `HostModuleRegistry.editorAvailability` 给出的 moduleId，
- * 因此宿主内没有按 editor 字面量分支的会话代码。
+ * 本文件只认 SDK 的 `EditorRegistration`：`semantic` / `catalog` / `create` / `session` /
+ * `reveal` / `references` 与 bundle 里的 `webviews` 文本。**不 import 任何领域包**，
+ * 因此宿主 bundle 里不再有 Entity/Graph/Structured/Table 的代码（附录 D.6）。
  *
- * 领域包与 editor 包一律**动态 import**：登记表在模块未加载时不会求值任何领域代码
- * （附录 D.2 授权边界）；C2 换成 bundle 自带 facets 后删除本文件。
+ * Webview 资产：bundle 里的脚本文本/样式文本由 `bundleModuleSource` 解包到
+ * `<globalStorage>/modules/<sha256>/`，这里只拿解包后的绝对 URI。
  */
-import type * as vscode from "vscode";
+import * as vscode from "vscode";
 import * as nodePath from "node:path";
-import type { DocumentDiagnostic, JsonValue, OwnedStableIdentity, ReferenceLocation } from "@visualbridge/core";
+import type {
+  DocumentFacet,
+  DocumentFacetContext,
+  DocumentFacetParseResult,
+  DocumentFacetSourceFile,
+  JsonValue,
+  OwnedStableIdentity,
+  ReferenceLocation,
+} from "@visualbridge/core";
+import type { CatalogFacet, CatalogWithSource } from "../catalog/catalogRegistryLoader";
+import type { EditorRegistration, RevealMailbox } from "@visualbridge/module-sdk";
+import { loadDocumentTypeCatalogRegistry } from "../modules/documentFacetRegistry";
 import type { DocumentMatch, ProjectContext } from "../project/projectRegistry";
 import type { WorkspaceReferenceService } from "../reference/workspaceReferenceService";
 import type {
   ModuleSessionCatalog,
   ModuleSessionController,
+  ModuleSourcesContext,
   ModuleSourcesKeyRenamePlan,
   ModuleSourcesParseResult,
   ModuleSourcesStorage,
 } from "../document/moduleSessionContract";
-import { loadDocumentTypeCatalogRegistry } from "../modules/documentFacetRegistry";
-import { GraphExecutionDebugController } from "./graphExecutionDebugController";
+import type { HostModuleBundle } from "../modules/moduleRegistration";
+import { GraphExecutionDebugController, isGraphDebugMessage } from "./graphExecutionDebugController";
+import { createModuleWebviewHtml } from "./moduleWebviewHtml";
 
-export const ENTITY_MODULE_ID = "visualbridge.entity";
-export const GRAPH_MODULE_ID = "visualbridge.graph";
-export const STRUCTURED_MODULE_ID = "visualbridge.structured";
-export const TABLE_MODULE_ID = "visualbridge.table";
+/** 定位 mailbox 的宿主侧视图：直接复用 SDK 的 `RevealMailbox`（不再自抄一份接口）。 */
+export type ModuleRevealMailbox = RevealMailbox;
 
-/** 定位 mailbox 的宿主侧结构；Editor 包各自实现同名成员集合。 */
-export interface ModuleRevealMailbox {
-  enqueue(target: unknown): unknown;
-  markReady(): void;
-  markUnavailable(): void;
-  readonly deliverable: unknown;
-  acknowledge(requestId: string): boolean;
-  /** Table 的 mailbox 额外暴露就绪态与未送达目标；Entity/Graph 没有这两个成员。 */
-  readonly isReady?: boolean;
-  readonly pendingTarget?: unknown;
-  cancel?(): void;
+export interface ModuleRevealFacet extends NonNullable<EditorRegistration["reveal"]> {
+  /** 位置形状不合法时的可读错误。 */
+  readonly invalidLocationMessage: string;
 }
 
-export interface ModuleRevealFacet {
-  readonly resultMessageType: string;
-  createMailbox(): ModuleRevealMailbox;
-  readTarget(location: ReferenceLocation): unknown | undefined;
-  /** 位置形状不合法时的可读错误（与改造前各会话的文案一致）。 */
-  readonly invalidLocationMessage: string;
+/**
+ * 用登记的消息类型盖章投递对象。
+ *
+ * `reveal.messageType` 是模块登记的、Webview 真正监听的类型名（附录 D.3）：宿主按登记值盖章，
+ * 模块 mailbox 自造不同类型的消息不会悄悄生效，也避免"登记了却没用"的死字段。
+ */
+export function stampRevealMessage(facet: ModuleRevealFacet | undefined, deliverable: unknown): unknown {
+  if (facet === undefined || deliverable === null || typeof deliverable !== "object" || Array.isArray(deliverable)) {
+    return deliverable;
+  }
+  return { ...(deliverable as Readonly<Record<string, unknown>>), type: facet.messageType };
 }
 
 export interface ModuleWebviewMetadata {
@@ -57,9 +64,11 @@ export interface ModuleWebviewMetadata {
 }
 
 export interface ModuleWebviewFacet {
-  /** `dist/webview/` 下的脚本与样式文件名。 */
-  readonly script: string;
-  readonly style: string;
+  /** 解包后的脚本与样式文件（`<globalStorage>/modules/<sha256>/`）。 */
+  readonly script: vscode.Uri;
+  readonly style: vscode.Uri;
+  /** 解包目录：`webview.localResourceRoots` 必须包含它。 */
+  readonly resourceRoot: vscode.Uri;
   createHtml(input: {
     readonly cspSource: string;
     readonly nonce: string;
@@ -71,6 +80,7 @@ export interface ModuleWebviewFacet {
 
 /** 宿主先处理的调试窗口消息（不转发给控制器）。 */
 export interface ModuleHostMessageContext {
+  readonly match: DocumentMatch;
   postMessage(message: unknown): Promise<boolean>;
   getText(): string;
   log(line: string): void;
@@ -118,7 +128,7 @@ export interface ModuleCreateInput {
   readonly catalog: {
     readonly ready: boolean;
     readonly registry: unknown;
-    readonly diagnostics: readonly DocumentDiagnostic[];
+    readonly diagnostics: readonly import("@visualbridge/core").DocumentDiagnostic[];
   };
   /** 稳定 ID 生成器：模块的 create facet 不能自己引入 `node:crypto`。 */
   readonly newStableId: (prefix: string) => string;
@@ -194,50 +204,89 @@ export interface ModuleEditorFacets {
 
 export interface ModuleEditorFacetServices {
   readonly references: WorkspaceReferenceService;
-}
-
-const cache = new Map<string, Promise<ModuleEditorFacets | undefined>>();
-
-/**
- * 按 moduleId 取 editor 面。
- *
- * 未登记的 moduleId 返回 `undefined`（调用方回退只读 Shell）；登记但装配失败时抛错，
- * 由调用方按"模块不可用"处理并记 Output。
- */
-export function loadModuleEditorFacets(
-  moduleId: string,
-  services: ModuleEditorFacetServices,
-): Promise<ModuleEditorFacets | undefined> {
-  const cached = cache.get(moduleId);
-  if (cached !== undefined) return cached;
-  const loading = createFacets(moduleId, services);
-  cache.set(moduleId, loading);
-  return loading;
-}
-
-/** 仅测试用：丢弃缓存（模块定义变化后可以重新装配）。 */
-export function resetModuleEditorFacetsForTest(): void {
-  cache.clear();
-}
-
-async function createFacets(
-  moduleId: string,
-  services: ModuleEditorFacetServices,
-): Promise<ModuleEditorFacets | undefined> {
-  switch (moduleId) {
-    case ENTITY_MODULE_ID: return loadEntityFacets();
-    case GRAPH_MODULE_ID: return loadGraphFacets();
-    case STRUCTURED_MODULE_ID: return loadStructuredFacets();
-    case TABLE_MODULE_ID: return loadTableFacets(services);
-    default: return undefined;
-  }
+  /** 宿主 OutputChannel；模块面里的非致命失败必须留下痕迹，不能静默丢弃。 */
+  readonly log: (line: string) => void;
 }
 
 /**
- * 会话侧 Catalog 装载：只按 Document Type 的 editor 取模块 `catalog` facet，宿主不自带领域列表。
+ * 按 (Project, moduleId, editor) 取 editor 面。
  *
- * 没有 facet 的领域返回一条可读错误（模块未登记），与会话"Catalog 不可用"的既有形状一致。
+ * 不做缓存：装配是纯闭包构造（无 IO），模块重载后必须立即看到新注册面。
+ * 未装载的 moduleId 返回 `undefined`（调用方回退只读 Shell）。
  */
+export async function loadModuleEditorFacets(
+  project: ProjectContext,
+  moduleId: string,
+  editor: string,
+  bundle: HostModuleBundle | undefined,
+  services: ModuleEditorFacetServices,
+): Promise<ModuleEditorFacets | undefined> {
+  if (bundle === undefined) return undefined;
+  const editorRegistration = bundle.registration.editors.find((candidate) => candidate.editor === editor);
+  const webviewKey = editorRegistration?.webview;
+  const assets = webviewKey === undefined ? undefined : bundle.webviews[webviewKey];
+  if (editorRegistration === undefined || assets === undefined) return undefined;
+  return createFacets(project, moduleId, editorRegistration, assets, services);
+}
+
+function createFacets(
+  project: ProjectContext,
+  moduleId: string,
+  editorRegistration: HostModuleBundle["registration"]["editors"][number],
+  assets: HostModuleBundle["webviews"][string],
+  services: ModuleEditorFacetServices,
+): ModuleEditorFacets {
+  const facet = editorRegistration.semantic as DocumentFacet<unknown, unknown>;
+  const editor = editorRegistration.editor;
+  const webviewTitle = editorRegistration.webviewTitle;
+  const base = {
+    moduleId,
+    editor,
+    storage: facet.storage,
+    webview: {
+      script: assets.script,
+      style: assets.style,
+      resourceRoot: assets.resourceRoot,
+      createHtml: (input: {
+        readonly cspSource: string;
+        readonly nonce: string;
+        readonly scriptUri: string;
+        readonly styleUri: string;
+        readonly metadata: ModuleWebviewMetadata;
+      }) => createModuleWebviewHtml({
+        title: webviewTitle,
+        cspSource: input.cspSource,
+        nonce: input.nonce,
+        scriptUri: input.scriptUri,
+        styleUri: input.styleUri,
+        metadata: input.metadata,
+      }),
+    },
+    loadCatalog: (match: DocumentMatch) => loadCatalogForMatch(match),
+    createController: (): ModuleSessionController => (
+      editorRegistration.session.createController(undefined)
+    ),
+  } satisfies Omit<ModuleEditorFacets, "reveal" | "sources" | "createHostMessageHandler">;
+
+  const reveal = editorRegistration.reveal;
+  const sources = facet.storage === "sources" ? createSourcesFacet(facet, moduleId, project, services) : undefined;
+  return {
+    ...base,
+    ...(reveal === undefined ? {} : {
+      reveal: {
+        messageType: reveal.messageType,
+        resultMessageType: reveal.resultMessageType,
+        createMailbox: () => reveal.createMailbox(),
+        readTarget: (location: ReferenceLocation) => reveal.readTarget(location),
+        invalidLocationMessage: `Invalid reference location for editor '${editor}'.`,
+      } satisfies ModuleRevealFacet,
+    }),
+    ...(sources === undefined ? {} : { sources }),
+    createHostMessageHandler: (context) => createRuntimeDebugHandler(facet, context),
+  };
+}
+
+/** 会话侧 Catalog 装载：只按 Document Type 的 editor 取模块 `catalog` facet。 */
 async function loadCatalogForMatch(match: DocumentMatch): Promise<ModuleSessionCatalog> {
   const loading = loadDocumentTypeCatalogRegistry(match.project, match.documentType);
   if (loading === undefined) {
@@ -256,169 +305,208 @@ async function loadCatalogForMatch(match: DocumentMatch): Promise<ModuleSessionC
   return { ready: result.ready, registry: result.registry, diagnostics: result.diagnostics };
 }
 
-async function loadEntityFacets(): Promise<ModuleEditorFacets> {
-  const [domain, editor] = await Promise.all([
-    import("@visualbridge/entity"),
-    import("@visualbridge/entity-editor"),
-  ]);
+/**
+ * 多源文档的宿主侧面。
+ *
+ * `storage` 直接由 `semantic` 的三个方法拼出来（`planSources` / `parseSources` / `renderSources`），
+ * 因此宿主不需要知道 CSV/XLSX 的差别。
+ *
+ * `publishDocument` 需要"当前内存文档"的引用数据，而 facet 只在解析结果里给出 `referenceData`。
+ * 这里用 `renderSources` + `parseSources` 组合出当前状态并取 `referenceData`；代价是每次改动
+ * 一次序列化 + 解析，因此按 `ownerId` 合并（250ms 防抖），且只保留最后一次。
+ */
+function createSourcesFacet(
+  facet: DocumentFacet<unknown, unknown>,
+  moduleId: string,
+  project: ProjectContext,
+  services: ModuleEditorFacetServices,
+): ModuleSourcesFacet | undefined {
+  if (facet.planSources === undefined || facet.parseSources === undefined || facet.renderSources === undefined) {
+    return undefined;
+  }
+  const planSources = facet.planSources.bind(facet);
+  const parseSources = facet.parseSources.bind(facet);
+  const renderSources = facet.renderSources.bind(facet);
+  const pending = new Map<string, NodeJS.Timeout>();
+  const moduleOptions = project.definition.modules.find((module) => module.id === moduleId)?.options;
+
+  /**
+   * 会话契约（`ModuleSourcesContext`）只带 project/documentType/options/catalog；
+   * facet 契约还要 `path` / `sourcePaths` / `projectDefinition`。路径从本次调用的文件列表推出，
+   * Project File 与模块 options 由宿主补齐（否则 Table 的 `tableLayout` 会丢）。
+   */
+  const facetContext = (
+    context: ModuleSourcesContext,
+    paths: readonly string[],
+  ): DocumentFacetContext => ({
+    projectId: context.projectId,
+    documentTypeId: context.documentTypeId,
+    path: paths[0] ?? "",
+    sourcePaths: paths,
+    registry: context.catalog.ready ? context.catalog.registry : undefined,
+    projectDefinition: project.definition as unknown as JsonValue,
+    moduleOptions: context.options ?? moduleOptions,
+  });
+
+  const storage: ModuleSourcesStorage = {
+    kind: "sources",
+    planSources: (active, candidatePaths, context) => planSources(
+      active,
+      candidatePaths,
+      facetContext(context, [active.path, ...candidatePaths]),
+    ),
+    parse: async (files, context) => {
+      const parsed = await parseSources(files, facetContext(context, files.map((file) => file.path)));
+      return parsed.success
+        ? {
+          success: true,
+          document: parsed.document as JsonValue,
+          diagnostics: parsed.diagnostics,
+          ...(parsed.sheetsBySource === undefined ? {} : { sheetsBySource: parsed.sheetsBySource }),
+        }
+        : { success: false, diagnostics: parsed.diagnostics };
+    },
+    render: (document, previous, context) => renderSources(
+      document,
+      previous,
+      facetContext(context, previous.map((file) => file.path)),
+    ),
+  };
+
   return {
-    moduleId: ENTITY_MODULE_ID,
-    editor: domain.ENTITY_EDITOR_ID,
-    storage: "text",
-    webview: {
-      script: "entityEditor.js",
-      style: "entityEditor.css",
-      createHtml: (input) => editor.createEntityEditorHtml(input),
+    storage,
+    publishDocument: (input) => {
+      const previous = pending.get(input.ownerId);
+      if (previous !== undefined) clearTimeout(previous);
+      pending.set(input.ownerId, setTimeout(() => {
+        pending.delete(input.ownerId);
+        void publishSourcesReferenceData(facet, moduleId, project, services, input);
+      }, 250));
     },
-    reveal: {
-      resultMessageType: editor.ENTITY_REVEAL_RESULT_MESSAGE_TYPE,
-      createMailbox: () => new editor.EntityRevealMailbox(),
-      readTarget: (location) => editor.readEntityRevealTarget(location),
-      invalidLocationMessage: "Invalid Entity component reference location.",
+    removeDocument: (ownerId) => {
+      const previous = pending.get(ownerId);
+      if (previous !== undefined) {
+        clearTimeout(previous);
+        pending.delete(ownerId);
+      }
+      services.references.removeModuleDocument(ownerId);
     },
-    loadCatalog: loadCatalogForMatch,
-    createController: () => domain.createEntitySessionController(),
   };
 }
 
-async function loadGraphFacets(): Promise<ModuleEditorFacets> {
-  const [domain, editor] = await Promise.all([
-    import("@visualbridge/graph"),
-    import("@visualbridge/graph-editor"),
-  ]);
-  return {
-    moduleId: GRAPH_MODULE_ID,
-    editor: domain.GRAPH_EDITOR_ID,
-    storage: "text",
-    webview: {
-      script: "graphEditor.js",
-      style: "graphEditor.css",
-      createHtml: (input) => editor.createGraphEditorHtml(input),
-    },
-    reveal: {
-      resultMessageType: editor.GRAPH_REVEAL_RESULT_MESSAGE_TYPE,
-      createMailbox: () => new editor.GraphRevealMailbox(),
-      readTarget: (location) => editor.readGraphRevealTarget(location),
-      invalidLocationMessage: "Invalid Graph element reference location.",
-    },
-    loadCatalog: loadCatalogForMatch,
-    createController: () => domain.createGraphSessionController(),
-    createHostMessageHandler: (context) => createGraphDebugHandler(domain, context),
-  };
+async function publishSourcesReferenceData(
+  facet: DocumentFacet<unknown, unknown>,
+  moduleId: string,
+  project: ProjectContext,
+  services: ModuleEditorFacetServices,
+  input: ModuleSourcesPublishInput,
+): Promise<void> {
+  const sourcePaths = input.sources.map((source) => relativeProjectPath(project, source.uri));
+  const context = facetContext(project, input.documentTypeId, sourcePaths, undefined);
+  const previous: DocumentFacetSourceFile[] = [];
+  for (const source of input.sources) {
+    try {
+      previous.push({ path: relativeProjectPath(project, source.uri), bytes: await readSourceBytes(source.uri) });
+    } catch (errorValue) {
+      services.log(
+        `[modules] '${moduleId}' 的引用数据未更新：读取源文件失败（${source.uri.toString()}）：${formatError(errorValue)}`,
+      );
+      return;
+    }
+  }
+  try {
+    const rendered = await facet.renderSources!(input.document, previous, context);
+    const parsed = await facet.parseSources!(rendered, context);
+    if (!parsed.success) {
+      services.log(
+        `[modules] '${moduleId}' 的引用数据未更新：模块重新解析保存后的源文件失败（`
+        + `${parsed.diagnostics.map((item) => item.message).join("; ") || "no diagnostics"}）`,
+      );
+      return;
+    }
+    if (parsed.referenceData === undefined) return;
+    services.references.updateModuleDocument(input.ownerId, project, {
+      moduleId,
+      documentTypeId: input.documentTypeId,
+      sourcePaths,
+      data: parsed.referenceData,
+    });
+  } catch (errorValue) {
+    // 引用数据是索引的附加值：渲染/解析失败不应打断保存流程，但必须写进 OutputChannel。
+    services.log(
+      `[modules] '${moduleId}' 的引用数据未更新：渲染/解析抛出异常：${formatError(errorValue)}`,
+    );
+  }
 }
 
-async function loadStructuredFacets(): Promise<ModuleEditorFacets> {
-  const [domain, editor] = await Promise.all([
-    import("@visualbridge/structured"),
-    import("@visualbridge/structured-editor"),
-  ]);
-  return {
-    moduleId: STRUCTURED_MODULE_ID,
-    editor: domain.STRUCTURED_EDITOR_ID,
-    storage: "text",
-    webview: {
-      script: "structuredEditor.js",
-      style: "structuredEditor.css",
-      createHtml: (input) => editor.createStructuredEditorHtml(input),
-    },
-    loadCatalog: loadCatalogForMatch,
-    createController: () => domain.createStructuredSessionController(),
-  };
+async function readSourceBytes(uri: vscode.Uri): Promise<Uint8Array> {
+  return vscode.workspace.fs.readFile(uri);
 }
 
-async function loadTableFacets(services: ModuleEditorFacetServices): Promise<ModuleEditorFacets> {
-  const [domain, editor] = await Promise.all([
-    import("@visualbridge/table"),
-    import("@visualbridge/table-editor"),
-  ]);
-  const storage: ModuleSourcesStorage = domain.tableSourcesStorage;
-  return {
-    moduleId: TABLE_MODULE_ID,
-    editor: domain.TABLE_EDITOR_ID,
-    storage: "sources",
-    webview: {
-      script: "tableEditor.js",
-      style: "tableEditor.css",
-      createHtml: (input) => editor.createTableEditorHtml(input),
-    },
-    reveal: {
-      resultMessageType: editor.TABLE_REVEAL_RESULT_MESSAGE_TYPE,
-      createMailbox: () => new editor.TableRevealMailbox(),
-      readTarget: (location) => readTableRevealTarget(location),
-      invalidLocationMessage: "Invalid Table reference location.",
-    },
-    sources: {
-      storage,
-      publishDocument: (input) => {
-        const registry = input.catalog.registry as ReturnType<typeof domain.createEmptyTableCatalogRegistry>;
-        const tableType = domain.resolveTableType(registry, input.documentTypeId);
-        if (tableType === undefined) return;
-        const sourcePaths = input.sources.map((source) => relativeProjectPath(input.project, source.uri));
-        const sheetPaths: Record<string, string> = {};
-        input.sources.forEach((source) => {
-          const sourcePath = relativeProjectPath(input.project, source.uri);
-          source.sheetIds.forEach((sheetId) => { sheetPaths[sheetId] = sourcePath; });
-        });
-        services.references.updateModuleDocument(input.ownerId, input.project, {
-          moduleId: TABLE_MODULE_ID,
-          documentTypeId: input.documentTypeId,
-          sourcePaths,
-          data: domain.createTableReferenceData({
-            projectId: input.project.definition.projectId,
-            documentTypeId: input.documentTypeId,
-            path: sourcePaths[0] ?? "",
-            document: input.document as unknown as Parameters<typeof domain.validateTableDocument>[0],
-            tableType,
-            sheetPaths,
-          }),
-        });
-      },
-      removeDocument: (ownerId) => services.references.removeModuleDocument(ownerId),
-    },
-    loadCatalog: loadCatalogForMatch,
-    createController: () => domain.createTableSessionController(),
-  };
-}
-
-const GRAPH_DEBUG_MESSAGE_TYPES: ReadonlySet<string> = new Set([
-  "requestGraphExecutionInstances",
-  "subscribeGraphExecution",
-  "unsubscribeGraphExecution",
-  "requestGraphExecutionDebugState",
-  "graphDebugAck",
-]);
-
-function createGraphDebugHandler(
-  domain: typeof import("@visualbridge/graph"),
+/** 执行调试消息的宿主侧处理器；延迟创建，只有真的收到调试消息才连接 Runtime Bridge。 */
+function createRuntimeDebugHandler(
+  facet: DocumentFacet<unknown, unknown>,
   context: ModuleHostMessageContext,
 ): ModuleHostMessageHandler {
-  // 执行调试使用独立 Runtime 连接（观察者语义），不与 DAP 检查会话共享。
-  const controller = new GraphExecutionDebugController({
-    postMessage: (message) => context.postMessage(message),
-    getDocumentId: () => {
-      const parsed = domain.parseGraphDocument(context.getText());
-      return parsed.success ? parsed.document.documentId : undefined;
-    },
-    output: (line) => context.log(line),
-  });
+  let controller: GraphExecutionDebugController | undefined;
   return {
     async handle(message) {
-      if (typeof message.type !== "string" || !GRAPH_DEBUG_MESSAGE_TYPES.has(message.type)) {
-        return false;
-      }
+      const type = message.type;
+      if (typeof type !== "string" || !isGraphDebugMessage(type)) return false;
+      controller ??= new GraphExecutionDebugController({
+        postMessage: (outgoing) => context.postMessage(outgoing),
+        getDocumentId: () => documentIdOf(facet, context),
+        output: (line) => context.log(line),
+      });
       await controller.handleWebviewMessage(message);
       return true;
     },
     get testState() {
-      return controller.testState;
+      return controller?.testState;
     },
-    dispose: () => controller.dispose(),
+    dispose: () => controller?.dispose(),
   };
 }
 
-function readTableRevealTarget(location: ReferenceLocation): unknown | undefined {
-  if (location.sheetId === undefined || location.rowId === undefined) return undefined;
-  return { sheetId: location.sheetId, rowId: location.rowId };
+/** 文档 id 是 Core 的通用约定（`documentId`），由模块自己的解析器给出。 */
+function documentIdOf(
+  facet: DocumentFacet<unknown, unknown>,
+  context: ModuleHostMessageContext,
+): string | undefined {
+  if (facet.parseText === undefined) return undefined;
+  // facet 边界：四个内置域的 `parseText` 都是同步的；契约允许 Promise，这里只接受同步结果。
+  const parsed = facet.parseText(context.getText(), facetContext(
+    context.match.project,
+    context.match.documentType.id,
+    [context.match.relativePath],
+    undefined,
+  )) as DocumentFacetParseResult<unknown>;
+  if (!parsed.success) return undefined;
+  const document = parsed.document;
+  if (typeof document !== "object" || document === null) return undefined;
+  const value = (document as { readonly documentId?: unknown }).documentId;
+  return typeof value === "string" ? value : undefined;
+}
+
+function facetContext(
+  project: ProjectContext,
+  documentTypeId: string,
+  sourcePaths: readonly string[],
+  registry: unknown,
+): DocumentFacetContext {
+  return {
+    projectId: project.definition.projectId,
+    documentTypeId,
+    path: sourcePaths[0] ?? "",
+    sourcePaths,
+    registry,
+    projectDefinition: project.definition as unknown as JsonValue,
+    moduleOptions: undefined,
+  };
+}
+
+function formatError(errorValue: unknown): string {
+  return errorValue instanceof Error ? errorValue.message : String(errorValue);
 }
 
 function relativeProjectPath(project: ProjectContext, uri: vscode.Uri): string {
@@ -427,3 +515,4 @@ function relativeProjectPath(project: ProjectContext, uri: vscode.Uri): string {
 
 // 供测试/C1 核对多源 storage 面时引用契约类型；避免仅类型引用被摇树掉。
 export type { ModuleSourcesKeyRenamePlan, ModuleSourcesParseResult };
+export type { CatalogFacet, CatalogWithSource };

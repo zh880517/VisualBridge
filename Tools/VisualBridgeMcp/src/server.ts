@@ -562,7 +562,7 @@ const serverHandle = serveStdio(createServer, {
 
 let providerShutdown: Promise<void> | undefined;
 const shutdownProviders = (): Promise<void> => {
-  providerShutdown ??= providerService.dispose();
+  providerShutdown ??= providerService.dispose().finally(() => modules.dispose());
   return providerShutdown;
 };
 process.stdin.once("end", () => {

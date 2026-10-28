@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 
@@ -194,6 +195,78 @@ export async function verifyCorpusManifest(rootPath, manifest) {
       );
     }
   }
+}
+
+/**
+ * 经 `ModuleLoader` 装载生成语料的模块（C2）。
+ *
+ * 与 `loadCorpusValidation` 的静态包路径并存：Loader 路径证明"分发到工程里的 `.vbmodule.js`
+ * 能被真实装载，且 facet 语义与包内实现一致"；`VB_SKIP_MODULES=1` 时由调用方跳过。
+ */
+/**
+ * 把仓库里已构建的四个 bundle 放进生成语料的 `Modules/`。
+ *
+ * 语料生成器只产出数据（不依赖构建产物），而 Project File 已声明
+ * `Modules/<editor>.vbmodule.js`；真实部署里这一步由 `npm run build:bundles` 完成。
+ */
+export async function installCorpusModules(rootPath) {
+  const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
+  const from = join(repositoryRoot, "Modules");
+  const to = join(rootPath, "Modules");
+  await mkdir(to, { recursive: true });
+  for (const editor of ["graph", "entity", "structured", "table"]) {
+    await copyFile(join(from, `${editor}.vbmodule.js`), join(to, `${editor}.vbmodule.js`));
+  }
+}
+
+export async function loadCorpusModules(rootPath) {
+  const core = require("../../../Core/dist/index.js");
+  const nodeHost = require("../../../Tools/NodeHost/dist/index.js");
+  const projectResult = core.parseProjectFile(
+    await readFile(join(rootPath, "VisualBridge.project.vbjson"), "utf8"),
+  );
+  if (!projectResult.success) {
+    throw new Error(`VisualBridge Project failed to parse:\n${projectResult.issues
+      .map((issue) => `${issue.path}: ${issue.message}`)
+      .join("\n")}`);
+  }
+  const project = projectResult.value;
+  const loader = await nodeHost.ModuleLoader.create({
+    projectRoot: rootPath,
+    projectId: project.projectId,
+    modules: project.modules,
+    trusted: true,
+  });
+  const editors = new Map();
+  for (const module of loader.result.modules) {
+    const options = project.modules.find((candidate) => candidate.id === module.id)?.options;
+    for (const registration of module.registration?.editors ?? []) {
+      editors.set(registration.editor, { moduleId: module.id, registration, options });
+    }
+  }
+  return Object.freeze({ rootPath, project, loader, editors });
+}
+
+/** 用模块的 `catalog` facet 构建某个 Document Type 的 Catalog Registry。 */
+export async function buildModuleCatalogRegistry(modules, documentType) {
+  const entry = modules.editors.get(documentType.editor);
+  if (entry === undefined) {
+    throw new Error(`No loaded module provides editor '${documentType.editor}'.`);
+  }
+  const catalogs = [];
+  for (const catalogPath of documentType.catalogs) {
+    const text = await readFile(join(modules.rootPath, ...catalogPath.split("/")), "utf8");
+    const parsed = entry.registration.catalog.parse(text, catalogPath);
+    if (!parsed.success) {
+      throw new Error(`Catalog '${catalogPath}' failed to parse:\n${formatDiagnostics(parsed.diagnostics ?? [])}`);
+    }
+    catalogs.push(parsed.document);
+  }
+  const built = entry.registration.catalog.build(catalogs);
+  if (!built.success) {
+    throw new Error(`Catalog Registry for '${documentType.id}' failed to build:\n${formatDiagnostics(built.diagnostics ?? [])}`);
+  }
+  return Object.freeze({ entry, registry: built.document });
 }
 
 export function createCorpusSemanticSources(validation, loadCounts = new Map()) {

@@ -212,9 +212,14 @@ export class DocumentBrowser implements vscode.TreeDataProvider<DocumentBrowserN
         .map((project) => ({ kind: "project", project }));
     }
     if (node.kind === "project") {
-      // 与语义索引/新建/引用同源：只有"有 facet"的 editor 才列举，避免浏览树与索引分叉。
+      // 与语义索引/新建/引用同源：受信任时只有"有 facet"的 editor 才列举，避免浏览树与索引分叉。
+      // 未受信任或 VB_SKIP_MODULES=1 时没有任何 facet，此时仍按 Project File 的 documentTypes
+      // 列出各类型，让子节点用 `unavailableModuleMessage` 说明原因（否则整棵树只剩空项目）。
+      // 判据必须按 Project 取：进程级 `authorization` 把 scheme 当 `file`，远端 Project 会被判成
+      // trusted 而 facet 表是空的，于是整棵树被滤成空。
+      const modulesAuthorized = this.modules.authorizationFor(node.project) === "trusted";
       const types: DocumentTypeNode[] = node.project.definition.documentTypes
-        .filter((documentType) => documentFacetFor(documentType.editor) !== undefined)
+        .filter((documentType) => !modulesAuthorized || documentFacetFor(documentType.editor) !== undefined)
         .slice()
         .sort((left, right) => compareUtf16CodeUnits(`${left.editor}\u0000${left.id}`, `${right.editor}\u0000${right.id}`))
         .map((documentType) => ({ kind: "documentType", project: node.project, documentType }));

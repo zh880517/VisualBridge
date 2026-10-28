@@ -9,6 +9,7 @@
 import {
   MODULE_API_VERSION,
   type EditorRegistration,
+  type JsonValue,
   type ModuleHost,
   type ModuleRegistration,
 } from "@visualbridge/module-sdk";
@@ -20,6 +21,12 @@ import {
   graphOperationSchema,
   createGraphSessionController,
 } from "../index";
+import {
+  GRAPH_REVEAL_MESSAGE_TYPE,
+  GRAPH_REVEAL_RESULT_MESSAGE_TYPE,
+  GraphRevealMailbox,
+  readGraphRevealTarget,
+} from "./graphReveal";
 
 export const manifest = {
   id: "visualbridge.graph",
@@ -38,6 +45,13 @@ const editor: EditorRegistration = {
   webview: "graph",
   webviewTitle: "Graph",
   operationSchema: graphOperationSchema,
+  reveal: {
+    messageType: GRAPH_REVEAL_MESSAGE_TYPE,
+    resultMessageType: GRAPH_REVEAL_RESULT_MESSAGE_TYPE,
+    // facet 边界：`ReferenceLocation` 已带 target 校验器需要的字段，返回值在这里收窄回 JSON。
+    readTarget: (location) => readGraphRevealTarget(location) as JsonValue | undefined,
+    createMailbox: () => new GraphRevealMailbox(),
+  },
   session: {
     // 工厂：宿主打开文档时调用，得到本次会话的控制器。
     createController: () => createGraphSessionController(),

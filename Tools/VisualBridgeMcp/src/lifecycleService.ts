@@ -232,7 +232,15 @@ export class DocumentLifecycleService {
       context.documentType,
       module,
     );
-    const created = await module.create.createDocument({
+    const createFacet = module.create;
+    if (createFacet === undefined) {
+      // 只读 editor 不提供 `create` facet：给出可读的 MCP 错误，而不是 TypeError。
+      throw new VisualBridgeMcpError(
+        "lifecycle.invalidCreate",
+        `Editor '${context.documentType.editor}' does not support document creation (module '${module.id}' has no create facet).`,
+      );
+    }
+    const created = await createFacet.createDocument({
       projectId: project.definition.projectId,
       projectDefinition: project.definition as unknown as JsonValue,
       documentType: context.documentType,

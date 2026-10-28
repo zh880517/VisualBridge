@@ -27,6 +27,7 @@ import type {
 } from "../refactor/workspaceReferenceRefactor";
 import {
   loadModuleEditorFacets,
+  stampRevealMessage,
   type ModuleEditorFacets,
   type ModuleRevealMailbox,
 } from "../editor/moduleEditorFacets";
@@ -65,9 +66,24 @@ interface PendingReveal {
   readonly target: unknown;
 }
 
+/** `requestReady` 重发间隔与次数上限；Webview 冷启动（脚本从 globalStorage 加载）通常在 1 s 内完成。 */
+const READY_RETRY_INTERVAL_MS = 250;
+const READY_RETRY_LIMIT = 40;
+
 interface PanelRevealState {
   readonly mailbox: ModuleRevealMailbox;
   readonly epoch: WebviewEpoch;
+  /**
+   * `requestReady` 的重发定时器。
+   *
+   * Webview 只在收到 `requestReady` 后才回 `ready`，而宿主在 `resolveCustomEditor` 里就发了第一条：
+   * 那时 Webview 的 message 监听器可能还没装好（脚本刚从 globalStorage 加载），消息会丢。
+   * 丢失后就再没有触发点，面板永远不 ready，所以这里按固定间隔重发，直到握手完成或面板关闭。
+   */
+  readyRetry: NodeJS.Timeout | undefined;
+  readyAttempts: number;
+  /** 本轮 epoch 已经提示过"握手超时"，避免每次重试都刷提示。 */
+  readyExhausted: boolean;
   sourceUri: string | undefined;
   sourceTarget: unknown;
   revealGeneration: number | undefined;
@@ -234,9 +250,13 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
       throw new Error(availability.message);
     }
     const moduleId = availability.moduleId;
-    const facets = await loadModuleEditorFacets(moduleId, {
-      references: this.references,
-    });
+    const facets = await loadModuleEditorFacets(
+      match.project,
+      moduleId,
+      match.documentType.editor,
+      this.modules.bundleFor(match.project, moduleId),
+      { references: this.references, log: (line) => this.output.appendLine(line) },
+    );
     if (facets === undefined || facets.storage !== "sources" || facets.sources === undefined) {
       throw new Error(
         `No in-process multi-source editor is registered for editor '${match.documentType.editor}';`
@@ -291,9 +311,14 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
     panel.title = `${document.match.documentType.id}: ${nodePath.basename(document.uri.fsPath)}`;
     const nonce = createNonce();
     const webviewRoot = vscode.Uri.joinPath(this.extensionUri, "dist", "webview");
-    const scriptUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, facets.webview.script));
-    const styleUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, facets.webview.style));
-    panel.webview.options = { enableScripts: true, localResourceRoots: [webviewRoot] };
+    // 脚本/样式来自模块 bundle 的解包目录（`<globalStorage>/modules/<sha256>/`），
+    // 不再是 `dist/webview` 下按 editor 命名的静态文件；两者都要进 localResourceRoots。
+    const scriptUri = panel.webview.asWebviewUri(facets.webview.script);
+    const styleUri = panel.webview.asWebviewUri(facets.webview.style);
+    panel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [webviewRoot, facets.webview.resourceRoot],
+    };
     panel.webview.html = facets.webview.createHtml({
       cspSource: panel.webview.cspSource,
       nonce,
@@ -306,6 +331,7 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
       },
     });
 
+
     let documentPanels = this.panels.get(document);
     if (documentPanels === undefined) {
       documentPanels = new Set();
@@ -315,6 +341,9 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
     const revealState: PanelRevealState = {
       mailbox: facets.reveal?.createMailbox() ?? unavailableMailbox(),
       epoch: new WebviewEpoch(),
+      readyRetry: undefined,
+      readyAttempts: 0,
+      readyExhausted: false,
       sourceUri: undefined,
       sourceTarget: undefined,
       revealGeneration: undefined,
@@ -345,11 +374,18 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
         revealState.mailbox.markUnavailable();
       } else if (visible && !panelWasVisible) {
         revealState.epoch.begin(createNonce());
+        // 新 epoch 重新计时：旧 epoch 的耗尽状态不能带过来，否则面板重新可见后不再重试。
+        revealState.readyAttempts = 0;
+        revealState.readyExhausted = false;
         void this.requestPanelReady(panel, revealState);
       }
       panelWasVisible = visible;
     });
     panel.onDidDispose(() => {
+      if (revealState.readyRetry !== undefined) {
+        clearTimeout(revealState.readyRetry);
+        revealState.readyRetry = undefined;
+      }
       revealState.epoch.invalidate();
       const currentPanels = this.panels.get(document);
       currentPanels?.delete(panel);
@@ -443,7 +479,13 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
     await this.modules.ensureProject(project);
     const availability = this.modules.editorAvailability(project, match.documentType.editor);
     const facets = availability.kind === "available"
-      ? await loadModuleEditorFacets(availability.moduleId, { references: this.references })
+      ? await loadModuleEditorFacets(
+        project,
+        availability.moduleId,
+        match.documentType.editor,
+        this.modules.bundleFor(project, availability.moduleId),
+        { references: this.references, log: (line) => this.output.appendLine(line) },
+      )
       : undefined;
     const target = facets?.reveal?.readTarget(location);
     if (target === undefined) {
@@ -463,7 +505,7 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
       state.revealGeneration = revealGeneration;
       state.mailbox.enqueue(target);
       panel.reveal();
-      await this.sendPanelReveal(panel, state, state.epoch.capture());
+      await this.sendPanelReveal(document, panel, state, state.epoch.capture());
       return;
     }
     const pending: PendingReveal = { sequence: revealGeneration, target };
@@ -963,7 +1005,7 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
           if (state === undefined) break;
           state.mailbox.enqueue(target);
           panel.reveal();
-          await this.sendPanelReveal(panel, state, state.epoch.capture());
+          await this.sendPanelReveal(document, panel, state, state.epoch.capture());
           break;
         }
         case "openDocument": {
@@ -1124,6 +1166,7 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
   }
 
   private async sendPanelReveal(
+    document: ModuleSourcesCustomDocument,
     panel: vscode.WebviewPanel,
     state: PanelRevealState,
     webviewEpoch: number,
@@ -1132,7 +1175,9 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
     const request = state.mailbox.deliverable;
     if (request === undefined) return;
     if (this.testPausedRevealPanels.delete(panel)) return;
-    if (!await panel.webview.postMessage(request)
+    // 消息类型以模块登记的类型为准（附录 D.3），不信任 mailbox 自造的类型。
+    const message = stampRevealMessage(document.facets.reveal, request);
+    if (!await panel.webview.postMessage(message)
       && this.isCurrentPanelEpoch(panel, state, webviewEpoch)) {
       state.mailbox.markUnavailable();
     }
@@ -1148,7 +1193,7 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
     this.claimPendingReveal(document, state);
     if (state.mailbox.deliverable === undefined) return;
     panel.reveal();
-    await this.sendPanelReveal(panel, state, state.epoch.capture());
+    await this.sendPanelReveal(document, panel, state, state.epoch.capture());
   }
 
   private clearPendingReveals(document: ModuleSourcesCustomDocument): void {
@@ -1198,6 +1243,7 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
     message: WebviewMessage,
     webviewEpoch: number,
   ): Promise<void> {
+
     if (typeof message.instanceId !== "string" || message.instanceId.length === 0) return;
     if (message.webviewToken === undefined) {
       await this.requestPanelReady(panel, state);
@@ -1210,9 +1256,13 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
       || !state.epoch.markReady(message.webviewToken)) {
       return;
     }
+    if (state.readyRetry !== undefined) {
+      clearTimeout(state.readyRetry);
+      state.readyRetry = undefined;
+    }
     state.mailbox.markReady();
     this.claimPendingReveal(document, state);
-    await this.sendPanelReveal(panel, state, webviewEpoch);
+    await this.sendPanelReveal(document, panel, state, webviewEpoch);
   }
 
   private async requestPanelReady(
@@ -1220,8 +1270,32 @@ implements vscode.CustomEditorProvider<ModuleSourcesCustomDocument>, vscode.Disp
     state: PanelRevealState,
   ): Promise<void> {
     const token = state.epoch.currentToken;
-    if (this.panelRevealStates.get(panel) !== state || !panel.visible || token === undefined) return;
+    if (this.panelRevealStates.get(panel) !== state) return;
+    if (state.readyRetry !== undefined) {
+      clearTimeout(state.readyRetry);
+      state.readyRetry = undefined;
+    }
+
+    if (!panel.visible || token === undefined) return;
     await panel.webview.postMessage({ type: "requestReady", webviewToken: token });
+    // 不依赖 mailbox 的可选 `isReady`：成功握手由 `handlePanelReady` 清掉定时器，这里只负责超时。
+    if (state.readyAttempts >= READY_RETRY_LIMIT) {
+      if (!state.readyExhausted) {
+        state.readyExhausted = true;
+        const reason = `模块 Webview 在 ${READY_RETRY_LIMIT} 次 requestReady 内没有回 ready（${state.sourceUri ?? "unknown"}），面板会停在空白页。`;
+        this.output.appendLine(`[modules] ${reason}`);
+        // 面板本身是模块产物，这里只能给宿主级可见提示，别让用户对着空白面板猜。
+        vscode.window.setStatusBarMessage(`VisualBridge: ${reason} 请重新打开该编辑器。`, 8_000);
+        void panel.webview.postMessage({ type: "moduleReadyTimeout", message: reason });
+      }
+      return;
+    }
+    state.readyAttempts += 1;
+    state.readyRetry = setTimeout(() => {
+      state.readyRetry = undefined;
+      void this.requestPanelReady(panel, state);
+    }, READY_RETRY_INTERVAL_MS);
+    state.readyRetry.unref?.();
   }
 
   private isCurrentPanelEpoch(

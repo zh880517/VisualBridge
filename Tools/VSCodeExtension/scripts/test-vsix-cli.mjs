@@ -10,6 +10,7 @@ import {
   runTests,
 } from "@vscode/test-electron";
 import { removeIsolatedDirectory } from "../test/support/removeIsolatedDirectory.mjs";
+import { verifyHostBundle, WEBVIEW_ONLY_MARKERS } from "./verify-host-bundle.mjs";
 
 const TEST_DIRECTORY_PREFIX = "visualbridge-vsix-cli-";
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -162,21 +163,15 @@ async function verifyInstalledFiles(extensionsDirectory, expectedManifest) {
     expectedManifest.main,
     expectedManifest.icon,
     ...schemaPaths,
-    "dist/webview/entityEditor.js",
-    "dist/webview/entityEditor.css",
-    "dist/webview/graphEditor.js",
-    "dist/webview/graphEditor.css",
+    // C2：宿主只托管 Project Settings 的 Webview；四个领域编辑器的脚本/样式随模块 bundle 分发。
     "dist/webview/projectEditor.js",
     "dist/webview/projectEditor.css",
-    "dist/webview/structuredEditor.js",
-    "dist/webview/structuredEditor.css",
-    "dist/webview/tableEditor.js",
-    "dist/webview/tableEditor.css",
     "dist/schemas/visualbridge-catalog-source.schema.json",
   ];
   for (const relativePath of requiredPaths) {
     await access(path.resolve(installedPath, relativePath), constants.R_OK);
   }
+  await verifyHostBundleCarriesNoDomainCode(installedPath, expectedManifest);
 
   const packagedPaths = await listPackagedPaths(installedPath);
   const forbiddenRoots = new Set([".test-dist", "artifacts", "node_modules", "scripts", "src", "test"]);
@@ -197,6 +192,38 @@ async function verifyInstalledFiles(extensionsDirectory, expectedManifest) {
     throw new Error(`Unexpected packaged paths: ${leakedPaths.join(", ")}`);
   }
   return installedPath;
+}
+
+/**
+ * C2 断言：打包后的宿主 bundle 里没有领域源码，`dist/webview` 里也没有领域 Webview 产物。
+ *
+ * 结构判据来自 `verify-host-bundle.mjs`（esbuild metafile 输入图 + 四域标记），它比纯字符串标记
+ * 可证伪：把领域包重新 import 回宿主入口时，metafile 会列出 `BuiltInExtensions/`、`Modules/`、
+ * `Editors/` 的输入，四域标记也会从 0 变成非 0（实测 28/109/20/41）。
+ * 重型依赖标记作为第二层，只能证明 Webview 依赖没进宿主。
+ */
+async function verifyHostBundleCarriesNoDomainCode(installedPath, expectedManifest) {
+  const bundlePath = path.resolve(installedPath, expectedManifest.main);
+  const structure = await verifyHostBundle({ bundlePath });
+  if (!structure.ok) {
+    throw new Error(`Packaged host bundle still carries domain code:\n${structure.failures.join("\n")}`);
+  }
+  console.log(`[vscode-cli] Host bundle structure: ${structure.inputs} inputs, ${structure.bundleBytes} bytes, no domain code.`);
+
+  const bundleText = await readFile(bundlePath, "utf8");
+  const present = [...WEBVIEW_ONLY_MARKERS].filter((marker) => bundleText.includes(marker));
+  if (present.length > 0) {
+    throw new Error(`Packaged host bundle still contains domain code: ${present.join(", ")}`);
+  }
+
+  const webviewDirectory = path.resolve(installedPath, "dist", "webview");
+  const webviewEntries = (await readdir(webviewDirectory)).sort();
+  const expected = ["projectEditor.css", "projectEditor.js"];
+  if (webviewEntries.length !== expected.length || webviewEntries.some((entry, index) => entry !== expected[index])) {
+    throw new Error(
+      `Packaged 'dist/webview' must contain only ${expected.join(", ")}; found ${webviewEntries.join(", ")}.`,
+    );
+  }
 }
 
 async function runPackagedActivation(installedPath, executablePath) {

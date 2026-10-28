@@ -35,6 +35,24 @@ interface DebugWebviewMessage {
 }
 
 /**
+ * Graph 运行时执行调试面板的消息类型。
+ *
+ * 这些消息由宿主拦截、不转发给会话控制器（C2 之前这份清单在 `moduleEditorFacets` 里，
+ * 和领域包一起被宿主静态引用）。放在控制器旁边，宿主侧只多一个字符串集合、不含领域代码。
+ */
+export const GRAPH_DEBUG_MESSAGE_TYPES: ReadonlySet<string> = new Set([
+  "requestGraphExecutionInstances",
+  "subscribeGraphExecution",
+  "unsubscribeGraphExecution",
+  "requestGraphExecutionDebugState",
+  "graphDebugAck",
+]);
+
+export function isGraphDebugMessage(type: string): boolean {
+  return GRAPH_DEBUG_MESSAGE_TYPES.has(type);
+}
+
+/**
  * Graph 编辑器会话专属的执行调试控制器（§19.5）：持有独立于 DAP 检查
  * 会话的 RuntimeBridgeService 连接（观察者语义不占租约，可并行观察），
  * 负责 Runtime 实例发现/自动连接、执行实例订阅与增量事件转发到 Webview。
