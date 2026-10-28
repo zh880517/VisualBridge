@@ -462,7 +462,7 @@
   "scripts": {
     "clean": "node ./scripts/clean.mjs",
     "prepare:package": "node ./scripts/prepare-package.mjs",
-    "build:host-dependencies": "npm run build --workspace @visualbridge/core && npm run build --workspace @visualbridge/node-host",
+    "build:host-dependencies": "npm run build --workspace @visualbridge/core && npm run build --workspace @visualbridge/module-sdk && npm run build --workspace @visualbridge/node-host",
     "build:project-editor": "npm run build --workspace @visualbridge/project-editor",
     "sync:editor-assets": "node ./scripts/sync-editor-assets.mjs",
     "sync:protocol": "node ./scripts/sync-protocol-assets.mjs",
@@ -470,7 +470,7 @@
     "build": "npm run clean && npm run build:project-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap --metafile=dist/extension.meta.json && npm run check",
     "watch": "npm run clean && npm run build:project-editor && npm run sync:protocol && npm run sync:editor-assets && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap --watch",
     "package:vsix": "npm run build:host-dependencies && npm run build && npm run prepare:package && vsce package --no-dependencies --out artifacts/visualbridge.vsix",
-    "test:unit": "node ./test/runUnitTests.mjs",
+    "test:unit": "npm run build:host-dependencies && node ./test/runUnitTests.mjs",
     "test:host": "npm run build:host-dependencies && npm run build && node ./test/runTest.mjs && node ./test/runRestrictedTest.mjs",
     "test:host:trusted": "npm run build:host-dependencies && npm run build && node ./test/runTest.mjs",
     "test:host:restricted": "npm run build:host-dependencies && npm run build && node ./test/runRestrictedTest.mjs",
