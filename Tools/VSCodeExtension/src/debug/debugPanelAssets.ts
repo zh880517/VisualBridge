@@ -69,6 +69,8 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
     var pause = button("pause", "", function () { command("togglePause"); });
     var clear = button("clear", "清空", function () { command("clear"); }, "清空当前实例的已缓存记录");
     var record = button("record", "录制", function () { command("toggleRecording"); }, "会话录制（F5）");
+    var replayExit = button("replay-exit", "返回实时", function () { command("closeRecording"); }, "退出回看，切回在线数据源");
+    replayExit.hidden = true;
     var byRecord = button("granularity-record", "按记录", function () {
       post({ type: "command", command: "granularity", value: "record" });
     }, "步进粒度：一次一条记录");
@@ -89,7 +91,7 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
     filter.addEventListener("input", function () {
       post({ type: "command", command: "filter", value: filter.value });
     });
-    [enable, pause, clear, record, byRecord, byFrame, previous, next, live, filter].forEach(function (node) {
+    [enable, pause, clear, record, replayExit, byRecord, byFrame, previous, next, live, filter].forEach(function (node) {
       toolbar.appendChild(node);
     });
 
@@ -108,7 +110,7 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
     body.appendChild(timeline);
     body.appendChild(detail);
     root.replaceChildren(toolbar, status, windows, body);
-    shell = { toolbar: toolbar, enable: enable, pause: pause, clear: clear, record: record, byRecord: byRecord, byFrame: byFrame, previous: previous, next: next, live: live, filter: filter, status: status, windows: windows, instances: instances, timeline: timeline, detail: detail };
+    shell = { toolbar: toolbar, enable: enable, pause: pause, clear: clear, record: record, replayExit: replayExit, byRecord: byRecord, byFrame: byFrame, previous: previous, next: next, live: live, filter: filter, status: status, windows: windows, instances: instances, timeline: timeline, detail: detail };
   }
 
   function renderEnable() {
@@ -131,10 +133,19 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
 
   function renderStatus() {
     var status = state.connection;
-    var text = status.state === "connected" ? "已连接" : "未连接";
+    var text = state.replay ? "回看中" : (status.state === "connected" ? "已连接" : "未连接");
     text += " · endpoint=" + (status.endpointId || "-");
     text += " · target=" + (status.target || "-");
     text += " · 帧 " + state.connection.frame;
+    if (state.replay) {
+      // 录制文件尾的标注（C.6）：sizeLimit 必须让人看得出来，而不是当普通断开。
+      text += " · " + (state.replay.records === undefined ? "未正常收尾" : state.replay.records + " 条记录");
+      if (state.replay.endedReason === "sizeLimit") {
+        text += " · 达到文件上限（sizeLimit）";
+      } else if (state.replay.endedReason === undefined) {
+        text += " · 无文件尾（可能截断）";
+      }
+    }
     if (state.status.records > 0) {
       text += " · " + state.status.records + " 条 / " + state.status.bytes + " B";
     }
@@ -245,8 +256,19 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
     shell.record.disabled = !state.recording.available;
     shell.record.title = state.recording.available
       ? "会话录制（F5）"
-      : "录制由 F5（会话录制）提供，尚未接入";
+      : state.replay
+        ? "回看模式下不可录制（先返回实时）"
+        : "录制由 F5（会话录制）提供，尚未接入";
     shell.record.setAttribute("aria-pressed", state.recording.active ? "true" : "false");
+    // 回看：多出"返回实时"按钮；标题带上文件与文件尾统计（截断的录制没有 records）。
+    shell.replayExit.hidden = !state.replay;
+    shell.replayExit.disabled = !state.replay;
+    if (state.replay) {
+      var replayInfo = state.replay.records === undefined
+        ? "（录制未正常收尾）"
+        : "（" + state.replay.records + " 条记录" + (state.replay.endedReason === "sizeLimit" ? "，达到文件上限" : "") + "）";
+      shell.replayExit.title = "回看 " + state.replay.filePath + replayInfo + "；点击退出回看";
+    }
     shell.pause.setAttribute("aria-pressed", state.paused ? "true" : "false");
     shell.byRecord.setAttribute("aria-pressed", state.granularity === "record" ? "true" : "false");
     shell.byFrame.setAttribute("aria-pressed", state.granularity === "frame" ? "true" : "false");

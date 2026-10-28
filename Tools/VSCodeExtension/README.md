@@ -64,6 +64,8 @@ Manifest 的默认 `visualbridge.documentEditor` selector 包含 `.vbgraph`、`.
 | `visualbridge.documentBrowser.renameReferenceTarget` | Rename Reference Target | 预览并原子重命名目标稳定值及全部入站引用。 |
 | `visualbridge.catalogBrowser.refresh` | Refresh Catalogs | 重新加载 Catalog Registry 与来源状态。 |
 | `visualbridge.catalogBrowser.open` | Open Catalog | 以只读检查用途打开物理 Catalog 文本。 |
+| `visualbridge.openDebugPanel` | VisualBridge: Open Debug Panel | 打开独立 Debug 面板（实时数据、开关与 F5 录制按钮）。 |
+| `visualbridge.openDebugRecording` | VisualBridge: Open Debug Recording | 选择 `.vbdrec` 文件并切入回看（离线重放，不连 Unity）。 |
 
 ## View ID 与 Custom Editor viewType
 

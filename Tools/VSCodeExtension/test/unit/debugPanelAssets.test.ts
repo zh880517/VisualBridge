@@ -149,6 +149,29 @@ test("the record button is honest: disabled until F5 wires it, then a plain togg
   );
 });
 
+test("the return-to-live button is hidden in live mode and posts closeRecording while replaying", () => {
+  const webview = mountPanel();
+  webview.render(snapshot({}));
+  assert.equal(webview.byId("replay-exit").hidden, true, "实时模式下不显示返回实时");
+  assert.equal(webview.byId("replay-exit").disabled, true);
+  webview.click("replay-exit");
+  assert.deepEqual(webview.posted.filter((message) => message.type === "command"), [], "隐藏按钮不发请求");
+
+  webview.render(snapshot({
+    replay: { filePath: "C:/recordings/session-1.vbdrec", records: 12, droppedRecords: 1, endedReason: "sizeLimit" },
+  }));
+  const exit = webview.byId("replay-exit");
+  assert.equal(exit.hidden, false, "回看时必须显示返回实时");
+  assert.equal(exit.disabled, false);
+  assert.match(exit.title, /session-1\.vbdrec/u);
+  webview.click("replay-exit");
+  assert.deepEqual(
+    webview.posted.filter((message) => message.type === "command"),
+    [{ type: "command", command: "closeRecording" }],
+    "返回实时只转发一次 closeRecording 意图",
+  );
+});
+
 test("facet windows show the host-owned title, the module content and the unloaded fallback", () => {
   const webview = mountPanel();
   webview.render(snapshot({
@@ -282,6 +305,7 @@ interface FakeNode {
   textContent: string;
   title: string;
   disabled: boolean;
+  hidden: boolean;
   value: string;
   readonly children: FakeNode[];
   readonly attributes: Map<string, string>;
@@ -302,6 +326,7 @@ function createNode(tag: string): FakeNode {
     textContent: "",
     title: "",
     disabled: false,
+    hidden: false,
     value: "",
     children: [],
     attributes: new Map<string, string>(),
@@ -442,6 +467,7 @@ function snapshot(overrides: {
   readonly historyMissing?: boolean;
   readonly recordingAvailable?: boolean;
   readonly recordingActive?: boolean;
+  readonly replay?: DebugPanelSnapshot["replay"];
   readonly facetWindows?: DebugPanelSnapshot["facets"]["windows"];
 }): DebugPanelSnapshot {
   const historyMissing = overrides.historyMissing ?? false;
@@ -484,6 +510,7 @@ function snapshot(overrides: {
       available: overrides.recordingAvailable ?? false,
       active: overrides.recordingActive ?? false,
     },
+    ...(overrides.replay === undefined ? {} : { replay: overrides.replay }),
     timeline: {
       selected: true,
       requestedPosition: 0,

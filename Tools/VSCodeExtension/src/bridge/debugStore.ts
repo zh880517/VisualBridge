@@ -135,6 +135,9 @@ export const DEBUG_MAX_BYTES_PER_INSTANCE = 32 * 1024 * 1024;
 /** 每实例 20000 条（C.4 的辅助上限）。 */
 export const DEBUG_MAX_RECORDS_PER_INSTANCE = 20_000;
 
+/** 环形缓冲的初始槽位数：稀疏增长，不再按 `maxRecords` 预分配一个可能极大的数组。 */
+const DEBUG_STORE_INITIAL_RECORDS = 1_024;
+
 /** 关键帧字节阈值 1 MB（C.4）。 */
 export const DEBUG_KEYFRAME_INTERVAL_BYTES = 1024 * 1024;
 
@@ -228,7 +231,7 @@ export class DebugStore {
     this.setTimer = options.setTimer ?? defaultSetTimer;
     this.clearTimer = options.clearTimer ?? defaultClearTimer;
     this.nextArrivalSeq = options.nextArrivalSeq;
-    this.slots = new Array<DebugRecord | undefined>(this.limits.maxRecords);
+    this.slots = new Array<DebugRecord | undefined>(Math.min(this.limits.maxRecords, DEBUG_STORE_INITIAL_RECORDS));
   }
 
   public get limitsSnapshot(): DebugStoreLimits {
@@ -328,7 +331,8 @@ export class DebugStore {
       this.pendingChanges.add("evict");
     }
 
-    const slot = (this.head + this.count) % this.limits.maxRecords;
+    this.ensureCapacity();
+    const slot = (this.head + this.count) % this.slots.length;
     this.slots[slot] = record;
     this.count += 1;
     this.bytesValue += record.wireBytes;
@@ -372,12 +376,60 @@ export class DebugStore {
   }
 
   /**
+   * 绝对位置 `position` 对应的**单条**记录：O(1)、不复制数组（P2-2）。
+   *
+   * 面板时间轴只为游标取一条明细；用 `recordsFrom(position)` 会把 `position → 末尾`
+   * 整段拷出来（2 万条记录的回看里一次快照就是 2 万条），这是不可接受的读取放大。
+   * 位置落在已淘汰区间/末尾之外时返回 `undefined`（与 `recordsFrom` 的夹取语义区分开：
+   * 这里没有"起点"可夹，越界就是没有）。
+   */
+  public recordAtPosition(position: number): DebugRecord | undefined {
+    const index = normalizePosition(position);
+    if (index < this.evicted || index >= this.endPosition) {
+      return undefined;
+    }
+
+    return this.recordAt(index - this.evicted);
+  }
+
+  /**
+   * 绝对区间 `[fromPosition, toPositionExclusive)` 的记录（最多 `toPosition - fromPosition` 条）。
+   *
+   * 与 {@link recordsFrom} 的区别：区间**两端都夹住**，不会从起点一路复制到末尾。
+   * 面板的渲染窗口需要的就是这个语义（游标附近 500 条）。返回的 `toPosition` 仍是当前末尾
+   * （与 `DebugRecordSlice` 的既有字段含义保持一致），窗口末位由 `fromPosition + records.length` 得出。
+   */
+  public recordsBetween(fromPosition: number, toPositionExclusive: number): DebugRecordSlice {
+    const requestedPosition = normalizePosition(fromPosition);
+    const endPosition = this.endPosition;
+    const start = Math.min(Math.max(requestedPosition, this.evicted), endPosition);
+    const stop = Math.min(Math.max(normalizePosition(toPositionExclusive), start), endPosition);
+    const records: DebugRecord[] = [];
+    for (let position = start; position < stop; position += 1) {
+      const record = this.recordAt(position - this.evicted);
+      if (record !== undefined) {
+        records.push(record);
+      }
+    }
+
+    return {
+      requestedPosition,
+      fromPosition: start,
+      toPosition: endPosition,
+      partial: requestedPosition < this.evicted,
+      records,
+    };
+  }
+
+  /**
    * 绝对位置 `position` 起的缓冲记录（F3 的区间读取）。
    *
    * 请求位置落在已淘汰区间时**夹到最早可用记录**，并把这件事显式报出来
    * （`DebugRecordSlice.fromPosition` / `partial`）：只返回记录数组会让调用方渲染出
    * "从 requested 位置开始"的假象（评审 P2-6）。`fromPosition` 同时夹在 `[evicted, endPosition]` 内，
    * 因此 `fromPosition <= toPosition` 恒成立——请求位置超过末尾时得到空切片而不是负区间（评审 P2-d）。
+   *
+   * 注意它是"到末尾"的整段读取（增量扫描用）；渲染窗口请用 {@link recordsBetween}。
    */
   public recordsFrom(position: number): DebugRecordSlice {
     const requestedPosition = normalizePosition(position);
@@ -510,7 +562,7 @@ export class DebugStore {
       }
     }
 
-    this.slots = new Array<DebugRecord | undefined>(this.limits.maxRecords);
+    this.slots = new Array<DebugRecord | undefined>(Math.min(this.limits.maxRecords, DEBUG_STORE_INITIAL_RECORDS));
     this.head = 0;
     this.count = 0;
     this.bytesValue = 0;
@@ -601,15 +653,44 @@ export class DebugStore {
   }
 
   private recordAt(index: number): DebugRecord | undefined {
-    if (index < 0 || index >= this.count || this.limits.maxRecords === 0) {
+    if (index < 0 || index >= this.count || this.slots.length === 0) {
       return undefined;
     }
 
-    return this.slots[(this.head + index) % this.limits.maxRecords];
+    return this.slots[(this.head + index) % this.slots.length];
+  }
+
+  /**
+   * 环形缓冲按需翻倍（上限 `maxRecords`）。
+   *
+   * 之前构造时就 `new Array(maxRecords)`：默认 2 万槽 × 最多 32 实例 = 固定几 MB，而回看要给
+   * `maxRecordsPerInstance` 传"回看预算"（20 万条）时，预分配会白占一大片内存（F5-07）。
+   * 现在按实际记录数增长，回看才能安全地用与解码预算匹配的上限。
+   */
+  private ensureCapacity(): void {
+    if (this.count < this.slots.length || this.slots.length >= this.limits.maxRecords) {
+      return;
+    }
+
+    const nextLength = Math.min(
+      this.limits.maxRecords,
+      Math.max(DEBUG_STORE_INITIAL_RECORDS, this.slots.length * 2),
+    );
+    if (nextLength <= this.slots.length) {
+      return;
+    }
+
+    const next = new Array<DebugRecord | undefined>(nextLength);
+    for (let index = 0; index < this.count; index += 1) {
+      next[index] = this.slots[(this.head + index) % this.slots.length];
+    }
+
+    this.slots = next;
+    this.head = 0;
   }
 
   private dropOldest(): DebugRecord | undefined {
-    if (this.count === 0) {
+    if (this.count === 0 || this.slots.length === 0) {
       return undefined;
     }
 
@@ -619,7 +700,7 @@ export class DebugStore {
     }
 
     this.slots[this.head] = undefined;
-    this.head = (this.head + 1) % this.limits.maxRecords;
+    this.head = (this.head + 1) % this.slots.length;
     this.count -= 1;
     this.bytesValue -= record.wireBytes;
     this.evicted += 1;

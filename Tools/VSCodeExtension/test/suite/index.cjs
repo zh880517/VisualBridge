@@ -5,6 +5,7 @@ const { createHash } = require("node:crypto");
 const net = require("node:net");
 const { tmpdir } = require("node:os");
 const path = require("node:path");
+const zlib = require("node:zlib");
 const vscode = require("vscode");
 const ExcelJS = require("exceljs");
 const { attachJsonReader, encodeFrame, KIND_JSON, sendJson } = require("../support/bridgeFrames.cjs");
@@ -35,6 +36,7 @@ const EXPECTED_COMMANDS = [
   "visualbridge.catalogBrowser.refresh",
   "visualbridge.manageUnsavedDocuments",
   "visualbridge.openDebugPanel",
+  "visualbridge.openDebugRecording",
   "visualbridge.openDocument",
   "visualbridge.openProjectSettings",
   "visualbridge.refreshProjects",
@@ -44,6 +46,86 @@ const EXPECTED_COMMANDS = [
   "visualbridge.unsavedDocuments.saveAll",
   "visualbridge.revealReference",
 ];
+
+/**
+ * 生成一个最小、可被 `FileDebugSource` 打开的 `.vbdrec`（附录 C.6）。
+ * 宿主测试无法 import TS 源码，这里只复刻容器字节：块头 type(1)+length(4)+crc32(4) + zlib 载荷。
+ */
+const RECORD_BLOCK_HEADER = 0;
+const RECORD_BLOCK_DATA = 1;
+const RECORD_BLOCK_FOOTER = 2;
+
+function debugRecordingBlock(type, payload) {
+  const compressed = zlib.deflateSync(payload);
+  const head = Buffer.alloc(9);
+  head.writeUInt8(type, 0);
+  head.writeUInt32BE(compressed.length, 1);
+  head.writeUInt32BE(zlib.crc32(payload), 5);
+  return Buffer.concat([head, compressed]);
+}
+
+async function writeDebugRecording(filePath, frames, options = {}) {
+  const header = {
+    recordVersion: 1,
+    protocolVersion: 4,
+    contractSchemaVersion: 2,
+    contractHash: "",
+    sessionId: "host-recording#session",
+    endpointId: "host-recording",
+    bootId: "host-recording-boot",
+    connectType: "editor",
+    startedAt: "2026-10-29T01:00:00.000Z",
+    contracts: null,
+  };
+  const payloads = frames.map((frame) => Buffer.from(JSON.stringify(frame), "utf8"));
+  const footer = {
+    records: options.footerRecords ?? frames.length,
+    wireBytes: options.footerWireBytes ?? payloads.reduce((sum, payload) => sum + 6 + payload.length, 0),
+    droppedRecords: 0,
+    droppedBytes: 0,
+    endedAt: "2026-10-29T01:00:01.000Z",
+    endedReason: options.endedReason ?? "disconnect",
+  };
+  const data = Buffer.concat(payloads.map((payload) => encodeFrame(1, KIND_JSON, payload)));
+  await writeFile(filePath, Buffer.concat([
+    debugRecordingBlock(RECORD_BLOCK_HEADER, Buffer.from(JSON.stringify(header), "utf8")),
+    debugRecordingBlock(RECORD_BLOCK_DATA, data),
+    debugRecordingBlock(RECORD_BLOCK_FOOTER, Buffer.from(JSON.stringify(footer), "utf8")),
+  ]));
+}
+
+/** 读回一个 `.vbdrec`：数据块里的原样线上帧 + 文件尾（宿主测试不能 import TS 源码）。 */
+async function readDebugRecording(filePath) {
+  const bytes = await readFile(filePath);
+  const frames = [];
+  let footer;
+  let offset = 0;
+  while (offset + 9 <= bytes.length) {
+    const type = bytes.readUInt8(offset);
+    const length = bytes.readUInt32BE(offset + 1);
+    const payload = zlib.inflateSync(bytes.subarray(offset + 9, offset + 9 + length));
+    if (type === RECORD_BLOCK_DATA) {
+      let position = 0;
+      while (position + 6 <= payload.length) {
+        const word = payload.readUInt32BE(position);
+        const payloadLength = word & 0x1fffffff;
+        frames.push({
+          channel: word >>> 31,
+          payload: payload.subarray(position + 6, position + 6 + payloadLength),
+        });
+        position += 6 + payloadLength;
+      }
+    } else if (type === RECORD_BLOCK_FOOTER) {
+      footer = JSON.parse(payload.toString("utf8"));
+    }
+
+    offset += 9 + length;
+  }
+
+  return { frames, footer };
+}
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 exports.run = async function run() {
   const workspacePath = requiredEnvironmentPath("VISUALBRIDGE_TEST_WORKSPACE");
@@ -4636,6 +4718,8 @@ exports.run = async function run() {
       socket,
       lines,
       send: (message) => sendJson(socket, message),
+      /** 通道 1 的调试帧（录制/接收门测试用；与线上帧逐字节一致）。 */
+      sendDebug: (message) => socket.write(encodeFrame(1, KIND_JSON, Buffer.from(JSON.stringify(message), "utf8"))),
       handshaken: false,
       welcome: undefined,
       async handshake() {
@@ -4664,6 +4748,11 @@ exports.run = async function run() {
         message,
       ),
       close: () => new Promise((resolve) => {
+        if (socket.destroyed) {
+          resolve();
+          return;
+        }
+
         socket.once("close", resolve);
         socket.destroy();
       }),
@@ -5015,6 +5104,229 @@ exports.run = async function run() {
     }
   });
 
+  await test("opens a debug recording through the public command and restores the live selection on return", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "visualbridge-recording-"));
+    const filePath = path.join(directory, "session.vbdrec");
+    try {
+      await writeDebugRecording(filePath, [
+        { type: "debugCreate", category: "f5-replay", instance: "recorded", instanceSlot: 1, resName: "recorded-res", debugInfo: "" },
+        { type: "debugFrame", frame: 1 },
+        { type: "debug", category: "f5-replay", instance: "recorded", iface: "IGraphDebuger", method: "NodeStarted", args: [{ tag: 1, name: "nodeId", type: "string", value: "r1" }] },
+        { type: "debug", category: "f5-replay", instance: "recorded", iface: "IGraphDebuger", method: "NodeStarted", args: [{ tag: 1, name: "nodeId", type: "string", value: "r2" }] },
+      ]);
+
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.open");
+      // 在线选中一个实例，作为"返回实时"必须恢复的目标。
+      const liveKey = "f5-live\u0000before";
+      await ingestDebug([debugCreate("f5-live", "before")]);
+      await ingestDebug([debugEvent("f5-live", "before", 1, "NodeStarted", "live-1")]);
+      await panelCommand("select", { key: liveKey });
+      const before = await panelState();
+      assert.equal(before.selectedKey, liveKey);
+      assert.equal(before.mode, "live");
+      assert.equal(before.replay, undefined);
+
+      // 真正执行公开命令（不只是把命令列进 EXPECTED_COMMANDS）：参数是 Uri，走过命令注册 +
+      // 参数解析 + 会话打开三层；命令本身不返回快照，因此从面板状态断言进入了回看态。
+      await vscode.commands.executeCommand("visualbridge.openDebugRecording", vscode.Uri.file(filePath));
+      const replay = await waitForAsync(
+        () => panelState(),
+        (state) => state?.replay !== undefined,
+        20_000,
+        "The public openDebugRecording command did not switch the panel into replay mode.",
+      );
+      assert.equal(
+        replay.replay.filePath.toLowerCase(),
+        filePath.toLowerCase(),
+        "回看状态必须指向命令传入的文件",
+      );
+      assert.equal(replay.replay.records, 4, "文件尾的 records 必须原样呈现");
+      assert.equal(replay.replay.droppedRecords, 0);
+      assert.equal(replay.replay.endedReason, "disconnect");
+      assert.equal(replay.recording.available, false, "回看期间录制按钮不可用");
+      assert.equal(replay.enable.canToggle, false, "回看没有传输层：开关显式置灰（不依赖 connection.state）");
+      assert.equal(replay.selectedKey, undefined, "进入回看从默认实例重新开始");
+
+      // 回看里的浏览（选中 B + 单步）不能泄漏回在线。
+      const replayKey = "f5-replay\u0000recorded";
+      await panelCommand("select", { key: replayKey });
+      const stepped = await panelCommand("step", { direction: -1 });
+      assert.equal(stepped.selectedKey, replayKey);
+      assert.equal(stepped.mode, "replay", "回看里单步后处于逐步回放");
+
+      // Webview 的"返回实时"按钮发的就是 closeRecording；这里走同一个命令入口验证可用。
+      const returned = await panelCommand("closeRecording");
+      assert.equal(returned.replay, undefined, "返回实时后不再有回看状态");
+      assert.equal(returned.selectedKey, liveKey, "关闭回看必须恢复在线选中");
+      assert.equal(returned.mode, "live", "进入回看前的 followIntent 必须恢复");
+    } finally {
+      // 断言失败时也必须先退回收看：回看会话持有第二个 manager/文件句柄，只关面板会把它留在
+      // 同一进程的后续套件里（P2-9）。
+      await panelCommand("closeRecording").catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.close");
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  await test("an oversized recording is rejected before the panel leaves the live view (P1-A)", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "visualbridge-oversize-"));
+    const filePath = path.join(directory, "oversize.vbdrec");
+    try {
+      // footer 声明 200001 条（> 回看上限 200000），文件本身只有一帧：预检必须在解码前拒绝。
+      await writeDebugRecording(
+        filePath,
+        [{ type: "debugCreate", category: "f5-oversize", instance: "recorded", instanceSlot: 1, resName: "r", debugInfo: "" }],
+        { footerRecords: 200001 },
+      );
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.open");
+      await ingestDebug([debugCreate("f5-oversize", "live")]);
+      const live = await panelState();
+      assert.equal(live.replay, undefined);
+
+      const rejected = await vscode.commands.executeCommand("visualbridge.test.debugPanel.openRecording", filePath);
+      assert.equal(rejected.ok, false, "预检必须拒绝超大录制");
+      assert.match(rejected.error, /200001/u, "错误信息必须含文件声明的条数");
+      assert.match(rejected.error, /200000/u, "错误信息必须含回看上限");
+      assert.match(rejected.error, /超过回看上限/u);
+      assert.match(rejected.error, /分段录制/u);
+
+      const after = await panelState();
+      assert.equal(after.replay, undefined, "拒绝后必须停留在实时模式（不能进入回看态）");
+      assert.equal(after.connection.state, live.connection.state);
+      assert.equal(after.mode, live.mode);
+    } finally {
+      await panelCommand("closeRecording").catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.close");
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  await test("recording is bound to its source connection (P1-B)", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "visualbridge-recording-bound-"));
+    const filePath = path.join(directory, "bound.vbdrec");
+    let primary;
+    let intruder;
+    const recordingState = () => vscode.commands.executeCommand("visualbridge.test.debugPanel.recordingState");
+    try {
+      primary = await connectDebugPeer("recording-source");
+      await primary.handshake();
+      const started = await vscode.commands.executeCommand("visualbridge.test.debugPanel.recordingStart", filePath);
+      assert.equal(started.active, true);
+      assert.equal(started.available, true);
+
+      primary.sendDebug({
+        type: "debugCreate", category: "f5-bound", instance: "primary", instanceSlot: 1, resName: "r", debugInfo: "",
+      });
+      primary.sendDebug({
+        type: "debug", category: "f5-bound", instance: "primary", iface: "IGraphDebuger",
+        method: "NodeStarted", frame: 1, args: [{ tag: 1, name: "nodeId", type: "string", value: "primary-1" }],
+      });
+      await delay(200);
+
+      // 第二个客户端：先发两帧（未握手），再发 hello（会被一对一门槛拒绝并 close）。
+      intruder = await connectDebugPeer("recording-intruder");
+      intruder.sendDebug({
+        type: "debug", category: "f5-bound", instance: "intruder", iface: "IGraphDebuger",
+        method: "NodeStarted", frame: 2, args: [{ tag: 1, name: "nodeId", type: "string", value: "intruder-1" }],
+      });
+      intruder.sendDebug({
+        type: "debug", category: "f5-bound", instance: "intruder", iface: "IGraphDebuger",
+        method: "NodeStarted", frame: 3, args: [{ tag: 1, name: "nodeId", type: "string", value: "intruder-2" }],
+      });
+      intruder.send({
+        type: "hello",
+        protocolVersion: 4,
+        role: "editor",
+        clientEndpointId: "recording-intruder",
+        token: bridgeState.token,
+        contractHash: bridgeState.contractHash,
+        payloads: ["json", "binary"],
+      });
+      await intruder.waitForLine((line) => line.type === "error", "the second client was not rejected");
+      await delay(200);
+
+      const duringIntruder = await recordingState();
+      assert.equal(duringIntruder.active, true, "第二连接发帧/握手不能收尾录制");
+      assert.equal(duringIntruder.endedReason, undefined);
+
+      await intruder.close();
+      await delay(300);
+      const afterIntruder = await recordingState();
+      assert.equal(afterIntruder.active, true, "第二连接关闭不能把录制截断成 disconnect");
+      assert.equal(afterIntruder.endedReason, undefined);
+
+      // 主连接继续录，然后正常停止。
+      primary.sendDebug({
+        type: "debug", category: "f5-bound", instance: "primary", iface: "IGraphDebuger",
+        method: "NodeStarted", frame: 4, args: [{ tag: 1, name: "nodeId", type: "string", value: "primary-2" }],
+      });
+      await delay(200);
+      const stopped = await vscode.commands.executeCommand("visualbridge.test.debugPanel.recordingStop");
+      assert.equal(stopped.footer.endedReason, "disconnect");
+      assert.equal(stopped.footer.records, 3, "主连接 3 帧：Create + 2 个事件");
+
+      const recording = await readDebugRecording(filePath);
+      assert.equal(recording.footer.records, 3);
+      const texts = recording.frames.map((frame) => frame.payload.toString("utf8"));
+      assert.equal(
+        texts.some((text) => text.includes("intruder")),
+        false,
+        `第二连接的帧不得出现在录制文件里：${texts.join(" | ")}`,
+      );
+      assert.equal(texts.filter((text) => text.includes("primary-")).length, 2);
+
+      // 主连接断开后没有已握手的源连接：开始录制必须拒绝。
+      await primary.close();
+      await waitForAsync(recordingState, (state) => state?.active === false, 20_000, "the recording did not finish after the source disconnected");
+      await assert.rejects(
+        vscode.commands.executeCommand("visualbridge.test.debugPanel.recordingStart", path.join(directory, "no-source.vbdrec")),
+        /handshaken/u,
+        "没有源连接时 startRecording 必须拒绝（不能录一个『还没有源』的会话）",
+      );
+    } finally {
+      await intruder?.close().catch(() => undefined);
+      await primary?.close().catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.recordingStop").catch(() => undefined);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  await test("closing the panel while replaying resumes the live store (P2-3)", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "visualbridge-recording-paused-"));
+    const filePath = path.join(directory, "paused.vbdrec");
+    const liveKey = "f5-paused\u0000pilot";
+    const liveStorePaused = () => vscode.commands.executeCommand("visualbridge.test.debugPanel.liveStorePaused", liveKey);
+    try {
+      await writeDebugRecording(filePath, [
+        { type: "debugCreate", category: "f5-paused", instance: "recorded", instanceSlot: 1, resName: "r", debugInfo: "" },
+        { type: "debugFrame", frame: 1 },
+        { type: "debug", category: "f5-paused", instance: "recorded", iface: "IGraphDebuger", method: "NodeStarted", args: [{ tag: 1, name: "nodeId", type: "string", value: "r1" }] },
+      ]);
+
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.open");
+      await ingestDebug([debugCreate("f5-paused", "pilot"), debugEvent("f5-paused", "pilot", 1, "NodeStarted", "live")]);
+      await panelCommand("select", { key: liveKey });
+      await panelCommand("togglePause");
+      assert.equal(await liveStorePaused(), true, "前提：线上 store 确实被暂停了");
+
+      const opened = await vscode.commands.executeCommand("visualbridge.test.debugPanel.openRecording", filePath);
+      assert.equal(opened.ok, true, String(opened.error));
+      assert.ok((await panelState()).replay, "必须真的进入回看态");
+
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.close");
+      assert.equal(
+        await liveStorePaused(),
+        false,
+        "关闭面板必须解开线上 store 的暂停（修复前它永久停在 paused=true，pendingAppended 无界增长）",
+      );
+      assert.equal((await panelState()).paused, false);
+    } finally {
+      await panelCommand("closeRecording").catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.close");
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   await test("F4 routes graph records to the Graph module facet and still feeds the generic view", async () => {
     // 前一个用例留了关键词过滤；先清掉，否则下面按 instanceId 找通用视图的行会被过滤掉。
     await panelCommand("filter", { value: "" });
@@ -5056,9 +5368,12 @@ exports.run = async function run() {
     assert.equal(instance.recordCount, 2);
 
     // 投递诊断不是"吞掉就完"：Webview 消息失败计数必须出现在面板快照里（验收 D）。
+    // 计数是**进程级**的：无头宿主里前序面板用例的 `postMessage` 本来就可能返回 false，
+    // 因此这里断言"注入恰好 +1"，而不是假设全局计数从 0 开始。
+    const beforeFailures = (await panelState()).delivery.webviewFailures;
     const failures = await vscode.commands.executeCommand("visualbridge.test.debugPanel.noteWebviewFailure");
-    assert.equal(failures, 1);
-    assert.equal((await panelState()).delivery.webviewFailures, 1);
+    assert.equal(failures, beforeFailures + 1);
+    assert.equal((await panelState()).delivery.webviewFailures, beforeFailures + 1);
   });
 
   await test("F4 falls back to generic when onRecord throws and keeps other categories intact", async () => {

@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import path from "node:path";
 import type {
   DocumentLifecycleDeleteTarget,
   ProjectProviderDocumentSnapshot,
@@ -47,6 +48,8 @@ import { BridgeProtocolError, parseBridgeMessage, parseDiscoveryRecord } from ".
 import { RuntimeDebugAdapter } from "./debug/runtimeDebugAdapter";
 import { RuntimeDebugConfigurationProvider, RUNTIME_DEBUG_TYPE } from "./debug/runtimeDebugConfigurationProvider";
 import { DebugPanelController } from "./debug/debugPanelController";
+import { DebugRecordingService } from "./debug/debugRecordingService";
+import { DebugReplaySession } from "./bridge/debugReplaySession";
 import { DebugFacetHost } from "./debug/debugFacetRouter";
 import { collectDebugFacetSources } from "./debug/debugFacetSources";
 import type { DebugEnvelope } from "./bridge/debugIngress";
@@ -945,13 +948,95 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     log: (message) => output.appendLine(message),
   });
   context.subscriptions.push(debugFacetHost);
+  // 录制（F5）：真正的写盘在 bridge 层；这里只负责路径选择与 UI 反馈。
+  const debugRecording = new DebugRecordingService({
+    storageUri: context.globalStorageUri,
+    bridge: () => bridgeServer,
+    log: (message) => output.appendLine(message),
+    onStopped: (filePath, footer) => {
+      const summary = footer === undefined
+        ? ""
+        : `（${footer.records} 条记录${footer.endedReason === "sizeLimit" ? "，达到文件上限" : ""}${footer.droppedRecords > 0 ? `，丢弃 ${footer.droppedRecords} 条` : ""}）`;
+      void vscode.window.showInformationMessage(
+        `调试录制已保存${summary}：${path.basename(filePath)}`,
+        "打开回看",
+      ).then((choice) => {
+        if (choice === "打开回看") {
+          void openRecordingWithProgress(filePath);
+        }
+      });
+    },
+  });
+  context.subscriptions.push(debugRecording);
+  const pickDebugRecordingFile = async (storageUri: vscode.Uri): Promise<string | undefined> => {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      defaultUri: vscode.Uri.joinPath(storageUri, "recordings"),
+      openLabel: "回看",
+      filters: { "VisualBridge Debug Recording": ["vbdrec"] },
+    });
+    return picked?.[0]?.fsPath;
+  };
   const debugPanel = new DebugPanelController({
     storageUri: context.globalStorageUri,
     bridge: () => bridgeServer,
     facets: debugFacetHost,
+    recording: {
+      get: () => debugRecording.state,
+      toggle: () => {
+        void debugRecording.toggle();
+      },
+    },
+    // 回看的模块 facet 按回看 manager 新建，退出回看时由控制器释放（F4 的在线 host 不动）。
+    replayFacets: (session) => {
+      const host = new DebugFacetHost({
+        router: session.manager.router,
+        replay: (category) => session.manager.replay(category),
+        knownCategories: () => [...new Set(session.manager.instances.map((instance) => instance.category))],
+        isCategoryStale: () => false,
+        hasReplayableRecords: (category) => session.manager.hasReplayableCategoryRecords(category),
+        sessionId: () => session.header.sessionId,
+        log: (message) => output.appendLine(message),
+      });
+      host.rebuild(collectDebugFacetSources(
+        projects.projects,
+        (project) => modules.modulesFor(project),
+        (moduleId, message) => output.appendLine(`[module:${moduleId}] ${message}`),
+      ));
+      return host;
+    },
     log: (message) => output.appendLine(message),
   });
   context.subscriptions.push(debugPanel);
+  /**
+   * 回看入口：大文件重放要占住宿主线程，给一个可见的进度提示（不可取消：解析没有中断点）。
+   *
+   * 先做**不解码的预检**（P1-A）：超大文件在这里快速失败，不进入 `withProgress`、不把面板切到
+   * 回看态；只有通过预检才用"正在解码 N 条…"的进度提示真正重放（P2-11）。
+   */
+  const openRecordingWithProgress = async (filePath: string): Promise<void> => {
+    try {
+      const preflight = await DebugReplaySession.preflight(filePath);
+      const decoded = preflight.records === undefined
+        ? "正在解码录制内容…"
+        : `正在解码 ${preflight.records} 条记录（约 ${(preflight.estimatedDecodedBytes / (1024 * 1024)).toFixed(1)} MB）…`;
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `正在回看 ${path.basename(filePath)}…`,
+          cancellable: false,
+        },
+        async (progress) => {
+          progress.report({ message: decoded });
+          await debugPanel.openRecording(filePath);
+        },
+      );
+    } catch (errorValue) {
+      const message = errorValue instanceof Error ? errorValue.message : String(errorValue);
+      output.appendLine(`[debug] failed to open recording '${filePath}': ${message}`);
+      void vscode.window.showErrorMessage(`无法打开调试录制：${message}`);
+    }
+  };
   /** 模块装载/授权/Project 变化后重建分类路由；旧 facet 先注销，之后不会再收到记录（验收 A）。 */
   const rebuildDebugFacets = (): void => {
     debugFacetHost.rebuild(collectDebugFacetSources(
@@ -968,6 +1053,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
   context.subscriptions.push(
     vscode.commands.registerCommand("visualbridge.openDebugPanel", () => debugPanel.open()),
+    // 回看（F5）：可带文件路径（宿主/测试），否则弹文件选择框；默认目录是录制目录。
+    vscode.commands.registerCommand("visualbridge.openDebugRecording", async (argument?: unknown) => {
+      const direct = argument instanceof vscode.Uri
+        ? argument.fsPath
+        : typeof argument === "string" && argument.length > 0
+          ? argument
+          : undefined;
+      const filePath = direct ?? await pickDebugRecordingFile(context.globalStorageUri);
+      if (filePath === undefined) {
+        return;
+      }
+
+      await openRecordingWithProgress(filePath);
+    }),
   );
 
   const runtimeBridge = new RuntimeBridgeService((message) => output.appendLine(`[runtime] ${message}`));
@@ -1029,6 +1128,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return { openCount: debugPanel.openCountForTest };
       }),
       vscode.commands.registerCommand("visualbridge.test.debugPanel.state", () => debugPanel.getStateForTest()),
+      // F5 宿主测试注入点：直接走控制器的回看入口（错误信息就是 `showErrorMessage` 会显示的那条），
+      // 以及 bridge 层的录制启停/状态（不经过保存对话框）。
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.openRecording", async (filePath: unknown) => {
+        if (typeof filePath !== "string") {
+          return { ok: false, error: "missing file path" };
+        }
+
+        try {
+          const snapshot = await debugPanel.openRecording(filePath);
+          return { ok: true, replay: snapshot.replay };
+        } catch (errorValue) {
+          return { ok: false, error: errorValue instanceof Error ? errorValue.message : String(errorValue) };
+        }
+      }),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.recordingStart", async (filePath: unknown) => {
+        if (typeof filePath !== "string") {
+          throw new Error("missing file path");
+        }
+
+        await bridgeServer.startRecording({ filePath });
+        return bridgeServer.recordingState;
+      }),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.recordingStop", async () => {
+        const footer = await bridgeServer.stopRecording();
+        return { footer, state: bridgeServer.recordingState };
+      }),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.recordingState", () => bridgeServer.recordingState),
+      // P2-3 的红/绿判据：面板关闭后线上 store 不能再停在暂停态（否则 pendingAppended 无界增长）。
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.liveStorePaused", (key: unknown) => {
+        const store = typeof key === "string" ? bridgeServer.debug.storeFor(key) : undefined;
+        return store?.paused;
+      }),
       vscode.commands.registerCommand(
         "visualbridge.test.debugPanel.command",
         (command: unknown, payload: unknown) => debugPanel.handleCommand(

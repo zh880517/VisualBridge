@@ -148,6 +148,17 @@ export interface DebugFrameLike {
   readonly payload: Buffer;
 }
 
+/**
+ * 录制钩子（附录 C.6）：在**解码之前**拿到原样帧。实现方只负责"写原始帧"，不做解码、
+ * 不看槽位、不受 `filterKey` 与 `DebugInstanceManager` 的容量淘汰影响——那些都在下游。
+ *
+ * 通道 1 由 `DebugIngress.acceptFrame` 调用本钩子；通道 0 的载荷不经过本类（连接层按通道
+ * 分流），由 `EditorBridgeServer` 在控制载荷入口调用同一个 tap，保证录制顺序 = 到达顺序。
+ */
+export interface DebugFrameRecorder {
+  recordFrame(channel: number, payloadKind: BridgePayloadKind, payload: Buffer): void;
+}
+
 /** 接收计数快照；只增不减，{@link DebugIngress.reset} 之后归零。 */
 export interface DebugIngressCounters {
   /** 收到的全部帧（含通道 0）。 */
@@ -220,6 +231,8 @@ export interface DebugIngressOptions {
    */
   readonly assumeNoPendingRequests?: boolean;
   readonly maxPayloadBytes?: number;
+  /** 录制钩子：帧在解码/筛选之前交出去；缺省 = 不录制（F5 由连接层注入）。 */
+  readonly recorder?: DebugFrameRecorder;
   readonly log?: (message: string) => void;
 }
 
@@ -235,6 +248,7 @@ export class DebugIngress {
   private readonly pendingRequest: ((requestId: number) => boolean) | undefined;
   private readonly knownRequest: ((requestId: number) => boolean) | undefined;
   private readonly maxPayloadBytes: number;
+  private readonly recorder: DebugFrameRecorder | undefined;
   private readonly log: (message: string) => void;
   private countersValue: DebugIngressCounters = ZERO_COUNTERS;
   private currentFrame = -1;
@@ -249,6 +263,7 @@ export class DebugIngress {
       ?? (options.assumeNoPendingRequests === true ? () => false : undefined);
     this.knownRequest = options.isKnownRequest;
     this.maxPayloadBytes = options.maxPayloadBytes ?? MAX_MESSAGE_BYTES;
+    this.recorder = options.recorder;
     this.log = options.log ?? (() => undefined);
   }
 
@@ -285,6 +300,9 @@ export class DebugIngress {
    * 通道 0、非法通道与超限帧只计数（A.1/A.2）。
    */
   public acceptFrame(frame: DebugFrameLike): readonly DebugEnvelope[] {
+    // 录制是旁路：在计数、通道分流、解码与筛选**之前**交出原样帧。钩子实现不得抛异常
+    // （F5 的录制器内部全部兜住），这样"录不录得上"永远不会改变接收行为。
+    this.recorder?.recordFrame(frame.channel, frame.payloadKind, frame.payload);
     const counters = { ...this.countersValue };
     counters.frames += 1;
     if (frame.channel === BridgeChannel.Control) {

@@ -27,7 +27,8 @@ import {
 } from "./sendQueues";
 
 export interface BridgeSocketHandlers {
-  readonly onControlPayload: (payload: Buffer) => void;
+  /** 通道 0 的业务载荷；`payloadKind` 原样带出，录制端要据此还原线上帧头。 */
+  readonly onControlPayload: (payload: Buffer, payloadKind: BridgePayloadKind) => void;
   readonly onDebugFrame: (payloadKind: BridgePayloadKind, payload: Buffer) => void;
   readonly onClosed: (error: Error | undefined) => void;
 }
@@ -227,7 +228,7 @@ export class BridgeSocket {
           } else if (frame.payloadKind === BridgePayloadKind.Json && classifyKeepAlive(frame.payload) === "pong") {
             continue;
           } else {
-            this.handlers.onControlPayload(frame.payload);
+            this.handlers.onControlPayload(frame.payload, frame.payloadKind);
           }
         } else {
           this.handlers.onDebugFrame(frame.payloadKind, frame.payload);

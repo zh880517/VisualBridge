@@ -10,7 +10,7 @@ import { BridgePayloadKind } from "../../src/bridge/framing";
 import { DebugInstanceManager, debugInstanceKey } from "../../src/bridge/debugInstanceManager";
 import type { DebugConsumer, DebugRouter } from "../../src/bridge/debugRouter";
 import { DebugEnableSwitch, type DebugEnableTransport } from "../../src/debug/debugEnableSwitch";
-import { DebugPanelModel, type DebugPanelConnection } from "../../src/debug/debugPanelState";
+import { DebugPanelModel, type DebugPanelConnection, type DebugPanelReplayState } from "../../src/debug/debugPanelState";
 
 export const EDITOR_CONNECTION: DebugPanelConnection = {
   state: "connected",
@@ -197,6 +197,8 @@ export function createModel(options: {
   readonly enable?: DebugEnableSwitch;
   readonly connection?: DebugPanelConnection;
   readonly windowRecords?: number;
+  readonly replay?: () => DebugPanelReplayState | undefined;
+  readonly onRecordingToggle?: () => void;
 } = {}): {
   readonly model: DebugPanelModel;
   readonly manager: DebugInstanceManager;
@@ -213,6 +215,8 @@ export function createModel(options: {
     enable: created.enable,
     connection: () => options.connection ?? EDITOR_CONNECTION,
     ...(options.windowRecords === undefined ? {} : { windowRecords: options.windowRecords }),
+    ...(options.replay === undefined ? {} : { replay: options.replay }),
+    ...(options.onRecordingToggle === undefined ? {} : { onRecordingToggle: options.onRecordingToggle }),
     keyframeCount: (category) => manager.keyframes.count(category),
   });
   return { model, manager, enable: created.enable, transport: created.transport, timer: created.timer };

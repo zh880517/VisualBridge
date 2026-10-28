@@ -110,6 +110,43 @@ test("stepping one record at a time stops exactly at the boundaries", () => {
   assert.equal(atEnd.atStart, false);
 });
 
+test("replay view state is isolated per data source and restored on return (F5-08)", () => {
+  const { model, manager, transport } = createModel();
+  createInstance(manager, "graph", "hero");
+  createInstance(manager, "graph", "boss");
+  ingestEvents(manager, [{ frame: 1 }, { frame: 2 }]);
+  manager.ingest(eventEnvelope({ instance: "boss", frame: 3, value: "boss-1" }));
+  const hero = instanceKeyOf("graph", "hero");
+  const boss = instanceKeyOf("graph", "boss");
+
+  model.selectInstance(hero);
+  assert.equal(model.snapshot().mode, "live");
+
+  // 进入回看：在线选中/跟随意图被存档，回看从"未选中"开始。
+  model.enterReplayView();
+  assert.equal(model.replayViewActive, true);
+  assert.equal(model.snapshot().selectedKey, undefined, "回看不得复用在线选中");
+  assert.equal(model.snapshot().mode, "live");
+
+  model.selectInstance(boss);
+  assert.equal(model.snapshot().selectedKey, boss);
+  model.step(-1);
+  assert.equal(model.snapshot().mode, "replay", "回看里的单步只影响回看视图");
+
+  // 回看没有传输层：显式守卫，而不是依赖 connection.state 间接推断。
+  const sentBefore = transport.sent.length;
+  model.requestEnabled(false);
+  assert.equal(transport.sent.length, sentBefore, "回看期间不得发出 debugSetEnabled");
+  assert.equal(model.snapshot().enable.canToggle, false, "回看期间开关置灰");
+
+  model.exitReplayView();
+  const restored = model.snapshot();
+  assert.equal(model.replayViewActive, false);
+  assert.equal(restored.selectedKey, hero, "返回实时必须恢复在线选中（不是 undefined）");
+  assert.equal(restored.mode, "live", "进入回看前的 followIntent 必须恢复");
+  assert.equal(manager.selectedKey, hero, "底层 manager 的选中也要恢复");
+});
+
 test("stepping one frame at a time moves a whole consecutive frame group", () => {
   const { model, manager } = createModel();
   createInstance(manager, "graph", "hero");
@@ -491,12 +528,17 @@ test("refreshing the panel is a read-only window: it never replays and never re-
   const store = manager.storeFor(key);
   assert.ok(store);
 
-  // 观测两个副作用：时间轴窗口读取的**起点**、分类重放次数。面板重绘**不应该**触发重放。
-  const requests: number[] = [];
-  const readWindow = store.recordsFrom.bind(store);
-  store.recordsFrom = (position: number) => {
-    requests.push(position);
-    return readWindow(position);
+  // 观测两个副作用：时间轴窗口/明细记录读取的**位置**、分类重放次数。面板重绘**不应该**触发重放。
+  const requests: string[] = [];
+  const readWindow = store.recordsBetween.bind(store);
+  store.recordsBetween = (from: number, toExclusive: number) => {
+    requests.push(`window:${from}:${toExclusive}`);
+    return readWindow(from, toExclusive);
+  };
+  const readRecord = store.recordAtPosition.bind(store);
+  store.recordAtPosition = (position: number) => {
+    requests.push(`record:${position}`);
+    return readRecord(position);
   };
   let replays = 0;
   const replayCategory = manager.replay.bind(manager);
@@ -520,4 +562,93 @@ test("refreshing the panel is a read-only window: it never replays and never re-
     "稳定态下每次重绘的读取序列与第一次完全一致（幂等、不累积、不漂移）");
   assert.equal(replays, 0, "重绘绝不触发 replay（那会重建消费者，不是刷新）");
   assert.equal(consumer.records.length, 3, "消费者的投递次数不受面板刷新影响");
+});
+
+test("replay state is surfaced to the webview and absent in live mode", () => {
+  const replay = {
+    filePath: "C:/recordings/session-1.vbdrec",
+    records: 12,
+    droppedRecords: 1,
+    endedReason: "sizeLimit",
+  } as const;
+  const { model } = createModel({ replay: () => replay });
+  assert.deepEqual(model.snapshot().replay, replay);
+
+  const live = createModel();
+  assert.equal(live.model.snapshot().replay, undefined, "在线快照不带 replay 字段");
+});
+
+test("a 20k-record timeline reads one record in O(1) and only a 500-record window (P2-2)", () => {
+  const { model, manager } = createModel();
+  createInstance(manager, "graph", "hero");
+  ingestEvents(
+    manager,
+    Array.from({ length: 20_000 }, (_unused, index) => ({ frame: index % 50 })),
+  );
+  const key = instanceKeyOf("graph", "hero");
+  model.selectInstance(key);
+  // 预热接口缓存：首见会全量扫一次（与"取一条记录"的判据无关）。
+  model.snapshot();
+
+  const store = manager.storeFor(key);
+  assert.ok(store !== undefined);
+  // 把游标停在中间：旧实现会用 recordsFrom(cursor - 1) 把 10001 条复制出来。
+  store.applyCursor(10_000);
+  model.pause();
+
+  const recordsFromCalls: { requested: number; copied: number }[] = [];
+  const originalRecordsFrom = store.recordsFrom.bind(store);
+  store.recordsFrom = (position: number) => {
+    const slice = originalRecordsFrom(position);
+    recordsFromCalls.push({ requested: position, copied: slice.records.length });
+    return slice;
+  };
+  const recordAtCalls: number[] = [];
+  const originalRecordAt = store.recordAtPosition.bind(store);
+  store.recordAtPosition = (position: number) => {
+    recordAtCalls.push(position);
+    return originalRecordAt(position);
+  };
+
+  const snapshot = model.snapshot();
+  assert.equal(snapshot.timeline.detail?.id, 10_000, "明细必须是游标指向的那一条");
+  assert.deepEqual(recordAtCalls, [9_999], "recordAt 只按绝对位置取一条");
+  assert.deepEqual(recordsFromCalls, [], "时间轴与明细都不再走『从某位置一直复制到末尾』的读取");
+  assert.ok(
+    snapshot.timeline.records.length <= DEBUG_PANEL_WINDOW_RECORDS,
+    `window must stay bounded, got ${snapshot.timeline.records.length}`,
+  );
+
+  // 红态量化：旧实现的 `recordsFrom(cursor - 1)` 在同样位置会复制出 10001 条（20k 录制的一半）。
+  const legacyCopy = originalRecordsFrom(9_999);
+  assert.equal(legacyCopy.records.length, 10_001, "旧路径的复制量（这也是本条断言在旧实现上会失败的地方）");
+});
+
+test("filter and granularity are archived per data source (P2-6)", () => {
+  const { model } = createModel();
+  model.setFilter("live-only");
+  model.setGranularity("frame");
+  assert.equal(model.snapshot().filter, "live-only");
+  assert.equal(model.snapshot().granularity, "frame");
+
+  model.enterReplayView();
+  assert.equal(model.snapshot().filter, "", "回看从自己的默认视图开始，不继承在线筛选");
+  assert.equal(model.snapshot().granularity, "record", "回看也不继承在线步进粒度");
+
+  model.setFilter("replay-only");
+  model.setGranularity("record");
+  model.exitReplayView();
+  assert.equal(model.snapshot().filter, "live-only", "退出回看恢复在线筛选");
+  assert.equal(model.snapshot().granularity, "frame", "退出回看恢复在线步进粒度");
+});
+
+test("recording toggle is rejected in replay mode even through the command channel (P2-7)", () => {
+  let toggles = 0;
+  const { model } = createModel({ onRecordingToggle: () => { toggles += 1; } });
+  model.requestRecordingToggle();
+  assert.equal(toggles, 1, "在线时照常转发");
+
+  model.enterReplayView();
+  model.requestRecordingToggle();
+  assert.equal(toggles, 1, "回看没有录制源：命令通道也必须挡住");
 });

@@ -72,6 +72,16 @@ export interface DebugPanelStoreSource {
     readonly partial: boolean;
     readonly records: readonly DebugRecord[];
   };
+  /** 窗口读取：`[from, to)`，不复制到末尾（P2-2）。 */
+  recordsBetween(fromPosition: number, toPosition: number): {
+    readonly requestedPosition: number;
+    readonly fromPosition: number;
+    readonly toPosition: number;
+    readonly partial: boolean;
+    readonly records: readonly DebugRecord[];
+  };
+  /** O(1) 取一条（不复制数组）：时间轴明细只用它（P2-2）。 */
+  recordAtPosition(position: number): DebugRecord | undefined;
   applyCursor(position: number): unknown;
   step(granularity: DebugCursorGranularity, direction: DebugCursorDirection): unknown;
   pause(): void;
@@ -199,6 +209,8 @@ export interface DebugPanelSnapshot {
   readonly recording: DebugPanelRecordingState;
   /** 模块 `debug` facet 的类型窗口区域（D.4）：标题/工具条归宿主，内容由模块给。 */
   readonly facets: DebugFacetSnapshot;
+  /** 回看中（F5）：Webview 据此显示"返回实时"，并把录制按钮标成"回看模式下不可录制"。 */
+  readonly replay?: DebugPanelReplayState;
   /** 宿主投递诊断：Webview 消息失败计数（P1：不能被吞掉）。 */
   readonly delivery: {
     readonly webviewFailures: number;
@@ -219,6 +231,36 @@ export interface DebugPanelRecordingState {
   readonly active: boolean;
 }
 
+/** 回看状态（F5）：文件身份 + 文件尾统计；`footer` 缺失 = 录制被截断或未正常收尾。 */
+export interface DebugPanelReplayState {
+  readonly filePath: string;
+  readonly records: number | undefined;
+  readonly droppedRecords: number | undefined;
+  readonly endedReason: string | undefined;
+}
+
+/**
+ * 单个数据源（在线 / 回看）的 UI 视图快照（F5-08）。
+ *
+ * `paused` / `followIntent` / `interfaces` / `positioned` / `selectedKey` / `filter` /
+ * `granularity` 都是"用户在这个数据源上的浏览状态"；在线与回看是两套实例键空间，混用会泄漏。
+ * 进入回看前存一份、退出时原样恢复，回看自己的浏览（含单步产生的 `followIntent=false`）随会话丢弃。
+ *
+ * `filter` / `granularity` 按数据源独立是**产品选择**（P2-6）：回看里按关键词找实例不应该改掉
+ * 在线面板的筛选条件；步进粒度同理（回看常用"按帧"，在线常用"按记录"）。所有浏览状态共用
+ * 这一份归档，避免出现"哪些字段该带过去"的第二个判定点。
+ */
+export interface DebugPanelViewState {
+  readonly selectedKey: string | undefined;
+  readonly paused: boolean;
+  readonly followIntent: boolean;
+  readonly resumeFollow: boolean;
+  readonly filter: string;
+  readonly granularity: DebugCursorGranularity;
+  readonly interfaces: ReadonlyMap<string, { position: number; count: number; names: ReadonlySet<string> }>;
+  readonly positioned: ReadonlySet<string>;
+}
+
 export interface DebugPanelModelOptions {
   readonly manager: DebugPanelSource;
   readonly enable: DebugEnableSwitch;
@@ -229,6 +271,8 @@ export interface DebugPanelModelOptions {
   /** 录制能力（F5 注入；缺省"未接入"）。 */
   readonly recording?: () => DebugPanelRecordingState;
   readonly onRecordingToggle?: () => void;
+  /** 回看状态（F5）：非空时面板显示"返回实时"，录制按钮置灰。 */
+  readonly replay?: () => DebugPanelReplayState | undefined;
   /** 模块 facet 区域快照（F4；缺省空快照 = 全部走通用视图）。 */
   readonly facets?: () => DebugFacetSnapshot;
   /** Webview 消息失败计数（F4 P1；由控制器累计）。 */
@@ -244,6 +288,7 @@ export class DebugPanelModel {
   private readonly windowRecords: number;
   private readonly recording: () => DebugPanelRecordingState;
   private readonly onRecordingToggle: (() => void) | undefined;
+  private readonly replay: (() => DebugPanelReplayState | undefined) | undefined;
   private readonly facets: () => DebugFacetSnapshot;
   private readonly webviewFailures: () => number;
   private readonly onChange: (() => void) | undefined;
@@ -260,6 +305,8 @@ export class DebugPanelModel {
   private readonly interfaces = new Map<string, { position: number; count: number; names: Set<string> }>();
   /** 已经在面板里定位过的实例（首次选中贴末尾，之后保留各自游标）。 */
   private readonly positioned = new Set<string>();
+  /** 进入回看前保存的在线视图快照；非空 = 当前处于"按数据源隔离"的回看视图（F5-08）。 */
+  private savedLiveView: DebugPanelViewState | undefined;
   private revisionValue = 0;
 
   public constructor(options: DebugPanelModelOptions) {
@@ -270,6 +317,7 @@ export class DebugPanelModel {
     this.windowRecords = options.windowRecords ?? DEBUG_PANEL_WINDOW_RECORDS;
     this.recording = options.recording ?? (() => ({ available: false, active: false }));
     this.onRecordingToggle = options.onRecordingToggle;
+    this.replay = options.replay;
     this.facets = options.facets ?? (() => EMPTY_DEBUG_FACET_SNAPSHOT);
     this.webviewFailures = options.webviewFailures ?? (() => 0);
     this.onChange = options.onChange;
@@ -327,6 +375,95 @@ export class DebugPanelModel {
 
     // 游标本来就在末尾 ⇒ 继续跟随；停在中间 ⇒ 保持逐步（不静默跳到末尾）。
     this.followIntent = fresh || (store !== undefined && store.cursor.position >= store.endPosition);
+    this.touch();
+  }
+
+  /** 当前是否处于"回看视图"（在线视图已存档，见 {@link enterReplayView}）。 */
+  public get replayViewActive(): boolean {
+    return this.savedLiveView !== undefined;
+  }
+
+  /**
+   * 进入回看：先存档在线视图（选中实例/暂停/跟随意图/接口缓存/已定位集合），再清空视图，
+   * 让回看从自己的默认实例开始（F5-08）。
+   *
+   * 不在这里 `resume()` 在线 store：在线如果进入前是暂停的，其 store 仍是暂停的，退出回看时
+   * 原样恢复 `paused=true` 才一致；回看是新 manager，本来就没有暂停。
+   */
+  public enterReplayView(): void {
+    if (this.savedLiveView !== undefined) {
+      return;
+    }
+
+    this.savedLiveView = this.captureViewState();
+    this.resetViewState();
+  }
+
+  /** 退出回看：丢弃回看视图，恢复进入前的在线视图（选中实例与 `followIntent` 都回来）。 */
+  public exitReplayView(): void {
+    const saved = this.savedLiveView;
+    this.savedLiveView = undefined;
+    if (saved === undefined) {
+      this.resetViewState();
+      return;
+    }
+
+    this.applyViewState(saved);
+  }
+
+  private captureViewState(): DebugPanelViewState {
+    return {
+      selectedKey: this.selectedKeyValue,
+      paused: this.pausedValue,
+      followIntent: this.followIntent,
+      resumeFollow: this.resumeFollow,
+      filter: this.filterValue,
+      granularity: this.granularityValue,
+      interfaces: new Map(
+        [...this.interfaces].map(([key, entry]) => [
+          key,
+          { position: entry.position, count: entry.count, names: new Set(entry.names) },
+        ]),
+      ),
+      positioned: new Set(this.positioned),
+    };
+  }
+
+  private applyViewState(state: DebugPanelViewState): void {
+    // 存档里的实例可能已被在线容量淘汰：恢复不存在的选中会让时间轴空转，直接落回未选中。
+    this.selectedKeyValue = state.selectedKey !== undefined && this.manager.instance(state.selectedKey) !== undefined
+      ? state.selectedKey
+      : undefined;
+    this.manager.select(this.selectedKeyValue);
+    this.pausedValue = state.paused;
+    this.followIntent = state.followIntent;
+    this.resumeFollow = state.resumeFollow;
+    this.filterValue = state.filter;
+    this.granularityValue = state.granularity;
+    this.interfaces.clear();
+    for (const [key, entry] of state.interfaces) {
+      this.interfaces.set(key, { position: entry.position, count: entry.count, names: new Set(entry.names) });
+    }
+
+    this.positioned.clear();
+    for (const key of state.positioned) {
+      this.positioned.add(key);
+    }
+
+    this.touch();
+  }
+
+  private resetViewState(): void {
+    this.selectedKeyValue = undefined;
+    this.manager.select(undefined);
+    this.pausedValue = false;
+    this.followIntent = true;
+    this.resumeFollow = true;
+    // 回看从自己的默认视图开始：不带在线数据源的关键词筛选与步进粒度（P2-6）。
+    this.filterValue = "";
+    this.granularityValue = "record";
+    this.interfaces.clear();
+    this.positioned.clear();
     this.touch();
   }
 
@@ -445,14 +582,34 @@ export class DebugPanelModel {
     return true;
   }
 
-  /** 转发开关点击（不带乐观更新；结果只反映服务端/最后已知值）。 */
+  /**
+   * 转发开关点击（不带乐观更新；结果只反映服务端/最后已知值）。
+   *
+   * 回看**显式**拒绝（F5-08）：回看会话没有传输层，`debugSetEnabled` 根本发不出去。直接按
+   * `replayViewActive` 守卫，而不是依赖"回看时 connection 恰好是 disconnected"这一间接事实——
+   * 后者一旦将来给回看合成一个连接状态就会失守。
+   */
   public requestEnabled(target: boolean): void {
+    if (this.replayViewActive) {
+      this.touch();
+      return;
+    }
+
     this.enable.request(target);
     this.touch();
   }
 
-  /** 转发"录制"按钮（F5 未接入时按钮本身置灰；这里只转发，不伪造录制状态）。 */
+  /**
+   * 转发"录制"按钮（F5）。回看**显式拒绝**（P2-7）：回看 manager 是只读重放，录制的是"在线
+   * 连接"，没有可绑定的源；命令通道（Webview 消息/测试命令）也可能绕过置灰直接调用，所以
+   * 守卫必须在这里，而不是只靠 UI 把按钮画灰。
+   */
   public requestRecordingToggle(): void {
+    if (this.replayViewActive) {
+      this.touch();
+      return;
+    }
+
     this.onRecordingToggle?.();
     this.touch();
   }
@@ -471,7 +628,8 @@ export class DebugPanelModel {
     const connection = this.connection();
     this.enable.setMode(connection.connectType === "player" ? "player" : "editor");
     // 没有已握手连接 ⇒ 请求发不出去，按钮置灰（连接断了也要把挂起请求结算掉）。
-    this.enable.setAvailable(connection.state === "connected");
+    // 回看同理：没有传输层，显式置灰（不依赖 connection.state 的间接推断，F5-08）。
+    this.enable.setAvailable(connection.state === "connected" && !this.replayViewActive);
     const instances = this.instanceRows();
     const key = this.selectedKeyValue !== undefined && this.manager.instance(this.selectedKeyValue) !== undefined
       ? this.selectedKeyValue
@@ -489,6 +647,7 @@ export class DebugPanelModel {
 
     const category = store?.category;
     const historyMissing = key === undefined ? false : (this.manager.instance(key)?.historyMissing ?? false);
+    const replay = this.replay?.();
     return {
       revision: this.revisionValue,
       paused: this.pausedValue,
@@ -510,6 +669,7 @@ export class DebugPanelModel {
         keyframes: category === undefined ? 0 : this.keyframeCount(category),
         frame: connection.frame,
       },
+      ...(replay === undefined ? {} : { replay }),
     };
   }
 
@@ -540,13 +700,13 @@ export class DebugPanelModel {
     // 锚点必须同时看 `pausedValue`：暂停只停 UI，store 里仍有新记录到达；若锚点继续贴末尾，
     // 每次快照都会把暂停期间的新记录渲染出来（C.7 的"暂停"就形同虚设）。
     const anchor = this.followIntent && !this.pausedValue ? store.endPosition : cursor;
-    // 故意**不**自己夹取请求位置：让 store 的 `recordsFrom` 去夹，并把 `fromPosition` / `partial`
+    // 故意**不**自己夹取请求位置：让 store 的窗口读取去夹，并把 `fromPosition` / `partial`
     // 如实带出来（F2 约定）。自己先 max 一遍会把"历史未记录"抹成 0。
     const requested = Math.max(0, anchor - this.windowRecords);
-    const slice = store.recordsFrom(requested);
+    // 窗口**两端都夹住**：只读 `[anchor - 500, anchor)`，不复制到末尾（P2-2）。
+    const slice = store.recordsBetween(requested, anchor);
     // 只渲染到锚点：逐步模式下不剧透游标之后的记录。
-    const visibleCount = Math.max(0, anchor - slice.fromPosition);
-    const visible = slice.records.slice(0, visibleCount);
+    const visible = slice.records;
     const groups = groupRecordsByFrame(visible);
     const frameStarts = new Set<number>();
     let offset = 0;
@@ -594,14 +754,16 @@ export class DebugPanelModel {
     };
   }
 
-  /** 游标指向"下一条要应用的记录"，因此游标对应的记录是 `cursor - 1`（0 位置没有记录）。 */
+  /**
+   * 游标指向"下一条要应用的记录"，因此游标对应的记录是 `cursor - 1`（0 位置没有记录）。
+   * **O(1)**：走 `recordAtPosition`，不再用 `recordsFrom(cursor - 1)` 复制游标到末尾的整段（P2-2）。
+   */
   private recordAt(store: DebugPanelStoreSource, cursor: number): DebugRecord | undefined {
     if (cursor <= store.earliestPosition) {
       return undefined;
     }
 
-    const slice = store.recordsFrom(cursor - 1);
-    return slice.records[0];
+    return store.recordAtPosition(cursor - 1);
   }
 
   private syncCursorToEnd(): void {
