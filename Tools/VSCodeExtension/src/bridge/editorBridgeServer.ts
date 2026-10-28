@@ -41,8 +41,19 @@ import {
   type DebugContractSnapshot,
   type DebugContractSnapshotSet,
 } from "./debugContractRegistry";
-import { DebugIngress, type DebugFrameRecorder } from "./debugIngress";
-import { DebugInstanceManager } from "./debugInstanceManager";
+import { DebugIngress, type DebugFrameRecorder, type DebugResponseEnvelope, type DebugResultEnvelope } from "./debugIngress";
+import { DebugInstanceManager, type DebugInstanceView } from "./debugInstanceManager";
+import {
+  DebugQueryClient,
+  debugQueryAvailability,
+  debugQueryLocalError,
+  debugQueryOwnsInstance,
+  resolveDebugQueryClient,
+  type DebugQueryConnection,
+  type DebugQueryNotice,
+  type DebugQueryResult,
+} from "./debugQueryClient";
+import { encodeDebugRequest, type DebugArg } from "./debugMessages";
 import { DebugSessionRecorder, type DebugRecorderOpenSink } from "./debugRecorder";
 import { serializeRecordedContracts } from "./debugRecordingContracts";
 import type { DebugRecordingFooter, DebugRecordingHeader, DebugRecordingEndReason } from "./debugRecordingFormat";
@@ -149,6 +160,23 @@ export interface EditorBridgeRecordingOptions {
 interface EditorBridgeDebugBinding {
   snapshot: DebugContractSnapshot | undefined;
   ingress: DebugIngress | undefined;
+  /**
+   * 本连接的查询客户端（F6）：挂起表与超时都在它里面。握手时创建，断连时 `cancelAll`；
+   * `DebugIngress` 的 `isPendingRequest` / `isKnownRequest` 都取自同一个 tracker，
+   * 因此线上二进制 `debug` / `debugResult` 能按 `requestId` 正确区分（A.4）。
+   */
+  queries: DebugQueryClient | undefined;
+}
+
+/** 面板查询入口的状态快照（F6）：`available` = **该实例所属连接**的查询客户端已就绪。 */
+export interface EditorBridgeDebugQueryState {
+  readonly available: boolean;
+  readonly pending: number;
+  /** 在途上限（C.1 的 8）。 */
+  readonly limit: number;
+  /** 在途已满：UI 应置灰按钮并提示，而不是发一条必然失败的请求。 */
+  readonly busy: boolean;
+  readonly notice: DebugQueryNotice | undefined;
 }
 
 /**
@@ -297,6 +325,144 @@ export class EditorBridgeServer implements vscode.Disposable {
     }
 
     return connection.transport.sendControlJson({ type: "debugSetEnabled", enabled });
+  }
+
+  /**
+   * 已握手、未终止、查询客户端已就绪的连接（F6 的候选集）。
+   *
+   * `owns` 直接读该连接**已有的**槽位绑定（`DebugIngress.slotRegistry`），把实例视图里的
+   * `instanceSlot/category/instanceId` 与它比对——**不新造**"实例 → 连接"映射。
+   */
+  private activeDebugQueryConnections(): readonly DebugQueryConnection[] {
+    const candidates: DebugQueryConnection[] = [];
+    for (const connection of this.connections.snapshot()) {
+      if (!connection.helloCompleted || connection.isTerminated) {
+        continue;
+      }
+
+      const binding = this.debugBindings.get(connection);
+      const queries = binding?.queries;
+      if (binding === undefined || queries === undefined) {
+        continue;
+      }
+
+      const ingress = binding.ingress;
+      candidates.push({
+        client: queries,
+        owns: (instance) => ingress !== undefined && debugQueryOwnsInstance(ingress.slotRegistry, instance),
+      });
+    }
+
+    return candidates;
+  }
+
+  /**
+   * 按**实例**解析所属连接的查询客户端（F6 收敛轮 P2-3）。
+   *
+   * 旧实现取"首个已握手连接"，多 Unity 连接时会把查询发到错误连接（服务端回
+   * `runtime.instanceNotFound`），`available` / `busy` 也不按实例算。现在：
+   * - 唯一归属 → 该连接；多个归属或没有任何存活连接持有它 → `unresolved`（**不猜**，
+   *   即使只剩一条连接也不回退：实例的原连接可能已断）；
+   * - 没有已握手连接 → `notConnected`；实例键查不到 → `instanceNotFound`；实例已结束 → `instanceFinished`。
+   */
+  private resolveDebugQueryRoute(instanceKey: string | undefined):
+    | { readonly status: "ready"; readonly queries: DebugQueryClient; readonly view: DebugInstanceView | undefined }
+    | { readonly status: "notConnected" }
+    | { readonly status: "instanceNotFound" }
+    | { readonly status: "instanceFinished" }
+    | { readonly status: "unresolved" } {
+    const connections = this.activeDebugQueryConnections();
+    if (connections.length === 0) {
+      return { status: "notConnected" };
+    }
+
+    const view = instanceKey === undefined ? undefined : this.debugManager.instance(instanceKey);
+    if (instanceKey !== undefined && view === undefined) {
+      return { status: "instanceNotFound" };
+    }
+
+    if (view !== undefined && !view.active) {
+      // 实例已结束：给"实例已结束"的明确文案，不落到"连接无法确定"。
+      return { status: "instanceFinished" };
+    }
+
+    const route = resolveDebugQueryClient(view, connections);
+    return route.status === "ready"
+      ? { status: "ready", queries: route.client, view }
+      : { status: "unresolved" };
+  }
+
+  /**
+   * 面板查询入口的状态（F6）：在途条数 / 上限 / 最近提示。
+   *
+   * 传入实例键时**只反映该实例所属连接**（多连接不混算 pending/busy/available）；
+   * 缺省（面板还没选中实例）取第一条已就绪连接。无连接/无法归属时 `available=false`，
+   * 面板据此置灰按钮（不是发一条必然失败的请求）。
+   */
+  public debugQueryState(instanceKey?: string): EditorBridgeDebugQueryState {
+    if (instanceKey === undefined) {
+      const [first] = this.activeDebugQueryConnections();
+      return debugQueryAvailability(first?.client);
+    }
+
+    const route = this.resolveDebugQueryRoute(instanceKey);
+    return debugQueryAvailability(route.status === "ready" ? route.queries : undefined);
+  }
+
+  /**
+   * 发起一次调试查询（附录 C.1）：结果以 `kind: "queryResult"` 记录插入时间轴，
+   * `frame` 固定为**发起时**的当前帧（P1）。失败 reject `DebugQueryError`，**不重试**。
+   *
+   * 路由按实例所属连接；多连接无法确定归属时回 `local.noConnection`（不猜、不发错连接）。
+   */
+  public queryDebug(
+    instanceKey: string,
+    interfaceId: string,
+    method: string,
+    args: readonly DebugArg[] = [],
+  ): Promise<DebugQueryResult> {
+    const route = this.resolveDebugQueryRoute(instanceKey);
+    switch (route.status) {
+      case "notConnected":
+        return Promise.reject(debugQueryLocalError("local.notConnected"));
+      case "instanceNotFound":
+        return Promise.reject(debugQueryLocalError("local.instanceNotFound"));
+      case "instanceFinished":
+        // 实例可能在结果前 `Finish`（验收 P1）：明确提示已结束，不重试、不发请求。
+        return Promise.reject(debugQueryLocalError("local.instanceFinished"));
+      case "unresolved":
+        return Promise.reject(debugQueryLocalError("local.noConnection"));
+      default:
+        return route.queries.query(instanceKey, interfaceId, method, args, {
+          frame: this.debugManager.currentFrame,
+        });
+    }
+  }
+
+  /** 面板桥接用的查询面（`DebugPanelBridge.debugQuery`）；与上面的方法一一对应。 */
+  public get debugQuery(): {
+    state(instanceKey?: string): EditorBridgeDebugQueryState;
+    query(instanceKey: string, interfaceId: string, method: string): Promise<DebugQueryResult>;
+    cancelInstance(instanceKey: string, reason?: "user" | "disconnect"): number;
+  } {
+    return {
+      state: (instanceKey?: string) => this.debugQueryState(instanceKey),
+      query: (instanceKey, interfaceId, method) => this.queryDebug(instanceKey, interfaceId, method),
+      cancelInstance: (instanceKey, reason = "user") => this.cancelDebugQueries(instanceKey, reason),
+    };
+  }
+
+  /**
+   * 取消某实例的在途查询（面板切换实例时用）：按实例键找到实例 id，再交给**它所属连接**的客户端。
+   * 返回取消条数；没有连接/实例无法归属时返回 0（幂等）。
+   */
+  public cancelDebugQueries(instanceKey: string, reason: "user" | "disconnect" = "user"): number {
+    const route = this.resolveDebugQueryRoute(instanceKey);
+    if (route.status !== "ready" || route.view === undefined) {
+      return 0;
+    }
+
+    return route.queries.cancelInstance(route.view.instanceId, reason).length;
   }
 
   /**
@@ -607,6 +773,8 @@ export class EditorBridgeServer implements vscode.Disposable {
     }
 
     for (const connection of this.connections.snapshot()) {
+      // 扩展卸载/关窗：挂起查询按"面板已关闭"取消（与断连文案区分）。
+      this.debugBindings.get(connection)?.queries?.cancelAll("dispose");
       connection.transport.close();
       this.connections.retire(connection);
     }
@@ -684,6 +852,8 @@ export class EditorBridgeServer implements vscode.Disposable {
 
         // 同步释放：BridgeSocket 在 finish() 里同步回调本方法。
         if (connection !== undefined) {
+          // 断连：该连接的挂起查询全部取消，并明确提示"连接已断开"（P1，不静默清空）。
+          this.debugBindings.get(connection)?.queries?.cancelAll("disconnect");
           this.logDebugCounters(connection);
           this.connections.retire(connection);
           // 宽限从这里起算（附录 A.8）：下一条连接在 15 s 内带 resumeSessionId 才能续接。
@@ -781,7 +951,14 @@ export class EditorBridgeServer implements vscode.Disposable {
     this.debugBindings.set(connection, {
       snapshot: this.contracts.current.snapshotForHash(message.contractHash) ?? this.singleContractSnapshot(),
       ingress: undefined,
+      queries: undefined,
     });
+    // 查询客户端在握手时就位：面板可以在收到第一条调试帧之前发起查询；接收门稍后创建时
+    // 从同一个客户端取 `isPendingRequest` / `isKnownRequest`（F6 的接线点）。
+    const binding = this.debugBindings.get(connection);
+    if (binding !== undefined) {
+      binding.queries = this.createDebugQueryClient(connection, binding);
+    }
 
     // 新连接可能出现在契约产物热更新之后：顺手刷新一次，下一条连接拿到新指纹。
     this.scheduleContractRefresh();
@@ -970,13 +1147,20 @@ export class EditorBridgeServer implements vscode.Disposable {
     const binding = this.debugBindings.get(connection);
     if (binding === undefined) {
       // 握手前收到的通道 1 帧：没有契约绑定，按无契约接收（不静默丢字节）。
-      this.debugBindings.set(connection, { snapshot: undefined, ingress: undefined });
+      this.debugBindings.set(connection, { snapshot: undefined, ingress: undefined, queries: undefined });
       this.acceptDebugFrame(connection, payloadKind, payload, recordTap);
       return;
     }
 
+    binding.queries ??= this.createDebugQueryClient(connection, binding);
+    const queries = binding.queries;
     binding.ingress ??= new DebugIngress({
       ...(binding.snapshot === undefined ? {} : { contracts: binding.snapshot }),
+      // F6 接线：二进制 `debug` / `debugResult` 只能靠本连接的挂起表区分（A.4）。
+      // 两个回调都指向同一个 tracker：`isPendingRequest` 决定"当作结果"，`isKnownRequest`
+      // 让已结算/已作废号的晚到结果仍被识别为 `debugResult`（然后由客户端按 :43 丢弃）。
+      isPendingRequest: (requestSeq) => queries.tracker.isPendingRequest(requestSeq),
+      isKnownRequest: (requestSeq) => queries.tracker.isKnownRequest(requestSeq),
       // 录制钩子：帧在这里（解码之前）交给本连接的 tap；只有录制源连接的帧会进文件。
       recorder: recordTap,
       log: (message) => this.output.appendLine(message),
@@ -993,7 +1177,18 @@ export class EditorBridgeServer implements vscode.Disposable {
       // 写入之后的关键帧失败也不会回滚已交付的记录（回滚反而会抹掉消费者已经看到的内容）。
       // 下面的 try/catch 只是最后一道保险，保证单条记录不会升级成连接级致命错误。
       try {
+        // 查询应答不进普通事件流：`debugResult` 由客户端按"发起的帧"写成 `queryResult`（P1），
+        // 失败 `response` 只用来结算 Promise，本身不是记录（C.1）。
+        if (envelope.type === "debugResult" || envelope.type === "response") {
+          this.handleDebugQueryEnvelope(queries, envelope);
+          continue;
+        }
+
         this.debugManager.ingest(envelope, binding.snapshot);
+        if (envelope.type === "debugFinish" && envelope.instance.length > 0) {
+          // 实例在结果前结束：该实例的挂起查询全部取消并提示"实例已结束"（P1），不重试。
+          queries.handleInstanceFinished(envelope.instance);
+        }
       } catch (errorValue) {
         // 单条坏记录不得升级成连接级错误（bridgeSocket 会把 acceptFrame 的异常判 fatal 并丢弃
         // 同批剩余帧），也不得影响同一批里的其它记录：这里逐条兜住、计数、记日志。
@@ -1002,6 +1197,43 @@ export class EditorBridgeServer implements vscode.Disposable {
           `[debug] ingest failed (#${this.debugIngestErrors}) for '${envelope.type}'; the rest of the batch keeps flowing: ${String(errorValue)}`,
         );
       }
+    }
+  }
+
+  /** 创建一条连接的查询客户端：发送、实例/契约反查与结果落地都由服务端注入。 */
+  private createDebugQueryClient(
+    connection: BridgeConnection,
+    binding: EditorBridgeDebugBinding,
+  ): DebugQueryClient {
+    return new DebugQueryClient({
+      now: this.now,
+      send: (request) => connection.transport.isOpen && connection.transport.sendDebugControl(encodeDebugRequest(request)),
+      resolveInstance: (key) => {
+        const view = this.debugManager.instance(key);
+        return view === undefined
+          ? undefined
+          : { category: view.category, instanceId: view.instanceId, active: view.active };
+      },
+      resolveMethod: (category, interfaceId, method) =>
+        binding.snapshot?.resolveByMethodName(category, interfaceId, method),
+      appendResult: (envelope, target) =>
+        this.debugManager.appendQueryResult(envelope, binding.snapshot, target.frame),
+      onNotice: (notice) => {
+        this.output.appendLine(`[debug] query ${notice.kind}: ${notice.message}`);
+      },
+      log: (message) => this.output.appendLine(message),
+    });
+  }
+
+  private handleDebugQueryEnvelope(
+    queries: DebugQueryClient,
+    envelope: DebugResultEnvelope | DebugResponseEnvelope,
+  ): void {
+    const status = queries.handleEnvelope(envelope);
+    if (status === "late") {
+      // 晚到结果按验收 :43 丢弃、不插时间轴；计数由 tracker 的 `lateResults` 承担，
+      // 客户端还会发一条 warning 通知（不是静默丢弃）。
+      this.output.appendLine(`[debug] late query ${envelope.type} for ${envelope.requestId} was dropped`);
     }
   }
 

@@ -561,15 +561,16 @@ test("an unsupported recordVersion is rejected without migration", async () => {
 test("replay produces the same DebugRecord sequence as the live ingress", async () => {
   await withTempDir(async (directory) => {
     const contracts = await primaryContracts();
+    // 只比 JSON 帧：二进制帧在回看里**无法归属**（见下一条用例与 F6 的冲突三裁决），
+    // 用 `assumeNoPendingRequests` 强行让两边相等等于把已知限制伪造成"没有限制"。
     const frames = [
       jsonFrame(CREATE_JSON),
       jsonFrame(FRAME_JSON),
       jsonFrame(EVENT_JSON),
-      binaryFrame(EVENT_BINARY),
     ];
 
     const liveManager = new DebugInstanceManager({ now: () => FIXED_CLOCK });
-    const liveIngress = new DebugIngress({ contracts, assumeNoPendingRequests: true });
+    const liveIngress = new DebugIngress({ contracts });
     const { recorder, filePath } = await startRecorder(directory, { contracts: serializeRecordedContracts(contracts) });
     for (const frame of frames) {
       ingestFrame(liveIngress, liveManager, frame, contracts);
@@ -594,11 +595,50 @@ test("replay produces the same DebugRecord sequence as the live ingress", async 
         startedAt: new Date(FIXED_CLOCK).toISOString(),
       });
 
-      const result = await source.replay({ ingressOptions: { assumeNoPendingRequests: true } });
+      const result = await source.replay();
       const key = debugInstanceKey("graph", "hero");
       assert.deepEqual(normalizeRecords(result.manager, key), normalizeRecords(liveManager, key));
       assert.equal(result.manager.storeFor(key)?.recordCount, liveManager.storeFor(key)?.recordCount);
-      assert.ok((result.manager.storeFor(key)?.recordCount ?? 0) >= 2, "both JSON and binary payloads were decoded");
+      assert.equal(result.ingressCounters.unattributableBinaryFrames, 0, "JSON-only recording has no unattributable frames");
+    } finally {
+      await source.close();
+    }
+  });
+});
+
+test("replay counts binary frames it cannot attribute instead of pretending they are events", async () => {
+  await withTempDir(async (directory) => {
+    const contracts = await primaryContracts();
+    const frames = [
+      jsonFrame(CREATE_JSON),
+      jsonFrame(FRAME_JSON),
+      jsonFrame(EVENT_JSON),
+      binaryFrame(EVENT_BINARY),
+    ];
+
+    const { recorder, filePath } = await startRecorder(directory, { contracts: serializeRecordedContracts(contracts) });
+    for (const frame of frames) {
+      recorder.recordFrame(frame.channel, frame.payloadKind, frame.payload);
+    }
+
+    await recorder.stop();
+    const source = await FileDebugSource.open(filePath);
+    try {
+      // 产品默认路径（不注入 `assumeNoPendingRequests`）：录制只含 Unity→VS Code 的单向帧，
+      // `request` 不在文件里，因此二进制 `debug` / `debugResult` 在字节上不可区分（A.4：
+      // debugResult = u32 requestId + 参数区，没有 flag；见 F6 报告冲突三）。
+      // 回看**不假装**归属，而是计数并透出，让 UI 明确提示这是录制格式的已知限制。
+      const result = await source.replay();
+      const key = debugInstanceKey("graph", "hero");
+      const store = result.manager.storeFor(key);
+      assert.equal(store?.recordCount, 1, "JSON event still lands; the binary event is not misattributed");
+      assert.equal(result.ingressCounters.unattributableBinaryFrames, 1);
+      assert.equal(result.ingressCounters.ambiguousMessages, 1, "legacy counter stays in sync");
+      assert.deepEqual(
+        store?.records.map((record) => record.kind),
+        ["event"],
+        "no queryResult is fabricated from an ambiguous binary frame",
+      );
     } finally {
       await source.close();
     }

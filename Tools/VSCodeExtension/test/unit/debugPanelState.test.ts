@@ -36,6 +36,22 @@ function frameShape(snapshot: { timeline: { groups: readonly { frame: number; co
   return snapshot.timeline.groups.map((group) => `${group.frame}x${group.count}`).join(",");
 }
 
+test("snapshot carries the query state supplied by the panel bridge (F6)", () => {
+  const query = {
+    available: true,
+    pending: 2,
+    limit: 8,
+    busy: false,
+    notice: { kind: "warning" as const, message: "晚到结果已丢弃" },
+  };
+  const { model } = createModel({ query: () => query });
+  assert.deepEqual(model.snapshot().query, query);
+
+  // 未接线（旧测试/回看）：必须有明确的"不可查询"默认值，而不是缺字段让 UI 猜。
+  const fallback = createModel().model.snapshot();
+  assert.deepEqual(fallback.query, { available: false, pending: 0, limit: 0, busy: false, notice: undefined });
+});
+
 test("records and frames arrive in arrival order: 1,2,1,3 groups as [1],[2],[1],[3]", () => {
   const { model, manager } = createModel();
   createInstance(manager, "graph", "hero");

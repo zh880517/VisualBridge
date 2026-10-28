@@ -76,6 +76,70 @@ test("player mode renders the switch greyed out and a click posts nothing", () =
   assert.deepEqual(webview.posted.filter((message) => message.type === "command"), [], "Player 模式点击不得发 debugSetEnabled");
 });
 
+test("the query button forwards the selected instance/interface/method and respects busy", () => {
+  const webview = mountPanel();
+  webview.render(snapshot({
+    query: {
+      available: true,
+      pending: 1,
+      limit: 8,
+      busy: false,
+      notice: { kind: "warning", message: "晚到结果已丢弃（不回插时间轴）" },
+    },
+  }));
+  const query = webview.byId("query");
+  assert.equal(query.disabled, false, "有连接、未满时按钮可点");
+  webview.click("query");
+  assert.deepEqual(
+    webview.posted.filter((message) => message.type === "command"),
+    [{
+      type: "command",
+      command: "query",
+      key: "graph\u0000hero",
+      interfaceId: "IGraphDebuger",
+      method: "NodeStarted",
+    }],
+    "点击只发一次查询意图，参数来自当前记录的实例/接口/方法",
+  );
+  assert.match(flatten(webview.byId("root")), /晚到结果已丢弃/u, "服务端的最近提示必须显示出来");
+
+  webview.render(snapshot({
+    query: { available: true, pending: 8, limit: 8, busy: true, notice: undefined },
+  }));
+  assert.equal(webview.byId("query").disabled, true, "达到并发上限时置灰（不排队）");
+  webview.click("query");
+  assert.equal(webview.posted.filter((message) => message.type === "command").length, 1, "置灰后点击不得再发");
+});
+
+test("query results are labelled distinctly in the timeline", () => {
+  const webview = mountPanel();
+  const state = snapshot({});
+  const records = state.timeline.records.map((record, index) => (
+    index === 0 ? { ...record, kind: "queryResult" } : record
+  ));
+  webview.render({ ...state, timeline: { ...state.timeline, records } });
+  assert.match(flatten(webview.byId("root")), /\[查询结果\]/u);
+});
+
+test("replay exposes unattributable binary frames instead of pretending they never existed", () => {
+  const webview = mountPanel();
+  webview.render(snapshot({
+    panelMode: "replay",
+    replay: {
+      filePath: "C:/recordings/session-1.vbdrec",
+      records: 12,
+      droppedRecords: 0,
+      endedReason: "stopped",
+      unattributableBinaryFrames: 3,
+    },
+  }));
+  assert.match(
+    flatten(webview.byId("root")),
+    /该录制含 3 条无法归属的二进制帧/u,
+    "冲突三的已知限制必须显式提示（录制只含单向帧，无法区分 debug/debugResult）",
+  );
+});
+
 test("editor mode sends exactly one enable request per click and never flips locally", () => {
   const webview = mountPanel();
   webview.render(snapshot({ mode: "editor", canToggle: true, enabled: true }));
@@ -468,6 +532,7 @@ function snapshot(overrides: {
   readonly recordingAvailable?: boolean;
   readonly recordingActive?: boolean;
   readonly replay?: DebugPanelSnapshot["replay"];
+  readonly query?: DebugPanelSnapshot["query"];
   readonly facetWindows?: DebugPanelSnapshot["facets"]["windows"];
 }): DebugPanelSnapshot {
   const historyMissing = overrides.historyMissing ?? false;
@@ -511,6 +576,7 @@ function snapshot(overrides: {
       active: overrides.recordingActive ?? false,
     },
     ...(overrides.replay === undefined ? {} : { replay: overrides.replay }),
+    ...(overrides.query === undefined ? {} : { query: overrides.query }),
     timeline: {
       selected: true,
       requestedPosition: 0,

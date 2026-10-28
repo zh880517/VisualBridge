@@ -38,6 +38,7 @@ import {
   type DebugCursorState,
   type DebugRecord,
   type DebugRecordInput,
+  type DebugRecordKind,
 } from "./debugStore";
 import {
   compareText,
@@ -585,8 +586,12 @@ export class DebugInstanceManager {
         this.currentFrameValue = envelope.frame;
         return [];
       case "debug":
-      case "debugResult":
         return this.ingestRecord(envelope, contracts);
+      case "debugResult":
+        // 查询应答与事件共用时间轴，但**记录种类不同**（C.1/C.2 的 `kind`，F6 追加）。
+        // 回看路径没有挂起表，JSON `debugResult` 只能按到达时的当前帧落地；在线路径由
+        // `DebugQueryClient` 调 `appendQueryResult` 盖发起的帧（P1：不污染按帧步进边界）。
+        return this.ingestRecord(envelope, contracts, { kind: "queryResult" });
       default:
         return [];
     }
@@ -1005,11 +1010,39 @@ export class DebugInstanceManager {
     });
   }
 
+  /**
+   * 把一条查询结果写进时间轴（F6）：`frame` 必须传**发起查询时**的当前帧。
+   *
+   * "与同帧数据一起应用"（验收 P1）的准确含义（收敛轮 P2-2 澄清）：
+   * - **不新增帧边界**：结果不推进 `currentFrame`、不产生 `debugFrame` 边界；
+   * - **同帧**到达时，它与该帧的事件落在同一个分组（按帧步进一次跨过两者）；
+   * - **跨帧**到达时，它按**追加顺序**落在时间轴末尾（帧号可以回退，如 `[7,8,9,7]` 四组、
+   *   7 号组在最后），**不会**插回老的帧 7 组里——与 F3 "帧号回退或重复不重排"一致。
+   *
+   * 返回 `undefined` 表示实例已不在时间轴（被淘汰/清空/结束），结果本身仍会交给 Promise。
+   */
+  public appendQueryResult(
+    envelope: DebugResultEnvelope,
+    contracts: DebugContractSnapshot | undefined,
+    frame: number,
+  ): DebugRecord | undefined {
+    if (this.disposed) {
+      return undefined;
+    }
+
+    const records = this.ingestRecord(envelope, contracts, {
+      kind: "queryResult",
+      frame: Number.isFinite(frame) ? Math.trunc(frame) : envelope.frame,
+    });
+    return records[0];
+  }
+
   private ingestRecord(
     envelope: DebugEventEnvelope | DebugResultEnvelope,
     contracts: DebugContractSnapshot | undefined,
+    options: { readonly kind?: DebugRecordKind; readonly frame?: number } = {},
   ): readonly DebugRecord[] {
-    const input = this.buildRecord(envelope, contracts);
+    const input = this.buildRecord(envelope, contracts, options);
     if (input === undefined) {
       return [];
     }
@@ -1258,6 +1291,7 @@ export class DebugInstanceManager {
   private buildRecord(
     envelope: DebugEventEnvelope | DebugResultEnvelope,
     contracts: DebugContractSnapshot | undefined,
+    options: { readonly kind?: DebugRecordKind; readonly frame?: number } = {},
   ): DebugRecordInput | undefined {
     const category = envelope.category ?? "";
     const instanceId = envelope.instance !== undefined && envelope.instance.length > 0
@@ -1272,14 +1306,14 @@ export class DebugInstanceManager {
     const methodId = envelope.methodId > 0 ? envelope.methodId : undefined;
     const declaration = contracts?.resolveMessage(category, methodId, envelope.interfaceId, envelope.method).declaration;
     return {
-      kind: "event",
+      kind: options.kind ?? "event",
       category,
       interfaceId: envelope.interfaceId ?? "",
       instanceId,
       method: envelope.method ?? "",
       args: toArgumentMap(envelope.args),
       named: buildNamedArguments(envelope.args, declaration),
-      frame: envelope.frame,
+      frame: options.frame ?? envelope.frame,
       wireBytes: envelope.wireBytes,
       receivedAt: this.now(),
       contractState: envelope.contractState,

@@ -145,6 +145,15 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
       } else if (state.replay.endedReason === undefined) {
         text += " · 无文件尾（可能截断）";
       }
+      if (state.replay.unattributableBinaryFrames > 0) {
+        text += " · 无法归属的二进制帧 " + state.replay.unattributableBinaryFrames;
+      }
+    }
+    if (state.query && state.query.available) {
+      text += " · 查询在途 " + state.query.pending + "/" + state.query.limit;
+      if (state.query.busy) {
+        text += "（已满，按钮禁用）";
+      }
     }
     if (state.status.records > 0) {
       text += " · " + state.status.records + " 条 / " + state.status.bytes + " B";
@@ -320,6 +329,16 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
     if (timeline.historyMissing) {
       nodes.push(el("div", "vb-debug-warning", "历史未记录：起点已夹到最早可用位置（请求 " + timeline.requestedPosition + "，实际 " + timeline.fromPosition + "）"));
     }
+    if (state.replay && state.replay.unattributableBinaryFrames > 0) {
+      // 冲突三的裁决：录制只含单向帧（没有 request），二进制 debug/debugResult 在字节上无法区分。
+      // 不假装归属、也不静默丢弃：把计数明确告诉用户，这是回看的已知限制。
+      nodes.push(el(
+        "div",
+        "vb-debug-warning",
+        "该录制含 " + state.replay.unattributableBinaryFrames + " 条无法归属的二进制帧：录制只含 Unity→VS Code 的单向帧（request 不在文件里），"
+          + "无法判定它是 debug 还是 debugResult，已计数并跳过。"
+      ));
+    }
     if (timeline.windowTruncated) {
       nodes.push(el("div", "vb-debug-hint", "仅显示最近 " + state.timeline.records.length + " 条（窗口起点 " + timeline.fromPosition + "）"));
     }
@@ -330,7 +349,9 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
         row.className += " vb-debug-record-frame-start";
       }
       row.setAttribute("data-position", String(record.position));
-      var head = "#" + record.id + " · 帧 " + record.frame + " · " + (record.interfaceId || "未知接口") + "." + (record.method || "未知方法");
+      var head = (record.kind === "queryResult" ? "[查询结果] " : "")
+        + "#" + record.id + " · 帧 " + record.frame + " · "
+        + (record.interfaceId || "未知接口") + "." + (record.method || "未知方法");
       row.appendChild(el("span", "vb-debug-record-head", head));
       row.appendChild(el("span", "vb-debug-record-meta", record.wireBytes + " B · " + record.instanceId));
       nodes.push(row);
@@ -348,7 +369,7 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
       return;
     }
     var nodes = [];
-    nodes.push(el("div", "vb-debug-detail-head", detail.category + " / " + (detail.interfaceId || "未知接口") + "." + (detail.method || "未知方法") + " · 帧 " + detail.frame + " · " + detail.contractState));
+    nodes.push(el("div", "vb-debug-detail-head", (detail.kind === "queryResult" ? "查询结果 · " : "") + detail.category + " / " + (detail.interfaceId || "未知接口") + "." + (detail.method || "未知方法") + " · 帧 " + detail.frame + " · " + detail.contractState));
     if (detail.namedOnly) {
       nodes.push(el("div", "vb-debug-hint", "契约缺失：仅列出非默认值，参数名显示为 arg#tag"));
     }
@@ -371,6 +392,39 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
     nodes.push(el("pre", "vb-debug-json", detail.json));
     if (detail.truncated) {
       nodes.push(el("div", "vb-debug-hint", "原始 JSON 中的超长值（如 byte[]）已截断"));
+    }
+    if (state.query) {
+      // 查询入口（F6）：用当前记录所属实例与接口/方法发起一次无参查询。
+      var query = state.query;
+      var queryBox = el("div", "vb-debug-query");
+      var queryButton = button("query", "查询此方法", function () {
+        if (!state || !state.selectedKey || !state.query || !state.query.available || state.query.busy) { return; }
+        post({
+          type: "command",
+          command: "query",
+          key: state.selectedKey,
+          interfaceId: detail.interfaceId,
+          method: detail.method
+        });
+      }, "向该实例发起一次无参查询，结果作为查询记录插入时间轴");
+      queryButton.disabled = !query.available || query.busy || !detail.method || !detail.interfaceId;
+      queryBox.appendChild(queryButton);
+      if (!query.available) {
+        queryBox.appendChild(el("span", "vb-debug-hint", "没有可用连接：查询不可用"));
+      } else {
+        queryBox.appendChild(el("span", "vb-debug-hint", "在途 " + query.pending + "/" + query.limit));
+        if (query.busy) {
+          queryBox.appendChild(el("span", "vb-debug-warning", "已达并发上限（8）：请等待在途查询结束，不会排队"));
+        }
+      }
+      if (query.notice) {
+        queryBox.appendChild(el(
+          "div",
+          query.notice.kind === "error" ? "vb-debug-warning" : "vb-debug-hint",
+          query.notice.message
+        ));
+      }
+      nodes.push(queryBox);
     }
     shell.detail.replaceChildren.apply(shell.detail, nodes);
   }
@@ -497,6 +551,8 @@ body { margin: 0; padding: 0; }
 .vb-debug-args th, .vb-debug-args td { text-align: left; padding: 2px 4px; border-bottom: 1px solid var(--vscode-panel-border); vertical-align: top; }
 .vb-debug-args td { word-break: break-all; }
 .vb-debug-json { white-space: pre-wrap; word-break: break-all; background: var(--vscode-textCodeBlock-background); padding: 6px; }
+.vb-debug-query { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 4px 0; border-top: 1px solid var(--vscode-panel-border); }
+.vb-debug-query .vb-debug-warning, .vb-debug-query .vb-debug-hint { width: 100%; }
 `;
 
 /** 脚本 + 样式的内容哈希（同一份字节只解包一份；改脚本即换目录）。 */

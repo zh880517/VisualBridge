@@ -211,6 +211,11 @@ export interface DebugPanelSnapshot {
   readonly facets: DebugFacetSnapshot;
   /** 回看中（F5）：Webview 据此显示"返回实时"，并把录制按钮标成"回看模式下不可录制"。 */
   readonly replay?: DebugPanelReplayState;
+  /**
+   * 查询入口状态（F6）：在途/上限/最近提示。回看模式下 `available=false`（没有传输层）。
+   * 缺省时 Webview 按"不可查询"渲染（不显示按钮）。
+   */
+  readonly query?: DebugPanelQueryState;
   /** 宿主投递诊断：Webview 消息失败计数（P1：不能被吞掉）。 */
   readonly delivery: {
     readonly webviewFailures: number;
@@ -237,6 +242,27 @@ export interface DebugPanelReplayState {
   readonly records: number | undefined;
   readonly droppedRecords: number | undefined;
   readonly endedReason: string | undefined;
+  /**
+   * 无法归属的二进制数据帧（F6，冲突三）：录制只含单向帧（没有 `request`），
+   * 无法区分 `debug` / `debugResult`；这些帧被计数且**不假装归属**。
+   * 缺省/0 表示没有。UI 必须显式提示，不能当没发生。
+   */
+  readonly unattributableBinaryFrames?: number;
+}
+
+/** 查询入口状态（F6）：结果写入时间轴，失败以 `notice` 呈现。 */
+export interface DebugPanelQueryState {
+  readonly available: boolean;
+  readonly pending: number;
+  /** C.1 的在途上限（8）。 */
+  readonly limit: number;
+  readonly busy: boolean;
+  readonly notice: DebugPanelQueryNotice | undefined;
+}
+
+export interface DebugPanelQueryNotice {
+  readonly kind: "info" | "warning" | "error";
+  readonly message: string;
 }
 
 /**
@@ -273,6 +299,8 @@ export interface DebugPanelModelOptions {
   readonly onRecordingToggle?: () => void;
   /** 回看状态（F5）：非空时面板显示"返回实时"，录制按钮置灰。 */
   readonly replay?: () => DebugPanelReplayState | undefined;
+  /** 查询入口状态（F6）：缺省 = 不可查询（回看或未接线）。 */
+  readonly query?: () => DebugPanelQueryState;
   /** 模块 facet 区域快照（F4；缺省空快照 = 全部走通用视图）。 */
   readonly facets?: () => DebugFacetSnapshot;
   /** Webview 消息失败计数（F4 P1；由控制器累计）。 */
@@ -289,6 +317,7 @@ export class DebugPanelModel {
   private readonly recording: () => DebugPanelRecordingState;
   private readonly onRecordingToggle: (() => void) | undefined;
   private readonly replay: (() => DebugPanelReplayState | undefined) | undefined;
+  private readonly query: () => DebugPanelQueryState;
   private readonly facets: () => DebugFacetSnapshot;
   private readonly webviewFailures: () => number;
   private readonly onChange: (() => void) | undefined;
@@ -318,6 +347,7 @@ export class DebugPanelModel {
     this.recording = options.recording ?? (() => ({ available: false, active: false }));
     this.onRecordingToggle = options.onRecordingToggle;
     this.replay = options.replay;
+    this.query = options.query ?? (() => ({ available: false, pending: 0, limit: 0, busy: false, notice: undefined }));
     this.facets = options.facets ?? (() => EMPTY_DEBUG_FACET_SNAPSHOT);
     this.webviewFailures = options.webviewFailures ?? (() => 0);
     this.onChange = options.onChange;
@@ -670,6 +700,7 @@ export class DebugPanelModel {
         frame: connection.frame,
       },
       ...(replay === undefined ? {} : { replay }),
+      query: this.query(),
     };
   }
 

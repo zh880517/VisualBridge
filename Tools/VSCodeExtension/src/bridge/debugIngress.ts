@@ -187,6 +187,13 @@ export interface DebugIngressCounters {
   readonly unknownContractMethods: number;
   /** 二进制载荷无法判定 `debug` / `debugResult`（缺挂起表）。 */
   readonly ambiguousMessages: number;
+  /**
+   * 无法归属的二进制数据帧（F6，冲突三）：录制只含 Unity→VS Code 的单向帧，
+   * `request`（VS Code→Unity）不在文件里 ⇒ 回看无法判断 `u32 requestId` 是否存在，
+   * 也就无法区分 `debug` / `debugResult`。这类帧**计数并透出**，不静默丢弃。
+   * 在线路径注入挂起表后不会出现；`ambiguousMessages` 保留为历史计数（两者同源）。
+   */
+  readonly unattributableBinaryFrames: number;
   /** `request` 消息字段非法。 */
   readonly invalidRequests: number;
 }
@@ -205,6 +212,7 @@ const ZERO_COUNTERS: DebugIngressCounters = {
   unknownMethods: 0,
   unknownContractMethods: 0,
   ambiguousMessages: 0,
+  unattributableBinaryFrames: 0,
   invalidRequests: 0,
 };
 
@@ -474,6 +482,9 @@ export class DebugIngress {
           break;
         case "ambiguousEnvelope":
           counters.ambiguousMessages += 1;
+          // 冲突三：回看无法归属的二进制帧必须成为**可观测事实**，不能只落日志后消失。
+          // 该 reason 只可能来自二进制解码器（JSON 解码不会产生它）。
+          counters.unattributableBinaryFrames += 1;
           break;
         case "invalidRequest":
           counters.invalidRequests += 1;

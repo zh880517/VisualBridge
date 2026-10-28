@@ -18,8 +18,9 @@ import { basename } from "node:path";
 import * as vscode from "vscode";
 import type { DebugCursorDirection, DebugCursorGranularity } from "../bridge/debugStore";
 import type { DebugInstanceManager } from "../bridge/debugInstanceManager";
+import type { DebugQueryResult } from "../bridge/debugQueryClient";
+import type { EditorBridgeDebugQueryState, EditorBridgeDebugReportingReason } from "../bridge/editorBridgeServer";
 import { DebugReplaySession } from "../bridge/debugReplaySession";
-import type { EditorBridgeDebugReportingReason } from "../bridge/editorBridgeServer";
 import { createModuleWebviewHtml } from "../editor/moduleWebviewHtml";
 import { publishDebugPanelAssets } from "./debugPanelAssets";
 import type { UnpackedModuleWebview } from "../modules/webviewAssets";
@@ -28,6 +29,8 @@ import {
   DebugPanelModel,
   EMPTY_DEBUG_FACET_SNAPSHOT,
   type DebugPanelConnection,
+  type DebugPanelQueryNotice,
+  type DebugPanelQueryState,
   type DebugPanelRecordingState,
   type DebugPanelReplayState,
   type DebugPanelSnapshot,
@@ -53,6 +56,17 @@ export interface DebugPanelBridge {
   };
   /** 发送 `debugSetEnabled`；`false` = 没有可用连接（请求没出去）。 */
   requestDebugReportingEnabled(enabled: boolean): boolean;
+  /**
+   * 调试查询（F6）：`state()` 用于按钮置灰与提示，`query()` 发起一次查询并等待结果。
+   * 缺省视为未接线（按钮不显示）。
+   */
+  readonly debugQuery?: {
+    /** 传实例键时只反映该实例所属连接（F6 多连接路由）；缺省取当前/首条连接。 */
+    state(instanceKey?: string): EditorBridgeDebugQueryState;
+    query(instanceKey: string, interfaceId: string, method: string): Promise<DebugQueryResult>;
+    /** 切换实例时取消旧实例的在途查询（"用户取消"文案，区别于断连）。 */
+    cancelInstance(instanceKey: string, reason?: "user" | "disconnect"): number;
+  };
 }
 
 /** 面板呈现的模块 facet 区域（F4；缺省时全部走通用视图）。 */
@@ -93,6 +107,9 @@ interface DebugPanelCommandMessage {
   readonly value?: unknown;
   readonly direction?: unknown;
   readonly key?: unknown;
+  /** 查询命令（F6）：Webview 从当前记录明细带出接口/方法。 */
+  readonly interfaceId?: unknown;
+  readonly method?: unknown;
 }
 
 export class DebugPanelController implements vscode.Disposable {
@@ -113,6 +130,8 @@ export class DebugPanelController implements vscode.Disposable {
   private webviewFailuresValue = 0;
   /** 测试专用：把连接类型钉成指定值（生产上只能来自 A.3 的 `connectType`）。 */
   private modeOverride: DebugEnableMode | undefined;
+  /** 最近一次查询动作的提示（F6）：由 Promise 结算写入，覆盖服务端的最近提示。 */
+  private queryNoticeValue: DebugPanelQueryNotice | undefined;
   /** 打开次数（宿主测试用它确认"重开"没有重新拉取）。 */
   private openCount = 0;
 
@@ -150,6 +169,7 @@ export class DebugPanelController implements vscode.Disposable {
       recording: () => this.currentRecordingState(),
       onRecordingToggle: () => this.options.recording?.toggle(),
       replay: () => this.replayState(),
+      query: () => this.queryState(),
       keyframeCount: (category) => this.currentManager().keyframes.count(category),
       facets: () => this.currentFacets()?.snapshot() ?? EMPTY_DEBUG_FACET_SNAPSHOT,
       webviewFailures: () => this.webviewFailuresValue,
@@ -310,11 +330,31 @@ export class DebugPanelController implements vscode.Disposable {
   }
 
   /** 逐条命令入口（Webview 与宿主测试共用）。 */
-  public handleCommand(command: string, payload: { value?: unknown; direction?: unknown; key?: unknown } = {}): DebugPanelSnapshot {
+  public handleCommand(
+    command: string,
+    payload: {
+      value?: unknown;
+      direction?: unknown;
+      key?: unknown;
+      interfaceId?: unknown;
+      method?: unknown;
+    } = {},
+  ): DebugPanelSnapshot {
     switch (command) {
-      case "select":
-        this.model.selectInstance(typeof payload.key === "string" ? payload.key : undefined);
+      case "select": {
+        const nextKey = typeof payload.key === "string" ? payload.key : undefined;
+        const previousKey = this.model.selectedKey;
+        if (!this.isReplaying && previousKey !== undefined && previousKey !== nextKey) {
+          // 切换实例：旧实例的在途查询按"用户取消"结算并提示（P1，与断连文案区分）。
+          const cancelled = this.options.bridge()?.debugQuery?.cancelInstance(previousKey, "user") ?? 0;
+          if (cancelled > 0) {
+            this.queryNoticeValue = { kind: "warning", message: `已取消 ${cancelled} 条属于上一实例的查询。` };
+          }
+        }
+
+        this.model.selectInstance(nextKey);
         break;
+      }
       case "filter":
         this.model.setFilter(typeof payload.value === "string" ? payload.value : "");
         break;
@@ -362,6 +402,10 @@ export class DebugPanelController implements vscode.Disposable {
       case "enable":
         this.model.requestEnabled(payload.value === true);
         break;
+      case "query":
+        // 异步：先返回当前快照（按钮立即进入"在途"提示），结算后再推一次状态。
+        this.runQuery(payload);
+        break;
       default:
         this.options.log?.(`[debug] unknown panel command '${command}'`);
         break;
@@ -375,6 +419,74 @@ export class DebugPanelController implements vscode.Disposable {
   /** 状态快照（宿主测试的读入口；与推给 Webview 的是同一份）。 */
   public getSnapshot(): DebugPanelSnapshot {
     return this.model.snapshot();
+  }
+
+  /**
+   * 查询入口状态（F6）：回看没有传输层，固定不可用；在线时以 bridge 的在途/上限/最近提示为准。
+   * 最近一次查询动作的提示优先于服务端缓存（它是用户刚点的这条）。
+   */
+  private queryState(): DebugPanelQueryState {
+    const notice = this.queryNoticeValue;
+    if (this.isReplaying) {
+      return { available: false, pending: 0, limit: 0, busy: false, notice };
+    }
+
+    const query = this.options.bridge()?.debugQuery;
+    if (query === undefined) {
+      return { available: false, pending: 0, limit: 0, busy: false, notice };
+    }
+
+    // 按当前选中实例所属的连接取状态：多连接时不把别的连接的 pending/busy 算进来（F6 路由）。
+    const state = query.state(this.model.selectedKey);
+    return {
+      available: state.available,
+      pending: state.pending,
+      limit: state.limit,
+      busy: state.busy,
+      notice: notice ?? state.notice,
+    };
+  }
+
+  /**
+   * 发起一次查询（F6）：失败/超时/忙都只变成一条可读提示，**不重试**、不影响接收。
+   * 结果由 bridge 以 `kind: "queryResult"` 记录写进时间轴（`frame` 是发起时的帧）。
+   */
+  private runQuery(payload: { key?: unknown; interfaceId?: unknown; method?: unknown }): void {
+    if (this.isReplaying) {
+      // 回看没有传输层：即使命令绕过 Webview 的置灰也必须拒绝（不能把历史面板的点击
+      // 变成一条发往当前实时连接的查询）。
+      this.queryNoticeValue = { kind: "warning", message: "回看模式下不能发起查询：请先返回实时。" };
+      this.sendState();
+      return;
+    }
+
+    const query = this.options.bridge()?.debugQuery;
+    const instanceKey = typeof payload.key === "string" ? payload.key : undefined;
+    const interfaceId = typeof payload.interfaceId === "string" ? payload.interfaceId : undefined;
+    const method = typeof payload.method === "string" ? payload.method : undefined;
+    if (query === undefined || instanceKey === undefined || interfaceId === undefined || method === undefined) {
+      this.queryNoticeValue = { kind: "error", message: "查询缺少实例/接口/方法，未发出。" };
+      this.options.log?.("[debug] query ignored: missing instance/interfaces/method");
+      this.sendState();
+      return;
+    }
+
+    this.queryNoticeValue = { kind: "info", message: `正在查询 ${interfaceId}.${method}…` };
+    this.sendState();
+    void query.query(instanceKey, interfaceId, method).then(
+      (result) => {
+        this.queryNoticeValue = result.record === undefined
+          ? { kind: "warning", message: "查询已返回，但实例已不在时间轴：结果未插入。" }
+          : { kind: "info", message: `查询结果已插入时间轴（帧 ${result.target.frame}）。` };
+        this.sendState();
+      },
+      (errorValue: unknown) => {
+        const message = errorValue instanceof Error ? errorValue.message : String(errorValue);
+        this.queryNoticeValue = { kind: "error", message };
+        this.options.log?.(`[debug] query failed: ${message}`);
+        this.sendState();
+      },
+    );
   }
 
   public getStateForTest(): DebugPanelSnapshot {
@@ -407,6 +519,8 @@ export class DebugPanelController implements vscode.Disposable {
       this.enable.applyBroadcast(enabled);
     } else {
       this.enable.applyWelcome(enabled);
+      // 连接换代/断开：上一条查询提示属于旧连接，不能继续冒充当前状态。
+      this.queryNoticeValue = undefined;
     }
 
     this.sendState();
@@ -480,6 +594,8 @@ export class DebugPanelController implements vscode.Disposable {
       records: footer?.records,
       droppedRecords: footer?.droppedRecords,
       endedReason: footer?.endedReason,
+      // 冲突三：回看无法归属的二进制帧是**已知限制**，必须出现在快照里让 UI 说明。
+      unattributableBinaryFrames: replay.session.result.ingressCounters.unattributableBinaryFrames,
     };
   }
 
@@ -560,6 +676,8 @@ export class DebugPanelController implements vscode.Disposable {
       value: command.value,
       direction: command.direction,
       key: command.key,
+      interfaceId: command.interfaceId,
+      method: command.method,
     });
   }
 
