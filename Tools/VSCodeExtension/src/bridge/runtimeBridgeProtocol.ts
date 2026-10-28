@@ -1,5 +1,7 @@
 import {
+  BRIDGE_HANDSHAKE_ERROR_CODES,
   BRIDGE_PROTOCOL_VERSION,
+  BridgeProtocolError,
   parseBridgeHello,
   parseBridgeWelcome,
   type BridgeHelloMessage,
@@ -42,6 +44,58 @@ export class RuntimeBridgeProtocolError extends Error {
     message: string,
   ) {
     super(`${code} at ${jsonPath}: ${message}`);
+  }
+}
+
+/**
+ * A.6 握手拒绝码在 Runtime 腿的归并表。
+ *
+ * 共享握手解析器按 A.6 抛出 `runtime.unsupportedProtocolVersion` / `runtime.unsupportedPayload`，
+ * 而 Runtime 腿对外只承诺 `RUNTIME_BRIDGE_ERROR_CODES` 里的码（协议版本不符即
+ * `runtime.protocolVersionMismatch`，载荷不支持即 `runtime.invalidMessage`）。
+ */
+const DELEGATED_HANDSHAKE_CODE_MAP: Readonly<Record<string, string>> = {
+  "runtime.unsupportedProtocolVersion": "runtime.protocolVersionMismatch",
+  "runtime.unsupportedPayload": "runtime.invalidMessage",
+};
+
+/** 委托握手解析时允许透传/转译的 Runtime 腿错误码（其余一律 internalError）。 */
+const DELEGATED_RUNTIME_CODES = new Set<string>([
+  ...RUNTIME_BRIDGE_ERROR_CODES,
+  ...BRIDGE_HANDSHAKE_ERROR_CODES,
+  // 本腿自身的字段校验码（A.4）：共享解析器抛 `bridge.missingProperty` / `bridge.unknownProperty`，
+  // 转译后必须与 Runtime 腿既有语义一致，因此不在 RUNTIME_BRIDGE_ERROR_CODES 表里也算合法。
+  "runtime.missingProperty",
+  "runtime.unknownProperty",
+]);
+
+/**
+ * 把委托给共享握手解析器时的 `BridgeProtocolError` 转译成 Runtime 腿的错误类型。
+ *
+ * `extension.ts` 的测试命令按 `instanceof RuntimeBridgeProtocolError` 取错误码，漏转译会落到
+ * `runtime.internalError`（E5 遗留缺陷）。返回 undefined 表示不是协议错误，调用方应原样抛出。
+ */
+export function translateDelegatedHandshakeError(errorValue: unknown): RuntimeBridgeProtocolError | undefined {
+  if (errorValue instanceof RuntimeBridgeProtocolError) return errorValue;
+  if (!(errorValue instanceof BridgeProtocolError)) return undefined;
+  const suffix = errorValue.code.startsWith("bridge.") ? errorValue.code.slice("bridge.".length) : undefined;
+  const mapped = DELEGATED_HANDSHAKE_CODE_MAP[errorValue.code]
+    ?? (suffix === undefined ? errorValue.code : `runtime.${suffix}`);
+  const code = DELEGATED_RUNTIME_CODES.has(mapped) ? mapped : "runtime.internalError";
+  const prefix = `${errorValue.code} at ${errorValue.jsonPath}: `;
+  const detail = errorValue.message.startsWith(prefix)
+    ? errorValue.message.slice(prefix.length)
+    : errorValue.message;
+  return new RuntimeBridgeProtocolError(code, errorValue.jsonPath, detail);
+}
+
+function delegateHandshake<T>(parse: () => T): T {
+  try {
+    return parse();
+  } catch (errorValue) {
+    const translated = translateDelegatedHandshakeError(errorValue);
+    if (translated === undefined) throw errorValue;
+    throw translated;
   }
 }
 
@@ -297,7 +351,7 @@ export function isRuntimeBridgeProtocolError(errorValue: unknown): errorValue is
 
 function parseHello(record: Record<string, unknown>): RuntimeBridgeHelloMessage {
   // 握手与 Editor 腿共用 A.3 形状（E5 统一）：直接复用共享解析器，不再维护第二份字段表。
-  const hello = parseBridgeHello(record);
+  const hello = delegateHandshake(() => parseBridgeHello(record));
   if (hello.role !== "vscode") {
     throw new RuntimeBridgeProtocolError("runtime.roleMismatch", "$.role", "The runtime leg only accepts 'vscode' dialers.");
   }
@@ -306,7 +360,7 @@ function parseHello(record: Record<string, unknown>): RuntimeBridgeHelloMessage 
 }
 
 function parseWelcome(record: Record<string, unknown>): RuntimeBridgeWelcomeMessage {
-  const welcome = parseBridgeWelcome(record);
+  const welcome = delegateHandshake(() => parseBridgeWelcome(record));
   if (welcome.connectType === "editor") {
     throw new RuntimeBridgeProtocolError(
       "runtime.roleMismatch",

@@ -13,6 +13,8 @@
     ]
   },
   "include": [
+    "src/bridge/bridgeProtocol.ts",
+    "src/bridge/runtimeBridgeProtocol.ts",
     "src/editor/webviewEpoch.ts",
     "src/document/projectSemanticDependency.ts",
     "src/reference/openDocumentOverrides.ts",
