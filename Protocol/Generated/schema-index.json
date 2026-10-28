@@ -67,13 +67,15 @@
     {
       "file": "Schema/visualbridge-editor-bridge.schema.json",
       "id": "https://visualbridge.dev/schema/visualbridge-editor-bridge.schema.json",
-      "sha256": "5fa072f55fecaa275b5f2532c7df9b87202185ff1c17d4d8f51852032f6014e3",
+      "sha256": "6961c6fef1e2e45a09374b8e9c25c5de1817d85d940af233f640903ba6c42e2a",
       "definitions": [
         "absolutePath",
         "bootId",
         "connectType",
         "contractHash",
+        "debugEnabledMessage",
         "debugFilter",
+        "debugSetEnabledMessage",
         "discoveryRecord",
         "endpointId",
         "errorCode",

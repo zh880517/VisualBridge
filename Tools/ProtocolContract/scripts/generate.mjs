@@ -286,6 +286,72 @@ async function verifyEditorBridgeExamples(compiler) {
       assert.equal(typeof testCase.loaderCode, "string", `${testCase.label} requires a loaderCode.`);
     }
   }
+
+  // 每个 schema 分支都必须有 fixture 用例，且必须有一条**有效**用例：否则新消息可以只改
+  // schema/校验器而不被 "schema ↔ TS 解析器 ↔ C# 校验器" 的共享回放覆盖（P1-3 的根因）。
+  // 只有 invalid 不算覆盖：invalid 只证明 "type 字符串存在/被拒"，不证明这个分支能被解析成合法消息。
+  const coveredMessageTypes = new Set(
+    fixture.cases
+      .filter((testCase) => testCase.target !== "discoveryRecord")
+      .map((testCase) => testCase.value?.type),
+  );
+  const validMessageTypes = new Set(
+    fixture.cases
+      .filter((testCase) => testCase.target !== "discoveryRecord" && testCase.valid === true)
+      .map((testCase) => testCase.value?.type),
+  );
+
+  // 收集一个定义声明的全部字面量 type（一个分支可能再拆成多个变体，如 response 的 ok/error）。
+  const collectTypes = (node, into) => {
+    const literal = node?.properties?.type?.const;
+    if (typeof literal === "string") {
+      into.add(literal);
+    }
+
+    for (const variant of node?.oneOf ?? []) {
+      collectTypes(variant, into);
+    }
+  };
+
+  // 遍历面 = 顶层 oneOf 的引用 ∪ 所有声明了字面量 type 的 $defs。
+  // 只看 oneOf 会留下盲区：新消息若只写进 $defs、忘了接进 oneOf，门禁会"存在但不可能红"。
+  const candidateDefinitions = new Set();
+  for (const branch of bridgeSchema.oneOf ?? []) {
+    assert.equal(typeof branch.$ref, "string", "Every Editor Bridge oneOf branch must be a $ref.");
+    const prefix = "#/$defs/";
+    assert.equal(branch.$ref.startsWith(prefix), true, `Unexpected Editor Bridge branch reference '${branch.$ref}'.`);
+    candidateDefinitions.add(branch.$ref.slice(prefix.length));
+  }
+
+  for (const [definitionName, definition] of Object.entries(bridgeSchema.$defs ?? {})) {
+    const declared = new Set();
+    collectTypes(definition, declared);
+    if (declared.size > 0) {
+      candidateDefinitions.add(definitionName);
+    }
+  }
+
+  for (const definitionName of candidateDefinitions) {
+    const declaredTypes = new Set();
+    collectTypes(bridgeSchema.$defs?.[definitionName], declaredTypes);
+    assert.equal(
+      declaredTypes.size > 0,
+      true,
+      `Editor Bridge $defs.${definitionName} must declare a literal 'type'.`,
+    );
+    for (const messageType of declaredTypes) {
+      assert.equal(
+        coveredMessageTypes.has(messageType),
+        true,
+        `Editor Bridge fixture must cover every schema branch: '${messageType}' has no case.`,
+      );
+      assert.equal(
+        validMessageTypes.has(messageType),
+        true,
+        `Editor Bridge fixture must include a valid case for every schema branch: '${messageType}' has only invalid cases.`,
+      );
+    }
+  }
 }
 
 async function verifyRuntimeBridgeExamples(compiler) {

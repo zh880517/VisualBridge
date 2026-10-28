@@ -15,7 +15,12 @@ namespace VisualBridge.Diagnostics.Bridge
     ///   <c>debugInstances</c> 筛选都在编码之前完成，未命中不编码、不入队，只累加计数；
     /// - 槽位映射 <c>slot → instance → category</c> 由 <c>Create</c> 建立、<c>debugFinish</c> 或断连立即失效（A.4/A.9）；
     /// - 丢弃计数按周期（心跳约 1 s，节流 500 ms）以 <c>dropped</c> 上报，避免打爆控制队列；
-    /// - 入站只接受通道 1 的 JSON <c>request</c>，其余帧按未知槽位/未知方法丢弃并计数，绝不断连。
+    /// - 上报总开关由 <see cref="VisualBridgeDebugReporting"/> 承载，但它只拦调试流的四条消息
+    ///   （<c>debug</c> / <c>debugCreate</c> / <c>debugFinish</c> / <c>debugFrame</c>，附录 A.2 的
+    ///   <c>debugSetEnabled</c>）；<c>response</c> / <c>reject</c> / <c>dropped</c> 不是调试流，
+    ///   关闭期间照常送出（否则宿主只能等超时，而业务 handler 可能已经跑过）；
+    /// - 入站只接受通道 1 的 JSON <c>request</c>，其余帧按未知槽位/未知方法丢弃并计数，绝不断连；
+    ///   总开关关闭时 <c>request</c> 立即以 <c>runtime.debugNotEnabled</c> 拒绝，不入队、不执行业务 handler。
     /// </summary>
     public sealed class VisualBridgeDebugTransport : IVisualBridgeDebugTransport, IVisualBridgeDebugOutboundGate, IDisposable
     {
@@ -23,6 +28,13 @@ namespace VisualBridge.Diagnostics.Bridge
         public const int DroppedReportIntervalMs = 500;
 
         private const int MaxMessageBytes = VisualBridgeDebugPayloadLimits.MaxMessageBytes;
+
+        /// <summary>
+        /// 关闭期查询的失败码（附录 A.6 的 <c>runtime.debugNotEnabled</c>）。F7 已登记进
+        /// <c>contract-manifest.json</c> 的 <c>errors.debugQuery</c> 与 <see cref="VisualBridgeDebugQueryErrors"/>：
+        /// 宿主拿到的是可映射的码，而不是只能等 4 s 超时。
+        /// </summary>
+        private const string DebugNotEnabledCode = VisualBridgeDebugQueryErrors.DebugNotEnabled;
 
         private readonly object gate = new object();
         private readonly object droppedGate = new object();
@@ -172,7 +184,7 @@ namespace VisualBridge.Diagnostics.Bridge
             var message = UseBinary()
                 ? VisualBridgeDebugWireMessages.CreateBinary(category, instanceId, instanceSlot, resName, debugInfo)
                 : VisualBridgeDebugWireMessages.CreateJson(category, instanceId, instanceSlot, resName, debugInfo);
-            if (!TrySendControl(message))
+            if (!TrySendDebugControl(message))
             {
                 return false;
             }
@@ -189,12 +201,21 @@ namespace VisualBridge.Diagnostics.Bridge
 
         public bool SendFinish(string instanceId, ushort instanceSlot)
         {
-            string category = null;
+            if (!VisualBridgeDebugReporting.Enabled)
+            {
+                // 关闭期抑制 Finish：连槽位失效都不做。会话层会回滚本地移除，传输层若在这里先删槽位，
+                // 重开后同一实例的每条事件都会被判 unknownSlot，直到重连（P1-A）。
+                return false;
+            }
+
+            string category;
+            Slot removedSlot = null;
             lock (gate)
             {
                 if (slots.TryGetValue(instanceSlot, out var slot))
                 {
                     category = slot.Category;
+                    removedSlot = slot;
                 }
                 else
                 {
@@ -210,7 +231,20 @@ namespace VisualBridge.Diagnostics.Bridge
             var message = UseBinary()
                 ? VisualBridgeDebugWireMessages.FinishBinary(instanceId, instanceSlot)
                 : VisualBridgeDebugWireMessages.FinishJson(category, instanceId);
-            var sent = TrySendControl(message);
+            var sent = TrySendDebugControl(message);
+            if (!sent && removedSlot != null)
+            {
+                // 发送失败（队列满 / 连接异常 / 闸门在两步之间关闭）必须把槽位放回去：
+                // "先失效后发送"只有在发送成功时才成立，否则会话层回滚了、传输层没有。
+                lock (gate)
+                {
+                    if (!slots.ContainsKey(instanceSlot))
+                    {
+                        slots[instanceSlot] = removedSlot;
+                    }
+                }
+            }
+
             FlushDropped();
             return sent;
         }
@@ -218,6 +252,12 @@ namespace VisualBridge.Diagnostics.Bridge
         public bool SendEvent(ushort instanceSlot, ushort methodId, string category, string iface, string method,
             long frame, VisualBridgeDebugEncodedMessage message)
         {
+            if (!VisualBridgeDebugReporting.Enabled)
+            {
+                // 抑制不是丢弃：不写数据队列，也不做槽位准入（否则会把"关闭"记成 unknownSlot）。
+                return false;
+            }
+
             if (!message.IsEncoded)
             {
                 CountEncodeFailure(message.Status);
@@ -242,15 +282,16 @@ namespace VisualBridge.Diagnostics.Bridge
                 return false;
             }
 
-            // 查询结果是客户端主动要求的应答（附录 A.5 的 response 语义在调试流之外），不受筛选抑制。
-            var sent = TrySendData(message);
+            // 查询结果是对宿主请求的应答（A.5 的 response 语义，不是调试流）：开关关闭时仍必须送达，
+            // 否则宿主只能等 4 s 超时，且与"关闭期 request 立即被拒、handler 不执行"的答复路径不一致。
+            var sent = TrySendMessage(message);
             FlushDropped();
             return sent;
         }
 
         public bool SendControl(VisualBridgeDebugEncodedMessage message)
         {
-            var sent = TrySendControl(message);
+            var sent = TrySendDebugControl(message);
             FlushDropped();
             return sent;
         }
@@ -538,6 +579,15 @@ namespace VisualBridge.Diagnostics.Bridge
                     return;
                 }
 
+                if (!VisualBridgeDebugReporting.Enabled)
+                {
+                    // 总开关关闭（附录 A.2 debugSetEnabled）：查询立即失败，不入队、不执行业务 handler。
+                    // 旧实现只把应答闸在出口，宿主侧会看到 handler 已执行却等不到回应——比拒绝更糟。
+                    SendQueryError(request.RequestSeq, DebugNotEnabledCode,
+                        "debug reporting is disabled; no query handler was executed.");
+                    return;
+                }
+
                 VisualBridgeDebugQueryRuntime.TryEnqueue(request);
                 FlushDropped();
                 return;
@@ -594,9 +644,16 @@ namespace VisualBridge.Diagnostics.Bridge
             }
         }
 
+        /// <summary>非调试流的控制消息（通道 1 的 response / reject）：不受总开关影响。</summary>
         private bool TrySendControl(VisualBridgeDebugEncodedMessage message)
         {
             return TrySendMessage(message);
+        }
+
+        /// <summary>调试流的控制消息（debugCreate / debugFinish / debugFrame）：受总开关拦截。</summary>
+        private bool TrySendDebugControl(VisualBridgeDebugEncodedMessage message)
+        {
+            return VisualBridgeDebugReporting.Enabled && TrySendControl(message);
         }
 
         private bool TrySendMessage(VisualBridgeDebugEncodedMessage message)
@@ -635,7 +692,9 @@ namespace VisualBridge.Diagnostics.Bridge
 
         private bool TrySendData(VisualBridgeDebugEncodedMessage message)
         {
-            return TrySendMessage(message);
+            // 只有调试事件（debug）属于调试流：关闭期间一条都不写数据队列（抑制不计数，见 SendEvent）。
+            // debugResult 是宿主查询的应答，走 SendResult 的非闸门路径。
+            return VisualBridgeDebugReporting.Enabled && TrySendMessage(message);
         }
 
         private static byte[] ToBytes(ReadOnlyMemory<byte> payload)

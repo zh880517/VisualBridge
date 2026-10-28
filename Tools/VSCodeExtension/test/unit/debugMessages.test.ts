@@ -346,6 +346,7 @@ test("a late binary debugResult still decodes as a result when the request id is
 
 test("the query error-code registry covers the A.6 channel-1 codes", () => {
   assert.deepEqual([...DEBUG_QUERY_ERROR_CODES], [
+    "runtime.debugNotEnabled",
     "runtime.instanceNotFound",
     "runtime.invalidArgument",
     "runtime.queryBusy",
@@ -354,6 +355,8 @@ test("the query error-code registry covers the A.6 channel-1 codes", () => {
     "runtime.queryUnregistered",
   ]);
   assert.equal(isDebugQueryErrorCode("runtime.queryRejected"), true);
+  assert.equal(isDebugQueryErrorCode("runtime.debugNotEnabled"), true,
+    "关闭期拒绝的码必须可映射，否则宿主只能等超时");
   assert.equal(isDebugQueryErrorCode("runtime.unknownThing"), false);
   assert.equal(isDebugQueryErrorCode(undefined), false);
 });

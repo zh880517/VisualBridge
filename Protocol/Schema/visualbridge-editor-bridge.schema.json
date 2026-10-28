@@ -2,14 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://visualbridge.dev/schema/visualbridge-editor-bridge.schema.json",
   "title": "VisualBridge Editor Bridge V2",
-  "description": "Editor-mode leg of the unified VisualBridge connection protocol: the hello/welcome handshake (protocolVersion 4), editor open/reveal requests, and the per-window discovery record (formatVersion 2). This is the target unified handshake shape; per the 2026-10-27 review ruling, the Runtime leg adopts the same hello/welcome fields in E5. This schema only adds the editor-only messages.",
+  "description": "Editor-mode leg of the unified VisualBridge connection protocol: the hello/welcome handshake (protocolVersion 4), editor open/reveal requests, the channel-0 debug-reporting control messages, and the per-window discovery record (formatVersion 2). This is the target unified handshake shape; per the 2026-10-27 review ruling, the Runtime leg adopts the same hello/welcome fields in E5. This schema only adds the editor-only messages.",
   "oneOf": [
     { "$ref": "#/$defs/helloMessage" },
     { "$ref": "#/$defs/welcomeMessage" },
     { "$ref": "#/$defs/openRequest" },
     { "$ref": "#/$defs/revealRequest" },
     { "$ref": "#/$defs/responseMessage" },
-    { "$ref": "#/$defs/errorMessage" }
+    { "$ref": "#/$defs/errorMessage" },
+    { "$ref": "#/$defs/debugSetEnabledMessage" },
+    { "$ref": "#/$defs/debugEnabledMessage" }
   ],
   "$defs": {
     "protocolVersion": {
@@ -240,6 +242,32 @@
           "minLength": 1,
           "maxLength": 512
         }
+      },
+      "additionalProperties": false
+    },
+    "debugSetEnabledMessage": {
+      "type": "object",
+      "description": "调试上报开关请求（通道 0，宿主 → Unity）：监听方要求 Unity 打开或关闭调试流上报，Unity 以 debugEnabled 广播回报结果。enabled 必填且不可省略（缺字段按所需字段拒绝），类型不符按 bridge.invalidMessage 拒绝。",
+      "required": [
+        "type",
+        "enabled"
+      ],
+      "properties": {
+        "type": { "const": "debugSetEnabled" },
+        "enabled": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "debugEnabledMessage": {
+      "type": "object",
+      "description": "调试上报开关状态广播（通道 0，Unity → 宿主）：Unity 采纳开关后回报当前值；面板以它作为唯一状态来源（不做本地乐观更新），Unity 每次连接时则以 welcome.debugEnabled 对齐。",
+      "required": [
+        "type",
+        "enabled"
+      ],
+      "properties": {
+        "type": { "const": "debugEnabled" },
+        "enabled": { "type": "boolean" }
       },
       "additionalProperties": false
     },

@@ -40,13 +40,17 @@ namespace VisualBridge.Diagnostics
         bool SendEvent(ushort instanceSlot, ushort methodId, string category, string iface, string method, long frame,
             VisualBridgeDebugEncodedMessage message);
 
-        /// <summary>发送查询结果载荷；<paramref name="requestSeq"/> 是信封里的请求号。</summary>
+        /// <summary>
+        /// 发送查询结果载荷；<paramref name="requestSeq"/> 是信封里的请求号。
+        /// 实现不得用调试上报开关拦它：这是宿主请求的应答（A.5 的 response 语义），不是调试流。
+        /// </summary>
         bool SendResult(uint requestSeq, VisualBridgeDebugEncodedMessage message);
 
         /// <summary>
         /// 发送查询失败应答（通道 1 的 <c>response</c>，不进调试流）：<paramref name="code"/> 取附录 A.6 的
-        /// <c>runtime.queryBusy</c> / <c>runtime.queryTimeout</c> / <c>runtime.queryUnregistered</c> /
-        /// <c>runtime.instanceNotFound</c> / <c>runtime.invalidArgument</c>，<paramref name="detail"/> 是诊断文本。
+        /// <c>runtime.debugNotEnabled</c> / <c>runtime.queryBusy</c> / <c>runtime.queryTimeout</c> /
+        /// <c>runtime.queryUnregistered</c> / <c>runtime.instanceNotFound</c> / <c>runtime.invalidArgument</c>，
+        /// <paramref name="detail"/> 是诊断文本。
         /// 与 <see cref="SendReject"/> 的区别：这个由查询运行期产生（含超时、队列满），<c>reason</c> 那条由业务拒绝产生。
         /// </summary>
         bool SendQueryError(uint requestSeq, string code, string detail);

@@ -3931,6 +3931,59 @@ exports.run = async function run() {
     }
   });
 
+  await test("rejects a malformed debugEnabled broadcast sent by Unity", async () => {
+    // 握手后收到缺 enabled 的 debugEnabled：监听侧必须回 error 帧并断开，
+    // 不能把一条状态广播静默当未知消息放过去（形状按 schema 严格校验）。
+    const state = await waitForAsync(
+      () => vscode.commands.executeCommand("visualbridge.test.getBridgeServerState"),
+      (value) => value !== null && value !== undefined,
+      20_000,
+      "Editor Bridge server did not start during activation.",
+    );
+    const socket = net.connect({ host: "127.0.0.1", port: state.tcpPort });
+    await new Promise((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    const lines = [];
+    attachJsonReader(socket, (message) => lines.push(message));
+    const closed = new Promise((resolve) => socket.once("close", () => resolve(true)));
+    try {
+      sendJson(socket, {
+        type: "hello",
+        protocolVersion: 4,
+        role: "editor",
+        clientEndpointId: "editor-malformed-debug-enabled",
+        token: state.token,
+        contractHash: state.contractHash,
+        payloads: ["json", "binary"],
+      });
+      await waitForAsync(
+        () => lines.find((line) => line.type === "welcome"),
+        (value) => value !== undefined,
+        20_000,
+        "Bridge server did not complete the handshake.",
+      );
+      sendJson(socket, { type: "debugEnabled" });
+      const errorLine = await waitForAsync(
+        () => lines.find((line) => line.type === "error"),
+        (value) => value !== undefined,
+        20_000,
+        "Bridge server did not reject a malformed debugEnabled broadcast.",
+      );
+      assert.equal(errorLine.code, "bridge.invalidMessage",
+        "缺 enabled 的 debugEnabled 必须按 schema 形状拒绝，而不是被当成未知消息放过。");
+      await Promise.race([
+        closed,
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error("The bridge server kept the connection open after a malformed debugEnabled broadcast.")),
+          10_000)),
+      ]);
+    } finally {
+      socket.destroy();
+    }
+  });
+
   await test("rejects Authoring files that resolve outside the Project through a directory link", async () => {
     const externalRoot = await mkdtemp(path.join(tmpdir(), "visualbridge-outside-authoring-"));
     const linkedRoot = path.join(workspacePath, "StructuredSemanticProject", "Config", "OutsideLink");

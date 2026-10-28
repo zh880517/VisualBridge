@@ -91,6 +91,9 @@ namespace VisualBridge.Editor
             // delayCall：静态构造发生在 reload 中间，此时连 socket 会打扰资产导入。
             EditorApplication.delayCall += () => Start("domain reload");
             EditorApplication.update += MaintainSessionLiveness;
+            // 服务端会在空闲时主动推通道 0 的控制消息（附录 A.2 的 debugSetEnabled）：
+            // 请求/响应模型没有读循环，必须由主线程逐帧非阻塞收，否则面板点一次开关就等 4 s 超时。
+            EditorApplication.update += PumpBridgeControlMessages;
         }
 
         /// <summary>是否正在等待重试（供窗口/状态栏读取）。</summary>
@@ -219,6 +222,15 @@ namespace VisualBridge.Editor
         {
             var index = Math.Min(attempts, VisualBridgeAutoConnectPolicy.BackoffMilliseconds.Count) - 1;
             return VisualBridgeAutoConnectPolicy.BackoffMilliseconds[Math.Max(0, index)] / 1000.0;
+        }
+
+        /// <summary>
+        /// 每帧（不节流）收一次服务端主动推来的控制消息：面板的开关命令带着 4 s 超时回滚，
+        /// 用 5 s 的存活节拍去收必然超时，所以这里跟 <see cref="EditorApplication.update"/> 同频。
+        /// </summary>
+        private static void PumpBridgeControlMessages()
+        {
+            VisualBridgeEditorBridgeService.Instance.Pump();
         }
 
         /// <summary>

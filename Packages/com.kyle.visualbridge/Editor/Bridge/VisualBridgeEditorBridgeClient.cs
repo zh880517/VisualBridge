@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading;
 using Newtonsoft.Json.Linq;
 using VisualBridge.Runtime;
 
@@ -69,6 +70,108 @@ namespace VisualBridge.Editor
         public IReadOnlyList<string> ServerPayloads { get; private set; }
 
         public bool ServerDebugEnabled { get; private set; }
+
+        /// <summary>
+        /// 主线程节拍：把已到达的通道 0 控制帧非阻塞地读进来并处理服务端主动发来的消息
+        /// （附录 A.2 的 <c>debugSetEnabled</c>）。返回本次实际处理的消息数。
+        ///
+        /// 不使用阻塞读：只在 <see cref="NetworkStream.DataAvailable"/> 为真时读，读不满一帧就留到下一拍
+        /// （半帧不丢，也绝不因为"暂时没数据"把连接判死）。同步请求正在读同一条流时（<see cref="ioLock"/>
+        /// 被占用）本轮直接跳过，由请求的读循环分发。
+        /// </summary>
+        public int Pump()
+        {
+            if (State != VisualBridgeBridgeConnectionState.Connected)
+            {
+                return 0;
+            }
+
+            var networkStream = stream as NetworkStream;
+            if (networkStream == null || !Monitor.TryEnter(ioLock))
+            {
+                return 0;
+            }
+
+            try
+            {
+                var handled = 0;
+                while (true)
+                {
+                    while (TryTakeEditorMessage(out var buffered))
+                    {
+                        DispatchControlMessage(buffered);
+                        handled++;
+                    }
+
+                    if (!networkStream.DataAvailable)
+                    {
+                        return handled;
+                    }
+
+                    var read = networkStream.Read(readBuffer, 0, readBuffer.Length);
+                    if (read <= 0)
+                    {
+                        // 对端已关闭：把判定留给下一次请求/节拍，这里不伪造错误。
+                        return handled;
+                    }
+
+                    frameReader.Append(readBuffer, 0, read);
+                }
+            }
+            finally
+            {
+                Monitor.Exit(ioLock);
+            }
+        }
+
+        /// <summary>
+        /// 分发一条服务端主动发来的消息（请求循环与 <see cref="Pump"/> 共用）。
+        /// 开关请求在这里被采纳并**回报**广播；其余类型（含方向错配的 <c>debugEnabled</c>）都属于协议违例。
+        /// </summary>
+        private void DispatchControlMessage(VisualBridgeBridgeMessage message)
+        {
+            switch (message.Type)
+            {
+                case VisualBridgeBridgeMessageType.DebugSetEnabled:
+                    ApplyDebugSetEnabled(message.Enabled);
+                    return;
+
+                case VisualBridgeBridgeMessageType.DebugEnabled:
+                    // debugEnabled 按附录 A.2 是 Unity → 宿主的广播：服务端（VS Code）发来即方向错配。
+                    // 与其它越权类型一视同仁按协议违例处理，不保留"静默忽略"的例外（F7 第 2 轮裁决）。
+                    throw VisualBridgeEditorBridgeValidator.Error(
+                        "bridge.protocolViolation",
+                        "$.type",
+                        "Server must not send 'debugEnabled' broadcasts after the handshake.");
+
+                default:
+                    throw VisualBridgeEditorBridgeValidator.Error(
+                        "bridge.protocolViolation",
+                        "$.type",
+                        $"Server must not send '{message.Type}' messages after the handshake.");
+            }
+        }
+
+        /// <summary>
+        /// 采纳 <c>debugSetEnabled</c>：更新进程级闸门与 SessionState，然后回报 <c>debugEnabled</c>。
+        /// 顺序固定为"先落状态再回报"：面板收到广播时 Unity 已经闸住了调试流。
+        /// </summary>
+        internal void ApplyDebugSetEnabled(bool enabled)
+        {
+            VisualBridge.Diagnostics.VisualBridgeDebugReporting.SetEnabled(enabled);
+            VisualBridgeSessionState.Load().WithDebugEnabled(enabled).Save();
+
+            // 重新打开时补一次挂接：为了兑现附录 A.5 的「连接建立时先 flush 待发项」。
+            // 两种情形都要它：开关在握手前就被关掉（此前从未 Attach，flush 从没发生过），
+            // 以及关闭期间新发布的待发项。已连接时 Attach 幂等：已经成功发出的描述不会重发，
+            // 只补发关闭期间 flush 失败而留在队列里的那部分（P1-4）。
+            if (enabled && VisualBridge.Diagnostics.Bridge.VisualBridgeDebugBridge.IsInstalled)
+            {
+                VisualBridge.Diagnostics.Bridge.VisualBridgeDebugBridge.Attach();
+            }
+
+            Write(VisualBridgeEditorBridgeValidator.CreateDebugEnabled(enabled).ToLine());
+        }
 
         /// <summary>
         /// 连接窗口的 TCP 端点，完成 hello/welcome 握手并校验服务端 generation
@@ -180,6 +283,14 @@ namespace VisualBridge.Editor
                         }
 
                         return message;
+                    }
+
+                    if (message.Type == VisualBridgeBridgeMessageType.DebugSetEnabled
+                        || message.Type == VisualBridgeBridgeMessageType.DebugEnabled)
+                    {
+                        // 开关消息与会话建立后的请求无因果关系：先处理（并回报广播），继续等本次响应。
+                        DispatchControlMessage(message);
+                        continue;
                     }
 
                     throw VisualBridgeEditorBridgeValidator.Error(
@@ -295,28 +406,10 @@ namespace VisualBridge.Editor
         {
             while (true)
             {
-                VisualBridgeFrame frame;
-                try
+                VisualBridgeBridgeMessage buffered;
+                if (TryTakeEditorMessage(out buffered))
                 {
-                    if (frameReader.TryReadFrame(out frame))
-                    {
-                        // 编辑器连接当前只消费控制通道（通道 0）；通道 1 的调试数据面由
-                        // E5/G1 接入，这里按帧头通道位跳过，绝不当作编辑器应答解析。
-                        if (frame.Channel != VisualBridgeChannel.Editor)
-                        {
-                            continue;
-                        }
-
-                        return ParsePayload(frame.Payload);
-                    }
-                }
-                catch (VisualBridgeFrameException exception)
-                {
-                    frameReader.DiscardPending();
-                    throw VisualBridgeEditorBridgeValidator.Error(
-                        "bridge.protocolViolation",
-                        "$",
-                        "Connection framing failed: " + exception.Message);
+                    return buffered;
                 }
 
                 var target = stream;
@@ -347,9 +440,61 @@ namespace VisualBridge.Editor
             }
         }
 
+        /// <summary>
+        /// 从已缓冲的字节里取出一条**通道 0** 消息；没有完整帧时返回 false（调用方继续读流）。
+        /// 这是"帧 → 消息"的唯一出口，请求循环与 <see cref="Pump"/> 共用：
+        /// CRC/分帧错误与畸形控制消息都按同一语义立即失败（<c>bridge.protocolViolation</c> /
+        /// <c>bridge.missingProperty</c> / <c>bridge.invalidMessage</c>），由 <see cref="VisualBridgeEditorBridgeService.Pump"/>
+        /// 统一断开连接——两侧都严格，不存在"某种控制消息可以宽容跳过"的特例。
+        /// </summary>
+        private bool TryTakeEditorMessage(out VisualBridgeBridgeMessage message)
+        {
+            VisualBridgeFrame frame;
+            while (true)
+            {
+                try
+                {
+                    if (!frameReader.TryReadFrame(out frame))
+                    {
+                        message = null;
+                        return false;
+                    }
+                }
+                catch (VisualBridgeFrameException exception)
+                {
+                    frameReader.DiscardPending();
+                    throw VisualBridgeEditorBridgeValidator.Error(
+                        "bridge.protocolViolation",
+                        "$",
+                        "Connection framing failed: " + exception.Message);
+                }
+
+                // 编辑器连接当前只消费控制通道（通道 0）；通道 1 的调试数据面由
+                // E5/G1 接入，这里按帧头通道位跳过，绝不当作编辑器应答解析。
+                if (frame.Channel != VisualBridgeChannel.Editor)
+                {
+                    continue;
+                }
+
+                message = ParsePayload(frame.Payload);
+                return true;
+            }
+        }
+
         private static VisualBridgeBridgeMessage ParsePayload(byte[] payload)
         {
             JObject value;
+            if (!TryParseObject(payload, out value))
+            {
+                throw VisualBridgeEditorBridgeValidator.Error("bridge.invalidJson", "$", "Server sent a non-JSON payload.");
+            }
+
+            return VisualBridgeEditorBridgeValidator.ValidateMessage(value);
+        }
+
+        private static bool TryParseObject(byte[] payload, out JObject value)
+        {
+            value = null;
             try
             {
                 var text = Encoding.UTF8.GetString(payload);
@@ -360,13 +505,13 @@ namespace VisualBridge.Editor
                     reader.FloatParseHandling = Newtonsoft.Json.FloatParseHandling.Decimal;
                     value = JObject.Load(reader);
                 }
+
+                return true;
             }
             catch
             {
-                throw VisualBridgeEditorBridgeValidator.Error("bridge.invalidJson", "$", "Server sent a non-JSON payload.");
+                return false;
             }
-
-            return VisualBridgeEditorBridgeValidator.ValidateMessage(value);
         }
     }
 }

@@ -118,9 +118,12 @@ export interface DebugResponseMessage {
  * `runtime.queryRejected` 是**业务拒绝**的码：业务实现 `RejectRequest` 主动拒绝、生成的 Dispatcher
  * 捕获业务异常后拒绝、handler 返回 false 且未回发结果（含非生成处理器抛异常，由运行期兜底）三条路径
  * 都回它，可区分的原因在 `detail`（`handler-returned-false`、`handler-exception: <异常类型>`、
- * 以及业务自定义原因）。本清单与 C# 的 `VisualBridgeDebugQueryErrors` 一一对应，由 `check:protocol` 双向核对。
+ * 以及业务自定义原因）。`runtime.debugNotEnabled` 是 F7 登记的开关关闭码：Unity 在请求入队前直接拒绝，
+ * 宿主据此把"连接被关掉"与"查询本身失败"区分开，而不是等超时。本清单与 C# 的
+ * `VisualBridgeDebugQueryErrors` 一一对应，由 `check:protocol` 双向核对。
  */
 export const DEBUG_QUERY_ERROR_CODES = [
+  "runtime.debugNotEnabled",
   "runtime.instanceNotFound",
   "runtime.invalidArgument",
   "runtime.queryBusy",

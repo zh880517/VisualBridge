@@ -5,12 +5,16 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
+using VisualBridge.Diagnostics;
+using VisualBridge.Diagnostics.Bridge;
+using VisualBridge.Runtime;
 
 namespace VisualBridge.Editor.Tests
 {
@@ -183,6 +187,324 @@ namespace VisualBridge.Editor.Tests
                 Assert.That(client.ServerPayloads, Is.EquivalentTo(new[] { "json" }));
                 Assert.That(client.State, Is.EqualTo(VisualBridgeBridgeConnectionState.Connected));
             }
+        }
+
+        [Test]
+        public void ClientAppliesDebugSetEnabledAndBroadcastsTheAppliedValue()
+        {
+            // F7：附录 A.2 的通道 0 开关命令。服务端在空闲时主动推，客户端由主线程节拍收下并回报。
+            VisualBridgeSessionState.Clear();
+            VisualBridgeDebugReporting.Reset();
+            try
+            {
+                using (var server = BridgeTestServer.Start(Welcome(generation: 1)))
+                using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "editor-1234", ""))
+                {
+                    Assert.DoesNotThrow(() => client.Connect());
+                    Assert.That(VisualBridgeDebugReporting.Enabled, Is.True, "Reporting defaults to on.");
+
+                    Assert.That(server.Push("{\"type\":\"debugSetEnabled\",\"enabled\":false}"), Is.True);
+                    Assert.That(PumpUntilHandled(client, 1), Is.GreaterThan(0), "Pump must pick up the pushed command.");
+
+                    Assert.That(VisualBridgeDebugReporting.Enabled, Is.False, "The gate must close as soon as the command is applied.");
+                    Assert.That(VisualBridgeSessionState.Load().DebugEnabled, Is.False,
+                        "The applied value must be persisted in SessionState (附录 A.2/A.3).");
+                    Assert.That(client.State, Is.EqualTo(VisualBridgeBridgeConnectionState.Connected));
+
+                    var off = WaitForReceivedLine(server, "\"type\":\"debugEnabled\"");
+                    Assert.That(off, Is.EqualTo("{\"type\":\"debugEnabled\",\"enabled\":false}"),
+                        "Unity must echo the applied value as the debugEnabled broadcast.");
+
+                    // 再打开：广播 true，闸门恢复。
+                    Assert.That(server.Push("{\"type\":\"debugSetEnabled\",\"enabled\":true}"), Is.True);
+                    Assert.That(PumpUntilHandled(client, 1), Is.GreaterThan(0));
+                    Assert.That(VisualBridgeDebugReporting.Enabled, Is.True);
+                    Assert.That(VisualBridgeSessionState.Load().DebugEnabled, Is.True);
+                    Assert.That(WaitForReceivedLine(server, "\"enabled\":true"),
+                        Is.EqualTo("{\"type\":\"debugEnabled\",\"enabled\":true}"));
+                }
+            }
+            finally
+            {
+                VisualBridgeSessionState.Clear();
+                VisualBridgeDebugReporting.Reset();
+            }
+        }
+
+        [Test]
+        public void ClientTreatsMalformedDebugSetEnabledAsAProtocolViolation()
+        {
+            // F7 复审裁决的语义变更声明：
+            //   旧语义 = 畸形开关消息"宽容跳过"，只计 RejectedControlMessages，连接保留；
+            //   新语义 = 与其它畸形控制消息一致，严格报错并断开（两侧都严格，不再有特例）。
+            // 客户端只负责把违例抛出来；断开由服务层节拍统一执行（见下一个用例）。
+            VisualBridgeSessionState.Clear();
+            VisualBridgeDebugReporting.Reset();
+            try
+            {
+                using (var server = BridgeTestServer.Start(Welcome(generation: 1)))
+                using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "editor-1234", ""))
+                {
+                    Assert.DoesNotThrow(() => client.Connect());
+
+                    Assert.That(server.Push("{\"type\":\"debugSetEnabled\"}"), Is.True);
+                    var missing = Assert.Throws<VisualBridgeIntegrationException>(() => client.Pump());
+                    Assert.That(missing.Code, Is.EqualTo("bridge.missingProperty"));
+                    Assert.That(VisualBridgeDebugReporting.Enabled, Is.True,
+                        "A malformed command must not flip the switch even though it now fails the connection.");
+                }
+            }
+            finally
+            {
+                VisualBridgeSessionState.Clear();
+                VisualBridgeDebugReporting.Reset();
+            }
+        }
+
+        [Test]
+        public void ClientRejectsServerDebugEnabledBroadcastAsAProtocolViolation()
+        {
+            // debugEnabled 是 Unity → 宿主 的广播（附录 A.2）：监听端发来即方向错配。
+            // 这里不保留"静默忽略"的例外，与其它越权类型一致按协议违例处理（F7 第 2 轮裁决）。
+            VisualBridgeSessionState.Clear();
+            VisualBridgeDebugReporting.Reset();
+            try
+            {
+                using (var server = BridgeTestServer.Start(Welcome(generation: 1)))
+                using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "editor-1234", ""))
+                {
+                    Assert.DoesNotThrow(() => client.Connect());
+                    Assert.That(server.Push("{\"type\":\"debugEnabled\",\"enabled\":true}"), Is.True);
+                    var violation = Assert.Throws<VisualBridgeIntegrationException>(() => client.Pump());
+                    Assert.That(violation.Code, Is.EqualTo("bridge.protocolViolation"));
+                    Assert.That(VisualBridgeDebugReporting.Enabled, Is.True,
+                        "A misdirected broadcast must not flip the switch.");
+                }
+            }
+            finally
+            {
+                VisualBridgeSessionState.Clear();
+                VisualBridgeDebugReporting.Reset();
+            }
+        }
+
+        [Test]
+        public void ServiceDropsTheConnectionAfterAMalformedControlMessage()
+        {
+            VisualBridgeSessionState.Clear();
+            VisualBridgeDebugReporting.Reset();
+            var service = VisualBridgeEditorBridgeService.Instance;
+            try
+            {
+                using (var server = BridgeTestServer.Start(Welcome(generation: 1)))
+                {
+                    service.Disconnect();
+                    service.Connect(TestWindow(server.Port, 1));
+                    Assert.That(service.IsConnected, Is.True);
+
+                    Assert.That(server.Push("{\"type\":\"debugSetEnabled\",\"enabled\":\"false\"}"), Is.True);
+
+                    // 服务层的节拍必须把违例归一成断连（异常不冒到 EditorApplication.update）。
+                    var deadline = DateTime.UtcNow.AddSeconds(5);
+                    while (service.IsConnected && DateTime.UtcNow < deadline)
+                    {
+                        Assert.DoesNotThrow(() => service.Pump());
+                        Thread.Sleep(10);
+                    }
+
+                    Assert.That(service.IsConnected, Is.False,
+                        "A malformed control message must drop the connection instead of being skipped.");
+                    Assert.That(VisualBridgeDebugReporting.Enabled, Is.True);
+                }
+            }
+            finally
+            {
+                service.Disconnect();
+                VisualBridgeSessionState.Clear();
+                VisualBridgeDebugReporting.Reset();
+            }
+        }
+
+        [Test]
+        public void ServiceConnectAlignsTheReportingGateWithWelcomeDebugEnabled()
+        {
+            // 附录 A.3：welcome.debugEnabled 是服务端权威值。Domain Reload 后静态闸门回到默认 true，
+            // 重连必须按握手值重新对齐，否则面板刚关掉的上报会被悄悄打开。
+            VisualBridgeSessionState.Clear();
+            VisualBridgeDebugReporting.Reset();
+            try
+            {
+                using (var server = BridgeTestServer.Start(Welcome(generation: 1, debugEnabled: false)))
+                {
+                    var service = VisualBridgeEditorBridgeService.Instance;
+                    service.Disconnect();
+                    service.Connect(TestWindow(server.Port, generation: 1));
+                    Assert.That(VisualBridgeDebugReporting.Enabled, Is.False,
+                        "The handshake value must win over the locally defaulted switch.");
+                    Assert.That(service.Session.DebugEnabled, Is.False);
+                }
+            }
+            finally
+            {
+                VisualBridgeEditorBridgeService.Instance.Disconnect();
+                VisualBridgeSessionState.Clear();
+                VisualBridgeDebugReporting.Reset();
+            }
+        }
+
+        [Test]
+        public void ReEnablingThroughTheClientFlushesPendingCreatesOnAnAlreadyConnectedLink()
+        {
+            // P2-1：ApplyDebugSetEnabled 的 Attach 分支过去只被"人工 Attach"覆盖（IsInstalled 恒 false），
+            // 这条用例走 Install + 真传输 + 假连接，钉住"客户端采纳开关 → 已连接时强制补发待发项"。
+            VisualBridgeSessionState.Clear();
+            VisualBridgeDebugReporting.Reset();
+            var wire = new DebugFakeWire();
+            var transport = new VisualBridgeDebugTransport(ConnectType.Editor, droppedReportIntervalMs: 0);
+            var service = VisualBridgeEditorBridgeService.Instance;
+            try
+            {
+                VisualBridgeDebugReporting.SetEnabled(false);
+                VisualBridgeDebug.SetFrame(7);
+                VisualBridgeDebug.SetEncoder(new VisualBridgeDebugJsonEncoder());
+                VisualBridgeDebugBridge.Install(transport); // 先 Install，此时未绑定连接
+                Assert.That(VisualBridgeDebug.Create("hero", "graph", "R", string.Empty), Is.True,
+                    "未连接时 Create 只是入待发队列。");
+
+                // 生产顺序：link-open 发生在闸门关闭时，这次 flush 必然失败（旧实现会清空待发项）。
+                transport.Bind(wire);
+                VisualBridgeDebugBridge.Attach();
+                Assert.That(wire.Controls.Count, Is.EqualTo(0), "关闭期间一条都不许写线上。");
+
+                using (var server = BridgeTestServer.Start(Welcome(generation: 1, debugEnabled: false)))
+                using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "editor-1234", ""))
+                {
+                    Assert.DoesNotThrow(() => client.Connect());
+
+                    Assert.That(server.Push("{\"type\":\"debugSetEnabled\",\"enabled\":true}"), Is.True);
+                    Assert.That(PumpUntilHandled(client, 1), Is.GreaterThan(0));
+                    Assert.That(VisualBridgeDebugReporting.Enabled, Is.True);
+
+                    Assert.That(CountDebugControls(wire, "\"type\":\"debugCreate\""), Is.EqualTo(1),
+                        "The client's Attach must retry the create that failed to flush while reporting was off.");
+                    Assert.That(WaitForReceivedLine(server, "\"type\":\"debugEnabled\""),
+                        Is.EqualTo("{\"type\":\"debugEnabled\",\"enabled\":true}"));
+                }
+            }
+            finally
+            {
+                VisualBridgeDebugBridge.Uninstall();
+                VisualBridgeDebug.SetEncoder(null);
+                VisualBridgeDebug.SetFrame(-1);
+                service.Disconnect();
+                VisualBridgeSessionState.Clear();
+                VisualBridgeDebugReporting.Reset();
+            }
+        }
+
+        [Test]
+        public void AutoConnectPumpsIdleControlMessagesOnEveryEditorFrame()
+        {
+            // P2-2：静态构造里 `EditorApplication.update += PumpBridgeControlMessages` 这行删掉后
+            // 之前仍全绿——因为它只被 MainThread 上的隐式帧驱动。这里从真实的委托链里取出
+            // 那个回调并手动跑一帧：删掉该行就会拿不到委托，命令也就不会被消费。
+            VisualBridgeSessionState.Clear();
+            VisualBridgeDebugReporting.Reset();
+            var service = VisualBridgeEditorBridgeService.Instance;
+            try
+            {
+                using (var server = BridgeTestServer.Start(Welcome(generation: 1)))
+                {
+                    service.Disconnect();
+                    service.Connect(TestWindow(server.Port, 1));
+                    Assert.That(service.IsConnected, Is.True);
+
+                    var updateField = typeof(EditorApplication).GetField(
+                        "update", BindingFlags.Public | BindingFlags.Static);
+                    Assert.That(updateField, Is.Not.Null,
+                        "EditorApplication.update is expected to stay a public static delegate field.");
+                    var callbacks = updateField.GetValue(null) as Delegate;
+                    var pump = callbacks?.GetInvocationList().FirstOrDefault(entry =>
+                        entry.Method.Name == "PumpBridgeControlMessages"
+                        && entry.Method.DeclaringType == typeof(VisualBridgeEditorBridgeAutoConnect));
+                    Assert.That(pump, Is.Not.Null,
+                        "AutoConnect must subscribe PumpBridgeControlMessages to EditorApplication.update.");
+
+                    Assert.That(server.Push("{\"type\":\"debugSetEnabled\",\"enabled\":false}"), Is.True);
+
+                    // 手动跑一帧：等价于编辑器空闲时的 EditorApplication.update。
+                    var frame = (EditorApplication.CallbackFunction)pump;
+                    var deadline = DateTime.UtcNow.AddSeconds(5);
+                    while (VisualBridgeDebugReporting.Enabled && DateTime.UtcNow < deadline)
+                    {
+                        frame();
+                        Thread.Sleep(10);
+                    }
+
+                    Assert.That(VisualBridgeDebugReporting.Enabled, Is.False,
+                        "An idle-frame switch command must be consumed by the registered per-frame pump.");
+                    Assert.That(WaitForReceivedLine(server, "\"type\":\"debugEnabled\""),
+                        Is.EqualTo("{\"type\":\"debugEnabled\",\"enabled\":false}"));
+                }
+            }
+            finally
+            {
+                service.Disconnect();
+                VisualBridgeSessionState.Clear();
+                VisualBridgeDebugReporting.Reset();
+            }
+        }
+
+        private static int PumpUntilHandled(VisualBridgeEditorBridgeClient client, int expected, int timeoutMs = 5000)
+        {
+            var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            var handled = 0;
+            while (DateTime.UtcNow < deadline)
+            {
+                handled += client.Pump();
+                if (handled >= expected)
+                {
+                    return handled;
+                }
+
+                Thread.Sleep(10);
+            }
+
+            return handled;
+        }
+
+        private static int CountDebugControls(DebugFakeWire wire, string fragment)
+        {
+            var count = 0;
+            foreach (var payload in wire.Controls)
+            {
+                if (Encoding.UTF8.GetString(payload).Contains(fragment))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static string WaitForReceivedLine(BridgeTestServer server, string expectedFragment, int timeoutMs = 5000)
+        {
+            var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            while (DateTime.UtcNow < deadline)
+            {
+                foreach (var line in server.GetReceivedRequests())
+                {
+                    if (line != null && line.Contains(expectedFragment))
+                    {
+                        return line;
+                    }
+                }
+
+                Thread.Sleep(10);
+            }
+
+            Assert.Fail("The client never sent a line containing '" + expectedFragment + "'.");
+            return null;
         }
 
         [Test]
@@ -781,12 +1103,14 @@ namespace VisualBridge.Editor.Tests
             int generation = 1,
             string contractHash = "",
             string payloads = "[\"json\",\"binary\"]",
-            bool resumed = false)
+            bool resumed = false,
+            bool debugEnabled = true)
         {
             return "{\"type\":\"welcome\",\"protocolVersion\":4,\"endpointId\":\"6f9619ff-8b86-4d01-b42d-00cf4fc964ff\","
                 + "\"sessionId\":\"" + SessionId + "\",\"resumed\":" + (resumed ? "true" : "false") + ",\"connectType\":\"editor\","
                 + "\"generation\":" + generation + ",\"bootId\":\"boot-1\",\"contractHash\":\"" + contractHash + "\","
-                + "\"payloads\":" + payloads + ",\"debugEnabled\":true,\"startedAt\":\"2026-10-26T12:00:00.000Z\"}";
+                + "\"payloads\":" + payloads + ",\"debugEnabled\":" + (debugEnabled ? "true" : "false")
+                + ",\"startedAt\":\"2026-10-26T12:00:00.000Z\"}";
         }
 
         private static string CreateDiscoveryDirectory()
@@ -834,6 +1158,7 @@ namespace VisualBridge.Editor.Tests
             private readonly string replyToHello;
             private readonly string thenSend;
             private readonly object gate = new object();
+            private readonly object sendGate = new object();
             private readonly Queue<string> pending = new Queue<string>();
             private readonly Queue<string> pendingDebug = new Queue<string>();
             private readonly System.Collections.Concurrent.ConcurrentQueue<string> received = new System.Collections.Concurrent.ConcurrentQueue<string>();
@@ -894,6 +1219,30 @@ namespace VisualBridge.Editor.Tests
                 }
 
                 connected?.Close();
+            }
+
+            /// <summary>
+            /// 不等请求、立刻推一条通道 0 消息给客户端（模拟服务端空闲时主动发 <c>debugSetEnabled</c>）。
+            /// 返回是否写成功。
+            /// </summary>
+            public bool Push(string line, int waitForStreamMs = 2000)
+            {
+                var deadline = DateTime.UtcNow.AddMilliseconds(waitForStreamMs);
+                while (stream == null && DateTime.UtcNow < deadline)
+                {
+                    Thread.Sleep(5);
+                }
+
+                lock (sendGate)
+                {
+                    if (stream == null)
+                    {
+                        return false;
+                    }
+
+                    Send(line);
+                    return true;
+                }
             }
 
             private void Run()
@@ -957,8 +1306,11 @@ namespace VisualBridge.Editor.Tests
                     channel,
                     VisualBridge.Runtime.VisualBridgePayloadKind.Json,
                     Encoding.UTF8.GetBytes(line));
-                stream.Write(frame, 0, frame.Length);
-                stream.Flush();
+                lock (sendGate)
+                {
+                    stream.Write(frame, 0, frame.Length);
+                    stream.Flush();
+                }
             }
 
             private string Receive()
@@ -1000,6 +1352,47 @@ namespace VisualBridge.Editor.Tests
 
                 listener.Stop();
                 thread.Join(1000);
+            }
+        }
+
+        /// <summary>P2-1 用的调试连接：只记录出站控制消息（不触发入站事件）。</summary>
+        private sealed class DebugFakeWire : IVisualBridgeDebugWire
+        {
+            public bool IsOpen => true;
+
+            public long Generation => 1L;
+
+            public long OverflowDroppedMessages => 0L;
+
+            public List<byte[]> Controls { get; } = new List<byte[]>();
+
+            public event Action<VisualBridgePayloadKind, byte[]> FrameReceived
+            {
+                add { }
+                remove { }
+            }
+
+            public event Action Closed
+            {
+                add { }
+                remove { }
+            }
+
+            public event Action Tick
+            {
+                add { }
+                remove { }
+            }
+
+            public bool SendControl(byte[] payload, VisualBridgeDebugPayloadFormat format)
+            {
+                Controls.Add(payload);
+                return true;
+            }
+
+            public bool SendDebug(byte[] payload, VisualBridgeDebugPayloadFormat format)
+            {
+                return true;
             }
         }
     }

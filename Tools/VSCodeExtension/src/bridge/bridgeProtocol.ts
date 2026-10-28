@@ -115,13 +115,27 @@ export interface BridgeErrorMessage {
   readonly detail?: string;
 }
 
+/** 通道 0：面板要求宿主打开/关闭调试上报（附录 A.2，schema 的 `debugSetEnabledMessage`）。 */
+export interface BridgeDebugSetEnabledMessage {
+  readonly type: "debugSetEnabled";
+  readonly enabled: boolean;
+}
+
+/** 通道 0：宿主回报已采纳的开关值（附录 A.2，schema 的 `debugEnabledMessage`）。 */
+export interface BridgeDebugEnabledMessage {
+  readonly type: "debugEnabled";
+  readonly enabled: boolean;
+}
+
 export type BridgeMessage =
   | BridgeHelloMessage
   | BridgeWelcomeMessage
   | BridgeOpenRequest
   | BridgeRevealRequest
   | BridgeResponseMessage
-  | BridgeErrorMessage;
+  | BridgeErrorMessage
+  | BridgeDebugSetEnabledMessage
+  | BridgeDebugEnabledMessage;
 
 /** 发现记录 v2：写盘方（监听方）发布自己的端点信息；心跳是文件 mtime。 */
 export interface BridgeDiscoveryRecord {
@@ -186,6 +200,8 @@ export function parseBridgeMessage(value: unknown): BridgeMessage {
     case "reveal": return parseReveal(record);
     case "response": return parseResponse(record);
     case "error": return parseError(record);
+    case "debugSetEnabled": return parseDebugSetEnabled(record);
+    case "debugEnabled": return parseDebugEnabled(record);
     default:
       throw protocolError("bridge.unknownMessageType", "$.type", `Unknown message type '${String(record.type)}'.`);
   }
@@ -552,6 +568,17 @@ function parseError(record: Record<string, unknown>): BridgeErrorMessage {
   return detail === undefined ? { type: "error", code } : { type: "error", code, detail };
 }
 
+/** 附录 A.2：schema 的两条开关消息都是 `additionalProperties:false` + `required:["type","enabled"]`。 */
+function parseDebugSetEnabled(record: Record<string, unknown>): BridgeDebugSetEnabledMessage {
+  requireOnlyKeys(record, "$", ["type", "enabled"]);
+  return { type: "debugSetEnabled", enabled: requireBoolean(record, "enabled", "$.enabled") };
+}
+
+function parseDebugEnabled(record: Record<string, unknown>): BridgeDebugEnabledMessage {
+  requireOnlyKeys(record, "$", ["type", "enabled"]);
+  return { type: "debugEnabled", enabled: requireBoolean(record, "enabled", "$.enabled") };
+}
+
 function requireObject(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw protocolError("bridge.invalidMessage", "$", "Expected an object.");
@@ -560,7 +587,7 @@ function requireObject(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function requireOnlyKeys(
+export function requireOnlyKeys(
   record: Record<string, unknown>,
   path: string,
   required: readonly string[],
@@ -758,7 +785,7 @@ function requireInteger(record: Record<string, unknown>, property: string, path:
   return value;
 }
 
-function requireBoolean(record: Record<string, unknown>, property: string, path: string): boolean {
+export function requireBoolean(record: Record<string, unknown>, property: string, path: string): boolean {
   const value = record[property];
   if (typeof value !== "boolean") {
     throw protocolError("bridge.invalidMessage", path, "Expected a boolean.");

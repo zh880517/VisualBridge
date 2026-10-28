@@ -3,11 +3,15 @@ namespace VisualBridge.Diagnostics
     /// <summary>
     /// 查询失败应答的错误码（附录 A.6）。清单在 <c>Protocol/contract-manifest.json</c> 的
     /// <c>errors.debugQuery</c>，由 <c>check:protocol</c> 与本类及客户端解码表三方核对。
-    /// 运行期只产出这六个码：业务实现用 <see cref="VisualBridgeDebug.RejectRequest"/> 拒绝时只带 detail，
-    /// 码由传输层按失败应答补齐。
+    /// 运行期只产出这七个码：业务实现用 <see cref="VisualBridgeDebug.RejectRequest"/> 拒绝时只带 detail，
+    /// 码由传输层按失败应答补齐；<see cref="DebugNotEnabled"/> 由传输层在总开关关闭、请求入队前直接产出
+    /// （F7 登记：宿主需要一个可映射的码，不能只等超时）。
     /// </summary>
     public static class VisualBridgeDebugQueryErrors
     {
+        /// <summary>调试上报总开关关闭：请求被立即拒绝，业务 handler 未执行（附录 A.2 / A.6）。</summary>
+        public const string DebugNotEnabled = "runtime.debugNotEnabled";
+
         /// <summary>队列或并发超限（附录 B.6：队列 8 / 并发 8）。</summary>
         public const string Busy = "runtime.queryBusy";
 

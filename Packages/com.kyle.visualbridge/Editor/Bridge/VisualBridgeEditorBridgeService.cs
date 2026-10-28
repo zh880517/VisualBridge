@@ -120,9 +120,42 @@ namespace VisualBridge.Editor
             previousSession
                 .WithConnection(instance.SessionId, window.RecordPath, instance.ServerDebugEnabled)
                 .Save();
+
+            // 附录 A.3：welcome.debugEnabled 是调试上报总开关的**服务端权威值**。每次（重）连接都用它
+            // 重新对齐本地闸门，否则 Domain Reload 后静态开关回到默认 true，会把面板刚关掉的上报又打开。
+            VisualBridge.Diagnostics.VisualBridgeDebugReporting.SetEnabled(instance.ServerDebugEnabled);
             client = instance;
             ConnectedWindow = window;
             return client;
+        }
+
+        /// <summary>
+        /// 主线程节拍：把服务端在空闲时推来的控制消息落下来（附录 A.2 的 <c>debugSetEnabled</c>）。
+        /// 非阻塞；没有已握手连接时是纯读一次字段的空操作。协议违例/分帧错误时断开连接
+        /// （面板随即按"请求发不出去"回滚），异常绝不冒到 <c>EditorApplication.update</c>。
+        /// </summary>
+        internal void Pump()
+        {
+            var current = client;
+            if (current == null)
+            {
+                return;
+            }
+
+            try
+            {
+                current.Pump();
+            }
+            catch (VisualBridgeIntegrationException exception)
+            {
+                UnityEngine.Debug.LogWarning($"[bridge] dropping the connection after a control message failure: {exception.Code} {exception.Message}");
+                Disconnect();
+            }
+            catch (Exception exception)
+            {
+                UnityEngine.Debug.LogWarning($"[bridge] dropping the connection after a control message failure: {exception.Message}");
+                Disconnect();
+            }
         }
 
         /// <summary>

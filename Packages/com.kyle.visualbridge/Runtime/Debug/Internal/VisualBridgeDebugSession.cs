@@ -154,6 +154,15 @@ namespace VisualBridge.Diagnostics
 
                 Volatile.Write(ref s_attached, true);
                 RefreshConnectionLocked();
+
+                var transport = Volatile.Read(ref s_transport);
+                if (transport != null)
+                {
+                    // 关闭期间连接就建立过：那次 flush 一定失败，而 RefreshConnectionLocked 在
+                    // "已连接且同代次"时会早退。重开路径（面板打开上报）必须在这里强制补发一次，
+                    // 否则会话快照有实例、传输层没有槽位，之后每条事件都计 unknownSlot，直到重连。
+                    FlushPendingLocked(transport);
+                }
             }
         }
 
@@ -235,9 +244,22 @@ namespace VisualBridge.Diagnostics
                     {
                         // 发送失败（例如控制队列满导致连接关闭）时必须回滚本地发布，
                         // 否则本地有、远端没有，调试器与运行时状态永久分叉。
+                        // 总开关关闭属于"抑制"而非失败：静默回滚，不告警也不计数（附录 A.5 的 encodeFailed 不含开关）。
                         PublishLocked(snapshot);
-                        VisualBridgeDebugDiagnostics.Warning(
-                            "VisualBridgeDebug Create '" + instanceId + "' 发送失败，已回滚本地发布。");
+                        // 槽位也要退回去：发送失败从未对外公布这个槽位，不回退会让关闭期反复 Create
+                        // 耗尽 65535 个槽位（F7-P2-5）。Gate 内 next == instanceSlot + 1；若发送失败触发了
+                        // 会话重置（next 已被重置），则保留重置后的值，不能盲目回写。
+                        if (s_nextSlot == instanceSlot + 1)
+                        {
+                            s_nextSlot = instanceSlot;
+                        }
+
+                        if (VisualBridgeDebugReporting.Enabled)
+                        {
+                            VisualBridgeDebugDiagnostics.Warning(
+                                "VisualBridgeDebug Create '" + instanceId + "' 发送失败，已回滚本地发布。");
+                        }
+
                         return false;
                     }
                 }
@@ -301,9 +323,14 @@ namespace VisualBridge.Diagnostics
                     if (!SendFinish(transport, instanceId, instanceSlot))
                     {
                         // 结束帧没送达：恢复本地发布，让下一次 Finish 仍有机会送达。
+                        // 关闭期抑制同理不告警（抑制 ≠ 失败）。
                         PublishLocked(snapshot);
-                        VisualBridgeDebugDiagnostics.Warning(
-                            "VisualBridgeDebug Finish '" + instanceId + "' 发送失败，已回滚本地移除。");
+                        if (VisualBridgeDebugReporting.Enabled)
+                        {
+                            VisualBridgeDebugDiagnostics.Warning(
+                                "VisualBridgeDebug Finish '" + instanceId + "' 发送失败，已回滚本地移除。");
+                        }
+
                         return false;
                     }
                 }
@@ -316,6 +343,12 @@ namespace VisualBridge.Diagnostics
         {
             // 热路径：只做一次 volatile 读快照，零锁零分配（快照内已含实例集合与连接态）。
             var snapshot = Volatile.Read(ref s_snapshot);
+
+            if (!VisualBridgeDebugReporting.Enabled)
+            {
+                // 总开关关闭：抑制不是丢弃。不编码、不入队、不计数、不告警（附录 A.5 的 encodeFailed 不含开关）。
+                return false;
+            }
 
             // 未知实例先返回且不计数：调用方从未 Create，或实例已在断连时作废（附录 B.3.1）。
             if (!snapshot.Instances.Contains(instanceId))
@@ -488,6 +521,14 @@ namespace VisualBridge.Diagnostics
             if (encoded.Status != VisualBridgeDebugEncodeStatus.Ok)
             {
                 CountDropped(encoded.Status);
+                return false;
+            }
+
+            if (!VisualBridgeDebugReporting.Enabled && message.Kind != VisualBridgeDebugMessageKind.DebugResult)
+            {
+                // 抑制发生在**编码完成之后**（编码器必须 End 收尾，半条消息会污染下一条）：
+                // Start 之后开关被关掉时，已编码的调试事件直接丢弃，不写队列、不计数、不告警。
+                // 查询结果（debugResult）是宿主请求的应答，不是调试流，不能在这里被吞掉。
                 return false;
             }
 
@@ -945,15 +986,26 @@ namespace VisualBridge.Diagnostics
                 return;
             }
 
+            // 只移除真正发出的项：关闭期抑制 / 队列满导致的失败必须留在队列里，重开或重连后再 flush。
+            // 旧实现无条件 Clear，会把"会话快照有实例、传输层没有槽位"永久钉死（之后每条事件都计 unknownSlot）。
+            int kept = 0;
             for (int index = 0; index < s_pendingCreates.Count; index++)
             {
                 var pending = s_pendingCreates[index];
-                SendCreate(transport, pending.InstanceId, pending.Category, pending.ResName, pending.DebugInfo,
-                    pending.InstanceSlot);
+                if (SendCreate(transport, pending.InstanceId, pending.Category, pending.ResName, pending.DebugInfo,
+                        pending.InstanceSlot))
+                {
+                    continue;
+                }
+
+                s_pendingCreates[kept] = pending;
+                kept++;
             }
 
-            // flush 只做一次：发送后清空，不重发。
-            s_pendingCreates.Clear();
+            if (kept < s_pendingCreates.Count)
+            {
+                s_pendingCreates.RemoveRange(kept, s_pendingCreates.Count - kept);
+            }
         }
 
         private static int RemovePendingLocked(string instanceId)

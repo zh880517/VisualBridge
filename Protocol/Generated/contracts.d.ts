@@ -64,12 +64,14 @@ export namespace VisualBridgeCatalogSource {
 // 来源：Protocol/Schema/visualbridge-editor-bridge.schema.json
 // $id: https://visualbridge.dev/schema/visualbridge-editor-bridge.schema.json
 export namespace VisualBridgeEditorBridge {
-  export type Root = (HelloMessage) | (WelcomeMessage) | (OpenRequest) | (RevealRequest) | (ResponseMessage) | (ErrorMessage);
+  export type Root = (HelloMessage) | (WelcomeMessage) | (OpenRequest) | (RevealRequest) | (ResponseMessage) | (ErrorMessage) | (DebugSetEnabledMessage) | (DebugEnabledMessage);
   export type AbsolutePath = string;
   export type BootId = string;
   export type ConnectType = "editor" | "editor-player" | "player";
   export type ContractHash = string;
+  export type DebugEnabledMessage = { readonly "enabled": boolean; readonly "type": "debugEnabled" };
   export type DebugFilter = readonly string[];
+  export type DebugSetEnabledMessage = { readonly "enabled": boolean; readonly "type": "debugSetEnabled" };
   export type DiscoveryRecord = { readonly "formatVersion": 2; readonly "generation": Generation; readonly "pid": ProcessId; readonly "projectRoots": readonly AbsolutePath[]; readonly "protocolVersion": ProtocolVersion; readonly "role": Role; readonly "tcpPort": TcpPort; readonly "token": Token; readonly "windowId": string };
   export type EndpointId = string;
   export type ErrorCode = "bridge.capabilityMissing" | "bridge.documentAmbiguous" | "bridge.documentUnresolved" | "bridge.internalError" | "bridge.invalidJson" | "bridge.invalidMessage" | "bridge.invalidToken" | "bridge.protocolVersionMismatch" | "bridge.unknownMessageType" | "runtime.alreadyConnected" | "runtime.contractHashMismatch" | "runtime.invalidToken" | "runtime.roleMismatch" | "runtime.unsupportedPayload" | "runtime.unsupportedProtocolVersion";

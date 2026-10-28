@@ -116,6 +116,15 @@ namespace VisualBridge.Editor
             return new VisualBridgeSessionState(sessionId, recordPath, debugEnabled, utcNow);
         }
 
+        /// <summary>
+        /// 返回只更新 debug 总开关的新状态（附录 A.2 的 <c>debugSetEnabled</c> 采纳后、广播回报之前）。
+        /// SessionState 跨 Domain Reload 保留该值，重连时仍以 welcome 通告值为准覆盖。
+        /// </summary>
+        public VisualBridgeSessionState WithDebugEnabled(bool enabled)
+        {
+            return new VisualBridgeSessionState(sessionId, recordPath, enabled, lastSeenUtc);
+        }
+
         /// <summary>写入 SessionState；SessionState 在主线程之外不可用时静默失败。</summary>
         public void Save()
         {

@@ -59,3 +59,41 @@ test("reveal reference accepts integers only inside the safe integer range", () 
     );
   }
 });
+
+test("the channel-0 reporting switch messages are part of the parsed union", () => {
+  // P1-3：schema 已声明 debugSetEnabled / debugEnabled；宿主解析器必须认它们，
+  // 否则共享 fixture 的 AJV 校验与宿主回放各说各话（新消息被"排除在断言之外"地绿）。
+  const setFalse = parseBridgeMessage({ type: "debugSetEnabled", enabled: false });
+  assert.deepEqual(setFalse, { type: "debugSetEnabled", enabled: false });
+  const setTrue = parseBridgeMessage({ type: "debugSetEnabled", enabled: true });
+  assert.deepEqual(setTrue, { type: "debugSetEnabled", enabled: true });
+
+  const enabled = parseBridgeMessage({ type: "debugEnabled", enabled: true });
+  assert.deepEqual(enabled, { type: "debugEnabled", enabled: true });
+  const disabled = parseBridgeMessage({ type: "debugEnabled", enabled: false });
+  assert.deepEqual(disabled, { type: "debugEnabled", enabled: false });
+});
+
+test("the reporting switch messages enforce enabled as a required boolean and reject extra keys", () => {
+  // 与 schema 的 required:["type","enabled"] + additionalProperties:false 同判据（TS 侧严格）。
+  expectProtocolError(
+    () => parseBridgeMessage({ type: "debugSetEnabled" }),
+    "bridge.missingProperty",
+    "$.enabled",
+  );
+  expectProtocolError(
+    () => parseBridgeMessage({ type: "debugEnabled", enabled: "true" }),
+    "bridge.invalidMessage",
+    "$.enabled",
+  );
+  expectProtocolError(
+    () => parseBridgeMessage({ type: "debugSetEnabled", enabled: false, reason: "panel" }),
+    "bridge.unknownProperty",
+    "$.reason",
+  );
+  expectProtocolError(
+    () => parseBridgeMessage({ type: "debugEnabled", enabled: 1 }),
+    "bridge.invalidMessage",
+    "$.enabled",
+  );
+});

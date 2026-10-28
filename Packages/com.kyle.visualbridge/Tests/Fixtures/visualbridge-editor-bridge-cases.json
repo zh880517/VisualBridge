@@ -494,6 +494,74 @@
         "requestId": "req-response-2",
         "status": "maybe"
       }
+    },
+    {
+      "label": "debugSetEnabled closes reporting",
+      "valid": true,
+      "value": {
+        "type": "debugSetEnabled",
+        "enabled": false
+      }
+    },
+    {
+      "label": "debugSetEnabled opens reporting",
+      "valid": true,
+      "value": {
+        "type": "debugSetEnabled",
+        "enabled": true
+      }
+    },
+    {
+      "label": "debugEnabled broadcasts the applied on state",
+      "valid": true,
+      "value": {
+        "type": "debugEnabled",
+        "enabled": true
+      }
+    },
+    {
+      "label": "debugEnabled broadcasts the applied off state",
+      "valid": true,
+      "value": {
+        "type": "debugEnabled",
+        "enabled": false
+      }
+    },
+    {
+      "label": "debugSetEnabled without enabled is rejected",
+      "valid": false,
+      "loaderCode": "bridge.missingProperty",
+      "value": {
+        "type": "debugSetEnabled"
+      }
+    },
+    {
+      "label": "debugSetEnabled rejects a string enabled",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "type": "debugSetEnabled",
+        "enabled": "false"
+      }
+    },
+    {
+      "label": "debugEnabled rejects an extra key",
+      "valid": false,
+      "loaderCode": "bridge.unknownProperty",
+      "value": {
+        "type": "debugEnabled",
+        "enabled": true,
+        "reason": "panel"
+      }
+    },
+    {
+      "label": "debugEnabled rejects a numeric enabled",
+      "valid": false,
+      "loaderCode": "bridge.invalidMessage",
+      "value": {
+        "type": "debugEnabled",
+        "enabled": 1
+      }
     }
   ]
 }

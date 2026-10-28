@@ -14,6 +14,12 @@ namespace VisualBridge.Editor
         Reveal,
         Response,
         Error,
+
+        /// <summary>宿主 → Unity 的调试上报开关请求（通道 0 JSON，附录 A.2）。</summary>
+        DebugSetEnabled,
+
+        /// <summary>Unity → 宿主的开关状态广播（通道 0 JSON，附录 A.2）。</summary>
+        DebugEnabled,
     }
 
     /// <summary>
@@ -55,6 +61,13 @@ namespace VisualBridge.Editor
         public string BootId { get; internal set; }
 
         public bool DebugEnabled { get; internal set; }
+
+        /// <summary>
+        /// <c>debugSetEnabled</c> / <c>debugEnabled</c> 的 <c>enabled</c> 字段（附录 A.2）。
+        /// 与 <see cref="DebugEnabled"/>（welcome 里的 <c>debugEnabled</c>）是两个不同的线字段，
+        /// 同名会让"握手通告值"和"开关命令值"混成一个，故分开保存。
+        /// </summary>
+        public bool Enabled { get; internal set; }
 
         public DateTime StartedAt { get; internal set; }
 
@@ -183,6 +196,8 @@ namespace VisualBridge.Editor
                 case "reveal": return ValidateReveal(value);
                 case "response": return ValidateResponse(value);
                 case "error": return ValidateError(value);
+                case "debugSetEnabled": return ValidateDebugSetEnabled(value);
+                case "debugEnabled": return ValidateDebugEnabled(value);
                 default:
                     throw Error("bridge.unknownMessageType", "$.type", $"Unknown message type '{type}'.");
             }
@@ -342,6 +357,17 @@ namespace VisualBridge.Editor
                     }
 
                     break;
+
+                case VisualBridgeBridgeMessageType.DebugSetEnabled:
+                    value["type"] = "debugSetEnabled";
+                    value["enabled"] = message.Enabled;
+                    break;
+
+                case VisualBridgeBridgeMessageType.DebugEnabled:
+                    value["type"] = "debugEnabled";
+                    value["enabled"] = message.Enabled;
+                    break;
+
                 default:
                     throw Error("bridge.invalidMessage", "$.type", "Cannot serialize an unknown message type.");
             }
@@ -393,6 +419,24 @@ namespace VisualBridge.Editor
                 RequestId = requestId,
                 ReferenceValue = referenceValue,
                 ReferenceIsNumber = referenceIsNumber,
+            };
+        }
+
+        internal static VisualBridgeBridgeMessage CreateDebugSetEnabled(bool enabled)
+        {
+            return new VisualBridgeBridgeMessage
+            {
+                Type = VisualBridgeBridgeMessageType.DebugSetEnabled,
+                Enabled = enabled,
+            };
+        }
+
+        internal static VisualBridgeBridgeMessage CreateDebugEnabled(bool enabled)
+        {
+            return new VisualBridgeBridgeMessage
+            {
+                Type = VisualBridgeBridgeMessageType.DebugEnabled,
+                Enabled = enabled,
             };
         }
 
@@ -652,6 +696,35 @@ namespace VisualBridge.Editor
             }
 
             throw Error("bridge.invalidMessage", "$.status", "Expected status 'ok' or 'error'.");
+        }
+
+        /// <summary>
+        /// 通道 0 的开关请求（附录 A.2）：<c>enabled</c> 必填且必须是布尔。判据全部沿用既有校验器——
+        /// 缺字段走 schema 的 required 语义（<c>bridge.missingProperty</c>），类型错（含 <c>null</c>）
+        /// 走 <c>bridge.invalidMessage</c>，都不新增错误码。
+        /// </summary>
+        private static VisualBridgeBridgeMessage ValidateDebugSetEnabled(JObject value)
+        {
+            return ValidateEnabledFlag(value, VisualBridgeBridgeMessageType.DebugSetEnabled);
+        }
+
+        /// <summary>通道 0 的开关状态广播（附录 A.2）：形状与请求完全一致，方向相反。</summary>
+        private static VisualBridgeBridgeMessage ValidateDebugEnabled(JObject value)
+        {
+            return ValidateEnabledFlag(value, VisualBridgeBridgeMessageType.DebugEnabled);
+        }
+
+        private static VisualBridgeBridgeMessage ValidateEnabledFlag(
+            JObject value,
+            VisualBridgeBridgeMessageType messageType)
+        {
+            RequireOnlyKeys(value, "$", "type", "enabled");
+            var enabled = RequireBoolean(value, "enabled", "$.enabled");
+            return new VisualBridgeBridgeMessage
+            {
+                Type = messageType,
+                Enabled = enabled,
+            };
         }
 
         private static VisualBridgeBridgeMessage ValidateError(JObject value)

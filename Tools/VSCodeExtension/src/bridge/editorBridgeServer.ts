@@ -14,6 +14,8 @@ import {
   isBridgeErrorCode,
   negotiatePayloads,
   parseBridgeMessage,
+  requireBoolean,
+  requireOnlyKeys,
   selectBridgeContractHash,
   type BridgeDiscoveryRecord,
   type BridgeErrorCode,
@@ -240,22 +242,27 @@ export class EditorBridgeServer implements vscode.Disposable {
   /**
    * 收下 Unity 的 `debugEnabled` 广播（附录 A.2 的通道 0 控制消息）：`{ type: "debugEnabled", enabled: boolean }`。
    *
-   * 返回是否认领了这条消息（认领后不再进业务消息解析）。形状不对就**不认领**，
-   * 让它走原来的 `bridge.unknownMessageType` 路径，保持"畸形消息会断连"的既有语义。
+   * 返回是否认领了这条消息。形状按 schema 严格校验（`additionalProperties:false` + `enabled` 必填布尔）：
+   * 缺字段/类型错/多余键都会抛 `BridgeProtocolError`，由调用方统一 `sendErrorAndClose`。
+   * 解析器已把 `debugEnabled` 纳入 `BridgeMessage` 联合，这里的二次校验只作纵深防御，
+   * 保证该函数独立调用时也不会"看到 type 对就放行"。
    */
   private acceptDebugEnabledBroadcast(value: unknown): boolean {
-    if (typeof value !== "object" || value === null) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
       return false;
     }
 
     const record = value as Record<string, unknown>;
-    if (record.type !== "debugEnabled" || typeof record.enabled !== "boolean") {
+    if (record.type !== "debugEnabled") {
       return false;
     }
 
-    if (record.enabled !== this.debugReportingEnabled) {
-      this.debugReportingEnabled = record.enabled;
-      this.output.appendLine(`[debug] debugEnabled broadcast: reporting=${record.enabled ? "on" : "off"}`);
+    requireOnlyKeys(record, "$", ["type", "enabled"]);
+    const enabled = requireBoolean(record, "enabled", "$.enabled");
+
+    if (enabled !== this.debugReportingEnabled) {
+      this.debugReportingEnabled = enabled;
+      this.output.appendLine(`[debug] debugEnabled broadcast: reporting=${enabled ? "on" : "off"}`);
     }
 
     this.notifyDebugReporting("broadcast");
@@ -437,19 +444,18 @@ export class EditorBridgeServer implements vscode.Disposable {
       return;
     }
 
-    // `debugEnabled`（附录 A.2 的通道 0 控制消息，契约见 schema 的 `debugEnabledMessage`）
-    // 是调试面自己的控制消息，不在 `BridgeMessage` 的业务联合里
-    // （那套只覆盖 hello/welcome/open/reveal/response/error）。必须在 `parseBridgeMessage` 之前
-    // 分流，否则会被判成 `bridge.unknownMessageType` 并**断开连接**——一条状态广播不该杀连接。
-    // 形状不对（类型错/缺 `enabled`）时故意**不认领**，落回下面的 `bridge.unknownMessageType`
-    // → `sendErrorAndClose`，即"畸形消息会断连"的既有语义（F7 已复核）。
-    if (connection.helloCompleted && this.acceptDebugEnabledBroadcast(value)) {
-      return;
-    }
-
+    // `debugSetEnabled` / `debugEnabled` 已并入 `BridgeMessage`（schema 的两条通道 0 消息），
+    // 因此先按统一解析器做形状校验，再按类型分流：
+    // - 握手后到达的 `debugEnabled` 是调试面自己的状态广播，认领后不进业务分派；
+    // - 其余控制消息（`debugSetEnabled` 出现在错误的监听端、或握手前到达）落回既有的
+    //   `bridge.unknownMessageType` / `bridge.missingProperty` 路径并断连，与 E3 的严格语义一致。
     let message: BridgeMessage;
     try {
       message = parseBridgeMessage(value);
+
+      if (connection.helloCompleted && this.acceptDebugEnabledBroadcast(message)) {
+        return;
+      }
     } catch (errorValue) {
       if (errorValue instanceof BridgeProtocolError) {
         const code = isBridgeErrorCode(errorValue.code) ? errorValue.code : "bridge.invalidMessage";
