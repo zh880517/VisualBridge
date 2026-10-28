@@ -39,6 +39,7 @@ import {
   type DebugContractSnapshotSet,
 } from "./debugContractRegistry";
 import { DebugIngress } from "./debugIngress";
+import { DebugInstanceManager } from "./debugInstanceManager";
 
 export const OPEN_DOCUMENT_COMMAND = "visualbridge.openDocument";
 export const REVEAL_REFERENCE_COMMAND = "visualbridge.revealReference";
@@ -133,6 +134,10 @@ export class EditorBridgeServer implements vscode.Disposable {
   /** 上一次连接被观察到的断开时刻（epoch ms）；宽限判定的起点。 */
   private lastDisconnectedAtMs: number | undefined;
   private readonly debugBindings = new WeakMap<BridgeConnection, EditorBridgeDebugBinding>();
+  /** 调试实例存储与路由：一个窗口（会话）一份，记录与实例在重连宽限内保留（C.3）。 */
+  private readonly debugManager: DebugInstanceManager;
+  /** 下游 ingest 抛错被隔离的次数（坏记录不得拖垮整帧）。 */
+  private debugIngestErrors = 0;
   private contractRefreshTimer: NodeJS.Timeout | undefined;
   private contractRefreshing: Promise<void> | undefined;
 
@@ -149,6 +154,15 @@ export class EditorBridgeServer implements vscode.Disposable {
     this.autoLoadContracts = options.autoLoadContracts ?? options.contracts === undefined;
     this.reconnectGraceMs = options.reconnectGraceMs;
     this.now = options.now ?? Date.now;
+    this.debugManager = new DebugInstanceManager({
+      now: this.now,
+      log: (message) => this.output.appendLine(message),
+    });
+  }
+
+  /** 调试实例存储与路由（F3 面板 / F4 facet 从这里接）。 */
+  public get debug(): DebugInstanceManager {
+    return this.debugManager;
   }
 
   public get state(): EditorBridgeServerState | undefined {
@@ -262,6 +276,8 @@ export class EditorBridgeServer implements vscode.Disposable {
     for (const disposable of this.disposables.splice(0)) {
       disposable.dispose();
     }
+
+    this.debugManager.dispose();
   }
 
   private accept(socket: net.Socket): void {
@@ -383,6 +399,14 @@ export class EditorBridgeServer implements vscode.Disposable {
       nextBootId: () => crypto.randomBytes(16).toString("hex"),
     });
     this.applyReconnectDecision(reconnect);
+    if (!reconnect.resumed) {
+      // 真断开/新会话才清空实例、记录与游标；15 s 内的可恢复中断原样保留（C.3）。
+      this.debugManager.reset();
+    } else {
+      // C.3：可恢复中断里"没再出现"的旧实例标 `endedAt` + `reconnect`；运行时随后重新 Create
+      // 同一个 id 时就会**新建一条实例记录**（旧记录原样保留），不会被误判成重复 Create。
+      this.debugManager.reconnect();
+    }
 
     const welcome: BridgeWelcomeMessage = {
       type: "welcome",
@@ -534,7 +558,7 @@ export class EditorBridgeServer implements vscode.Disposable {
 
   /**
    * 通道 1 的调试载荷：交给本连接绑定的接收门（槽位表与契约快照都按连接隔离）。
-   * 解码结果暂存日志——存储与路由由 F2 接在 `DebugIngress` 下游。
+   * 解码出的包络按到达顺序交给 `DebugInstanceManager.ingest`——它负责"先入 store、再路由、最后捕关键帧"。
    */
   private acceptDebugFrame(connection: BridgeConnection, payloadKind: BridgePayloadKind, payload: Buffer): void {
     const binding = this.debugBindings.get(connection);
@@ -549,7 +573,28 @@ export class EditorBridgeServer implements vscode.Disposable {
       ...(binding.snapshot === undefined ? {} : { contracts: binding.snapshot }),
       log: (message) => this.output.appendLine(message),
     });
-    binding.ingress.acceptFrame({ channel: BridgeChannel.Debug, payloadKind, payload });
+    const envelopes = binding.ingress.acceptFrame({ channel: BridgeChannel.Debug, payloadKind, payload });
+    for (const envelope of envelopes) {
+      // 顺序固定（F2）：记录先进 store、再路由——由 DebugInstanceManager.ingest 内部保证，
+      // 这里只把包络按到达顺序交下去，绝不先给消费者。
+      //
+      // 关于"写入成功但投递失败"（评审 8⑥）：这一层不需要为 ingest 做补偿或回滚。ingest 的
+      // 写入与投递之间**不可抛**——`DebugRouter.dispatch` 对观察者、`accepts()`、主消费者
+      // 三处各自 try/catch，消费者抛错只会让该分类回退通用视图（C.5），既不会冒泡到 ingest，
+      // 也不会让记录消失。因此这里唯一可能失败的时机是写入之前（整流丢弃，没有可回滚的东西）；
+      // 写入之后的关键帧失败也不会回滚已交付的记录（回滚反而会抹掉消费者已经看到的内容）。
+      // 下面的 try/catch 只是最后一道保险，保证单条记录不会升级成连接级致命错误。
+      try {
+        this.debugManager.ingest(envelope, binding.snapshot);
+      } catch (errorValue) {
+        // 单条坏记录不得升级成连接级错误（bridgeSocket 会把 acceptFrame 的异常判 fatal 并丢弃
+        // 同批剩余帧），也不得影响同一批里的其它记录：这里逐条兜住、计数、记日志。
+        this.debugIngestErrors += 1;
+        this.output.appendLine(
+          `[debug] ingest failed (#${this.debugIngestErrors}) for '${envelope.type}'; the rest of the batch keeps flowing: ${String(errorValue)}`,
+        );
+      }
+    }
   }
 
   private logDebugCounters(connection: BridgeConnection): void {
