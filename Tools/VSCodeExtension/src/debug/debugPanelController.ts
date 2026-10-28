@@ -24,10 +24,12 @@ import type { UnpackedModuleWebview } from "../modules/webviewAssets";
 import { DebugEnableSwitch, DEBUG_ENABLE_TIMEOUT_MS, type DebugEnableMode } from "./debugEnableSwitch";
 import {
   DebugPanelModel,
+  EMPTY_DEBUG_FACET_SNAPSHOT,
   type DebugPanelConnection,
   type DebugPanelRecordingState,
   type DebugPanelSnapshot,
 } from "./debugPanelState";
+import type { DebugFacetReplayView, DebugFacetSnapshot } from "./debugFacetRouter";
 
 export const DEBUG_PANEL_VIEW_TYPE = "visualbridge.debugPanel";
 export const DEBUG_PANEL_TITLE = "VisualBridge Debug";
@@ -49,11 +51,22 @@ export interface DebugPanelBridge {
   requestDebugReportingEnabled(enabled: boolean): boolean;
 }
 
+/** 面板呈现的模块 facet 区域（F4；缺省时全部走通用视图）。 */
+export interface DebugPanelFacets {
+  snapshot(): DebugFacetSnapshot;
+  /** 显式分类级重建（"按分类重建"按钮）；返回的 `partial` 会进窗口快照。 */
+  replayCategory(category: string): DebugFacetReplayView | undefined;
+}
+
 export interface DebugPanelControllerOptions {
   /** `context.globalStorageUri`：面板资源落在它下面的 `debugPanel/`。 */
   readonly storageUri: vscode.Uri;
   readonly bridge: () => DebugPanelBridge | undefined;
-  /** 录制能力（F5 提供；缺省视为未接入，按钮置灰）。 */
+  /** 模块 `debug` facet 的类型窗口区域（F4）。 */
+  readonly facets?: DebugPanelFacets;
+  /**
+   * 录制能力（F5 提供；缺省视为未接入，按钮置灰）。
+   */
   readonly recording?: {
     readonly get: () => DebugPanelRecordingState;
     toggle(): void;
@@ -80,6 +93,8 @@ export class DebugPanelController implements vscode.Disposable {
   private refreshTimer: NodeJS.Timeout | undefined;
   private ready = false;
   private disposed = false;
+  /** 推给 Webview 的状态消息失败次数（P1：失败不能被吞掉）。 */
+  private webviewFailuresValue = 0;
   /** 测试专用：把连接类型钉成指定值（生产上只能来自 A.3 的 `connectType`）。 */
   private modeOverride: DebugEnableMode | undefined;
   /** 打开次数（宿主测试用它确认"重开"没有重新拉取）。 */
@@ -107,6 +122,8 @@ export class DebugPanelController implements vscode.Disposable {
       recording: () => this.options.recording?.get() ?? { available: false, active: false },
       onRecordingToggle: () => this.options.recording?.toggle(),
       keyframeCount: (category) => manager.keyframes.count(category),
+      facets: () => this.options.facets?.snapshot() ?? EMPTY_DEBUG_FACET_SNAPSHOT,
+      webviewFailures: () => this.webviewFailuresValue,
       onChange: () => this.scheduleRefresh(),
     });
   }
@@ -119,6 +136,11 @@ export class DebugPanelController implements vscode.Disposable {
 
   public get isReady(): boolean {
     return this.ready;
+  }
+
+  /** 模块路由 / 加载状态变化后立刻重推一次快照（等刷新周期会让"模块未加载"慢一拍）。 */
+  public refreshNow(): void {
+    this.sendState();
   }
 
   public get openCountForTest(): number {
@@ -205,6 +227,15 @@ export class DebugPanelController implements vscode.Disposable {
       case "clear":
         this.model.clear();
         break;
+      case "replayCategory":
+        if (typeof payload.value === "string") {
+          // 返回值（applied/partial）由宿主写进窗口快照；`undefined` 表示该分类没有可重建的
+          // 模块消费者（模块未加载/已回退通用视图），宿主会记日志，面板此时也已禁用该按钮
+          // 并给出"重载模块后自动恢复"的提示（F4 返修 P1 a / P2-2），不会假装重建成功。
+          this.options.facets?.replayCategory(payload.value);
+        }
+
+        break;
       case "step":
         this.model.step(asDirection(payload.direction));
         break;
@@ -277,6 +308,12 @@ export class DebugPanelController implements vscode.Disposable {
   public setEnableTimeoutForTest(timeoutMs: number): void {
     this.enable.setTimeoutForTest(timeoutMs);
     this.sendState();
+  }
+
+  /** 测试专用：模拟一次 Webview 状态消息投递失败（验证计数没有被吞掉）。 */
+  public noteWebviewFailureForTest(reason = "injected for test"): number {
+    this.noteWebviewFailure(reason);
+    return this.webviewFailuresValue;
   }
 
   public dispose(): void {
@@ -359,7 +396,29 @@ export class DebugPanelController implements vscode.Disposable {
       return;
     }
 
-    void this.panel.webview.postMessage({ type: "state", state: this.model.snapshot() });
+    const sent = this.panel.webview.postMessage({ type: "state", state: this.model.snapshot() });
+    // P1：Webview 消息失败必须计数并提示，不能 `void` 掉。`postMessage` 返回 Thenable<boolean>，
+    // 也可能直接抛（面板正在销毁）；两条路径都记到同一个计数里。
+    try {
+      void Promise.resolve(sent).then(
+        (delivered) => {
+          if (delivered === false) {
+            this.noteWebviewFailure("postMessage returned false");
+          }
+        },
+        (errorValue: unknown) => this.noteWebviewFailure(String(errorValue)),
+      );
+    } catch (errorValue) {
+      this.noteWebviewFailure(String(errorValue));
+    }
+  }
+
+  private noteWebviewFailure(reason: string): void {
+    this.webviewFailuresValue += 1;
+    // 只在前几次与每 100 次落日志：刷新周期 200 ms，持续性失败不能刷屏。
+    if (this.webviewFailuresValue <= 3 || this.webviewFailuresValue % 100 === 0) {
+      this.options.log?.(`[debug] panel state postMessage failed (${this.webviewFailuresValue}): ${reason}`);
+    }
   }
 
   private startRefresh(): void {

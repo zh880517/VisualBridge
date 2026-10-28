@@ -27,4 +27,5 @@ export * from "./src/graphCatalogFacet";
 export * from "./src/graphCreateFacet";
 export * from "./src/graphDocumentFacet";
 export * from "./src/graphMcpFacet";
+export * from "./src/graphDebugFacet";
 export * from "./src/graphOperationSchema";

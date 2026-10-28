@@ -116,6 +116,21 @@ export interface DebugCategoryReplayResult {
   readonly partial: boolean;
 }
 
+/**
+ * 实例级清空的结果（`DebugStore.clear()` 与**分类级**主消费者的边界说明）。
+ *
+ * - `releasedBytes`：该实例释放的字节数（全局记账由各 store 的 `bytes` 求和，无需另扣）；
+ * - `categoryReset`：该分类已无任何剩余记录，因此顺带把分类主消费者重置成空——此时
+ *   "清一个实例"与"清整个分类"的边界重合，重置没有额外副作用；
+ * - `categoryStale`：同分类**还有别的实例记录**，主消费者状态仍是旧值（含被清空实例的内容）。
+ *   宿主不在这里调用分类级 `replay`，由面板显式发起（`replayCategory`），并如实展示 `partial`。
+ */
+export interface DebugClearInstanceResult {
+  readonly releasedBytes: number;
+  readonly categoryReset: boolean;
+  readonly categoryStale: boolean;
+}
+
 /** 实例上限（可注入；默认值即 C.4 的四道线上上限）。 */
 export interface DebugInstanceManagerLimits {
   readonly maxInstances: number;
@@ -298,6 +313,21 @@ export class DebugInstanceManager {
   private readonly categoryFloors = new Map<string, number>();
   /** 过滤变化后尚未重放的分类：下次分类回放标 `partial`（C.4）。 */
   private readonly replayPartial = new Set<string>();
+  /**
+   * "实例级清空"之后、尚未经过分类级回放的分类。
+   *
+   * `DebugStore.clear()` 的边界是**一个实例**，而 `DebugFacet` 是**分类级**的：宿主没有
+   * "把某实例的贡献从 facet 状态里减掉"的 API（D.4 没有 reset/实例级事件）。因此清空一个实例后
+   * 若同分类还有别的实例记录，主消费者状态**仍然是旧的**（多出已清空实例的内容），不能假装
+   * 它已同步。这里只记"陈旧"，等面板显式发起分类级 `replay(category)` 再重建——**不在实例级
+   * 操作里偷偷重建整个分类**（F3 评审转来的 P1；见 `clearInstance` 的注释）。
+   *
+   * **终止条件**（F4 返修 P1）：该分类**已没有任何可见记录**时，`settleStaleCategory` 直接结算
+   * （重置主消费者并清掉标记）——与 `clearInstance` 的 `categoryReset` 分支是同一件事：
+   * 分类就是空的，没有东西可重放。少了这一条，同分类剩余实例被淘汰后 `replay()` 会因
+   * `stores.length === 0` 静默返回 `undefined`，界面永远卡在"等一次重建"上。
+   */
+  private readonly staleCategories = new Set<string>();
   private pendingTimer: unknown;
   private disposed = false;
 
@@ -418,6 +448,53 @@ export class DebugInstanceManager {
   /** 该身份**当前活动**实例的 store（同名旧实例已结束时返回新实例的）。 */
   public storeFor(key: string): DebugStore | undefined {
     return this.activeEntry(key)?.store ?? this.entries.find((candidate) => candidate.key === key)?.store;
+  }
+
+  /**
+   * 清空**一个实例**的已缓存记录（面板"清空"，C.7）。
+   *
+   * 为什么这里**不**调用分类级 `replay(category)`（F3 评审转来的 P1）：
+   * - `DebugStore.clear()` 的身份是 `(category, instanceId)`，而 `replay` / `resetMain` 作用于
+   *   **整个分类**（关键帧、主消费者都按分类归属，C.4/D.4）。在实例级操作里调它们，会顺带重建
+   *   同分类的其它实例，并丢掉 `replay` 返回的 `partial`；
+   * - `DebugFacet` 没有"移除某实例贡献"的 API（D.4 只有 `categories`/`onRecord`），所以正确的
+   *   做法不是猜一个重建时机，而是：清掉该实例的记录 + **作废该分类的关键帧/闸门**（状态不可信）
+   *   + 标记 `categoryStale`，等面板显式发起的分类级重建（`replayCategory`）。
+   * - 同分类**没有**剩余记录时不变量退化成"分类就是空的"：此时重置主消费者是安全的，
+   *   且不需要重放任何记录，所以 `categoryReset=true`。
+   */
+  public clearInstance(key: string): DebugClearInstanceResult | undefined {
+    const entry = this.activeEntry(key) ?? this.entries.find((candidate) => candidate.key === key);
+    if (entry === undefined) {
+      return undefined;
+    }
+
+    const releasedBytes = entry.store.clear();
+    const category = entry.category;
+    // 记录离开可用窗口：分类级的"新消费者状态完整"闸门必须关掉，关键帧也不能再当基线。
+    this.markCategoryDirty(category);
+    if (!this.hasVisibleCategoryRecords(category)) {
+      this.router.resetMain(category);
+      this.rebuilt.set(category, true);
+      // P2-7：`clear()` 抬高了该分类的淘汰下界，`noteCategoryFloors` 会在下一条 append 时据此
+      // 再把闸门关回去，让上面这行 `rebuilt = true` 变成一次性的死代码（该分类本次会话再也不会
+      // 捕获关键帧）。但这次下界抬高是**我们自己刚重置过的那次 clear** 带来的，主消费者状态
+      // 已经是"空"——把它记成"已计入的下界"，下一条记录才不会误判成"状态来源已不在窗口内"。
+      this.categoryFloors.set(category, this.maxEvictedArrivalSeq(category));
+      this.staleCategories.delete(category);
+      return { releasedBytes, categoryReset: true, categoryStale: false };
+    }
+
+    this.staleCategories.add(category);
+    this.log(
+      `[debug] cleared instance '${entry.instanceId}' (category '${category}'); the category main consumer is stale until an explicit category replay.`,
+    );
+    return { releasedBytes, categoryReset: false, categoryStale: true };
+  }
+
+  /** 该分类的主消费者是否因"实例级清空"而可能陈旧（等一次分类级 replay）。 */
+  public isCategoryStale(category: string): boolean {
+    return this.staleCategories.has(category);
   }
 
   /** 选中实例（受实例数上限保护）；`undefined` 取消选中。 */
@@ -622,6 +699,8 @@ export class DebugInstanceManager {
    * 分类没有已注册的主消费者时返回 `undefined`（没有可重建的状态，也不去动观察者）。
    */
   public replay(category: string): DebugCategoryReplayResult | undefined {
+    // 记录已全部离开可用窗口的陈旧分类先结算：`stale` 不能再挂到下一次真会话。
+    this.settleStaleCategory(category);
     if (!this.router.hasOwner(category)) {
       return undefined;
     }
@@ -671,6 +750,9 @@ export class DebugInstanceManager {
       this.rebuilt.set(category, true);
     }
 
+    // 分类级重建覆盖了"实例级清空"留下的陈旧状态。
+    this.staleCategories.delete(category);
+
     return {
       category,
       fromKeyframe,
@@ -709,6 +791,45 @@ export class DebugInstanceManager {
     return false;
   }
 
+  /**
+   * 该分类**当前可见**的 store 里是否还有记录（不含被淘汰实例带走的历史）。
+   *
+   * 两个使用方：内部 `clearInstance`/`settleStaleCategory` 判断"分类是否真的空了"；
+   * facet 面板的 `rebuildable` 判断"按分类重建还有没有可重建的内容"（F4 返修 P2-1）。
+   * 公开而不是另写一份判定：分类记录是否可见只有这一个真源。
+   */
+  public hasVisibleCategoryRecords(category: string): boolean {
+    for (const entry of this.entries) {
+      if (entry.category === category && entry.store.recordCount > 0) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * 该分类是否还有 `replay()` 可用的数据源（F4 返修 P2-1）。
+   *
+   * `replay()` 从**活动实例的 store** 取记录；实例全被淘汰只剩墓碑时 `stores.length === 0`，
+   * 调用直接返回 `undefined`。面板的 `rebuildable` 必须与这个前提一致，否则按钮点了没反应。
+   * 记录维度复用 {@link hasVisibleCategoryRecords}，不新增第二套"有没有记录"的判定；
+   * "记录先于 Create"的暂存批次也算——它们属于该分类，`Create` 到达后就会补进 store（C.3）。
+   */
+  public hasReplayableCategoryRecords(category: string): boolean {
+    if (this.hasVisibleCategoryRecords(category)) {
+      return true;
+    }
+
+    for (const bucket of this.pending.values()) {
+      if (bucket.category === category && bucket.records.length > 0) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   /** 闸门是否打开（缺省打开：新会话里消费者在第 1 条记录之前注册，状态天然完整）。 */
   private isRebuilt(category: string): boolean {
     return this.rebuilt.get(category) ?? true;
@@ -718,6 +839,39 @@ export class DebugInstanceManager {
   private markCategoryDirty(category: string): void {
     this.rebuilt.set(category, false);
     this.keyframes.clear(category);
+  }
+
+  /**
+   * `stale` 的终止条件（F4 返修 P1）：该分类**已没有任何可见记录**时结算成"不陈旧"。
+   *
+   * 理由：`stale` 的语义是"主消费者状态多出了已清空实例的内容"，它只在该分类还有别的记录、
+   * 需要一次重建时才成立。记录全没了以后，重置主消费者与 `clearInstance` 的 `categoryReset`
+   * 分支是同一件事（分类本来就是空的），继续挂着只会让界面永久停在"等一次重建"上：
+   * 同分类剩余实例被实例数上限或全局字节上限淘汰后，`replay()` 因 `stores.length === 0`
+   * 静默返回 `undefined`，没有任何用户可执行的出路。
+   *
+   * 同一次重置顺带把当前淘汰下界记成"已计入"，免得下一条记录到达时 `noteCategoryFloors`
+   * 把刚刚修好的闸门又关回去（与 P2-7 同一个记账问题）。
+   */
+  private settleStaleCategory(category: string): boolean {
+    if (!this.staleCategories.has(category) || this.hasVisibleCategoryRecords(category)) {
+      return false;
+    }
+
+    this.router.resetMain(category);
+    this.rebuilt.set(category, true);
+    this.keyframes.clear(category);
+    this.categoryFloors.set(category, this.maxEvictedArrivalSeq(category));
+    this.staleCategories.delete(category);
+    this.log(`[debug] category '${category}' has no records left; settling the stale marker by resetting its main consumer.`);
+    return true;
+  }
+
+  /** 所有"记录已全部离开可用窗口"的陈旧分类都结算掉（淘汰路径调用）。 */
+  private settleStaleCategories(): void {
+    for (const category of [...this.staleCategories]) {
+      this.settleStaleCategory(category);
+    }
   }
 
   /**
@@ -818,6 +972,7 @@ export class DebugInstanceManager {
     this.retiredMaxSeq.clear();
     this.categoryFloors.clear();
     this.replayPartial.clear();
+    this.staleCategories.clear();
     this.arrivalCounter = 0;
     this.currentFrameValue = -1;
     this.selectedKeyValue = undefined;
@@ -993,8 +1148,18 @@ export class DebugInstanceManager {
   }
 
   /**
-   * 入 store → 路由 → 关键帧（顺序固定）。
-   * 关键帧在 `dispatch` 之后捕获：快照已包含刚刚应用的那一条，`arrivalSeq` 也就等于它。
+   * 入 store → 淘汰/结算 → 路由 → 关键帧（顺序固定）。
+   *
+   * F4 返修 P2-2：自动结算必须在 `dispatch` **之前**。一个 facet 可以同时认领多个分类，
+   * 这些分类共享同一个 `ModuleDebugFacetConsumer`；结算兄弟分类时 `resetMain` 会 reset
+   * 这个共享消费者（`reset()` 清 pending/content/delivered）。若结算发生在 `dispatch`
+   * 之后（旧位置），刚入队的当前记录会被清掉，且 `captureKeyframe` 看到 `pending == 0`
+   * 而捕获一份"空状态"基线。移到 `dispatch` 之前后：结算只可能发生在当前记录入队前，
+   * 队列不会被清空；随后 `captureState` 也能看到 `pending > 0` 而拒绝捕获不完整快照。
+   *
+   * 淘汰（`enforceGlobalBytes`）也在 `dispatch` 之前：结算判据依赖"该分类已无可见记录"，
+   * 而这一轮的淘汰正是把兄弟分类清空的原因；先淘汰再结算，本轮就能观察到该事实。
+   * 记录仍会投递（`dispatch` 用的是 append 返回的记录对象），与旧顺序的投递结果一致。
    */
   private appendRecord(entry: DebugInstanceEntry, input: DebugRecordInput): DebugRecord | undefined {
     const record = entry.store.append(input);
@@ -1004,10 +1169,12 @@ export class DebugInstanceManager {
 
     entry.lastActiveAt = record.receivedAt;
     entry.frame = record.frame;
-    this.router.dispatch(record);
     this.enforceGlobalBytes();
     // 淘汰可能落在**别的**分类上，所以按分类全量比一次；关闸必须在捕获之前。
     this.noteCategoryFloors();
+    // 逐条淘汰可能把某个陈旧分类的最后记录也带走（F4 返修 P1 的死角 b）。
+    this.settleStaleCategories();
+    this.router.dispatch(record);
     if (entry.store.takeKeyframeTrigger()) {
       this.captureKeyframe(entry, record);
     }
@@ -1227,6 +1394,9 @@ export class DebugInstanceManager {
       // 整个实例被淘汰 = 该分类下界抬高 ⇒ 主消费者状态不再等于"可用窗口内的全量重放"，关闸。
       this.noteCategoryFloors();
     }
+
+    // 被淘汰的可能是该分类最后一个还有记录的实例：此时"陈旧"的前提消失，必须结算（F4 返修 P1 b）。
+    this.settleStaleCategories();
 
     entry.store.dispose();
     this.suppressed.set(entry.key, {

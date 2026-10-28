@@ -16,10 +16,12 @@ import {
 import {
   graphCatalogFacet,
   graphCreateFacet,
+  graphDebugFacet,
   graphDocumentFacet,
   graphMcpFacet,
   graphOperationSchema,
   createGraphSessionController,
+  validateGraphOptions,
 } from "../index";
 import {
   GRAPH_REVEAL_MESSAGE_TYPE,
@@ -56,8 +58,10 @@ const editor: EditorRegistration = {
     // 工厂：宿主打开文档时调用，得到本次会话的控制器。
     createController: () => createGraphSessionController(),
   },
+  // 分类展示（D.4 / F4）：宿主按分类路由记录，模块只返回窗口内容。
+  debug: graphDebugFacet,
 };
 
 export function activate(_host: ModuleHost): ModuleRegistration {
-  return { editors: [editor] };
+  return { editors: [editor], validateOptions: validateGraphOptions };
 }

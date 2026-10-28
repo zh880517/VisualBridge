@@ -4700,6 +4700,9 @@ exports.run = async function run() {
     resName: `${instance}-res`,
     debugInfo: "",
   });
+  const facetSnapshot = () => vscode.commands.executeCommand("visualbridge.test.debugPanel.facets");
+  const flushFacetBatch = () => vscode.commands.executeCommand("visualbridge.test.debugPanel.flushFacets");
+  const graphWindowOf = (snapshot) => snapshot.windows.find((window) => window.category === "graph");
 
   await test("keeps the Debug panel switch in sync with welcome and the debugEnabled broadcast", async () => {
     const peer = await connectDebugPeer("debug-panel-welcome");
@@ -5010,6 +5013,216 @@ exports.run = async function run() {
     } finally {
       await vscode.commands.executeCommand("visualbridge.test.debugPanel.close");
     }
+  });
+
+  await test("F4 routes graph records to the Graph module facet and still feeds the generic view", async () => {
+    // 前一个用例留了关键词过滤；先清掉，否则下面按 instanceId 找通用视图的行会被过滤掉。
+    await panelCommand("filter", { value: "" });
+    const before = await facetSnapshot();
+    await ingestDebug([
+      debugCreate("graph", "facet-hero"),
+      debugEvent("graph", "facet-hero", 1, "NodeStarted", "node-a"),
+      debugEvent("graph", "facet-hero", 2, "NodeFinished", "node-b"),
+    ]);
+    await flushFacetBatch();
+
+    const after = await facetSnapshot();
+    const window = graphWindowOf(after);
+    assert.ok(window, "The Graph facet window must exist once the module declared the category.");
+    assert.equal(window.state, "active");
+    assert.equal(window.moduleId, "visualbridge.graph");
+    assert.equal(window.editor, "graph");
+    assert.equal(window.path, "modules[0].editors[0].debug");
+    assert.equal(window.records, 2);
+    assert.equal(window.batches, 1);
+    assert.deepEqual(window.content, {
+      kind: "graph.debug",
+      category: "graph",
+      seq: window.content.seq,
+      instanceId: "facet-hero",
+      frame: 2,
+      method: "NodeFinished",
+      wireBytes: 24,
+      nodeId: "node-b",
+    });
+    // 验收 B：同一批记录 facet 与通用观察者都收到。
+    assert.equal(after.generic.records, before.generic.records + 2);
+    assert.equal(after.generic.dropped, 0);
+
+    // 通用视图仍然可见：同一实例在面板时间轴里仍有两条记录。
+    const state = await panelState();
+    const instance = state.instances.find((row) => row.instanceId === "facet-hero");
+    assert.ok(instance);
+    assert.equal(instance.recordCount, 2);
+
+    // 投递诊断不是"吞掉就完"：Webview 消息失败计数必须出现在面板快照里（验收 D）。
+    const failures = await vscode.commands.executeCommand("visualbridge.test.debugPanel.noteWebviewFailure");
+    assert.equal(failures, 1);
+    assert.equal((await panelState()).delivery.webviewFailures, 1);
+  });
+
+  await test("F4 falls back to generic when onRecord throws and keeps other categories intact", async () => {
+    const before = await facetSnapshot();
+    await vscode.commands.executeCommand("visualbridge.test.debugPanel.faultFacet", "graph");
+    await ingestDebug([
+      debugCreate("graph", "fault-hero"),
+      debugEvent("graph", "fault-hero", 1, "NodeStarted", "node-fault"),
+      debugEvent("graph", "fault-hero", 2, "NodeStarted", "node-fault-2"),
+    ]);
+    await flushFacetBatch();
+
+    const failed = await facetSnapshot();
+    const window = graphWindowOf(failed);
+    assert.equal(window.state, "fallback");
+    assert.equal(window.diagnostics[0].code, "module.callFailed");
+    assert.equal(window.diagnostics[0].path, "modules[0].editors[0].debug");
+    assert.match(window.message, /回退到通用视图/u);
+    // 记录不丢：通用观察者收到了这 2 条（转储记录也计入观察者）。
+    assert.equal(failed.generic.records, before.generic.records + 2);
+
+    // 复位注入并重建路由后，同一分类恢复正常。
+    await vscode.commands.executeCommand("visualbridge.test.debugPanel.resetFacets");
+    await flushFacetBatch();
+    await ingestDebug([debugEvent("graph", "fault-hero", 3, "NodeStarted", "node-recovered")]);
+    await flushFacetBatch();
+    const recovered = graphWindowOf(await facetSnapshot());
+    assert.equal(recovered.state, "active");
+    assert.equal(recovered.content.nodeId, "node-recovered");
+  });
+
+  await test("F4 re-reads modules[].options.debug after a module reload and locates invalid options", async () => {
+    const projectUri = vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "VisualBridge.project.vbjson"));
+    const original = await vscode.workspace.fs.readFile(projectUri);
+    const readDefinition = () => JSON.parse(new TextDecoder("utf-8").decode(original));
+    const writeDefinition = async (definition) => {
+      await vscode.workspace.fs.writeFile(
+        projectUri,
+        new TextEncoder().encode(`${JSON.stringify(definition, undefined, 2)}\n`),
+      );
+      await vscode.commands.executeCommand("visualbridge.refreshProjects");
+      await vscode.commands.executeCommand("visualbridge.test.reloadModules");
+    };
+    const moduleState = (id) => waitForAsync(
+      async () => {
+        const state = await vscode.commands.executeCommand("visualbridge.test.getModuleRegistryState");
+        const project = state.projects.find((entry) => entry.projectId === "GraphSemanticProject");
+        return project?.modules.find((module) => module.id === id);
+      },
+      (module) => module !== undefined && module.status === "loaded",
+      20_000,
+      `Module '${id}' did not settle as loaded.`,
+    );
+
+    try {
+      const tuned = readDefinition();
+      assert.equal(tuned.modules[0].id, "visualbridge.graph");
+      tuned.modules[0].options = { debug: { title: "Hosted Graph" } };
+      await writeDefinition(tuned);
+      await moduleState("visualbridge.graph");
+      // 先证明重建后的路由上下文确实拿到了新的 modules[0].options（否则下面的窗口断言会掩盖
+      // "重载了模块但路由源还是旧 Project 定义"这一类缺陷）。
+      const routes = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.debugPanel.facetRoutes"),
+        (entries) => entries.some((entry) => entry.moduleId === "visualbridge.graph"
+          && entry.options?.debug?.title === "Hosted Graph"),
+        20_000,
+        "The rebuilt facet route did not pick up modules[0].options.debug after the reload.",
+      );
+      assert.ok(routes.some((entry) => entry.path === "modules[0].editors[0].debug"));
+      await ingestDebug([
+        debugCreate("graph", "options-hero"),
+        debugEvent("graph", "options-hero", 1, "NodeStarted", "node-options"),
+      ]);
+      await flushFacetBatch();
+      const window = graphWindowOf(await facetSnapshot());
+      assert.equal(window.state, "active");
+      assert.deepEqual(
+        window.content.options,
+        { title: "Hosted Graph" },
+        `unexpected facet content: ${JSON.stringify(window.content)}`,
+      );
+
+      const invalid = readDefinition();
+      invalid.modules[0].options = { debug: { title: 42 } };
+      await writeDefinition(invalid);
+      const disabled = await waitForAsync(
+        async () => {
+          const state = await vscode.commands.executeCommand("visualbridge.test.getModuleRegistryState");
+          const project = state.projects.find((entry) => entry.projectId === "GraphSemanticProject");
+          return project?.modules.find((module) => module.id === "visualbridge.graph");
+        },
+        (module) => module !== undefined && module.status !== "loaded"
+          && module.diagnostics.some((entry) => entry.code === "module.optionsInvalid"),
+        20_000,
+        "The Graph module was not rejected after modules[0].options.debug became invalid.",
+      );
+      const diagnostic = disabled.diagnostics.find((entry) => entry.code === "module.optionsInvalid");
+      assert.ok(diagnostic, "validateOptions failure must be reported as module.optionsInvalid.");
+      assert.equal(diagnostic.path, "modules[0].options");
+      assert.match(diagnostic.message, /graph\.options\.debugInvalid/u);
+      assert.match(diagnostic.message, /\$\.debug\.title/u);
+
+      // 模块被停用后，该分类立即回退通用视图，面板给出"模块未加载"。
+      await flushFacetBatch();
+      await ingestDebug([debugEvent("graph", "options-hero", 2, "NodeStarted", "node-disabled")]);
+      await flushFacetBatch();
+      const unavailable = graphWindowOf(await facetSnapshot());
+      assert.equal(unavailable.state, "unavailable");
+      assert.match(unavailable.message, /模块未加载/u);
+    } finally {
+      await vscode.workspace.fs.writeFile(projectUri, original);
+      await vscode.commands.executeCommand("visualbridge.refreshProjects");
+      await vscode.commands.executeCommand("visualbridge.test.reloadModules");
+      await moduleState("visualbridge.graph");
+    }
+  });
+
+  await test("F4 revoking module trust invalidates the route immediately and replay never double-feeds generic", async () => {
+    const before = await facetSnapshot();
+    const genericBefore = before.generic.records;
+    // 撤销信用前旧消费者已投递的条数 = 该分类在 store 里的可见记录数（上一次 rebuild 已全量重放）。
+    const beforeRecords = graphWindowOf(before).records;
+    try {
+      await vscode.commands.executeCommand("visualbridge.test.setModuleTrustOverride", false);
+      await waitForAsync(
+        async () => graphWindowOf(await facetSnapshot())?.state,
+        (state) => state === "unavailable",
+        20_000,
+        "The Graph facet route did not go generic after trust was revoked.",
+      );
+      await ingestDebug([
+        debugCreate("graph", "revoked-hero"),
+        debugEvent("graph", "revoked-hero", 1, "NodeStarted", "node-offline"),
+      ]);
+      await flushFacetBatch();
+      const offline = await facetSnapshot();
+      // 验收 A：注销后的消费者一次都没有再被调用，分类立刻走通用视图。
+      assert.equal(offline.lateRecords, 0);
+      assert.equal(offline.generic.records, genericBefore + 1);
+      assert.match(graphWindowOf(offline).message, /模块未加载/u);
+    } finally {
+      await vscode.commands.executeCommand("visualbridge.test.setModuleTrustOverride", undefined);
+    }
+
+    await waitForAsync(
+      async () => graphWindowOf(await facetSnapshot()),
+      (window) => window?.state === "active",
+      20_000,
+      "The Graph facet route did not recover after trust was restored.",
+    );
+    await flushFacetBatch();
+    const replayed = await facetSnapshot();
+    // 信任恢复后新 facet 在 rebuild() 里按分类全量重放该分类**当前可用**的记录，所以投递数是
+    // 精确值而不是"至少 1 条"：撤销前旧消费者已投递的 beforeRecords + 卸载期间存下的条数。
+    // 卸载期间存下的条数由通用视图基线算出（观察者始终收到每条记录；debugCreate 不是记录）。
+    const storedWhileUnloaded = replayed.generic.records - genericBefore;
+    assert.equal(storedWhileUnloaded, 1, "卸载期间恰好只存下 1 条记录");
+    assert.equal(
+      graphWindowOf(replayed).records,
+      beforeRecords + storedWhileUnloaded,
+      "records stored while unloaded must all be replayed to the new facet",
+    );
+    assert.equal(replayed.generic.records, genericBefore + 1, "replay must not feed the generic observer twice");
   });
 };
 

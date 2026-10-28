@@ -1015,6 +1015,30 @@ test("an instance retired for the floor also closes the gate until a full replay
   assert.equal(manager.keyframes.count("graph"), 1, "a successful full replay after the eviction reopens the gate");
 });
 
+test("a category reset by an instance clear keeps capturing keyframes (P2-7)", () => {
+  const consumer = new RecordingConsumer(["graph"]);
+  const router = new DebugRouter();
+  router.register(consumer, "graph");
+  const manager = new DebugInstanceManager({
+    router,
+    limits: { keyframeIntervalRecords: 1, keyframeIntervalBytes: Number.POSITIVE_INFINITY },
+  });
+
+  manager.ingest(createEnvelope("hero"));
+  manager.ingest(eventEnvelope("hero", 1));
+  assert.equal(manager.keyframes.count("graph"), 1);
+
+  // 只有这一个实例：清空后该分类已无任何记录 ⇒ `categoryReset` 分支（resetMain + rebuilt = true）。
+  const cleared = manager.clearInstance(debugInstanceKey("graph", "hero"));
+  assert.equal(cleared?.categoryReset, true);
+  assert.equal(manager.keyframes.count("graph"), 0);
+
+  manager.ingest(eventEnvelope("hero", 2));
+  // 这次下界抬高正是上面那次"已重置过的清空"造成的，必须被它吸收；否则 `rebuilt = true` 是一次性
+  // 死代码，该分类本次会话再也捕不到关键帧（旧实现：这里会是 0）。
+  assert.equal(manager.keyframes.count("graph"), 1, "the reset state is the new baseline; the gate must stay open");
+});
+
 test("a Create in one category does not lift an id-level Finish for other categories", () => {
   const clock = 0;
   const manager = new DebugInstanceManager({ now: () => clock });

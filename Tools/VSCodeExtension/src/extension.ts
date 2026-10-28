@@ -47,6 +47,8 @@ import { BridgeProtocolError, parseBridgeMessage, parseDiscoveryRecord } from ".
 import { RuntimeDebugAdapter } from "./debug/runtimeDebugAdapter";
 import { RuntimeDebugConfigurationProvider, RUNTIME_DEBUG_TYPE } from "./debug/runtimeDebugConfigurationProvider";
 import { DebugPanelController } from "./debug/debugPanelController";
+import { DebugFacetHost } from "./debug/debugFacetRouter";
+import { collectDebugFacetSources } from "./debug/debugFacetSources";
 import type { DebugEnvelope } from "./bridge/debugIngress";
 
 interface LifecycleElementDeleteRequest {
@@ -932,12 +934,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   // 独立 Debug 面板（F3）：数据只来自 `bridgeServer.debug`，开关状态只来自 welcome 与广播。
+  // 模块 debug facet（F4）：宿主把分类路由到已装载模块，通用视图始终是观察者（C.5）。
+  const debugFacetHost = new DebugFacetHost({
+    router: bridgeServer.debug.router,
+    replay: (category) => bridgeServer.debug.replay(category),
+    knownCategories: () => [...new Set(bridgeServer.debug.instances.map((instance) => instance.category))],
+    isCategoryStale: (category) => bridgeServer.debug.isCategoryStale(category),
+    hasReplayableRecords: (category) => bridgeServer.debug.hasReplayableCategoryRecords(category),
+    sessionId: () => bridgeServer.state?.sessionId ?? "",
+    log: (message) => output.appendLine(message),
+  });
+  context.subscriptions.push(debugFacetHost);
   const debugPanel = new DebugPanelController({
     storageUri: context.globalStorageUri,
     bridge: () => bridgeServer,
+    facets: debugFacetHost,
     log: (message) => output.appendLine(message),
   });
   context.subscriptions.push(debugPanel);
+  /** 模块装载/授权/Project 变化后重建分类路由；旧 facet 先注销，之后不会再收到记录（验收 A）。 */
+  const rebuildDebugFacets = (): void => {
+    debugFacetHost.rebuild(collectDebugFacetSources(
+      projects.projects,
+      (project) => modules.modulesFor(project),
+      (moduleId, message) => output.appendLine(`[module:${moduleId}] ${message}`),
+    ));
+    debugPanel.refreshNow();
+  };
+  context.subscriptions.push(modules.onDidChange(rebuildDebugFacets), projects.onDidChange(rebuildDebugFacets));
+  rebuildDebugFacets();
   context.subscriptions.push(
     bridgeServer.onDidChangeDebugReporting((reason) => debugPanel.applyBridgeChange(reason, bridgeServer.debugReporting.enabled)),
   );
@@ -1028,6 +1053,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         state: debugPanel.getStateForTest(),
       })),
       vscode.commands.registerCommand("visualbridge.test.debugPanel.debugReporting", () => bridgeServer.debugReporting),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.facets", () => debugFacetHost.snapshot()),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.facetRoutes", () => debugFacetHost.routeSummaryForTest()),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.flushFacets", () => {
+        debugFacetHost.flushForTest();
+        return debugFacetHost.snapshot();
+      }),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.faultFacet", (category: unknown) => {
+        debugFacetHost.setFaultInjectionForTest(typeof category === "string" ? category : undefined);
+        debugFacetHost.flushForTest();
+        return debugFacetHost.snapshot();
+      }),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.resetFacets", () => {
+        debugFacetHost.setFaultInjectionForTest(undefined);
+        debugFacetHost.reloadForTest();
+        debugFacetHost.flushForTest();
+        return debugFacetHost.snapshot();
+      }),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.replayCategory", (category: unknown) =>
+        (typeof category === "string" ? debugFacetHost.replayCategory(category) : undefined)),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.noteWebviewFailure", () =>
+        debugPanel.noteWebviewFailureForTest()),
       vscode.commands.registerCommand("visualbridge.test.parseBridgeMessage", (value: unknown) => {
         try {
           return { ok: true, message: parseBridgeMessage(value) };

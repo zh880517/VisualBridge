@@ -25,12 +25,18 @@ export function createManager(options: {
   readonly maxRecords?: number;
   /** 实例数上限：压到 1 就能用第二个 `Create` 把第一个实例挤成墓碑。 */
   readonly maxInstances?: number;
+  /** 全局字节上限：压小后一次 append 就能淘汰**别的**分类的最后一条记录（P2-2）。 */
+  readonly maxBytesGlobal?: number;
+  /** 关键帧触发间隔（条）：设 1 让每条记录都触发捕获（P2-2 的空状态关键帧）。 */
+  readonly keyframeIntervalRecords?: number;
 } = {}): DebugInstanceManager {
   return new DebugInstanceManager({
     ...(options.router === undefined ? {} : { router: options.router }),
     limits: {
       ...(options.maxRecords === undefined ? {} : { maxRecordsPerInstance: options.maxRecords }),
       ...(options.maxInstances === undefined ? {} : { maxInstances: options.maxInstances }),
+      ...(options.maxBytesGlobal === undefined ? {} : { maxBytesGlobal: options.maxBytesGlobal }),
+      ...(options.keyframeIntervalRecords === undefined ? {} : { keyframeIntervalRecords: options.keyframeIntervalRecords }),
     },
     now: () => 1_000,
   });

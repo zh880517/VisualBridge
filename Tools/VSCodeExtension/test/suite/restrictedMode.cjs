@@ -309,6 +309,43 @@ exports.run = async function run() {
       }),
     ]);
   });
+
+  await test("debug categories fall back to the generic view with an explicit module-unloaded notice", async () => {
+    await vscode.commands.executeCommand("visualbridge.test.debugPanel.ingest", [
+      {
+        type: "debugCreate",
+        frame: -1,
+        wireBytes: 10,
+        payloadKind: 1,
+        category: "graph",
+        instance: "restricted-hero",
+        instanceSlot: 1,
+        resName: "restricted-hero-res",
+        debugInfo: "",
+      },
+      {
+        type: "debug",
+        frame: 1,
+        wireBytes: 24,
+        payloadKind: 1,
+        category: "graph",
+        instance: "restricted-hero",
+        interfaceId: "IGraphDebuger",
+        method: "NodeStarted",
+        methodId: 10,
+        instanceSlot: 1,
+        args: [{ tag: 1, name: "nodeId", type: "string", value: "node-restricted" }],
+        contractState: "unknown-interface",
+      },
+    ]);
+    const snapshot = await vscode.commands.executeCommand("visualbridge.test.debugPanel.flushFacets");
+    const window = snapshot.windows.find((candidate) => candidate.category === "graph");
+    assert.ok(window, "An untrusted workspace must still expose the category window as unavailable.");
+    assert.equal(window.state, "unavailable");
+    assert.match(window.message, /模块未加载/u);
+    assert.equal(window.moduleId, undefined);
+    assert.ok(snapshot.generic.records >= 1, "The record still reaches the generic consumer.");
+  });
 };
 
 async function test(name, action) {

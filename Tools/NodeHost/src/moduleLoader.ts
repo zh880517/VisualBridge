@@ -185,6 +185,14 @@ interface ValidatedEditorRegistration {
   readonly debug?: {
     readonly categories: readonly string[];
     readonly windowTitle?: string;
+    /**
+     * 调试记录回调（附录 D.4）。
+     *
+     * 校验只负责"是不是函数"；**必须原样保留**：宿主侧 F4 的 facet 路由要调用它，若在注册面
+     * 投影时丢掉，模块声明的 `debug.categories` 就只能看不能用（F4 之前的投影正是如此）。
+     * 用结构化函数类型而不是从 SDK import `DebugFacet`，保持 NodeHost 不依赖 SDK 包装层。
+     */
+    readonly onRecord: (record: unknown, context: unknown) => unknown;
   };
   readonly [key: string]: unknown;
 }
@@ -991,6 +999,11 @@ function normalizeRegistration(
         } else {
           debug = {
             categories,
+            // D.4 把 `onRecord` 定义成 facet 的**方法**：注册面投影时必须 bind 到模块导出的那个
+            // facet 对象，否则调用时 `this` 是装载器这份投影副本，有状态 facet 会静默丢状态
+            // （与 validateOptions / dispose 的处理保持一致，F4 返修 P2-4）。
+            onRecord: (editorValue.debug.onRecord as (record: unknown, context: unknown) => unknown)
+              .bind(editorValue.debug),
             ...(editorValue.debug.windowTitle === undefined
               ? {}
               : { windowTitle: editorValue.debug.windowTitle as string }),

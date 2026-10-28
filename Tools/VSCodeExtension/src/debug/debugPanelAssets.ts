@@ -95,6 +95,8 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
 
     var status = el("div", "vb-debug-status");
     status.id = "status";
+    var windows = el("div", "vb-debug-windows");
+    windows.id = "windows";
     var body = el("div", "vb-debug-body");
     var instances = el("ul", "vb-debug-instances");
     instances.id = "instances";
@@ -105,8 +107,8 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
     body.appendChild(instances);
     body.appendChild(timeline);
     body.appendChild(detail);
-    root.replaceChildren(toolbar, status, body);
-    shell = { toolbar: toolbar, enable: enable, pause: pause, clear: clear, record: record, byRecord: byRecord, byFrame: byFrame, previous: previous, next: next, live: live, filter: filter, status: status, instances: instances, timeline: timeline, detail: detail };
+    root.replaceChildren(toolbar, status, windows, body);
+    shell = { toolbar: toolbar, enable: enable, pause: pause, clear: clear, record: record, byRecord: byRecord, byFrame: byFrame, previous: previous, next: next, live: live, filter: filter, status: status, windows: windows, instances: instances, timeline: timeline, detail: detail };
   }
 
   function renderEnable() {
@@ -145,7 +147,95 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
     if (state.timeline.historyMissing) {
       text += " · 历史未记录";
     }
+    var facets = state.facets || { windows: [], failures: 0, pending: 0, generic: { records: 0 } };
+    if (facets.windows.length > 0) {
+      text += " · 类型窗口 " + facets.windows.length;
+    }
+    if (facets.pending > 0) {
+      text += " · 待投 " + facets.pending;
+    }
+    if (facets.failures > 0) {
+      text += " · 模块失败 " + facets.failures;
+    }
+    if (facets.generic && facets.generic.records > 0) {
+      text += " · 通用 " + facets.generic.records;
+    }
+    if (state.delivery && state.delivery.webviewFailures > 0) {
+      text += " · Webview 失败 " + state.delivery.webviewFailures;
+    }
     shell.status.textContent = text;
+  }
+
+  function renderWindows() {
+    var facets = state.facets || { windows: [] };
+    var nodes = (facets.windows || []).map(function (windowState, index) {
+      var section = el("section", "vb-debug-window vb-debug-window-" + windowState.state);
+      var header = el("div", "vb-debug-window-head");
+      header.appendChild(el("span", "vb-debug-window-title", windowState.title));
+      if (windowState.moduleTitle) {
+        header.appendChild(el("span", "vb-debug-window-module-title", " · " + windowState.moduleTitle));
+      }
+      var badge = windowState.state === "active"
+        ? "模块消费"
+        : windowState.state === "fallback" ? "已回退通用视图" : "通用视图";
+      header.appendChild(el("span", "vb-debug-window-badge", badge));
+      // 按钮可用性、元信息与提示文案共用这一个判据：不允许"按钮禁用、提示却让用户去点"（F4 P1 a）。
+      var rebuildable = windowState.rebuildable === true;
+      var replay = button("vb-debug-window-replay-" + index, "按分类重建", function () {
+        post({ type: "command", command: "replayCategory", value: windowState.category });
+      }, rebuildable
+        ? "按分类重建主消费者（partial 会如实显示）"
+        : "该分类没有可重建的模块消费者：重载模块（或重新授权）后会自动恢复");
+      replay.disabled = !rebuildable;
+      header.appendChild(replay);
+      section.appendChild(header);
+
+      var meta = [];
+      if (windowState.moduleId) { meta.push(windowState.moduleId); }
+      if (windowState.editor) { meta.push(windowState.editor); }
+      meta.push(windowState.records + " 条 / " + windowState.batches + " 批");
+      if (windowState.pending > 0) { meta.push("待投 " + windowState.pending); }
+      if (windowState.stale) {
+        meta.push(rebuildable ? "实例清空后未重建" : "实例清空后未重建 · 需重载模块");
+      }
+      section.appendChild(el("div", "vb-debug-window-meta", meta.join(" · ")));
+
+      if (windowState.message) {
+        section.appendChild(el("div", "vb-debug-warning", windowState.message));
+      }
+      if (windowState.stale) {
+        // 不可重建时给的是用户真能执行的下一步，而不是一个点不动的按钮。
+        section.appendChild(el("div", rebuildable ? "vb-debug-hint" : "vb-debug-warning",
+          rebuildable
+            ? "同分类还有其它实例的记录：模块视图仍是清空前的状态，点“按分类重建”才会重建。"
+            : "模块未加载或已回退通用视图，没有可重建的模块消费者：重载模块（或重新授权）后会自动恢复重建。"));
+      }
+      if (windowState.replay) {
+        section.appendChild(el("div", windowState.replay.partial ? "vb-debug-warning" : "vb-debug-hint",
+          "上次重建：应用 " + windowState.replay.applied + " 条"
+          + (windowState.replay.fromKeyframe ? "（关键帧）" : "（从头）")
+          + (windowState.replay.partial ? " · 历史缺失（partial）" : "")));
+      }
+      (windowState.diagnostics || []).forEach(function (diagnostic) {
+        section.appendChild(el("div", "vb-debug-warning", diagnostic.code + " @ " + diagnostic.path + "：" + diagnostic.message));
+      });
+      if (windowState.content !== undefined) {
+        var text;
+        try {
+          text = JSON.stringify(windowState.content, undefined, 2);
+        } catch (error) {
+          text = String(windowState.content);
+        }
+        section.appendChild(el("pre", "vb-debug-json vb-debug-facet-content", text));
+      } else if (windowState.state === "active") {
+        section.appendChild(el("div", "vb-debug-empty", "模块尚未返回渲染增量"));
+      }
+      return section;
+    });
+    if (nodes.length === 0) {
+      nodes = [el("div", "vb-debug-empty", "暂无模块调试窗口（记录仍会进通用窗口）")];
+    }
+    shell.windows.replaceChildren.apply(shell.windows, nodes);
   }
 
   function renderToolbar() {
@@ -274,6 +364,7 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
     renderEnable();
     renderStatus();
     renderToolbar();
+    renderWindows();
     renderInstances();
     renderTimeline();
     renderDetail();
@@ -341,6 +432,20 @@ body { margin: 0; padding: 0; }
   border-bottom: 1px solid var(--vscode-panel-border);
   opacity: 0.9;
 }
+.vb-debug-windows {
+  max-height: 32vh;
+  overflow: auto;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  padding: 4px;
+}
+.vb-debug-window { border: 1px solid var(--vscode-panel-border); margin: 4px 0; padding: 4px; }
+.vb-debug-window-fallback { border-color: var(--vscode-editorWarning-foreground); }
+.vb-debug-window-head { display: flex; align-items: center; gap: 6px; }
+.vb-debug-window-title { font-weight: 600; }
+.vb-debug-window-module-title { opacity: 0.8; }
+.vb-debug-window-badge { border: 1px solid var(--vscode-panel-border); padding: 0 4px; font-size: 0.9em; }
+.vb-debug-window-meta { opacity: 0.8; }
+.vb-debug-facet-content { max-height: 16vh; overflow: auto; }
 .vb-debug-body { display: flex; align-items: stretch; min-height: 0; }
 .vb-debug-instances {
   list-style: none;

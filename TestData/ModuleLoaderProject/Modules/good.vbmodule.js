@@ -1,4 +1,15 @@
 // 正常模块：提供 fixture editor、一个 Reference kind、validateOptions 与 dispose。
+// 调试 facet 刻意做成**有状态**的：D.4 把 `onRecord` 定义成方法，宿主必须 bind 到模块导出的
+// 这个 facet 对象上，否则状态会静默落在装载器的投影副本上（F4 P2-4）。
+const debugFacet = {
+  categories: ["fixture.debug"],
+  calls: 0,
+  onRecord() {
+    this.calls += 1;
+    return { calls: this.calls, self: this === debugFacet };
+  },
+};
+
 module.exports = {
   manifest: {
     id: "visualbridge.fixture.good",
@@ -58,12 +69,7 @@ module.exports = {
               },
             },
           ],
-          debug: {
-            categories: ["fixture.debug"],
-            onRecord() {
-              return undefined;
-            },
-          },
+          debug: debugFacet,
           session: {
             createController() {
               return {

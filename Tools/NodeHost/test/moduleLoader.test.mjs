@@ -57,6 +57,12 @@ test("loads the committed fixture bundle and reports every status", async () => 
   assert.deepEqual(codes.get("visualbridge.fixture.conflict"), ["module.editorConflict"]);
   assert.deepEqual(codes.get("visualbridge.fixture.reference-conflict"), ["module.referenceKindConflict"]);
   assert.deepEqual(codes.get("visualbridge.fixture.debug-conflict"), ["module.editorConflict"]);
+  const debugConflict = result.modules.find((module) => module.id === "visualbridge.fixture.debug-conflict");
+  assert.ok(debugConflict);
+  // 冲突诊断必须能定位到具体 categories 下标，而不是只说"有冲突"（F4 验收 ③）。
+  const debugConflictDiagnostic = debugConflict.diagnostics[0];
+  assert.match(debugConflictDiagnostic.path, /^modules\[\d+\]\.editors\[0\]\.debug\.categories\[0\]$/u);
+  assert.equal(debugConflictDiagnostic.message, "Debug category 'fixture.debug' is already provided by module 'visualbridge.fixture.good'.");
   assert.deepEqual(codes.get("visualbridge.fixture.hash"), ["module.hashMismatch"]);
   assert.deepEqual(codes.get("visualbridge.fixture.require"), ["module.loadFailed"]);
   assert.deepEqual(codes.get("visualbridge.fixture.activate"), ["module.activateFailed"]);
@@ -76,8 +82,24 @@ test("loads the committed fixture bundle and reports every status", async () => 
   assert.equal(good.declaredHash, undefined);
   assert.equal(good.manifest?.id, "visualbridge.fixture.good");
   assert.deepEqual(good.registration.editors.map((editor) => editor.editor), ["fixture"]);
+  // F4：注册面必须保留 debug facet 的回调，否则宿主只能看到 categories 却无法调用模块。
+  const debugFacet = good.registration.editors[0].debug;
+  assert.deepEqual([...debugFacet.categories], ["fixture.debug"]);
+  assert.equal(typeof debugFacet.onRecord, "function");
   assert.match(good.webviews.fixture.script, /function/u);
   assert.equal(good.webviews.fixture.style, ":root { --vb-fixture: 1; }");
+});
+
+test("a stateful debug facet keeps its own `this` after registration normalization (P2-4)", async () => {
+  const { loader } = await createFixtureLoader();
+  const good = loader.result.modules.find((module) => module.id === "visualbridge.fixture.good");
+  assert.ok(good);
+  const facet = good.registration.editors[0].debug;
+  assert.ok(facet);
+  // D.4 把 onRecord 定义成方法：`this` 必须是模块导出的那个 facet，而不是装载器的投影对象。
+  // 未 bind 时 state 会静默落在投影副本上，模块自己永远读不到（F4 P2-4）。
+  assert.deepEqual(facet.onRecord({ category: "fixture.debug" }, {}), { calls: 1, self: true });
+  assert.deepEqual(facet.onRecord({ category: "fixture.debug" }, {}), { calls: 2, self: true });
 });
 
 test("rejects invalid, missing and aliased module entries", async (t) => {

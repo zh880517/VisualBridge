@@ -23,7 +23,8 @@ import {
   type DebugCursorGranularity,
   type DebugRecord,
 } from "../bridge/debugStore";
-import type { DebugInstanceView } from "../bridge/debugInstanceManager";
+import type { DebugClearInstanceResult, DebugInstanceView } from "../bridge/debugInstanceManager";
+import type { DebugFacetSnapshot } from "./debugFacetRouter";
 import type { DebugEnableState, DebugEnableSwitch } from "./debugEnableSwitch";
 
 /** 时间轴一次最多渲染多少条记录（P1 的 2 万条卡顿对策）。 */
@@ -32,12 +33,25 @@ export const DEBUG_PANEL_WINDOW_RECORDS = 500;
 /** 参数值 / 原始 JSON 的单值预览上限（P1：`byte[]` 是 base64，必须截断）。 */
 export const DEBUG_PANEL_VALUE_PREVIEW_LIMIT = 160;
 
+/** 没有接入模块 facet 时的空快照（面板仍然可用，全部走通用视图）。 */
+export const EMPTY_DEBUG_FACET_SNAPSHOT: DebugFacetSnapshot = {
+  windows: [],
+  pending: 0,
+  batches: 0,
+  failures: 0,
+  batchLimit: 0,
+  lateRecords: 0,
+  generic: { records: 0, dropped: 0 },
+};
+
 /** 面板用到的 manager 子集：单测可以喂一个只实现这些成员的假对象。 */
 export interface DebugPanelSource {
   readonly instances: readonly DebugInstanceView[];
   instance(key: string): DebugInstanceView | undefined;
   storeFor(key: string): DebugPanelStoreSource | undefined;
   replay(category: string): unknown;
+  /** 实例级清空（**不**在内部重建整个分类，见 `DebugInstanceManager.clearInstance`）。 */
+  clearInstance(key: string): DebugClearInstanceResult | undefined;
   select(key: string | undefined): void;
 }
 
@@ -60,7 +74,6 @@ export interface DebugPanelStoreSource {
   };
   applyCursor(position: number): unknown;
   step(granularity: DebugCursorGranularity, direction: DebugCursorDirection): unknown;
-  clear(): number;
   pause(): void;
   resume(): void;
 }
@@ -184,6 +197,12 @@ export interface DebugPanelSnapshot {
   readonly totalInstances: number;
   readonly timeline: DebugPanelTimeline;
   readonly recording: DebugPanelRecordingState;
+  /** 模块 `debug` facet 的类型窗口区域（D.4）：标题/工具条归宿主，内容由模块给。 */
+  readonly facets: DebugFacetSnapshot;
+  /** 宿主投递诊断：Webview 消息失败计数（P1：不能被吞掉）。 */
+  readonly delivery: {
+    readonly webviewFailures: number;
+  };
   /** 状态栏附加信息。 */
   readonly status: {
     readonly records: number;
@@ -210,6 +229,10 @@ export interface DebugPanelModelOptions {
   /** 录制能力（F5 注入；缺省"未接入"）。 */
   readonly recording?: () => DebugPanelRecordingState;
   readonly onRecordingToggle?: () => void;
+  /** 模块 facet 区域快照（F4；缺省空快照 = 全部走通用视图）。 */
+  readonly facets?: () => DebugFacetSnapshot;
+  /** Webview 消息失败计数（F4 P1；由控制器累计）。 */
+  readonly webviewFailures?: () => number;
   readonly onChange?: () => void;
 }
 
@@ -221,6 +244,8 @@ export class DebugPanelModel {
   private readonly windowRecords: number;
   private readonly recording: () => DebugPanelRecordingState;
   private readonly onRecordingToggle: (() => void) | undefined;
+  private readonly facets: () => DebugFacetSnapshot;
+  private readonly webviewFailures: () => number;
   private readonly onChange: (() => void) | undefined;
   /** 关键词筛选（匹配 instanceId / resName / category / interface / debugInfo，C.7）。 */
   private filterValue = "";
@@ -245,6 +270,8 @@ export class DebugPanelModel {
     this.windowRecords = options.windowRecords ?? DEBUG_PANEL_WINDOW_RECORDS;
     this.recording = options.recording ?? (() => ({ available: false, active: false }));
     this.onRecordingToggle = options.onRecordingToggle;
+    this.facets = options.facets ?? (() => EMPTY_DEBUG_FACET_SNAPSHOT);
+    this.webviewFailures = options.webviewFailures ?? (() => 0);
     this.onChange = options.onChange;
   }
 
@@ -392,27 +419,26 @@ export class DebugPanelModel {
   }
 
   /**
-   * 清空当前实例的时间轴。
+   * 清空当前实例的时间轴（C.7）。
    *
-   * 与 F2 的 `setFilterKey` 闸门约定：`DebugStore.clear()` 只把 `recordCount` 归零、**不**关闭
-   * "新消费者缺历史"的闸门，而 `DebugInstanceManager.setFilterKey` 只在 `recordCount > 0` 时关闸。
-   * 因此"先 clear 再换 filterKey"会让旧主消费者状态被当成新过滤的完整基线（F2 注明该组合在
-   * F2 内不可达）。本面板的两条处置：
-   * 1. 关键词筛选**不**改 `filterKey`（纯视图过滤，不动关键帧归属），因此生产路径上不存在
-   *    "clear 之后再换 filterKey"；
-   * 2. clear 之后立刻 `replay(category)` 一次，把分类主消费者重置成与 store 一致的空状态，
-   *    这样即便将来有人把数据面过滤接到 `setFilterKey`，被作废的也只剩空状态。
-   * 谁将来把数据面过滤接上 `setFilterKey`，必须同时保证"clear 之后先 replay 或先换 key"。
+   * 边界是**一个实例**：调用 `DebugInstanceManager.clearInstance`，由它决定分类主消费者是否
+   * 已经退化成空（`categoryReset`），还是在同分类还有别的实例记录时只标 `categoryStale`。
+   * **不在实例级操作里调用分类级 `replay`**（F3 评审转来的 P1：那会重建整个分类并丢掉
+   * `partial`）；需要重建分类时由面板的"按分类重建"动作显式发起。
    */
   public clear(): boolean {
-    const store = this.selectedStore();
+    const key = this.selectedKeyValue;
+    if (key === undefined) {
+      return false;
+    }
+
+    const store = this.manager.storeFor(key);
     if (store === undefined) {
       return false;
     }
 
-    store.clear();
-    this.interfaces.delete(this.selectedKeyValue as string);
-    this.manager.replay(store.category);
+    this.manager.clearInstance(key);
+    this.interfaces.delete(key);
     store.applyCursor(store.endPosition);
     this.followIntent = true;
     this.touch();
@@ -476,6 +502,8 @@ export class DebugPanelModel {
       totalInstances: this.manager.instances.length,
       timeline: this.buildTimeline(store, historyMissing),
       recording: this.recording(),
+      facets: this.facets(),
+      delivery: { webviewFailures: this.webviewFailures() },
       status: {
         records: store?.recordCount ?? 0,
         bytes: store?.bytes ?? 0,

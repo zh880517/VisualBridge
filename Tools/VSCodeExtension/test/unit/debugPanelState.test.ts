@@ -358,8 +358,60 @@ test("clear empties the store and resets the cursor without leaving a partial fl
   assert.equal(timeline.records.length, 0);
   assert.equal(timeline.partial, false, "清空不是'历史未记录'");
   assert.equal(model.snapshot().mode, "live");
-  // 清空后主消费者状态跟着回到空（见 clear() 的注释：避免"clear 后换 filterKey"漏关闸）。
+  // 本用例只有 1 个实例：清空后该分类**已无任何记录**，`clearInstance` 走 `categoryReset` 分支，
+  // 所以主消费者被重置（这是"实例级清空"与"分类级重建"边界重合的那一支）。
+  // 不要把它当成通例：同分类还有别的实例记录时只标 `categoryStale`，主消费者**不会**被重置
+  // （见下一条用例）。
   assert.ok(consumer.resets >= 1);
+});
+
+test("clearing one instance does not silently rebuild the whole category (0.1 P1)", () => {
+  const router = new DebugRouter();
+  const consumer = new RecordingConsumer("graph");
+  router.register(consumer, "graph-facet");
+  const { model, manager } = createModel({ manager: createManager({ router }) });
+  createInstance(manager, "graph", "first");
+  createInstance(manager, "graph", "second");
+  ingestEvents(manager, [
+    { instance: "first", frame: 1 },
+    { instance: "first", frame: 2 },
+    { instance: "second", frame: 3 },
+    { instance: "second", frame: 4 },
+  ]);
+  const firstKey = instanceKeyOf("graph", "first");
+  model.selectInstance(firstKey);
+
+  const result = manager.clearInstance(firstKey);
+  assert.equal(result?.categoryStale, true);
+  assert.equal(result?.categoryReset, false);
+  assert.equal(manager.storeFor(firstKey)?.recordCount, 0);
+  assert.equal(manager.isCategoryStale("graph"), true);
+  // 关键点：实例级清空**没有**偷偷调用分类级 replay/resetMain。
+  assert.equal(consumer.resets, 0, "instance clear must not rebuild the category consumer");
+  assert.equal(consumer.records.length, 4, "other instances' records are untouched");
+
+  const replay = manager.replay("graph");
+  assert.equal(replay?.applied, 2, "explicit category replay re-delivers only the remaining records");
+  // 被清空实例的记录**确实**已从可用窗口消失（store.clear 抬高 maxEvicted），所以分类重建
+  // 必须标 partial——这正是"实例级清空"与"分类级重建"边界不同的可见后果。
+  assert.equal(replay?.partial, true);
+  assert.equal(consumer.resets, 1);
+  assert.equal(manager.isCategoryStale("graph"), false);
+});
+
+test("clearing the last instance of a category resets its consumer because the category is empty", () => {
+  const router = new DebugRouter();
+  const consumer = new RecordingConsumer("graph");
+  router.register(consumer, "graph-facet");
+  const manager = createManager({ router });
+  createInstance(manager, "graph", "only");
+  ingestEvents(manager, [{ frame: 1 }, { frame: 2 }]);
+
+  const result = manager.clearInstance(instanceKeyOf("graph", "only"));
+  assert.equal(result?.categoryReset, true);
+  assert.equal(result?.categoryStale, false);
+  assert.equal(manager.isCategoryStale("graph"), false);
+  assert.equal(consumer.resets, 1);
 });
 
 test("a large timeline renders only a bounded window but keeps absolute positions", () => {

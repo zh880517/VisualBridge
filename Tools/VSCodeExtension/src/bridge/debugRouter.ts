@@ -165,6 +165,27 @@ export class DebugRouter {
   }
 
   /**
+   * 把一个分类标成"回退到通用视图"（C.5）。
+   *
+   * 同步抛错的路径（{@link deliverMain}）在路由内部直接调用它；**异步投递**的消费者
+   * （F4 的模块 facet 按批投递，见 `debugFacetHost`）也必须能上报同一件事——否则异常发生在
+   * `consume()` 返回之后，路由层永远看不到，分类会继续被投给一个已经失败的 facet。
+   * 返回 `true` 表示本次调用真的改变了归属。
+   */
+  public markCategoryFallback(category: string, label: string, reason: string): boolean {
+    if (this.fallback.has(category)) {
+      return false;
+    }
+
+    this.fallback.add(category);
+    this.errorsValue += 1;
+    this.log(
+      `[debug] consumer '${label}' threw for category '${category}'; the category falls back to the generic view: ${reason}`,
+    );
+    return true;
+  }
+
+  /**
    * 分发一条记录：**总是**先给观察者，再给该分类的主消费者（若主消费者就是观察者则只投递一次）。
    * 两次投递各自隔离异常。
    */
@@ -314,9 +335,7 @@ export class DebugRouter {
     try {
       return owner.accepts(record) ? owner : this.observer;
     } catch (errorValue) {
-      this.errorsValue += 1;
-      this.log(`[debug] consumer '${this.describe(owner)}' threw from accepts(): ${String(errorValue)}`);
-      this.fallback.add(category);
+      this.markCategoryFallback(category, this.describe(owner), `accepts() threw: ${String(errorValue)}`);
       return this.observer;
     }
   }
@@ -336,12 +355,8 @@ export class DebugRouter {
     try {
       main.consume(record);
     } catch (errorValue) {
-      this.errorsValue += 1;
       // 该分类回退通用视图：后续记录不再投给这个 facet，其他分类不受影响（C.5）。
-      this.fallback.add(record.category);
-      this.log(
-        `[debug] consumer '${this.describe(main)}' threw for category '${record.category}'; the category falls back to the generic view: ${String(errorValue)}`,
-      );
+      this.markCategoryFallback(record.category, this.describe(main), String(errorValue));
     }
   }
 
@@ -406,7 +421,12 @@ export class GenericDebugConsumer implements DebugConsumer {
     this.droppedValue = 0;
   }
 
-  /** 保留的最近记录（副本引用，按到达顺序）。 */
+  /**
+   * 保留的最近记录（**与 `DebugStore` 共用同一条记录对象，不是副本**）。
+   *
+   * 观察者只做展示：记录本身由 store 拥有，任何消费者（包括模块 facet）都不得改写它；
+   * 投递给模块的是 `toPublicRecord` 造出来的独立投影（`params` 深拷贝），不是这里的引用。
+   */
   public get records(): readonly DebugRecord[] {
     return this.recordsValue;
   }

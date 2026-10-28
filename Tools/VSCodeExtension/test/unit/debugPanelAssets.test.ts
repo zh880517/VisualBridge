@@ -149,6 +149,103 @@ test("the record button is honest: disabled until F5 wires it, then a plain togg
   );
 });
 
+test("facet windows show the host-owned title, the module content and the unloaded fallback", () => {
+  const webview = mountPanel();
+  webview.render(snapshot({
+    facetWindows: [
+      {
+        category: "graph",
+        state: "active",
+        title: "调试分类 · graph",
+        moduleTitle: "Graph",
+        moduleId: "visualbridge.graph",
+        editor: "graph",
+        path: "modules[0].editors[0].debug",
+        message: undefined,
+        toolbar: ["replayCategory"],
+        records: 2,
+        batches: 1,
+        pending: 0,
+        content: { kind: "graph.debug", nodes: [1, 2] },
+        updatedAt: 1_000,
+        stale: false,
+        rebuildable: true,
+        diagnostics: [],
+        replay: { fromKeyframe: false, keyframeId: undefined, applied: 2, partial: false },
+      },
+      {
+        category: "table",
+        state: "unavailable",
+        title: "调试分类 · table",
+        moduleTitle: undefined,
+        moduleId: undefined,
+        editor: undefined,
+        path: undefined,
+        message: "模块未加载，该分类回退到通用视图。",
+        toolbar: ["replayCategory"],
+        records: 0,
+        batches: 0,
+        pending: 0,
+        content: undefined,
+        updatedAt: undefined,
+        stale: false,
+        rebuildable: false,
+        diagnostics: [],
+        replay: undefined,
+      },
+    ],
+  }));
+
+  const text = flatten(webview.byId("windows"));
+  assert.match(text, /Graph/u);
+  assert.match(text, /graph\.debug/u);
+  assert.match(text, /模块未加载/u);
+  assert.match(text, /通用视图/u);
+  assert.match(text, /上次重建：应用 2 条/u);
+
+  webview.click("vb-debug-window-replay-0");
+  assert.deepEqual(
+    webview.posted.filter((message) => message.type === "command"),
+    [{ type: "command", command: "replayCategory", value: "graph" }],
+  );
+  assert.equal(webview.byId("vb-debug-window-replay-1").disabled, true, "没有模块的窗口没有可重建的消费者");
+});
+
+test("a stale window whose module is unavailable never asks for a disabled rebuild (P1 a)", () => {
+  const webview = mountPanel();
+  webview.render(snapshot({
+    facetWindows: [{
+      category: "graph",
+      state: "unavailable",
+      title: "调试分类 · graph",
+      moduleTitle: undefined,
+      moduleId: undefined,
+      editor: undefined,
+      path: undefined,
+      message: "模块未加载，该分类回退到通用视图。",
+      toolbar: ["replayCategory"],
+      records: 0,
+      batches: 0,
+      pending: 0,
+      content: undefined,
+      updatedAt: undefined,
+      stale: true,
+      rebuildable: false,
+      diagnostics: [],
+      replay: undefined,
+    }],
+  }));
+
+  const replay = webview.byId("vb-debug-window-replay-0");
+  assert.equal(replay.disabled, true, "没有可重建的模块消费者 ⇒ 按钮禁用");
+  // 提示文案与按钮必须由同一个判据驱动：不能一边禁用按钮，一边让用户去点它。
+  const hintText = textWithoutButtons(webview.byId("windows"));
+  assert.doesNotMatch(hintText, /点按分类重建|点“按分类重建”/u);
+  // 但状态不能就此沉默：必须给出用户能执行的下一步。
+  assert.match(hintText, /重载模块/u);
+  assert.match(flatten(webview.byId("windows")), /需重载模块/u);
+});
+
 test("the detail pane lists the parameter table and the truncated raw JSON", () => {
   const webview = mountPanel();
   webview.render(snapshot({}));
@@ -323,6 +420,15 @@ function flatten(node: FakeNode): string {
   return `${node.textContent}${node.children.map((child) => flatten(child)).join("")}`;
 }
 
+/** 除按钮之外的全部文本：按钮自己的"按分类重建"标签不算提示文案。 */
+function textWithoutButtons(node: FakeNode): string {
+  if (node.tag === "button") {
+    return "";
+  }
+
+  return `${node.textContent}${node.children.map((child) => textWithoutButtons(child)).join("")}`;
+}
+
 /** 一个够用的快照（默认编辑器模式、有选中实例、几条记录）。 */
 function snapshot(overrides: {
   readonly mode?: "editor" | "player";
@@ -336,6 +442,7 @@ function snapshot(overrides: {
   readonly historyMissing?: boolean;
   readonly recordingAvailable?: boolean;
   readonly recordingActive?: boolean;
+  readonly facetWindows?: DebugPanelSnapshot["facets"]["windows"];
 }): DebugPanelSnapshot {
   const historyMissing = overrides.historyMissing ?? false;
   return {
@@ -436,6 +543,16 @@ function snapshot(overrides: {
         truncated: true,
       },
     },
+    facets: {
+      windows: overrides.facetWindows ?? [],
+      pending: 0,
+      batches: 0,
+      failures: 0,
+      batchLimit: 100,
+      lateRecords: 0,
+      generic: { records: 3, dropped: 0 },
+    },
+    delivery: { webviewFailures: 0 },
     status: { records: 3, bytes: 72, keyframes: 0, frame: 7 },
   };
 }
