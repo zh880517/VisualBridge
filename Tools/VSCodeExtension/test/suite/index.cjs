@@ -34,6 +34,7 @@ const EXPECTED_COMMANDS = [
   "visualbridge.catalogBrowser.open",
   "visualbridge.catalogBrowser.refresh",
   "visualbridge.manageUnsavedDocuments",
+  "visualbridge.openDebugPanel",
   "visualbridge.openDocument",
   "visualbridge.openProjectSettings",
   "visualbridge.refreshProjects",
@@ -4558,6 +4559,398 @@ exports.run = async function run() {
       else process.env.VISUALBRIDGE_TEST_RUNTIME_DIR = previousRuntimeDirectory;
       await new Promise((resolve) => server.close(resolve));
       await rm(discoveryDirectory, { recursive: true, force: true });
+    }
+  });
+
+  // ==== F3：独立 Debug 面板（附录 C.7） ====
+
+  const bridgeState = await waitForAsync(
+    () => vscode.commands.executeCommand("visualbridge.test.getBridgeServerState"),
+    (value) => value !== null && value !== undefined,
+    20_000,
+    "Editor Bridge server did not start during activation.",
+  );
+  /** 连一条"Unity 侧"的假客户端（复用 C2 的帧编解码，不新写协议）。 */
+  const connectDebugPeer = async (endpointId) => {
+    const socket = net.connect({ host: "127.0.0.1", port: bridgeState.tcpPort });
+    await new Promise((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    const lines = [];
+    attachJsonReader(socket, (message) => lines.push(message));
+    const peer = {
+      socket,
+      lines,
+      send: (message) => sendJson(socket, message),
+      handshaken: false,
+      welcome: undefined,
+      async handshake() {
+        peer.send({
+          type: "hello",
+          protocolVersion: 4,
+          role: "editor",
+          clientEndpointId: endpointId,
+          token: bridgeState.token,
+          contractHash: bridgeState.contractHash,
+          payloads: ["json", "binary"],
+        });
+        peer.welcome = await waitForAsync(
+          () => lines.find((line) => line.type === "welcome"),
+          (value) => value !== undefined,
+          20_000,
+          `Debug panel peer '${endpointId}' did not receive a welcome.`,
+        );
+        peer.handshaken = true;
+        return peer.welcome;
+      },
+      waitForLine: async (predicate, message) => waitForAsync(
+        () => lines.find(predicate),
+        (value) => value !== undefined,
+        20_000,
+        message,
+      ),
+      close: () => new Promise((resolve) => {
+        socket.once("close", resolve);
+        socket.destroy();
+      }),
+    };
+    return peer;
+  };
+  const debugPolicyCommand = () => vscode.commands.executeCommand("visualbridge.test.debugPanel.debugReporting");
+  const panelState = () => vscode.commands.executeCommand("visualbridge.test.debugPanel.state");
+  const panelCommand = (command, payload = {}) => vscode.commands.executeCommand("visualbridge.test.debugPanel.command", command, payload);
+  const ingestDebug = (envelopes) => vscode.commands.executeCommand("visualbridge.test.debugPanel.ingest", envelopes);
+  /** 合成调试信封：字段对齐 F1 的 `DebugEnvelope`（C.1），不经过网络，只为喂满面板数据。 */
+  const debugEvent = (category, instance, frame, method, value) => ({
+    type: "debug",
+    frame,
+    wireBytes: 24,
+    payloadKind: 1,
+    category,
+    instance,
+    interfaceId: "IGraphDebuger",
+    method,
+    methodId: 10,
+    instanceSlot: 1,
+    args: [{ tag: 1, name: "nodeId", type: "string", value }],
+    contractState: "unknown-interface",
+  });
+  const debugCreate = (category, instance) => ({
+    type: "debugCreate",
+    frame: -1,
+    wireBytes: 10,
+    payloadKind: 1,
+    category,
+    instance,
+    instanceSlot: 1,
+    resName: `${instance}-res`,
+    debugInfo: "",
+  });
+
+  await test("keeps the Debug panel switch in sync with welcome and the debugEnabled broadcast", async () => {
+    const peer = await connectDebugPeer("debug-panel-welcome");
+    try {
+      const welcome = await peer.handshake();
+      // A.5：welcome 通告初值；A.3 的 connectType 决定面板拓扑。
+      assert.equal(welcome.debugEnabled, true);
+      assert.equal(welcome.connectType, "editor");
+
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.open");
+      const opened = await waitForAsync(
+        () => panelState(),
+        (state) => state?.connection?.state === "connected" && state?.connection?.endpointId === "debug-panel-welcome",
+        20_000,
+        "The Debug panel did not see the handshaken connection.",
+      );
+      assert.equal(opened.enable.enabled, true, "初值必须来自 welcome.debugEnabled");
+      assert.equal(opened.enable.source, "welcome");
+      assert.equal(opened.enable.canToggle, true);
+      assert.equal(opened.connection.target, `127.0.0.1:${bridgeState.tcpPort}`);
+      assert.equal((await debugPolicyCommand()).enabled, true);
+
+      // Unity 侧回报"已关闭"：广播到达后按钮才变，且连接不能被这条控制消息弄断。
+      peer.send({ type: "debugEnabled", enabled: false });
+      const off = await waitForAsync(
+        () => panelState(),
+        (state) => state?.enable?.enabled === false,
+        20_000,
+        "The debugEnabled broadcast did not reach the Debug panel.",
+      );
+      assert.equal(off.enable.source, "broadcast");
+      assert.equal(off.enable.error, undefined);
+      assert.equal((await debugPolicyCommand()).enabled, false);
+
+      // 连接仍然可用：再发一条广播（true）仍能被面板收到，证明没有走"未知消息断开"分支。
+      peer.send({ type: "debugEnabled", enabled: true });
+      await waitForAsync(
+        () => panelState(),
+        (state) => state?.enable?.enabled === true && state.enable.source === "broadcast",
+        20_000,
+        "The Debug panel stopped accepting debugEnabled broadcasts.",
+      );
+      assert.equal(peer.socket.destroyed, false, "A state broadcast must not kill the connection.");
+    } finally {
+      await peer.close();
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.close");
+    }
+
+    // 断开后：状态栏回到未连接，开关不能再点（C.7 状态栏）。
+    const disconnected = await waitForAsync(
+      () => panelState(),
+      (state) => state?.connection?.state === "disconnected" && state?.enable?.canToggle === false,
+      20_000,
+      "The Debug panel did not notice the connection going away.",
+    );
+    assert.equal(disconnected.connection.endpointId, undefined);
+  });
+
+  await test("sends debugSetEnabled without an optimistic switch and rolls back on timeout", async () => {
+    // 先等上一条连接彻底退休：服务端的 close 通知会以 welcome 语义清掉挂起请求，
+    // 迟到的 close 落进本用例的等待窗口就会把 pending 提前结算（宿主事件是异步的）。
+    await waitForAsync(
+      () => debugPolicyCommand(),
+      (reporting) => reporting?.available === false,
+      20_000,
+      "The previous Debug panel connection was still alive.",
+    );
+    const peer = await connectDebugPeer("debug-panel-toggle");
+    try {
+      await peer.handshake();
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.open");
+      // 用例自洽：先把服务端值广播成 false 再广播回 true，两次都等到面板采纳再点。
+      // 不能只等 `enabled === true`：welcome 的初值就是 true，那样会立刻通过，
+      // 迟到的广播反而落进点击之后的等待窗口，把挂起请求提前结算。
+      peer.send({ type: "debugEnabled", enabled: false });
+      await waitForAsync(
+        () => panelState(),
+        (state) => state?.enable?.enabled === false && state?.enable?.source === "broadcast",
+        20_000,
+        "The panel did not adopt the debugEnabled=false broadcast.",
+      );
+      peer.send({ type: "debugEnabled", enabled: true });
+      await waitForAsync(
+        () => panelState(),
+        (state) => state?.enable?.enabled === true && state?.enable?.source === "broadcast",
+        20_000,
+        "The panel did not adopt the debugEnabled=true broadcast.",
+      );
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.setEnableTimeout", 1_000);
+
+      // 点击 = 发一条 debugSetEnabled（A.5，通道 0 JSON）；本地值**不动**。
+      // 用命令的返回值（点击那一刻的快照）断言，避免把后续异步事件混进 P0 判定。
+      const pending = await panelCommand("enable", { value: false });
+      const request = await peer.waitForLine(
+        (line) => line.type === "debugSetEnabled",
+        "The panel did not send debugSetEnabled to the Unity peer.",
+      );
+      assert.equal(request.enabled, false);
+
+      const pendingDetail = JSON.stringify(pending?.enable);
+      assert.equal(pending.enable.enabled, true, `P0：面板不许本地乐观更新 ${pendingDetail}`);
+      assert.equal(pending.enable.pending, true, `P0：点击后应处于等广播状态 ${pendingDetail}`);
+      assert.equal(pending.enable.pendingTarget, false, pendingDetail);
+      assert.equal(pending.enable.canToggle, false, `等广播期间按钮置灰 ${pendingDetail}`);
+
+      // 对端不回广播 ⇒ 超时后回到服务端状态（仍是 true），只多一条 timeout 提示。
+      const rolledBack = await waitForAsync(
+        () => panelState(),
+        (state) => state?.enable?.pending === false && state?.enable?.error === "timeout",
+        20_000,
+        "The Debug panel did not roll back after the debugEnabled timeout.",
+      );
+      assert.equal(rolledBack.enable.enabled, true, "超时后必须回到服务端的 true，而不是点击的 false");
+      assert.equal(rolledBack.enable.canToggle, true);
+
+      // 迟到的广播才是唯一能让它变 true→false 的事件。
+      peer.send({ type: "debugEnabled", enabled: false });
+      const settled = await waitForAsync(
+        () => panelState(),
+        (state) => state?.enable?.enabled === false && state?.enable?.error === undefined,
+        20_000,
+        "A late debugEnabled broadcast did not settle the switch.",
+      );
+      assert.equal(settled.enable.source, "broadcast");
+      assert.equal(peer.socket.destroyed, false);
+    } finally {
+      await peer.close();
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.close");
+    }
+  });
+
+  await test("rolls the Debug panel switch back immediately when no connection can carry the request", async () => {
+    await waitForAsync(
+      () => debugPolicyCommand(),
+      (reporting) => reporting?.available === false,
+      20_000,
+      "Expected no handshaken connection before this case ran.",
+    );
+    await vscode.commands.executeCommand("visualbridge.test.debugPanel.open");
+    try {
+      const before = await panelState();
+      assert.equal(before.connection.state, "disconnected");
+      assert.equal(before.enable.canToggle, false, "没有可承载请求的连接时按钮置灰");
+      assert.equal(before.enable.enabled, (await debugPolicyCommand()).enabled);
+      await panelCommand("enable", { value: !before.enable.enabled });
+      const after = await panelState();
+      assert.equal(after.enable.enabled, before.enable.enabled, "请求发不出去时值必须原样");
+      assert.equal(after.enable.pending, false, "发不出去不该留挂起（否则按钮永远锁死）");
+      assert.equal(after.enable.error, "sendFailed");
+    } finally {
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.close");
+    }
+  });
+
+  await test("greys the Debug panel switch in Player mode without sending any request", async () => {
+    const peer = await connectDebugPeer("debug-panel-player");
+    try {
+      await peer.handshake();
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.open");
+      // 生产上 connectType 只有一个来源（A.3）；这里用注入点覆盖成 Player 拓扑。
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.setMode", "player");
+      const player = await panelState();
+      assert.equal(player.enable.mode, "player");
+      assert.equal(player.enable.canToggle, false);
+      const beforeValue = player.enable.enabled;
+
+      await panelCommand("enable", { value: !beforeValue });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.deepEqual(
+        peer.lines.filter((line) => line.type === "debugSetEnabled"),
+        [],
+        "Player 模式不得发送 debugSetEnabled",
+      );
+      const unchanged = await panelState();
+      assert.equal(unchanged.enable.enabled, beforeValue);
+      assert.equal(unchanged.enable.error, undefined, "没有请求就不该有回滚提示");
+    } finally {
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.setMode", "editor");
+      await peer.close();
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.close");
+    }
+  });
+
+  await test("keeps the per-instance cursor, granularity and filter across Debug panel instance switches", async () => {
+    await vscode.commands.executeCommand("visualbridge.test.debugPanel.open");
+    try {
+      await ingestDebug([
+        debugCreate("f3-graph", "hero"),
+        debugCreate("f3-entity", "boss"),
+      ]);
+      // 乱序到达：1,2,1,3 —— 分组必须是 4 段（不重排）。
+      await ingestDebug([
+        debugEvent("f3-graph", "hero", 1, "NodeStarted", "a"),
+        debugEvent("f3-graph", "hero", 2, "NodeStarted", "b"),
+        debugEvent("f3-graph", "hero", 1, "NodeStarted", "c"),
+        debugEvent("f3-graph", "hero", 3, "NodeStarted", "d"),
+        debugEvent("f3-entity", "boss", 9, "NodeStarted", "x"),
+      ]);
+      const heroKey = "f3-graph\u0000hero";
+      const bossKey = "f3-entity\u0000boss";
+
+      await panelCommand("select", { key: heroKey });
+      const hero = await panelState();
+      assert.equal(hero.timeline.groups.length, 4, "1,2,1,3 必须分成 4 段（按到达顺序）");
+      assert.deepEqual(hero.timeline.groups.map((group) => group.frame), [1, 2, 1, 3]);
+      assert.equal(hero.timeline.cursor, hero.timeline.toPosition, "首次选中看末尾");
+
+      // 按记录退一步，再切到 boss：hero 的游标必须原样保留（验收标准 1）。
+      await panelCommand("step", { direction: -1 });
+      const stepped = await panelState();
+      assert.equal(stepped.mode, "replay");
+      const heroCursor = stepped.timeline.cursor;
+      assert.equal(heroCursor, stepped.timeline.toPosition - 1);
+
+      await panelCommand("filter", { value: "boss" });
+      await panelCommand("select", { key: bossKey });
+      const boss = await panelState();
+      assert.equal(boss.timeline.records.length, 1);
+      assert.equal(boss.filter, "boss", "过滤状态跨实例保留");
+
+      await panelCommand("select", { key: heroKey });
+      const back = await panelState();
+      assert.equal(back.timeline.cursor, heroCursor, "切回来游标原样保留");
+      assert.equal(back.mode, "replay");
+      assert.equal(back.filter, "boss");
+
+      // 按帧步进：粒度切换不丢游标，回退一帧跨过整组。
+      await panelCommand("granularity", { value: "frame" });
+      await panelCommand("step", { direction: -1 });
+      const byFrame = await panelState();
+      assert.equal(byFrame.granularity, "frame");
+      assert.ok(byFrame.timeline.cursor < back.timeline.cursor);
+
+      // 回到实时：F2 的 replay() 不动游标，面板必须自己补到末尾。
+      await panelCommand("live");
+      const live = await panelState();
+      assert.equal(live.mode, "live");
+      assert.equal(live.timeline.cursor, live.timeline.toPosition);
+      assert.equal(live.timeline.atEnd, true);
+    } finally {
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.close");
+    }
+  });
+
+  await test("keeps Debug panel records cached across close and reopen", async () => {
+    const first = await vscode.commands.executeCommand("visualbridge.test.debugPanel.open");
+    try {
+      await ingestDebug([debugCreate("f3-cache", "keeper")]);
+      await ingestDebug([
+        debugEvent("f3-cache", "keeper", 1, "NodeStarted", "a"),
+        debugEvent("f3-cache", "keeper", 2, "NodeStarted", "b"),
+      ]);
+      await panelCommand("select", { key: "f3-cache\u0000keeper" });
+      const before = await panelState();
+      assert.equal(before.timeline.records.length, 2);
+      const recordIds = before.timeline.records.map((record) => record.id);
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.close");
+
+      const second = await vscode.commands.executeCommand("visualbridge.test.debugPanel.open");
+      assert.equal(second.openCount, first.openCount + 1, "重开应复用同一控制器而不是新建");
+      const after = await panelState();
+      // 没有新的 ingest：记录、游标、选中实例全部来自缓存（不重新拉取）。
+      assert.deepEqual(after.timeline.records.map((record) => record.id), recordIds);
+      assert.equal(after.selectedKey, "f3-cache\u0000keeper");
+      assert.equal(after.timeline.cursor, before.timeline.cursor);
+      assert.equal(after.status.records, before.status.records);
+    } finally {
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.close");
+    }
+  });
+
+  await test("pauses the Debug panel view without dropping the records that keep arriving", async () => {
+    await vscode.commands.executeCommand("visualbridge.test.debugPanel.open");
+    try {
+      await ingestDebug([debugCreate("f3-pause", "pilot")]);
+      await ingestDebug([debugEvent("f3-pause", "pilot", 1, "NodeStarted", "a")]);
+      await panelCommand("select", { key: "f3-pause\u0000pilot" });
+      await panelCommand("togglePause");
+      const paused = await panelState();
+      assert.equal(paused.paused, true);
+      const recordsWhilePaused = paused.status.records;
+
+      await ingestDebug([
+        debugEvent("f3-pause", "pilot", 2, "NodeStarted", "b"),
+        debugEvent("f3-pause", "pilot", 3, "NodeStarted", "c"),
+      ]);
+      const stillPaused = await panelState();
+      assert.equal(stillPaused.paused, true);
+      assert.equal(stillPaused.timeline.cursor, paused.timeline.cursor, "暂停中不跟随末尾");
+      // 暂停冻结时间轴窗口：新记录只进 store，不能出现在渲染列表里。
+      assert.equal(
+        stillPaused.timeline.records.length,
+        paused.timeline.records.length,
+        "暂停期间两次快照的行数相同",
+      );
+
+      await panelCommand("togglePause");
+      const resumed = await panelState();
+      assert.equal(resumed.paused, false);
+      assert.equal(resumed.status.records, recordsWhilePaused + 2, "暂停期间的记录一条不少");
+      assert.ok(resumed.timeline.records.length > stillPaused.timeline.records.length, "恢复后行数增加");
+      assert.equal(resumed.timeline.cursor, resumed.timeline.toPosition, "恢复后追平末尾");
+    } finally {
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.close");
     }
   });
 };

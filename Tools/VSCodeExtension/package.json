@@ -57,6 +57,11 @@
         "icon": "$(settings-gear)"
       },
       {
+        "command": "visualbridge.openDebugPanel",
+        "title": "VisualBridge: Open Debug Panel",
+        "icon": "$(debug-alt)"
+      },
+      {
         "command": "visualbridge.createGraphDocument",
         "title": "VisualBridge: Create Graph Document",
         "enablement": "visualbridge.hasProjects"

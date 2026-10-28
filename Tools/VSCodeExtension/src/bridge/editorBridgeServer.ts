@@ -81,6 +81,24 @@ export interface EditorBridgeServerOptions {
 
 type BridgeConnection = EditorBridgeConnectionSlot<BridgeSocket>;
 
+/**
+ * 调试上报开关的可观测状态（附录 A.2 的通道 0 控制消息 / C.7）。
+ *
+ * `enabled` 是 welcome 通告值的唯一真源；`available` 表示现在有没有可接收 `debugSetEnabled`
+ * 的已握手连接（没有时面板必须按"请求发不出去"回滚）；`connectType` 来自 A.3，
+ * `player` 只可能出现在 Runtime 腿。
+ */
+export interface EditorBridgeDebugReporting {
+  readonly enabled: boolean;
+  readonly available: boolean;
+  readonly connectType: "editor" | "editor-player" | "player";
+  readonly endpointId: string | undefined;
+  readonly target: string | undefined;
+}
+
+/** 调试面变化的原因：`broadcast` = Unity 的 `debugEnabled` 应答；`connection` = 握手/断开。 */
+export type EditorBridgeDebugReportingReason = "connection" | "broadcast";
+
 /** 一条连接绑定的调试面状态：指纹决定契约快照，快照决定二进制解码。 */
 interface EditorBridgeDebugBinding {
   snapshot: DebugContractSnapshot | undefined;
@@ -136,6 +154,17 @@ export class EditorBridgeServer implements vscode.Disposable {
   private readonly debugBindings = new WeakMap<BridgeConnection, EditorBridgeDebugBinding>();
   /** 调试实例存储与路由：一个窗口（会话）一份，记录与实例在重连宽限内保留（C.3）。 */
   private readonly debugManager: DebugInstanceManager;
+  /**
+   * 调试上报总开关（附录 A.2 的通道 0 控制消息 / C.7）：**唯一**真源。
+   *
+   * 两个方向共用一个值：`welcome.debugEnabled` 通告它；`debugSetEnabled` 请求 Unity 切换，
+   * Unity 用 `debugEnabled` 广播回报结果后这里才更新。面板不做本地乐观更新，
+   * 因此这个字段只由「握手时通告」与「广播到达」两处改写。
+   */
+  private debugReportingEnabled = true;
+  /** 最近一次完成握手的拨号方 endpoint（状态栏的 `endpointId`，C.7）。 */
+  private lastClientEndpointId: string | undefined;
+  private readonly debugReportingListeners = new Set<(reason: EditorBridgeDebugReportingReason) => void>();
   /** 下游 ingest 抛错被隔离的次数（坏记录不得拖垮整帧）。 */
   private debugIngestErrors = 0;
   private contractRefreshTimer: NodeJS.Timeout | undefined;
@@ -163,6 +192,84 @@ export class EditorBridgeServer implements vscode.Disposable {
   /** 调试实例存储与路由（F3 面板 / F4 facet 从这里接）。 */
   public get debug(): DebugInstanceManager {
     return this.debugManager;
+  }
+
+  /**
+   * 调试上报开关的可观测状态（F3 面板的唯一来源，附录 C.7）。
+   *
+   * `connectType` 是 A.3 的监听方拓扑：编辑器腿恒为 `editor`；`player` 只可能来自 Runtime 腿
+   * （E5 那条链），面板据它把开关置灰。
+   */
+  public get debugReporting(): EditorBridgeDebugReporting {
+    const active = this.connections.snapshot().some((connection) => connection.helloCompleted && !connection.isTerminated);
+    return {
+      enabled: this.debugReportingEnabled,
+      available: active,
+      connectType: "editor",
+      endpointId: active ? this.lastClientEndpointId : undefined,
+      target: this.tcpPort === undefined ? undefined : `127.0.0.1:${this.tcpPort}`,
+    };
+  }
+
+  /**
+   * 调试面状态变化。`reason` 区分两种语义，面板的处置完全不同：
+   * - `broadcast`：Unity 回报的 `debugEnabled`（A.2 的通道 0 控制消息），是服务端应答；
+   * - `connection`：握手/断开，所谓值来自 `welcome.debugEnabled`（初值/重连）。
+   */
+  public onDidChangeDebugReporting(listener: (reason: EditorBridgeDebugReportingReason) => void): vscode.Disposable {
+    this.debugReportingListeners.add(listener);
+    return { dispose: () => this.debugReportingListeners.delete(listener) };
+  }
+
+  /**
+   * 发送 `debugSetEnabled`（附录 A.2 的通道 0 控制消息，契约见
+   * `Protocol/Schema/visualbridge-editor-bridge.schema.json` 的 `debugSetEnabledMessage`）。
+   *
+   * **不**等应答也不改本地值：返回值只表示"请求是否发出去了"。服务端结果由 `debugEnabled`
+   * 广播回来（{@link EditorBridgeServer.acceptDebugEnabledBroadcast}），面板据此重绘。
+   */
+  public requestDebugReportingEnabled(enabled: boolean): boolean {
+    const connection = this.connections.snapshot().find((candidate) => candidate.helloCompleted && !candidate.isTerminated);
+    if (connection === undefined) {
+      return false;
+    }
+
+    return connection.transport.sendControlJson({ type: "debugSetEnabled", enabled });
+  }
+
+  /**
+   * 收下 Unity 的 `debugEnabled` 广播（附录 A.2 的通道 0 控制消息）：`{ type: "debugEnabled", enabled: boolean }`。
+   *
+   * 返回是否认领了这条消息（认领后不再进业务消息解析）。形状不对就**不认领**，
+   * 让它走原来的 `bridge.unknownMessageType` 路径，保持"畸形消息会断连"的既有语义。
+   */
+  private acceptDebugEnabledBroadcast(value: unknown): boolean {
+    if (typeof value !== "object" || value === null) {
+      return false;
+    }
+
+    const record = value as Record<string, unknown>;
+    if (record.type !== "debugEnabled" || typeof record.enabled !== "boolean") {
+      return false;
+    }
+
+    if (record.enabled !== this.debugReportingEnabled) {
+      this.debugReportingEnabled = record.enabled;
+      this.output.appendLine(`[debug] debugEnabled broadcast: reporting=${record.enabled ? "on" : "off"}`);
+    }
+
+    this.notifyDebugReporting("broadcast");
+    return true;
+  }
+
+  private notifyDebugReporting(reason: EditorBridgeDebugReportingReason): void {
+    for (const listener of [...this.debugReportingListeners]) {
+      try {
+        listener(reason);
+      } catch (errorValue) {
+        this.output.appendLine(`[debug] debugReporting listener threw: ${String(errorValue)}`);
+      }
+    }
   }
 
   public get state(): EditorBridgeServerState | undefined {
@@ -277,6 +384,7 @@ export class EditorBridgeServer implements vscode.Disposable {
       disposable.dispose();
     }
 
+    this.debugReportingListeners.clear();
     this.debugManager.dispose();
   }
 
@@ -309,6 +417,9 @@ export class EditorBridgeServer implements vscode.Disposable {
           this.connections.retire(connection);
           // 宽限从这里起算（附录 A.8）：下一条连接在 15 s 内带 resumeSessionId 才能续接。
           this.lastDisconnectedAtMs = this.now();
+          // 连接没了 ⇒ 面板的开关变成"发不出去"，必须重绘（C.7 的状态栏）。
+          this.lastClientEndpointId = undefined;
+          this.notifyDebugReporting("connection");
         }
       },
     }, { log: (message) => this.output.appendLine(message) });
@@ -323,6 +434,16 @@ export class EditorBridgeServer implements vscode.Disposable {
       value = JSON.parse(payload.toString("utf8"));
     } catch {
       this.sendErrorAndClose(connection, "bridge.invalidJson", "Message is not valid JSON.");
+      return;
+    }
+
+    // `debugEnabled`（附录 A.2 的通道 0 控制消息，契约见 schema 的 `debugEnabledMessage`）
+    // 是调试面自己的控制消息，不在 `BridgeMessage` 的业务联合里
+    // （那套只覆盖 hello/welcome/open/reveal/response/error）。必须在 `parseBridgeMessage` 之前
+    // 分流，否则会被判成 `bridge.unknownMessageType` 并**断开连接**——一条状态广播不该杀连接。
+    // 形状不对（类型错/缺 `enabled`）时故意**不认领**，落回下面的 `bridge.unknownMessageType`
+    // → `sendErrorAndClose`，即"畸形消息会断连"的既有语义（F7 已复核）。
+    if (connection.helloCompleted && this.acceptDebugEnabledBroadcast(value)) {
       return;
     }
 
@@ -419,10 +540,12 @@ export class EditorBridgeServer implements vscode.Disposable {
       bootId: reconnect.bootId,
       contractHash: selection.contractHash,
       payloads,
-      debugEnabled: true,
+      debugEnabled: this.debugReportingEnabled,
       startedAt: this.startedAt,
     };
     this.connections.markHandshaken(connection);
+    this.lastClientEndpointId = message.clientEndpointId;
+    this.notifyDebugReporting("connection");
     connection.transport.sendControlJson(welcome);
     this.output.appendLine(
       `[bridge] handshake complete endpoint='${message.clientEndpointId}' session=${welcome.sessionId} resumed=${welcome.resumed} payloads=[${payloads.join(",")}]`,

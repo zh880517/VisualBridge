@@ -46,6 +46,8 @@ import { EditorBridgeServer } from "./bridge/editorBridgeServer";
 import { BridgeProtocolError, parseBridgeMessage, parseDiscoveryRecord } from "./bridge/bridgeProtocol";
 import { RuntimeDebugAdapter } from "./debug/runtimeDebugAdapter";
 import { RuntimeDebugConfigurationProvider, RUNTIME_DEBUG_TYPE } from "./debug/runtimeDebugConfigurationProvider";
+import { DebugPanelController } from "./debug/debugPanelController";
+import type { DebugEnvelope } from "./bridge/debugIngress";
 
 interface LifecycleElementDeleteRequest {
   readonly projectId: string;
@@ -929,6 +931,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     output.appendLine(`[bridge] Editor Bridge server failed to start: ${String(errorValue)}`);
   }
 
+  // 独立 Debug 面板（F3）：数据只来自 `bridgeServer.debug`，开关状态只来自 welcome 与广播。
+  const debugPanel = new DebugPanelController({
+    storageUri: context.globalStorageUri,
+    bridge: () => bridgeServer,
+    log: (message) => output.appendLine(message),
+  });
+  context.subscriptions.push(debugPanel);
+  context.subscriptions.push(
+    bridgeServer.onDidChangeDebugReporting((reason) => debugPanel.applyBridgeChange(reason, bridgeServer.debugReporting.enabled)),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand("visualbridge.openDebugPanel", () => debugPanel.open()),
+  );
+
   const runtimeBridge = new RuntimeBridgeService((message) => output.appendLine(`[runtime] ${message}`));
   context.subscriptions.push({ dispose: () => runtimeBridge.disconnect() });
 
@@ -966,8 +982,52 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   if (context.extensionMode !== vscode.ExtensionMode.Production) {
+    /** 宿主测试的注入点：直接走 F2 的 `ingest`（面板只读 manager，不另建数据源）。 */
+    const ingestDebugForTest = (envelopes: unknown): number => {
+      if (!Array.isArray(envelopes)) return 0;
+      let records = 0;
+      for (const envelope of envelopes) {
+        records += bridgeServer.debug.ingest(envelope as DebugEnvelope).length;
+      }
+
+      // 只灌数据，不碰开关状态（面板自己按刷新周期重绘）。
+      return records;
+    };
     context.subscriptions.push(
       vscode.commands.registerCommand("visualbridge.test.getBridgeServerState", () => bridgeServer.state ?? null),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.open", async () => {
+        await debugPanel.open();
+        return { openCount: debugPanel.openCountForTest, ready: debugPanel.isReady };
+      }),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.close", () => {
+        debugPanel.close();
+        return { openCount: debugPanel.openCountForTest };
+      }),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.state", () => debugPanel.getStateForTest()),
+      vscode.commands.registerCommand(
+        "visualbridge.test.debugPanel.command",
+        (command: unknown, payload: unknown) => debugPanel.handleCommand(
+          typeof command === "string" ? command : "",
+          (typeof payload === "object" && payload !== null ? payload : {}) as {
+            readonly value?: unknown;
+            readonly direction?: unknown;
+            readonly key?: unknown;
+          },
+        ),
+      ),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.setMode", (mode: unknown) => {
+        debugPanel.setModeOverrideForTest(mode === "player" || mode === "editor" ? mode : undefined);
+        return debugPanel.getStateForTest();
+      }),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.setEnableTimeout", (timeoutMs: unknown) => {
+        debugPanel.setEnableTimeoutForTest(typeof timeoutMs === "number" ? timeoutMs : 0);
+        return debugPanel.getStateForTest();
+      }),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.ingest", (envelopes: unknown) => ({
+        records: ingestDebugForTest(envelopes),
+        state: debugPanel.getStateForTest(),
+      })),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.debugReporting", () => bridgeServer.debugReporting),
       vscode.commands.registerCommand("visualbridge.test.parseBridgeMessage", (value: unknown) => {
         try {
           return { ok: true, message: parseBridgeMessage(value) };
