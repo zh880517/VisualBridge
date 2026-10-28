@@ -300,6 +300,12 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
         post({ type: "command", command: "select", key: row.key });
       });
       item.appendChild(label);
+      // E9：来源标注（显示层）。两个 Unity 进程可能同名，靠这条区分 Editor 腿与 Runtime 腿。
+      var origin = row.origin === "runtime" ? "Runtime 桥" : row.origin === "editor" ? "Editor 桥" : "来源未标注";
+      item.appendChild(el("span", "vb-debug-instance-origin", origin));
+      if (row.originConflict) {
+        item.appendChild(el("span", "vb-debug-instance-warning", "两条腿出现同名实例（保留首条记录）"));
+      }
       var meta = [row.resName, row.interfaces.join(","), row.recordCount + " 条", "帧 " + row.frame];
       item.appendChild(el("span", "vb-debug-instance-meta", meta.filter(function (part) { return part && part.length > 0; }).join(" · ")));
       if (!row.active) {
@@ -536,6 +542,7 @@ body { margin: 0; padding: 0; }
 .vb-debug-instance-selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
 .vb-debug-instance-label { background: none; border: none; color: inherit; cursor: pointer; padding: 0; font-weight: 600; }
 .vb-debug-instance-meta { display: block; opacity: 0.8; }
+.vb-debug-instance-origin { display: block; font-size: 0.9em; opacity: 0.75; }
 .vb-debug-instance-warning { display: block; color: var(--vscode-editorWarning-foreground); }
 .vb-debug-instance-ended { display: block; opacity: 0.7; }
 .vb-debug-timeline { width: 34%; overflow: auto; padding: 4px; border-right: 1px solid var(--vscode-panel-border); }

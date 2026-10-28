@@ -115,6 +115,13 @@ export interface DebugPanelInstanceRow {
   readonly descriptorMissing: boolean;
   readonly historyMissing: boolean;
   readonly selected: boolean;
+  /**
+   * 数据来源腿（E9）：`editor` = Editor 桥，`runtime` = Runtime 桥，`undefined` = 未标注。
+   * 只用于显示（两个 Unity 进程可能同名），不参与协议身份。
+   */
+  readonly origin: "editor" | "runtime" | undefined;
+  /** 同一身份同时出现在两条腿上（保留首条记录，这里显式标冲突）。 */
+  readonly originConflict: boolean;
 }
 
 /** 参数表格的一行（通用窗口）。 */
@@ -841,6 +848,8 @@ export class DebugPanelModel {
         descriptorMissing: view.descriptorMissing,
         historyMissing: view.historyMissing,
         selected: view.key === this.selectedKeyValue,
+        origin: view.origin,
+        originConflict: view.originConflict,
       });
     }
 

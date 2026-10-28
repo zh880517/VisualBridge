@@ -63,7 +63,11 @@ export interface DebugPanelBridge {
   readonly debugQuery?: {
     /** 传实例键时只反映该实例所属连接（F6 多连接路由）；缺省取当前/首条连接。 */
     state(instanceKey?: string): EditorBridgeDebugQueryState;
-    query(instanceKey: string, interfaceId: string, method: string): Promise<DebugQueryResult>;
+    /**
+     * `options.methodId` 显式给方法号：工作区没有调试契约（`debug-contracts.json` 的
+     * `categories` 为空）时，"方法名 → 方法号"无从解析，只能由调用方给号（C.1 的字段）。
+     */
+    query(instanceKey: string, interfaceId: string, method: string, options?: { readonly methodId?: number }): Promise<DebugQueryResult>;
     /** 切换实例时取消旧实例的在途查询（"用户取消"文案，区别于断连）。 */
     cancelInstance(instanceKey: string, reason?: "user" | "disconnect"): number;
   };
@@ -338,6 +342,7 @@ export class DebugPanelController implements vscode.Disposable {
       key?: unknown;
       interfaceId?: unknown;
       method?: unknown;
+      methodId?: unknown;
     } = {},
   ): DebugPanelSnapshot {
     switch (command) {
@@ -451,7 +456,7 @@ export class DebugPanelController implements vscode.Disposable {
    * 发起一次查询（F6）：失败/超时/忙都只变成一条可读提示，**不重试**、不影响接收。
    * 结果由 bridge 以 `kind: "queryResult"` 记录写进时间轴（`frame` 是发起时的帧）。
    */
-  private runQuery(payload: { key?: unknown; interfaceId?: unknown; method?: unknown }): void {
+  private runQuery(payload: { key?: unknown; interfaceId?: unknown; method?: unknown; methodId?: unknown }): void {
     if (this.isReplaying) {
       // 回看没有传输层：即使命令绕过 Webview 的置灰也必须拒绝（不能把历史面板的点击
       // 变成一条发往当前实时连接的查询）。
@@ -471,9 +476,12 @@ export class DebugPanelController implements vscode.Disposable {
       return;
     }
 
+    const methodId = typeof payload.methodId === "number" && Number.isInteger(payload.methodId) && payload.methodId > 0
+      ? payload.methodId
+      : undefined;
     this.queryNoticeValue = { kind: "info", message: `正在查询 ${interfaceId}.${method}…` };
     this.sendState();
-    void query.query(instanceKey, interfaceId, method).then(
+    void query.query(instanceKey, interfaceId, method, methodId === undefined ? {} : { methodId }).then(
       (result) => {
         this.queryNoticeValue = result.record === undefined
           ? { kind: "warning", message: "查询已返回，但实例已不在时间轴：结果未插入。" }

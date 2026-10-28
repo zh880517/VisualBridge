@@ -569,6 +569,8 @@ function snapshot(overrides: {
       descriptorMissing: false,
       historyMissing,
       selected: true,
+      origin: "editor",
+      originConflict: false,
     }],
     totalInstances: 1,
     recording: {

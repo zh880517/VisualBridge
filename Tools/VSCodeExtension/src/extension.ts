@@ -44,6 +44,7 @@ import {
 } from "./reference/workspaceReferenceService";
 import { WorkspaceReferenceRefactor } from "./refactor/workspaceReferenceRefactor";
 import { EditorBridgeServer } from "./bridge/editorBridgeServer";
+import { DebugRecordingHost } from "./bridge/debugRecordingHost";
 import { BridgeProtocolError, parseBridgeMessage, parseDiscoveryRecord } from "./bridge/bridgeProtocol";
 import { RuntimeDebugAdapter } from "./debug/runtimeDebugAdapter";
 import { RuntimeDebugConfigurationProvider, RUNTIME_DEBUG_TYPE } from "./debug/runtimeDebugConfigurationProvider";
@@ -928,7 +929,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
   unsavedDocumentsTree.refresh();
 
-  const bridgeServer = new EditorBridgeServer(projects, documents, output);
+  // 跨腿录制宿主（E9）：两条腿（Editor 桥 / Runtime 桥）共用同一个录制状态机，
+  // 保证"Runtime 腿的帧也能录进 .vbdrec"，而不是只在 Editor 腿留一条录制旁路。
+  const debugRecordingHost = new DebugRecordingHost({ log: (message) => output.appendLine(message) });
+  const bridgeServer = new EditorBridgeServer(projects, documents, output, { recordingHost: debugRecordingHost });
   context.subscriptions.push(bridgeServer);
   try {
     await bridgeServer.start();
@@ -1069,8 +1073,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
-  const runtimeBridge = new RuntimeBridgeService((message) => output.appendLine(`[runtime] ${message}`));
-  context.subscriptions.push({ dispose: () => runtimeBridge.disconnect() });
+  // Runtime 腿的调试接线（E9）：ch1 帧接进与 Editor 腿**同一个**实例表与录制宿主；
+  // 查询归属由 F6 的 `resolveDebugQueryClient` 按实例解析（两条腿各一条连接，不按腿分支）。
+  const runtimeBridge = new RuntimeBridgeService((message) => output.appendLine(`[runtime] ${message}`), {
+    debug: {
+      manager: bridgeServer.debug,
+      resolveContracts: (contractHash) => bridgeServer.contractSnapshots.snapshotForHash(contractHash),
+      recording: debugRecordingHost,
+    },
+  });
+  context.subscriptions.push(
+    { dispose: () => runtimeBridge.disconnect() },
+    bridgeServer.registerDebugQuerySource(() => runtimeBridge.debugQueryConnections),
+  );
 
   // Runtime 只检查 DAP 会话（VB-UX-11）：inline 适配器，一切状态经 Runtime Bridge 协议获取。
   let runtimeDebugAdapter: RuntimeDebugAdapter | undefined;
@@ -1128,6 +1143,39 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return { openCount: debugPanel.openCountForTest };
       }),
       vscode.commands.registerCommand("visualbridge.test.debugPanel.state", () => debugPanel.getStateForTest()),
+      // E9 的 E2E 驱动：一次真实查询往返（两条腿按实例归属路由；`methodId` 用于没有契约的样例工程）。
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.queryDebug", async (payload: {
+        readonly key?: unknown;
+        readonly interfaceId?: unknown;
+        readonly method?: unknown;
+        readonly methodId?: unknown;
+      } = {}) => {
+        if (typeof payload.key !== "string" || typeof payload.interfaceId !== "string" || typeof payload.method !== "string") {
+          return { ok: false, error: "query debug requires key, interfaceId and method" };
+        }
+
+        try {
+          const result = await bridgeServer.queryDebug(
+            payload.key,
+            payload.interfaceId,
+            payload.method,
+            [],
+            typeof payload.methodId === "number" ? { methodId: payload.methodId } : {},
+          );
+          return {
+            ok: true,
+            kind: result.record?.kind,
+            frame: result.target.frame,
+            value: result.record?.args.get(1)?.value,
+          };
+        } catch (errorValue) {
+          return {
+            ok: false,
+            error: errorValue instanceof Error ? errorValue.message : String(errorValue),
+            code: (errorValue as { readonly code?: string }).code,
+          };
+        }
+      }),
       // F5 宿主测试注入点：直接走控制器的回看入口（错误信息就是 `showErrorMessage` 会显示的那条），
       // 以及 bridge 层的录制启停/状态（不经过保存对话框）。
       vscode.commands.registerCommand("visualbridge.test.debugPanel.openRecording", async (filePath: unknown) => {
@@ -1168,6 +1216,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             readonly value?: unknown;
             readonly direction?: unknown;
             readonly key?: unknown;
+            readonly interfaceId?: unknown;
+            readonly method?: unknown;
+            readonly methodId?: unknown;
           },
         ),
       ),

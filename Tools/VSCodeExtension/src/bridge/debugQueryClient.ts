@@ -655,11 +655,16 @@ export interface DebugQueryInstanceTarget {
 export interface DebugQueryConnection {
   readonly owns: (instance: DebugQueryInstanceTarget) => boolean;
   readonly client: DebugQueryClient;
+  /**
+   * 该连接自己的"当前帧"（E9 两条腿）：结果记录必须盖**发起查询那条腿**的帧号。
+   * 缺省 = 调用方回退到共享的实例表当前帧（F1-F6 的单腿行为）。
+   */
+  readonly frame?: () => number;
 }
 
 /** 路由结果：`ready` 选中唯一连接；`noOwner` / `ambiguous` 都必须由调用方明确报错，不猜。 */
 export type DebugQueryRoute =
-  | { readonly status: "ready"; readonly client: DebugQueryClient }
+  | { readonly status: "ready"; readonly client: DebugQueryClient; readonly frame?: () => number }
   | { readonly status: "noOwner" }
   | { readonly status: "ambiguous" };
 
@@ -695,14 +700,14 @@ export function resolveDebugQueryClient(
     // 面板还没选中实例：只有一条连接时无歧义；多条连接时不猜。
     const [only] = connections;
     return connections.length === 1 && only !== undefined
-      ? { status: "ready", client: only.client }
+      ? { status: "ready", client: only.client, ...(only.frame === undefined ? {} : { frame: only.frame }) }
       : { status: "ambiguous" };
   }
 
   const owners = connections.filter((candidate) => candidate.owns(instance));
   const [owner] = owners;
   if (owners.length === 1 && owner !== undefined) {
-    return { status: "ready", client: owner.client };
+    return { status: "ready", client: owner.client, ...(owner.frame === undefined ? {} : { frame: owner.frame }) };
   }
 
   return owners.length > 1 ? { status: "ambiguous" } : { status: "noOwner" };

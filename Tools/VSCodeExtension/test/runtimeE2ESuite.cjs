@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
-const { readFile, writeFile, stat } = require("node:fs/promises");
+const { mkdtemp, readFile, rm, writeFile, stat } = require("node:fs/promises");
+const os = require("node:os");
 const path = require("node:path");
 const vscode = require("vscode");
 
@@ -143,6 +144,116 @@ exports.run = async function run() {
     } finally {
       await writeFile(artifactPath, original, "utf8");
       await stat(artifactPath);
+    }
+  });
+
+  // ---- E9 调试通道生产接线：Runtime 腿的 ch1 帧必须真的进 DebugIngress → 实例/事件 ----
+  const DEBUG_INSTANCE_KEY = "e9-channel\u0000e9-debug-instance";
+
+  await test("receives live ch1 debug frames on the runtime bridge and ingests them as instances (E9)", async () => {
+    // Unity 侧执行模拟器通过生产入口 `VisualBridgeDiagnostics.VisualBridgeDebug` 每 300ms 发一条事件帧。
+    const state = await waitForAsync(
+      () => vscode.commands.executeCommand("visualbridge.test.getRuntimeBridgeState"),
+      (value) => value?.connected === true && (value?.debugFrames ?? 0) >= 2 && (value?.debugEnvelopes ?? 0) >= 2,
+      60_000,
+      "The runtime bridge did not deliver ch1 debug frames to DebugIngress.",
+    );
+    const snapshot = await waitForAsync(
+      () => vscode.commands.executeCommand("visualbridge.test.debugPanel.state"),
+      (value) => Array.isArray(value?.instances)
+        && value.instances.some((row) => row.key === DEBUG_INSTANCE_KEY && row.recordCount >= 1),
+      30_000,
+      "The runtime debugCreate did not become a panel instance with events.",
+    );
+    const row = snapshot.instances.find((entry) => entry.key === DEBUG_INSTANCE_KEY);
+    assert.equal(row.origin, "runtime", "The runtime-leg instance must be labeled with its origin.");
+    assert.equal(row.originConflict, false, "No Editor-leg instance shares this identity.");
+    assert.ok(row.recordCount >= 1, `The runtime leg must ingest debug events (recordCount=${row.recordCount}).`);
+    console.log(`[runtime-e2e] runtime ch1 debug: frames=${state.debugFrames} envelopes=${state.debugEnvelopes} records=${row.recordCount} origin=${row.origin}`);
+  });
+
+  await test("completes a real debug query roundtrip on the runtime leg (E9)", async () => {
+    const before = await vscode.commands.executeCommand("visualbridge.test.debugPanel.state");
+    const beforeRow = before.instances.find((entry) => entry.key === DEBUG_INSTANCE_KEY);
+    assert.ok(beforeRow, "The runtime debug instance disappeared before the query roundtrip.");
+
+    const result = await vscode.commands.executeCommand("visualbridge.test.debugPanel.queryDebug", {
+      key: DEBUG_INSTANCE_KEY,
+      interfaceId: "IE9SampleQuery",
+      method: "Echo",
+      // 样例工程没有调试契约（categories 为空）：方法名无法解析成方法号，显式给号（C.1 的字段）。
+      methodId: 10,
+    });
+    assert.equal(result.ok, true, `The debug query failed: ${result.error} (${result.code})`);
+    assert.equal(result.kind, "queryResult", "The result must be appended to the timeline as a queryResult record.");
+    assert.equal(result.value, "e9-query-ok", "The query result payload must come from the Unity handler.");
+
+    const after = await vscode.commands.executeCommand("visualbridge.test.debugPanel.state");
+    const afterRow = after.instances.find((entry) => entry.key === DEBUG_INSTANCE_KEY);
+    assert.ok(afterRow.recordCount > beforeRow.recordCount,
+      `The query result must extend the runtime instance timeline (${beforeRow.recordCount} -> ${afterRow.recordCount}).`);
+    console.log(`[runtime-e2e] runtime query roundtrip: frame=${result.frame} kind=${result.kind} value=${result.value}`);
+  });
+
+  await test("records the runtime debug channel and replays it from the .vbdrec (E9)", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "visualbridge-e9-recording-"));
+    const filePath = path.join(directory, "runtime-channel.vbdrec");
+    try {
+      const before = await vscode.commands.executeCommand("visualbridge.test.getRuntimeBridgeState");
+      assert.equal(before.connected, true);
+      const started = await vscode.commands.executeCommand("visualbridge.test.debugPanel.recordingStart", filePath);
+      assert.equal(started.active, true);
+      assert.equal(started.origin, "runtime", "Recording must bind to the runtime-leg connection that is producing frames.");
+
+      // `records` 只在数据块落盘（64 KB 或停止）时增加：录制期间等的是"帧还在流"，不是 records>0。
+      const streamed = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getRuntimeBridgeState"),
+        (value) => (value?.debugFrames ?? 0) >= (before.debugFrames ?? 0) + 3,
+        20_000,
+        "The runtime leg stopped delivering debug frames while recording.",
+      );
+      const stopped = await vscode.commands.executeCommand("visualbridge.test.debugPanel.recordingStop");
+      assert.ok(stopped.footer, "Stopping the recording must produce a footer.");
+      assert.ok(stopped.footer.records >= 3, `Expected recorded frames in the footer, got ${stopped.footer.records}.`);
+      assert.equal(stopped.state.deliverable, true, "The recording must be finalized as deliverable.");
+      const size = (await stat(filePath)).size;
+      assert.ok(size > 0, "The .vbdrec file must not be empty.");
+
+      // 回看：用真实 reader 打开刚录的文件，时间轴必须能出记录（不是"文件非空"就宣称可回看）。
+      const opened = await vscode.commands.executeCommand("visualbridge.test.debugPanel.openRecording", filePath);
+      assert.equal(opened.ok, true, `The recording could not be opened: ${opened.error}`);
+      const replay = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.debugPanel.state"),
+        (value) => value?.replay !== undefined
+          && (value?.replay?.records ?? 0) >= 3
+          && Array.isArray(value?.instances)
+          && value.instances.some((row) => row.key === DEBUG_INSTANCE_KEY && row.recordCount >= 1),
+        20_000,
+        "The .vbdrec could not be replayed into an instance timeline.",
+      );
+      const replayInstance = replay.instances.find((row) => row.key === DEBUG_INSTANCE_KEY);
+      assert.ok(replayInstance, "The replayed recording must reconstruct the runtime debug instance.");
+      assert.ok(replayInstance.recordCount >= 2,
+        `The replayed instance must carry the recorded events (recordCount=${replayInstance.recordCount}).`);
+
+      // 选中回放实例：时间轴必须能渲染出记录（"回看能出时间轴"的证据）。
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.command", "select", { key: DEBUG_INSTANCE_KEY });
+      const timeline = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.debugPanel.state"),
+        (value) => (value?.timeline?.records?.length ?? 0) >= 1 && value?.timeline?.selected === true,
+        20_000,
+        "The replayed recording produced no timeline rows.",
+      );
+      console.log(`[runtime-e2e] runtime recording: +frames=${streamed.debugFrames - (before.debugFrames ?? 0)} footer=${stopped.footer.records} bytes=${size} replayRecords=${replay.replay.records} replayRows=${timeline.timeline.records.length} replayInstanceRecords=${replayInstance.recordCount}`);
+
+      // 关闭回看，后续 DAP 用例仍然操作在线面板。
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.command", "closeRecording", {});
+      const live = await vscode.commands.executeCommand("visualbridge.test.debugPanel.state");
+      assert.equal(live.replay, undefined, "Closing the replay must return the panel to the live bridge.");
+    } finally {
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.recordingStop").catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.command", "live", {}).catch(() => undefined);
+      await rm(directory, { recursive: true, force: true });
     }
   });
 

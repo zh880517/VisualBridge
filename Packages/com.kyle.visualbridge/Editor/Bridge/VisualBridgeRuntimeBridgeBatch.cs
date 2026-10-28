@@ -190,6 +190,115 @@ namespace VisualBridge.Editor
             if (EditorApplication.isPlaying)
             {
                 StepExecutionSimulator();
+                StepDebugChannelSimulator();
+            }
+        }
+
+        // ---- E9 调试通道 E2E：真实的 ch1 调试帧 + 真实查询往返 ----
+        // 走生产入口 `VisualBridge.Diagnostics.VisualBridgeDebug`（Play 模式由
+        // `VisualBridgeRuntimeBridgeHost.InstallDebugTransport` 注入 transport），
+        // 因此 E2E 验证的是线上路径，不是测试专线的假数据。
+        private const string DebugSimCategory = "e9-channel";
+        private const string DebugSimInterface = "IE9SampleQuery";
+        private const string DebugSimInstance = "e9-debug-instance";
+        private const string DebugSimMethod = "Echo";
+        private const ushort DebugSimEventMethodId = 20;
+        private const ushort DebugSimQueryMethodId = 10;
+        private const string DebugSimNextTickKey = "VisualBridge.RuntimeBridgeHostedE2E.DebugNextTick";
+        private const string DebugSimFrameKey = "VisualBridge.RuntimeBridgeHostedE2E.DebugFrame";
+        private const string DebugSimCreatedKey = "VisualBridge.RuntimeBridgeHostedE2E.DebugCreated";
+        private const string DebugSimConnectedKey = "VisualBridge.RuntimeBridgeHostedE2E.DebugConnected";
+        private const string DebugSimSentKey = "VisualBridge.RuntimeBridgeHostedE2E.DebugSent";
+        private const string DebugSimFailedKey = "VisualBridge.RuntimeBridgeHostedE2E.DebugFailed";
+        private const int DebugSimTickMs = 300;
+
+        /// <summary>
+        /// 每个 tick：连接建立后 Create 实例、幂等注册查询处理器，然后按 300ms 发一条事件。
+        /// 诊断计数（sent/failed/connected）写进 Unity 日志，E2E 失败时能区分"Unity 没发"
+        /// 与"VS Code 没收/没录"。
+        /// </summary>
+        private static void StepDebugChannelSimulator()
+        {
+            if (VisualBridgeRuntimeBridgeHost.CurrentServer == null)
+            {
+                return;
+            }
+
+            var connected = VisualBridge.Diagnostics.VisualBridgeDebug.isConnected;
+            if (connected != SessionState.GetBool(DebugSimConnectedKey, false))
+            {
+                SessionState.SetBool(DebugSimConnectedKey, connected);
+                UnityEngine.Debug.Log($"[runtime-bridge] debug channel connected={connected}");
+            }
+
+            if (!connected)
+            {
+                // 断连会重置实例集合与待发队列（Detach 语义）：下次连上要重新 Create。
+                SessionState.SetBool(DebugSimCreatedKey, false);
+                return;
+            }
+
+            // Create 是幂等的；成功后不再每帧调用（重复 Create 会刷警告）。
+            if (!SessionState.GetBool(DebugSimCreatedKey, false))
+            {
+                if (VisualBridge.Diagnostics.VisualBridgeDebug.Create(
+                    DebugSimInstance, DebugSimCategory, "E9RuntimeProbe", "E9 调试通道运行时探针"))
+                {
+                    SessionState.SetBool(DebugSimCreatedKey, true);
+                    UnityEngine.Debug.Log("[runtime-bridge] debug instance created: " + DebugSimInstance);
+                }
+            }
+
+            // 查询处理器每 tick 重注册（幂等）：domain reload 会清掉静态注册表。
+            VisualBridge.Diagnostics.VisualBridgeDebug.RegisterRequestHandler(
+                DebugSimCategory, DebugSimInterface,
+                (VisualBridge.Diagnostics.VisualBridgeDebugRequestDispatcher)((methodId, instanceId, instanceSlot, requestSeq, parameters) =>
+                {
+                    if (methodId != DebugSimQueryMethodId)
+                    {
+                        return false;
+                    }
+
+                    var request = new VisualBridge.Diagnostics.VisualBridgeDebugRequest(
+                        instanceId, instanceSlot, methodId, requestSeq,
+                        DebugSimCategory, DebugSimInterface, DebugSimMethod);
+                    if (!VisualBridge.Diagnostics.VisualBridgeDebug.StartResult(request))
+                    {
+                        UnityEngine.Debug.LogWarning("[runtime-bridge] debug query result could not start.");
+                        return false;
+                    }
+
+                    VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("value", 1, "e9-query-ok");
+                    var ended = VisualBridge.Diagnostics.VisualBridgeDebug.End();
+                    UnityEngine.Debug.Log($"[runtime-bridge] debug query handled methodId={methodId} instance={instanceId} ended={ended}");
+                    return ended;
+                }));
+
+            var nextTickTicks = SessionState.GetString(DebugSimNextTickKey, "0");
+            if (!long.TryParse(nextTickTicks, out var nextTick) || DateTime.UtcNow.Ticks < nextTick)
+            {
+                return;
+            }
+
+            SessionState.SetString(DebugSimNextTickKey, DateTime.UtcNow.AddMilliseconds(DebugSimTickMs).Ticks.ToString());
+            var frame = SessionState.GetInt(DebugSimFrameKey, 0) + 1;
+            SessionState.SetInt(DebugSimFrameKey, frame);
+            VisualBridge.Diagnostics.VisualBridgeDebug.SetFrame(frame);
+            var sent = false;
+            if (VisualBridge.Diagnostics.VisualBridgeDebug.Start(
+                DebugSimInstance, DebugSimCategory, DebugSimEventMethodId, DebugSimInterface, "Tick"))
+            {
+                VisualBridge.Diagnostics.VisualBridgeDebug.PushParam("tick", 1, "e9-tick-" + frame);
+                sent = VisualBridge.Diagnostics.VisualBridgeDebug.End();
+            }
+
+            var sentCount = SessionState.GetInt(DebugSimSentKey, 0) + (sent ? 1 : 0);
+            var failedCount = SessionState.GetInt(DebugSimFailedKey, 0) + (sent ? 0 : 1);
+            SessionState.SetInt(DebugSimSentKey, sentCount);
+            SessionState.SetInt(DebugSimFailedKey, failedCount);
+            if (frame % 10 == 0)
+            {
+                UnityEngine.Debug.Log($"[runtime-bridge] debug-sim frame={frame} sent={sentCount} failed={failedCount} connected={connected}");
             }
         }
 

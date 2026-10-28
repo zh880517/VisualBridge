@@ -25,6 +25,13 @@ import { probeBridgePorts } from "./bridgeProbe";
 import { BRIDGE_PROTOCOL_VERSION } from "./bridgeProtocol";
 import { BridgePayloadKind } from "./framing";
 import { GraphExecutionRecording } from "./graphExecutionRecording";
+import { DebugChannelSession, type DebugChannel } from "./debugChannel";
+import type { DebugContractSnapshot } from "./debugContractRegistry";
+import type { DebugEnvelope } from "./debugIngress";
+import type { DebugInstanceManager } from "./debugInstanceManager";
+import type { DebugQueryConnection } from "./debugQueryClient";
+import type { DebugRecordingConnectType } from "./debugRecordingFormat";
+import type { DebugRecordingHost } from "./debugRecordingHost";
 
 export interface RuntimeBridgeInstance {
   readonly recordPath: string;
@@ -73,14 +80,59 @@ export interface RuntimeBridgeConnectionState {
   readonly lastSnapshotCount?: number;
   readonly lastEventCount?: number;
   readonly subscribedExecutionId?: string;
+  /** E9：本连接的 ch1 接收计数（没有调试会话时缺省）。 */
+  readonly debugFrames?: number;
+  readonly debugEnvelopes?: number;
+  readonly debugInstances?: number;
+}
+
+/**
+ * Runtime 腿的调试接线（E9）：把 ch1 帧接进与 Editor 腿**同一个**实例表/录制宿主。
+ *
+ * 缺省不提供时行为退回 E1：ch1 帧只记一条日志后丢弃。宿主（`extension.ts`）注入后，
+ * Runtime 腿的 `debugCreate` / `debug` / `debugResult` 与 Editor 腿完全同路径落地。
+ */
+export interface RuntimeBridgeDebugWiring {
+  /** 与 Editor 腿共享的实例表（两条腿的实例落在同一个面板里，方案 A）。 */
+  readonly manager: DebugInstanceManager;
+  /** 按 welcome 的 `contractHash` 取契约快照（决定二进制解码与方法名解析）。 */
+  readonly resolveContracts?: (contractHash: string) => DebugContractSnapshot | undefined;
+  /** 跨腿录制宿主；缺省 = 不录制（但帧仍然进实例表）。 */
+  readonly recording?: DebugRecordingHost;
+  /** 下游 ingest 抛错的隔离回调（缺省写日志）。 */
+  readonly onIngestError?: (envelope: DebugEnvelope, error: unknown) => void;
+}
+
+export interface RuntimeBridgeServiceOptions {
+  /** E9：注入调试接线。缺省时 Runtime 腿只保留 E1 的控制面行为。 */
+  readonly debug?: RuntimeBridgeDebugWiring;
 }
 
 export class RuntimeBridgeService {
   private connection: RuntimeBridgeConnection | undefined;
   private eventListener: ((event: RuntimeBridgeEventMessage) => void) | undefined;
   private recording: GraphExecutionRecording | undefined;
+  private readonly debugWiring: RuntimeBridgeDebugWiring | undefined;
 
-  public constructor(private readonly output: (message: string) => void) {
+  public constructor(
+    private readonly output: (message: string) => void,
+    options: RuntimeBridgeServiceOptions = {},
+  ) {
+    this.debugWiring = options.debug;
+  }
+
+  /**
+   * 当前 Runtime 连接的调试会话（E9）：宿主用它把查询路由接到这条腿上。
+   * 没连接/没握手时 `undefined`。
+   */
+  public get debugSession(): DebugChannelSession | undefined {
+    return this.connection?.debugSession;
+  }
+
+  /** F6 的候选连接（Runtime 腿）：编辑器腿把它注册进 `debugQuery` 的归属解析。 */
+  public get debugQueryConnections(): readonly DebugQueryConnection[] {
+    const session = this.debugSession;
+    return session === undefined ? [] : [session.connection];
   }
 
   public get state(): RuntimeBridgeConnectionState {
@@ -138,7 +190,7 @@ export class RuntimeBridgeService {
 
   public async connect(instance: RuntimeBridgeInstance, timeoutMs = 5000): Promise<RuntimeBridgeWelcomeMessage> {
     this.disconnect();
-    const connection = new RuntimeBridgeConnection(instance, this.output, (event) => this.handleEvent(event));
+    const connection = new RuntimeBridgeConnection(instance, this.output, (event) => this.handleEvent(event), this.debugWiring);
     this.connection = connection;
     try {
       const welcome = await connection.connect(timeoutMs);
@@ -176,7 +228,7 @@ export class RuntimeBridgeService {
           ...(options.contractHash === undefined ? {} : { contractHash: options.contractHash }),
           ...(options.resumeSessionId === undefined ? {} : { resumeSessionId: options.resumeSessionId }),
         };
-        const connection = new RuntimeBridgeConnection(instance, this.output, (event) => this.handleEvent(event));
+        const connection = new RuntimeBridgeConnection(instance, this.output, (event) => this.handleEvent(event), this.debugWiring);
         attempts.push(connection);
         const aborted = new Promise<never>((_, reject) => {
           signal.addEventListener("abort", () => reject(new Error("Probe attempt aborted.")), { once: true });
@@ -337,12 +389,20 @@ export class RuntimeBridgeConnection {
   private subscribedExecutionId: string | undefined;
   private disposed = false;
   private connectionError: Error | undefined;
+  private debugSessionValue: DebugChannelSession | undefined;
+  private debugSourceId: string | undefined;
 
   public constructor(
     private readonly instance: RuntimeBridgeInstance,
     private readonly output: (message: string) => void,
     private readonly onEvent: (event: RuntimeBridgeEventMessage) => void,
+    private readonly debugWiring: RuntimeBridgeDebugWiring | undefined = undefined,
   ) {
+  }
+
+  /** 本连接的调试会话（E9）：welcome 之后创建，断连/重连时销毁重建。 */
+  public get debugSession(): DebugChannelSession | undefined {
+    return this.debugSessionValue;
   }
 
   public get state(): RuntimeBridgeConnectionState {
@@ -350,6 +410,7 @@ export class RuntimeBridgeConnection {
       return { connected: false };
     }
 
+    const counters = this.debugSessionValue?.ingress.counters;
     return {
       connected: !this.disposed,
       instanceId: this.welcome.endpointId,
@@ -361,6 +422,13 @@ export class RuntimeBridgeConnection {
       lastSnapshotCount: this.snapshotCount,
       lastEventCount: this.events.length,
       ...(this.subscribedExecutionId === undefined ? {} : { subscribedExecutionId: this.subscribedExecutionId }),
+      ...(counters === undefined
+        ? {}
+        : {
+          debugFrames: counters.frames,
+          debugEnvelopes: counters.envelopes,
+          debugInstances: this.debugWiring?.manager.instances.length ?? 0,
+        }),
     };
   }
 
@@ -396,8 +464,15 @@ export class RuntimeBridgeConnection {
       const bridge = new BridgeSocket(socket, {
         onControlPayload: (payload) => this.handlePayload(payload),
         onDebugFrame: (payloadKind: BridgePayloadKind, payload: Buffer) => {
-          // E1 只搭传输：Runtime 通道现阶段的业务消息全部走控制通道，调试通道留给 E4。
-          this.output(`Runtime bridge ignored a ${payload.length}-byte debug payload (kind ${payloadKind}).`);
+          if (this.debugSessionValue === undefined) {
+            // 握手完成前（或宿主未接线）收到的 ch1 帧：没有契约/实例表可落，只记日志。
+            this.output(`Runtime bridge ignored a ${payload.length}-byte debug payload (kind ${payloadKind}) before the debug session was ready.`);
+            return;
+          }
+
+          // E9：Runtime 腿的 ch1 帧与 Editor 腿走**同一个** DebugChannelSession 入口
+          // （录制 tap → 计数/分流 → 解码 → 实例/查询结算），没有第二条旁路。
+          this.debugSessionValue.acceptFrame(payloadKind, payload);
         },
         onClosed: (error) => {
           const failure = error ?? new Error(this.handshake === undefined
@@ -585,6 +660,7 @@ export class RuntimeBridgeConnection {
 
   public dispose(): void {
     this.disposed = true;
+    this.detachDebugSession();
     this.invalidate(new Error("Runtime bridge connection disposed."));
     this.bridge?.close();
     this.bridge = undefined;
@@ -605,6 +681,7 @@ export class RuntimeBridgeConnection {
       if (message.type === "welcome") {
         this.welcome = message;
         this.warnIfPlayerWithoutAuthentication();
+        this.attachDebugSession(message);
         this.finishHandshake(message, undefined);
       } else {
         const detail = message.type === "error" ? message.detail ?? message.code : `Expected a welcome message, received '${message.type}'.`;
@@ -646,6 +723,81 @@ export class RuntimeBridgeConnection {
     }
   }
 
+  /**
+   * welcome 之后建立调试会话（E9）：契约按 `welcome.contractHash` 选，发送走本连接的
+   * ch1 控制队列，录制源用 `runtime-<sessionId>` 登记到跨腿录制宿主。
+   *
+   * Runtime 腿**不发送** `debugSetEnabled`（Runtime 服务端在 ch0 只认 hello/request，
+   * 多发一条控制消息会被判连接级错误）：上报开关由 Unity 的 `DebugLinkOpened` 决定，
+   * `welcome.debugEnabled` 只读。
+   */
+  private attachDebugSession(welcome: RuntimeBridgeWelcomeMessage): void {
+    const wiring = this.debugWiring;
+    if (wiring === undefined) {
+      return;
+    }
+
+    this.detachDebugSession();
+    const snapshot = wiring.resolveContracts?.(welcome.contractHash);
+    const sourceId = `runtime-${welcome.sessionId}`;
+    const recording = wiring.recording;
+    const recorder = recording === undefined
+      ? undefined
+      : {
+        recordFrame: (channel: number, payloadKind: BridgePayloadKind, payload: Buffer) => {
+          recording.noteFrame(sourceId, channel, payloadKind, payload);
+        },
+      };
+    const channel: DebugChannel = {
+      origin: "runtime",
+      id: welcome.sessionId,
+      isOpen: () => !this.disposed && this.connectionError === undefined
+        && this.bridge !== undefined && this.bridge.isOpen && this.welcome !== undefined,
+
+      sendDebugPayload: (payload) => this.bridge !== undefined
+        && this.bridge.isOpen
+        && this.bridge.sendDebugControl(payload),
+    };
+    this.debugSessionValue = new DebugChannelSession({
+      channel,
+      manager: wiring.manager,
+      ...(snapshot === undefined ? {} : { contracts: snapshot }),
+      ...(recorder === undefined ? {} : { recorder }),
+      log: (message) => this.output(message),
+      ...(wiring.onIngestError === undefined ? {} : { onIngestError: wiring.onIngestError }),
+    });
+    this.debugSourceId = sourceId;
+    if (recording !== undefined) {
+      const connectType: DebugRecordingConnectType = welcome.connectType === "player" ? "player" : "editor-player";
+      recording.registerSource({
+        id: sourceId,
+        origin: "runtime",
+        connectType,
+        sessionId: welcome.sessionId,
+        endpointId: welcome.endpointId,
+        bootId: welcome.bootId,
+        contractHash: welcome.contractHash,
+        contracts: snapshot,
+        isOpen: () => !this.disposed && this.connectionError === undefined && this.bridge !== undefined && this.bridge.isOpen,
+      });
+    }
+    this.output(
+      `Runtime bridge debug channel attached session=${welcome.sessionId} contract=${welcome.contractHash || "(none)"} debugEnabled=${welcome.debugEnabled}`,
+    );
+  }
+
+  /** 销毁本连接的调试会话并注销录制源（重连/断连/释放都必须走这里，避免状态泄漏）。 */
+  private detachDebugSession(): void {
+    const sourceId = this.debugSourceId;
+    this.debugSourceId = undefined;
+    if (sourceId !== undefined) {
+      this.debugWiring?.recording?.unregisterSource(sourceId);
+    }
+
+    this.debugSessionValue?.dispose("disconnect");
+    this.debugSessionValue = undefined;
+  }
+
   private finishHandshake(welcome: RuntimeBridgeWelcomeMessage | undefined, error: Error | undefined): void {
     const handshake = this.handshake;
     if (handshake === undefined) return;
@@ -672,6 +824,7 @@ export class RuntimeBridgeConnection {
 
     if (this.connectionError === undefined) this.connectionError = error;
     this.welcome = undefined;
+    this.detachDebugSession();
     this.rejectPending(this.connectionError);
     this.bridge?.close();
   }

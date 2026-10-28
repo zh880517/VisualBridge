@@ -41,22 +41,26 @@ import {
   type DebugContractSnapshot,
   type DebugContractSnapshotSet,
 } from "./debugContractRegistry";
-import { DebugIngress, type DebugFrameRecorder, type DebugResponseEnvelope, type DebugResultEnvelope } from "./debugIngress";
+import type { DebugFrameRecorder } from "./debugIngress";
 import { DebugInstanceManager, type DebugInstanceView } from "./debugInstanceManager";
 import {
-  DebugQueryClient,
   debugQueryAvailability,
   debugQueryLocalError,
-  debugQueryOwnsInstance,
   resolveDebugQueryClient,
+  type DebugQueryClient,
   type DebugQueryConnection,
   type DebugQueryNotice,
   type DebugQueryResult,
 } from "./debugQueryClient";
-import { encodeDebugRequest, type DebugArg } from "./debugMessages";
-import { DebugSessionRecorder, type DebugRecorderOpenSink } from "./debugRecorder";
-import { serializeRecordedContracts } from "./debugRecordingContracts";
+import { DebugChannelSession, type DebugChannel } from "./debugChannel";
+import {
+  DebugRecordingHost,
+  type DebugRecordingSource,
+  type EditorBridgeRecordingOptions,
+  type EditorBridgeRecordingState,
+} from "./debugRecordingHost";
 import type { DebugRecordingFooter, DebugRecordingHeader, DebugRecordingEndReason } from "./debugRecordingFormat";
+import type { DebugArg } from "./debugMessages";
 
 export const OPEN_DOCUMENT_COMMAND = "visualbridge.openDocument";
 export const REVEAL_REFERENCE_COMMAND = "visualbridge.revealReference";
@@ -94,6 +98,11 @@ export interface EditorBridgeServerOptions {
   readonly reconnectGraceMs?: number;
   /** 当前时刻（epoch ms）注入点；缺省 `Date.now`，测试用假时钟验证 14.9 s / 15.1 s 边界。 */
   readonly now?: () => number;
+  /**
+   * 跨腿录制宿主（E9）：宿主把它同时交给 Runtime 腿，录制才能覆盖两条腿。
+   * 缺省（单测直接 new 服务端）时自建一个，行为与 F5 相同。
+   */
+  readonly recordingHost?: DebugRecordingHost;
 }
 
 type BridgeConnection = EditorBridgeConnectionSlot<BridgeSocket>;
@@ -116,56 +125,20 @@ export interface EditorBridgeDebugReporting {
 /** 调试面变化的原因：`broadcast` = Unity 的 `debugEnabled` 应答；`connection` = 握手/断开。 */
 export type EditorBridgeDebugReportingReason = "connection" | "broadcast";
 
-/** 会话录制能力的状态（F3 面板的"录制"按钮只读它）。 */
-export interface EditorBridgeRecordingState {
-  /** 桥接服务已启动、能写文件（与"当前有没有连接"无关：可以先开录再连）。 */
-  readonly available: boolean;
-  readonly active: boolean;
-  readonly filePath: string | undefined;
-  readonly startedAt: string | undefined;
-  readonly records: number;
-  readonly droppedRecords: number;
-  readonly droppedBytes: number;
-  readonly endedReason: DebugRecordingEndReason | undefined;
-  readonly endedAt: string | undefined;
-  /**
-   * 文件已 finalize（文件尾 + sync + close 已完成，或写盘失败已回收 sink）。
-   * 面板的自动收尾提示必须等它为 true，否则用户可能打开一个没有文件尾的半截文件（F5-05）。
-   */
-  readonly finalized: boolean;
-  /**
-   * 文件尾确实写成功（可以"打开回看"）。`finalized && !deliverable` = 收尾失败，
-   * UI 必须走错误提示，不能提示"已保存"（P2-4）。
-   */
-  readonly deliverable: boolean;
-  /** 收尾失败原因（footer 写失败 / 写盘失败）；非空时不能宣称"已保存"。 */
-  readonly failure: string | undefined;
-}
-
-/** 开始录制的入参；路径由宿主（UI）确定，服务端只负责快照与写入。 */
-export interface EditorBridgeRecordingOptions {
-  readonly filePath: string;
-  readonly maxFileBytes?: number;
-  /** 记录条数上限（缺省 = 回看预算；保证"能录出来的文件一定能打开"）。 */
-  readonly maxRecords?: number;
-  readonly blockBytes?: number;
-  readonly queueBlocks?: number;
-  /** 注入时钟；缺省用服务端时钟（测试用假时钟断言 `startedAt`/`endedAt`）。 */
-  readonly now?: () => number;
-  /** 测试注入：替换文件写入。 */
-  readonly openSink?: DebugRecorderOpenSink;
-}
+/**
+ * 会话录制的状态/入参（F5）现在由跨腿宿主 {@link DebugRecordingHost} 定义；
+ * 这里转出以保持既有导入路径不变（E9）。
+ */
+export type { EditorBridgeRecordingOptions, EditorBridgeRecordingState } from "./debugRecordingHost";
 
 /** 一条连接绑定的调试面状态：指纹决定契约快照，快照决定二进制解码。 */
 interface EditorBridgeDebugBinding {
   snapshot: DebugContractSnapshot | undefined;
-  ingress: DebugIngress | undefined;
   /**
-   * 本连接的查询客户端（F6）：挂起表与超时都在它里面。握手时创建，断连时 `cancelAll`；
-   * `DebugIngress` 的 `isPendingRequest` / `isKnownRequest` 都取自同一个 tracker，
-   * 因此线上二进制 `debug` / `debugResult` 能按 `requestId` 正确区分（A.4）。
+   * 本连接的解码/查询会话（F1/F6）：`DebugIngress` 的挂起表、槽位表与 `DebugQueryClient`
+   * 都按连接隔离；E9 起 Editor 腿与 Runtime 腿共用同一套 {@link DebugChannelSession}。
    */
-  queries: DebugQueryClient | undefined;
+  session: DebugChannelSession | undefined;
 }
 
 /** 面板查询入口的状态快照（F6）：`available` = **该实例所属连接**的查询客户端已就绪。 */
@@ -241,22 +214,19 @@ export class EditorBridgeServer implements vscode.Disposable {
   private readonly debugReportingListeners = new Set<(reason: EditorBridgeDebugReportingReason) => void>();
   /** 下游 ingest 抛错被隔离的次数（坏记录不得拖垮整帧）。 */
   private debugIngestErrors = 0;
-  /** 当前会话录制器（F5）；一次只录一个文件。 */
-  private recorder: DebugSessionRecorder | undefined;
   /**
-   * 录制源连接（P1-B）：`startRecording` 时解析并固定，之后**只有这条连接**的入站帧进录制文件，
-   * 也只有它的关闭会收尾录制。重连/第二个编辑器/端口探测都不会污染或截断当前录制。
-   *
-   * 连接 id 用**连接对象本身**：`EditorBridgeConnectionSlot` 是每次 `accept` 新建的槽位对象
-   * （既是连接门的登记项，也是 `debugBindings` WeakMap 的键），连接关闭即退休、重连拿到的是
-   * 新对象，因此不存在"id 复用导致误绑"；既有 binding 上只有 `snapshot`/`ingress`，没有 id 字段。
+   * 跨腿录制宿主（E9）：状态机与文件写入都在这里，`startRecording`/`stopRecording` 只是转发。
+   * 当前录制**只绑定一个源**（P1-B），源可以是 Editor 腿或 Runtime 腿的连接。
    */
-  private recordingSource: BridgeConnection | undefined;
-  /**
-   * 最近一次录制的收尾快照（F5-05）：`stopRecording` 清掉 `recorder` 后，面板的自动收尾轮询
-   * 仍要能读到 footer 统计（条数/丢弃/endedReason）并确认文件已 finalize。
-   */
-  private lastRecording: EditorBridgeRecordingState | undefined;
+  private readonly recordingHost: DebugRecordingHost;
+  /** 每条连接的录制 tap（在 `accept` 建立，稳定对象；只有录制源的帧会进文件）。 */
+  private readonly debugRecordTaps = new WeakMap<BridgeConnection, DebugFrameRecorder>();
+  /** 每条已握手连接的录制源 id（`accept` 分配，握手后注册到 {@link recordingHost}）。 */
+  private readonly debugRecordSourceIds = new WeakMap<BridgeConnection, string>();
+  /** 外部腿（当前是 Runtime 桥）提供的查询连接：只增删，不改变 F6 的归属判定。 */
+  private readonly externalDebugQuerySources = new Set<() => readonly DebugQueryConnection[]>();
+  /** 连接序号：录制源 id 的唯一来源（一条连接一个，不复用）。 */
+  private connectionSequence = 0;
   private contractRefreshTimer: NodeJS.Timeout | undefined;
   private contractRefreshing: Promise<void> | undefined;
 
@@ -273,6 +243,10 @@ export class EditorBridgeServer implements vscode.Disposable {
     this.autoLoadContracts = options.autoLoadContracts ?? options.contracts === undefined;
     this.reconnectGraceMs = options.reconnectGraceMs;
     this.now = options.now ?? Date.now;
+    this.recordingHost = options.recordingHost ?? new DebugRecordingHost({
+      now: this.now,
+      log: (message) => this.output.appendLine(message),
+    });
     this.debugManager = new DebugInstanceManager({
       now: this.now,
       log: (message) => this.output.appendLine(message),
@@ -282,6 +256,11 @@ export class EditorBridgeServer implements vscode.Disposable {
   /** 调试实例存储与路由（F3 面板 / F4 facet 从这里接）。 */
   public get debug(): DebugInstanceManager {
     return this.debugManager;
+  }
+
+  /** 当前契约快照集合（E9：Runtime 腿按 welcome 的 `contractHash` 从这里取快照）。 */
+  public get contractSnapshots(): DebugContractSnapshotSet {
+    return this.contracts.current;
   }
 
   /**
@@ -340,17 +319,21 @@ export class EditorBridgeServer implements vscode.Disposable {
         continue;
       }
 
-      const binding = this.debugBindings.get(connection);
-      const queries = binding?.queries;
-      if (binding === undefined || queries === undefined) {
+      const session = this.debugBindings.get(connection)?.session;
+      if (session === undefined) {
         continue;
       }
 
-      const ingress = binding.ingress;
-      candidates.push({
-        client: queries,
-        owns: (instance) => ingress !== undefined && debugQueryOwnsInstance(ingress.slotRegistry, instance),
-      });
+      candidates.push(session.connection);
+    }
+
+    // 另一条腿（Runtime 桥）的连接同样参与归属解析：实例在哪条腿上，查询就发到哪条腿。
+    for (const source of this.externalDebugQuerySources) {
+      try {
+        candidates.push(...source());
+      } catch (errorValue) {
+        this.output.appendLine(`[debug] external debug query source failed: ${String(errorValue)}`);
+      }
     }
 
     return candidates;
@@ -366,7 +349,13 @@ export class EditorBridgeServer implements vscode.Disposable {
    * - 没有已握手连接 → `notConnected`；实例键查不到 → `instanceNotFound`；实例已结束 → `instanceFinished`。
    */
   private resolveDebugQueryRoute(instanceKey: string | undefined):
-    | { readonly status: "ready"; readonly queries: DebugQueryClient; readonly view: DebugInstanceView | undefined }
+    | {
+      readonly status: "ready";
+      readonly queries: DebugQueryClient;
+      readonly view: DebugInstanceView | undefined;
+      /** 该实例所属腿的当前帧（E9）；缺省回退到共享的实例表当前帧。 */
+      readonly frame: (() => number) | undefined;
+    }
     | { readonly status: "notConnected" }
     | { readonly status: "instanceNotFound" }
     | { readonly status: "instanceFinished" }
@@ -388,7 +377,7 @@ export class EditorBridgeServer implements vscode.Disposable {
 
     const route = resolveDebugQueryClient(view, connections);
     return route.status === "ready"
-      ? { status: "ready", queries: route.client, view }
+      ? { status: "ready", queries: route.client, view, frame: route.frame }
       : { status: "unresolved" };
   }
 
@@ -420,6 +409,7 @@ export class EditorBridgeServer implements vscode.Disposable {
     interfaceId: string,
     method: string,
     args: readonly DebugArg[] = [],
+    options: { readonly methodId?: number } = {},
   ): Promise<DebugQueryResult> {
     const route = this.resolveDebugQueryRoute(instanceKey);
     switch (route.status) {
@@ -433,8 +423,11 @@ export class EditorBridgeServer implements vscode.Disposable {
       case "unresolved":
         return Promise.reject(debugQueryLocalError("local.noConnection"));
       default:
+        // 帧号取**实例所属腿**自己的当前帧（E9）：两条腿并行时，用共享实例表的帧号会把结果
+        // 盖到另一条腿的时间轴上（F6 的 P1）。单腿时两者相同。
         return route.queries.query(instanceKey, interfaceId, method, args, {
-          frame: this.debugManager.currentFrame,
+          frame: route.frame?.() ?? this.debugManager.currentFrame,
+          ...(options.methodId === undefined ? {} : { methodId: options.methodId }),
         });
     }
   }
@@ -442,12 +435,12 @@ export class EditorBridgeServer implements vscode.Disposable {
   /** 面板桥接用的查询面（`DebugPanelBridge.debugQuery`）；与上面的方法一一对应。 */
   public get debugQuery(): {
     state(instanceKey?: string): EditorBridgeDebugQueryState;
-    query(instanceKey: string, interfaceId: string, method: string): Promise<DebugQueryResult>;
+    query(instanceKey: string, interfaceId: string, method: string, options?: { readonly methodId?: number }): Promise<DebugQueryResult>;
     cancelInstance(instanceKey: string, reason?: "user" | "disconnect"): number;
   } {
     return {
       state: (instanceKey?: string) => this.debugQueryState(instanceKey),
-      query: (instanceKey, interfaceId, method) => this.queryDebug(instanceKey, interfaceId, method),
+      query: (instanceKey, interfaceId, method, options = {}) => this.queryDebug(instanceKey, interfaceId, method, [], options),
       cancelInstance: (instanceKey, reason = "user") => this.cancelDebugQueries(instanceKey, reason),
     };
   }
@@ -505,173 +498,49 @@ export class EditorBridgeServer implements vscode.Disposable {
    * `droppedRecords` / `endedReason`，并且只在 `finalized=true` 后才提示（F5-05）。
    */
   public get recordingState(): EditorBridgeRecordingState {
-    const available = this.state !== undefined && this.activeRecordingSource() !== undefined;
-    const stats = this.recorder?.stats;
-    if (stats !== undefined) {
-      return {
-        available,
-        active: stats.active,
-        filePath: stats.filePath,
-        startedAt: stats.startedAt,
-        records: stats.records,
-        droppedRecords: stats.droppedRecords,
-        droppedBytes: stats.droppedBytes,
-        endedReason: stats.endedReason,
-        endedAt: stats.endedAt,
-        finalized: stats.finalized,
-        deliverable: stats.deliverable,
-        failure: stats.failure,
-      };
-    }
-
-    const last = this.lastRecording;
-    return {
-      available,
-      active: false,
-      filePath: last?.filePath,
-      startedAt: last?.startedAt,
-      records: last?.records ?? 0,
-      droppedRecords: last?.droppedRecords ?? 0,
-      droppedBytes: last?.droppedBytes ?? 0,
-      endedReason: last?.endedReason,
-      endedAt: last?.endedAt,
-      finalized: last !== undefined,
-      deliverable: last?.deliverable ?? false,
-      failure: last?.failure,
-    };
+    // `available` 还要求桥接服务已启动（F5 原语义：单测里未 start 时不能"开路"）。
+    const state = this.recordingHost.state;
+    return { ...state, available: this.state !== undefined && state.available };
   }
 
   /**
-   * 开始录制：**此刻**把契约快照与身份字段写进文件头（C.6 的 P0：不是结束时）。
+   * 开始录制：录制宿主固定**第一个可用调试源**（Editor 腿优先，其次 Runtime 腿），
+   * 并在**此刻**把契约快照与身份字段写进文件头（C.6 的 P0：不是结束时）。
    *
-   * 录制必须绑定到一个**已握手**的连接（P1-B）：没有源就拒绝，否则又会退回"录一切连接"。
-   * `contractHash` 取自 F1 注册表已有的快照指纹（`DebugContractSnapshot.contractHash`，
-   * 与 `publishedContractHash` 走同一个 `selectBridgeContractHash` 选择顺序）；`contracts`
-   * 是同一快照的序列化结果。优先用**录制源连接绑定的快照**——录制内容正是按它解码的；
-   * 没有绑定时退回"唯一非空快照"，再退回发布指纹对应的快照。
+   * 两条腿的帧都由各自的入站入口（`DebugIngress` 之前）交给同一个录制宿主，
+   * 因此不存在"Runtime 腿录制为空"的旁路。
    */
   public async startRecording(
     options: EditorBridgeRecordingOptions,
   ): Promise<DebugRecordingHeader> {
-    if (this.recorder?.active === true) {
-      throw new Error("A debug session recording is already active.");
-    }
-
-    const state = this.state;
-    if (state === undefined) {
+    if (this.state === undefined) {
       throw new Error("The Editor Bridge server has not started.");
     }
 
-    const source = this.activeRecordingSource();
-    if (source === undefined) {
-      throw new Error(
-        "Recording requires a handshaken Editor Bridge connection: a recording is bound to the connection it records.",
-      );
-    }
-
-    const snapshot = this.recordingContractSnapshot(source);
-    const recorder = new DebugSessionRecorder({
-      filePath: options.filePath,
-      ...(options.maxFileBytes === undefined ? {} : { maxFileBytes: options.maxFileBytes }),
-      ...(options.maxRecords === undefined ? {} : { maxRecords: options.maxRecords }),
-      ...(options.blockBytes === undefined ? {} : { blockBytes: options.blockBytes }),
-      ...(options.queueBlocks === undefined ? {} : { queueBlocks: options.queueBlocks }),
-      ...(options.openSink === undefined ? {} : { openSink: options.openSink }),
-      now: options.now ?? this.now,
-      log: (message) => this.output.appendLine(message),
-      header: {
-        protocolVersion: BRIDGE_PROTOCOL_VERSION,
-        contractSchemaVersion: snapshot?.schemaVersion ?? BRIDGE_CONTRACT_SCHEMA_VERSION,
-        contractHash: snapshot?.contractHash ?? "",
-        sessionId: state.sessionId,
-        endpointId: state.windowId,
-        bootId: state.bootId,
-        connectType: "editor",
-        contracts: serializeRecordedContracts(snapshot),
-      },
-    });
-    this.lastRecording = undefined;
-    // 绑定必须在 `recorder.start()` 之前生效：文件头写入期间到达的帧也要归到同一条源连接。
-    this.recordingSource = source;
-    this.recorder = recorder;
-    try {
-      return await recorder.start();
-    } catch (errorValue) {
-      if (this.recorder === recorder) {
-        this.recorder = undefined;
-        this.recordingSource = undefined;
-      }
-
-      throw errorValue;
-    }
+    return this.recordingHost.start(options);
   }
 
   /**
-   * 停止录制并写文件尾；没有录制时返回 `undefined`。
-   *
-   * 顺序（F5-05）：先 `await recorder.stop()` 拿到 footer（文件尾已写出并 close），再撤掉
-   * `this.recorder`——这样自动收尾的轮询在 finalize 期间仍能读到 stats，收尾后也能从
-   * {@link lastRecording} 读到 footer 统计；反过来（先清再 stop）会让 monitor 拿到 undefined。
+   * 停止录制并写文件尾；没有录制时返回 `undefined`。收尾顺序见 {@link DebugRecordingHost.stop}
+   * （F5-05：先写 footer 再清状态，轮询能读到最终统计）。
    */
   public async stopRecording(reason: DebugRecordingEndReason = "disconnect"): Promise<DebugRecordingFooter | undefined> {
-    const recorder = this.recorder;
-    if (recorder === undefined) {
-      return undefined;
-    }
-
-    try {
-      const footer = await recorder.stop(reason);
-      const stats = recorder.stats;
-      this.lastRecording = {
-        available: this.state !== undefined && this.activeRecordingSource() !== undefined,
-        active: false,
-        filePath: stats.filePath,
-        startedAt: stats.startedAt,
-        records: stats.records,
-        droppedRecords: stats.droppedRecords,
-        droppedBytes: stats.droppedBytes,
-        endedReason: stats.endedReason,
-        endedAt: stats.endedAt,
-        finalized: stats.finalized,
-        deliverable: stats.deliverable,
-        failure: stats.failure,
-      };
-      return footer;
-    } finally {
-      if (this.recorder === recorder) {
-        this.recorder = undefined;
-        this.recordingSource = undefined;
-      }
-    }
+    return this.recordingHost.stop(reason);
   }
 
-  /** 录制钩子入口：录制器是旁路，任何异常都不得冒泡到连接的读循环。 */
-  private recordInboundFrame(channel: number, payloadKind: BridgePayloadKind, payload: Buffer): void {
-    try {
-      this.recorder?.recordFrame(channel, payloadKind, payload);
-    } catch (errorValue) {
-      this.output.appendLine(`[debug] recording hook failed (the frame is delivered normally): ${String(errorValue)}`);
-    }
+  /**
+   * 注册另一条腿的查询连接（E9）：Runtime 桥把自己的 {@link DebugQueryConnection} 交进来，
+   * F6 的归属解析（{@link resolveDebugQueryClient}）自动覆盖两条腿，`debugQueryClient` 本身
+   * **没有**任何按腿分支。返回的 disposable 在腿销毁时注销。
+   */
+  public registerDebugQuerySource(source: () => readonly DebugQueryConnection[]): vscode.Disposable {
+    this.externalDebugQuerySources.add(source);
+    return { dispose: () => this.externalDebugQuerySources.delete(source) };
   }
 
-  /** 当前可用于录制的连接：必须已完成 hello/welcome 且仍存活（同一时刻至多一条，A.6）。 */
-  private activeRecordingSource(): BridgeConnection | undefined {
-    return this.connections.snapshot().find((connection) => connection.helloCompleted && !connection.isTerminated);
-  }
-
-  /** 录制文件头用的契约快照（选择顺序见 {@link startRecording}；优先录制源连接绑定的快照）。 */
-  private recordingContractSnapshot(source: BridgeConnection | undefined): DebugContractSnapshot | undefined {
-    const bound = source === undefined ? undefined : this.debugBindings.get(source)?.snapshot;
-    if (bound !== undefined) {
-      return bound;
-    }
-
-    const single = this.singleContractSnapshot();
-    if (single !== undefined) {
-      return single;
-    }
-
-    return this.contracts.current.snapshotForHash(this.publishedContractHash());
+  /** 当前注册的跨腿查询源数量（诊断/测试用）。 */
+  public get externalDebugQuerySourceCount(): number {
+    return this.externalDebugQuerySources.size;
   }
 
   private notifyDebugReporting(reason: EditorBridgeDebugReportingReason): void {
@@ -774,7 +643,7 @@ export class EditorBridgeServer implements vscode.Disposable {
 
     for (const connection of this.connections.snapshot()) {
       // 扩展卸载/关窗：挂起查询按"面板已关闭"取消（与断连文案区分）。
-      this.debugBindings.get(connection)?.queries?.cancelAll("dispose");
+      this.debugBindings.get(connection)?.session?.cancelAll("dispose");
       connection.transport.close();
       this.connections.retire(connection);
     }
@@ -814,18 +683,20 @@ export class EditorBridgeServer implements vscode.Disposable {
     void this.writeDiscoveryRecord();
     let connection: BridgeConnection | undefined;
     /**
-     * 本连接专属的录制 tap（P1-B）：帧只在"当前连接 === 录制源"时才进录制文件。
+     * 本连接专属的录制 tap（P1-B）：帧只在"本连接是当前录制源"时才进录制文件。
      * 通道 0 与通道 1 共用它，保证两类帧的录制顺序与到达顺序一致；`DebugIngress` 也拿这同一个
-     * 对象，所以开关录制/换源不需要重建接收门。
+     * 对象，所以开关录制/换源不需要重建接收门。**Runtime 腿用同一套 tap 机制**
+     * （`DebugRecordingHost.noteFrame`），不存在只给 Editor 腿录制旁路。
      */
     const recordTap: DebugFrameRecorder = {
       recordFrame: (channel, payloadKind, payload) => {
-        if (connection === undefined || connection !== this.recordingSource) {
+        const sourceId = connection === undefined ? undefined : this.debugRecordSourceIds.get(connection);
+        if (sourceId === undefined) {
           // 半开连接（或已被拒绝的第二个客户端）发来的帧一律不录，也不影响当前录制。
           return;
         }
 
-        this.recordInboundFrame(channel, payloadKind, payload);
+        this.recordingHost.noteFrame(sourceId, channel, payloadKind, payload);
       },
     };
     const bridge = new BridgeSocket(socket, {
@@ -842,7 +713,7 @@ export class EditorBridgeServer implements vscode.Disposable {
         // 通道按帧头分派（附录 A.2）：通道 1 的调试载荷交给本连接的接收门。
         // 帧层错误（CRC/长度）已由 BridgeSocket 断开，这里只做解码与计数，绝不断连。
         if (connection !== undefined) {
-          this.acceptDebugFrame(connection, payloadKind, payload, recordTap);
+          this.acceptDebugFrame(connection, payloadKind, payload);
         }
       },
       onClosed: (error) => {
@@ -853,18 +724,16 @@ export class EditorBridgeServer implements vscode.Disposable {
         // 同步释放：BridgeSocket 在 finish() 里同步回调本方法。
         if (connection !== undefined) {
           // 断连：该连接的挂起查询全部取消，并明确提示"连接已断开"（P1，不静默清空）。
-          this.debugBindings.get(connection)?.queries?.cancelAll("disconnect");
+          this.debugBindings.get(connection)?.session?.cancelAll("disconnect");
           this.logDebugCounters(connection);
           this.connections.retire(connection);
           // 宽限从这里起算（附录 A.8）：下一条连接在 15 s 内带 resumeSessionId 才能续接。
           this.lastDisconnectedAtMs = this.now();
-          // 只有**录制源连接**的关闭才收尾录制（P1-B）：其它连接（Unity 重连、第二个编辑器、
-          // 端口探测）的 close 不产生任何录制副作用，不会把当前录制截断成 disconnect。
-          if (connection === this.recordingSource) {
-            this.recordingSource = undefined;
-            void this.stopRecording("disconnect").catch((errorValue: unknown) => {
-              this.output.appendLine(`[debug] failed to finish the session recording: ${String(errorValue)}`);
-            });
+          // 只有**录制源连接**的关闭才收尾录制（P1-B）：注销录制源时宿主自己判断活跃源；
+          // 其它连接（Unity 重连、第二个编辑器、端口探测）的 close 不会截断当前录制。
+          const sourceId = this.debugRecordSourceIds.get(connection);
+          if (sourceId !== undefined) {
+            this.recordingHost.unregisterSource(sourceId);
           }
           // 连接没了 ⇒ 面板的开关变成"发不出去"，必须重绘（C.7 的状态栏）。
           this.lastClientEndpointId = undefined;
@@ -875,6 +744,11 @@ export class EditorBridgeServer implements vscode.Disposable {
 
     // 同步占位；accept 会先剔除已终止（对端已断）的连接，避免误拒重连。
     connection = this.connections.accept(bridge);
+    // 一条连接一个录制源 id（握手后才注册到录制宿主）：半开连接发帧时宿主还不认识它，
+    // 因此不会被录进别人的文件（P1-B），也不会与重连后的新连接混淆。
+    this.connectionSequence += 1;
+    this.debugRecordSourceIds.set(connection, `editor-${this.connectionSequence}`);
+    this.debugRecordTaps.set(connection, recordTap);
   }
 
   private handlePayload(connection: BridgeConnection, payload: Buffer): void {
@@ -948,17 +822,13 @@ export class EditorBridgeServer implements vscode.Disposable {
     }
 
     // 该连接的数据面绑定它自己声明的契约快照（多 Project 工作区里各工程指纹不同）。
+    // 会话在握手时就位：面板可以在收到第一条调试帧之前发起查询；接收门从同一个客户端取
+    // `isPendingRequest` / `isKnownRequest`（F6 的接线点）。
+    const snapshot = this.contracts.current.snapshotForHash(message.contractHash) ?? this.singleContractSnapshot();
     this.debugBindings.set(connection, {
-      snapshot: this.contracts.current.snapshotForHash(message.contractHash) ?? this.singleContractSnapshot(),
-      ingress: undefined,
-      queries: undefined,
+      snapshot,
+      session: this.createDebugSession(connection, snapshot),
     });
-    // 查询客户端在握手时就位：面板可以在收到第一条调试帧之前发起查询；接收门稍后创建时
-    // 从同一个客户端取 `isPendingRequest` / `isKnownRequest`（F6 的接线点）。
-    const binding = this.debugBindings.get(connection);
-    if (binding !== undefined) {
-      binding.queries = this.createDebugQueryClient(connection, binding);
-    }
 
     // 新连接可能出现在契约产物热更新之后：顺手刷新一次，下一条连接拿到新指纹。
     this.scheduleContractRefresh();
@@ -1001,6 +871,13 @@ export class EditorBridgeServer implements vscode.Disposable {
     this.connections.markHandshaken(connection);
     this.lastClientEndpointId = message.clientEndpointId;
     this.notifyDebugReporting("connection");
+    // 录制源在**握手成功后**才注册（P1-B）：半开连接不可录制，Runtime 腿同理由 welcome 触发。
+    this.registerRecordingSource(connection, {
+      sessionId: reconnect.sessionId,
+      bootId: reconnect.bootId,
+      contractHash: selection.contractHash,
+      contracts: snapshot,
+    });
     connection.transport.sendControlJson(welcome);
     this.output.appendLine(
       `[bridge] handshake complete endpoint='${message.clientEndpointId}' session=${welcome.sessionId} resumed=${welcome.resumed} payloads=[${payloads.join(",")}]`,
@@ -1142,108 +1019,90 @@ export class EditorBridgeServer implements vscode.Disposable {
     connection: BridgeConnection,
     payloadKind: BridgePayloadKind,
     payload: Buffer,
-    recordTap: DebugFrameRecorder,
   ): void {
-    const binding = this.debugBindings.get(connection);
+    let binding = this.debugBindings.get(connection);
     if (binding === undefined) {
       // 握手前收到的通道 1 帧：没有契约绑定，按无契约接收（不静默丢字节）。
-      this.debugBindings.set(connection, { snapshot: undefined, ingress: undefined, queries: undefined });
-      this.acceptDebugFrame(connection, payloadKind, payload, recordTap);
-      return;
+      binding = { snapshot: undefined, session: this.createDebugSession(connection, undefined) };
+      this.debugBindings.set(connection, binding);
     }
 
-    binding.queries ??= this.createDebugQueryClient(connection, binding);
-    const queries = binding.queries;
-    binding.ingress ??= new DebugIngress({
-      ...(binding.snapshot === undefined ? {} : { contracts: binding.snapshot }),
-      // F6 接线：二进制 `debug` / `debugResult` 只能靠本连接的挂起表区分（A.4）。
-      // 两个回调都指向同一个 tracker：`isPendingRequest` 决定"当作结果"，`isKnownRequest`
-      // 让已结算/已作废号的晚到结果仍被识别为 `debugResult`（然后由客户端按 :43 丢弃）。
-      isPendingRequest: (requestSeq) => queries.tracker.isPendingRequest(requestSeq),
-      isKnownRequest: (requestSeq) => queries.tracker.isKnownRequest(requestSeq),
-      // 录制钩子：帧在这里（解码之前）交给本连接的 tap；只有录制源连接的帧会进文件。
-      recorder: recordTap,
-      log: (message) => this.output.appendLine(message),
-    });
-    const envelopes = binding.ingress.acceptFrame({ channel: BridgeChannel.Debug, payloadKind, payload });
-    for (const envelope of envelopes) {
-      // 顺序固定（F2）：记录先进 store、再路由——由 DebugInstanceManager.ingest 内部保证，
-      // 这里只把包络按到达顺序交下去，绝不先给消费者。
-      //
-      // 关于"写入成功但投递失败"（评审 8⑥）：这一层不需要为 ingest 做补偿或回滚。ingest 的
-      // 写入与投递之间**不可抛**——`DebugRouter.dispatch` 对观察者、`accepts()`、主消费者
-      // 三处各自 try/catch，消费者抛错只会让该分类回退通用视图（C.5），既不会冒泡到 ingest，
-      // 也不会让记录消失。因此这里唯一可能失败的时机是写入之前（整流丢弃，没有可回滚的东西）；
-      // 写入之后的关键帧失败也不会回滚已交付的记录（回滚反而会抹掉消费者已经看到的内容）。
-      // 下面的 try/catch 只是最后一道保险，保证单条记录不会升级成连接级致命错误。
-      try {
-        // 查询应答不进普通事件流：`debugResult` 由客户端按"发起的帧"写成 `queryResult`（P1），
-        // 失败 `response` 只用来结算 Promise，本身不是记录（C.1）。
-        if (envelope.type === "debugResult" || envelope.type === "response") {
-          this.handleDebugQueryEnvelope(queries, envelope);
-          continue;
-        }
+    binding.session ??= this.createDebugSession(connection, binding.snapshot);
+    // 帧路径只有这一条：录制 tap → 计数/分流 → 解码 → 实例/查询结算（DebugChannelSession）。
+    binding.session.acceptFrame(payloadKind, payload);
+  }
 
-        this.debugManager.ingest(envelope, binding.snapshot);
-        if (envelope.type === "debugFinish" && envelope.instance.length > 0) {
-          // 实例在结果前结束：该实例的挂起查询全部取消并提示"实例已结束"（P1），不重试。
-          queries.handleInstanceFinished(envelope.instance);
-        }
-      } catch (errorValue) {
-        // 单条坏记录不得升级成连接级错误（bridgeSocket 会把 acceptFrame 的异常判 fatal 并丢弃
-        // 同批剩余帧），也不得影响同一批里的其它记录：这里逐条兜住、计数、记日志。
+  /**
+   * 创建一条连接的调试会话（E9）：Editor 腿只提供**连接**与**发送函数**，
+   * 解码、实例归属、查询挂起表与录制 tap 都复用与 Runtime 腿相同的
+   * {@link DebugChannelSession}。
+   */
+  private createDebugSession(
+    connection: BridgeConnection,
+    snapshot: DebugContractSnapshot | undefined,
+  ): DebugChannelSession {
+    const recorder = this.debugRecordTaps.get(connection);
+    const channel: DebugChannel = {
+      origin: "editor",
+      id: this.debugRecordSourceIds.get(connection) ?? "editor",
+      isOpen: () => connection.transport.isOpen,
+      sendDebugPayload: (payload) => connection.transport.sendDebugControl(payload),
+    };
+    return new DebugChannelSession({
+      channel,
+      manager: this.debugManager,
+      ...(snapshot === undefined ? {} : { contracts: snapshot }),
+      ...(recorder === undefined ? {} : { recorder }),
+      now: this.now,
+      log: (message) => this.output.appendLine(message),
+      onIngestError: (envelope, errorValue) => {
         this.debugIngestErrors += 1;
         this.output.appendLine(
           `[debug] ingest failed (#${this.debugIngestErrors}) for '${envelope.type}'; the rest of the batch keeps flowing: ${String(errorValue)}`,
         );
-      }
-    }
-  }
-
-  /** 创建一条连接的查询客户端：发送、实例/契约反查与结果落地都由服务端注入。 */
-  private createDebugQueryClient(
-    connection: BridgeConnection,
-    binding: EditorBridgeDebugBinding,
-  ): DebugQueryClient {
-    return new DebugQueryClient({
-      now: this.now,
-      send: (request) => connection.transport.isOpen && connection.transport.sendDebugControl(encodeDebugRequest(request)),
-      resolveInstance: (key) => {
-        const view = this.debugManager.instance(key);
-        return view === undefined
-          ? undefined
-          : { category: view.category, instanceId: view.instanceId, active: view.active };
       },
-      resolveMethod: (category, interfaceId, method) =>
-        binding.snapshot?.resolveByMethodName(category, interfaceId, method),
-      appendResult: (envelope, target) =>
-        this.debugManager.appendQueryResult(envelope, binding.snapshot, target.frame),
-      onNotice: (notice) => {
-        this.output.appendLine(`[debug] query ${notice.kind}: ${notice.message}`);
-      },
-      log: (message) => this.output.appendLine(message),
     });
   }
 
-  private handleDebugQueryEnvelope(
-    queries: DebugQueryClient,
-    envelope: DebugResultEnvelope | DebugResponseEnvelope,
+  /**
+   * 把已握手的 Editor 连接登记为可录制源（E9）：录制宿主按源 id 过滤帧，
+   * Runtime 腿在收到 welcome 时走同一套登记。
+   */
+  private registerRecordingSource(
+    connection: BridgeConnection,
+    identity: {
+      readonly sessionId: string;
+      readonly bootId: string;
+      readonly contractHash: string;
+      readonly contracts: DebugContractSnapshot | undefined;
+    },
   ): void {
-    const status = queries.handleEnvelope(envelope);
-    if (status === "late") {
-      // 晚到结果按验收 :43 丢弃、不插时间轴；计数由 tracker 的 `lateResults` 承担，
-      // 客户端还会发一条 warning 通知（不是静默丢弃）。
-      this.output.appendLine(`[debug] late query ${envelope.type} for ${envelope.requestId} was dropped`);
-    }
-  }
-
-  private logDebugCounters(connection: BridgeConnection): void {
-    const binding = this.debugBindings.get(connection);
-    if (binding?.ingress === undefined) {
+    const id = this.debugRecordSourceIds.get(connection);
+    if (id === undefined) {
       return;
     }
 
-    const counters = binding.ingress.counters;
+    const source: DebugRecordingSource = {
+      id,
+      origin: "editor",
+      connectType: "editor",
+      sessionId: identity.sessionId,
+      endpointId: this.windowId ?? "",
+      bootId: identity.bootId,
+      contractHash: identity.contractHash,
+      contracts: identity.contracts,
+      isOpen: () => !connection.isTerminated && connection.transport.isOpen,
+    };
+    this.recordingHost.registerSource(source);
+  }
+
+  private logDebugCounters(connection: BridgeConnection): void {
+    const ingress = this.debugBindings.get(connection)?.session?.ingress;
+    if (ingress === undefined) {
+      return;
+    }
+
+    const counters = ingress.counters;
     this.output.appendLine(
       `[debug] connection summary frames=${counters.frames} controlFrames=${counters.controlFrames} envelopes=${counters.envelopes} wireBytes=${counters.wireBytes} unknownSlots=${counters.unknownSlots} unknownMethods=${counters.unknownMethods} unknownContractMethods=${counters.unknownContractMethods} oversize=${counters.oversizeFrames} malformed=${counters.malformedMessages}`,
     );

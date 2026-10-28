@@ -23,6 +23,7 @@ import type {
   DebugContractSnapshot,
   DebugContractWireType,
 } from "./debugContractRegistry";
+import type { DebugChannelOrigin } from "./debugChannel";
 import type { DebugCreateEnvelope, DebugEnvelope, DebugEventEnvelope, DebugResultEnvelope } from "./debugIngress";
 import type { DebugArg } from "./debugMessages";
 import { DEBUG_KEYFRAME_MAX_PER_CATEGORY, DebugKeyframeRegistry } from "./debugKeyframe";
@@ -95,6 +96,17 @@ export interface DebugInstanceView {
   readonly cursor: DebugCursorState;
   readonly keyframeCount: number;
   readonly frame: number;
+  /**
+   * 数据来源腿（E9）：`editor` = Editor 桥，`runtime` = Runtime 桥。
+   * 只在**显示层**使用（面板标注来源）；协议身份仍是 `(category, instanceId)`。
+   * `undefined` = 未标注来源的接收方（F1-F6 的既有调用方）。
+   */
+  readonly origin: DebugChannelOrigin | undefined;
+  /**
+   * 同一 `(category, instanceId)` 同时出现在**两条腿**上：首次 `Create` 保留原记录与来源，
+   * 另一条腿的 `Create` 被当作重复忽略，但这里会置位并计数（不静默合并）。
+   */
+  readonly originConflict: boolean;
 }
 
 /**
@@ -182,6 +194,8 @@ export interface DebugInstanceManagerCounters {
   readonly droppedWithoutIdentity: number;
   /** 全局 128 MB 上限触发的跨实例淘汰条数。 */
   readonly globalEvictions: number;
+  /** 两条腿用同一 `(category, instanceId)` 建实例的次数（保留首条，只标注冲突）。 */
+  readonly originConflicts: number;
 }
 
 export interface DebugInstanceManagerOptions {
@@ -209,6 +223,10 @@ interface DebugInstanceEntry {
   endedReason: DebugInstanceEndReason | undefined;
   descriptorMissing: boolean;
   frame: number;
+  /** 首次建立该实例的连接所属腿（E9；显示层）。 */
+  origin: DebugChannelOrigin | undefined;
+  /** 另一条腿也 Create 了同一身份（保留首条，见 {@link DebugInstanceManagerCounters.originConflicts}）。 */
+  originConflict: boolean;
   readonly store: DebugStore;
 }
 
@@ -225,6 +243,8 @@ interface DebugSuppressedInstance {
   endedReason: DebugInstanceEndReason | undefined;
   readonly descriptorMissing: boolean;
   readonly frame: number;
+  readonly origin: DebugChannelOrigin | undefined;
+  readonly originConflict: boolean;
 }
 
 interface DebugPendingBucket {
@@ -232,6 +252,8 @@ interface DebugPendingBucket {
   readonly instanceId: string;
   readonly instanceSlot: number;
   readonly firstAt: number;
+  /** 暂存批次来自哪条腿（E9）：占位实例沿用首条记录来源。 */
+  readonly origin: DebugChannelOrigin | undefined;
   /** 补投失败时会被截短（已投递的部分不再重放），其余字段不变。 */
   records: DebugRecordInput[];
   /**
@@ -339,6 +361,7 @@ export class DebugInstanceManager {
   private droppedSuppressedValue = 0;
   private droppedWithoutIdentityValue = 0;
   private globalEvictionsValue = 0;
+  private originConflictsValue = 0;
 
   public constructor(options: DebugInstanceManagerOptions = {}) {
     this.router = options.router ?? new DebugRouter();
@@ -415,6 +438,7 @@ export class DebugInstanceManager {
       droppedSuppressed: this.droppedSuppressedValue,
       droppedWithoutIdentity: this.droppedWithoutIdentityValue,
       globalEvictions: this.globalEvictionsValue,
+      originConflicts: this.originConflictsValue,
     };
   }
 
@@ -531,16 +555,20 @@ export class DebugInstanceManager {
    * 建实例（`debugCreate` 的唯一入口）。重复 `Create` 保留首次内容；占位实例（`descriptorMissing`）
    * 收到迟到的 `Create` 时补齐描述；已结束的同名实例仍保留在列表里，新建一条（C.3）。
    */
-  public create(descriptor: DebugInstanceDescriptor): DebugInstanceView {
+  public create(descriptor: DebugInstanceDescriptor, origin?: DebugChannelOrigin): DebugInstanceView {
     const key = debugInstanceKey(descriptor.category, descriptor.instanceId);
     const existing = this.activeEntry(key);
     if (existing !== undefined) {
+      // 两条腿可能各自 Create 同一个 `(category, instanceId)`：保留首条实例与来源，
+      // 但把冲突显式标出来（E9 的显示层；不静默把两条腿的记录混成一条）。
+      this.noteOriginConflict(existing, origin);
       if (!existing.descriptorMissing) {
         this.duplicateCreatesValue += 1;
         this.log(`[debug] duplicate debugCreate for '${descriptor.instanceId}' ignored; the first descriptor stays (C.3).`);
         return this.viewOfEntry(existing);
       }
 
+      existing.origin ??= origin;
       existing.resName = descriptor.resName;
       existing.debugInfo = descriptor.debugInfo;
       if (Number.isInteger(descriptor.instanceSlot) && descriptor.instanceSlot > 0) {
@@ -556,9 +584,28 @@ export class DebugInstanceManager {
     this.finished.delete(key);
     // 只解禁**本分类**：id 级抑制是整 id 的，其它分类的同 id 记录仍按 Finish 之后丢弃（评审 P2-a①）。
     this.releaseFinishedId(descriptor.category, descriptor.instanceId);
-    const entry = this.openEntry(descriptor, false);
+    const entry = this.openEntry(descriptor, false, origin);
     this.drainPending(entry);
     return this.viewOfEntry(entry);
+  }
+
+  /**
+   * 同身份的第二条腿到达：只标注、不合并。`origin` 缺省或与首条相同 = 正常重复 `Create`。
+   */
+  private noteOriginConflict(entry: DebugInstanceEntry, origin: DebugChannelOrigin | undefined): void {
+    if (origin === undefined || entry.origin === undefined || entry.origin === origin) {
+      return;
+    }
+
+    if (entry.originConflict) {
+      return;
+    }
+
+    entry.originConflict = true;
+    this.originConflictsValue += 1;
+    this.log(
+      `[debug] instance '${entry.instanceId}' (category '${entry.category}') arrives from the ${origin} leg while the ${entry.origin} leg owns the first record; the first instance is kept and the panel marks the origin conflict (E9).`,
+    );
   }
 
   /**
@@ -568,7 +615,7 @@ export class DebugInstanceManager {
    * `contracts` 是产生该包络的契约快照（按连接绑定，C.8），只用于补 `named` 的默认值；
    * 热更新不回溯已产出的记录。
    */
-  public ingest(envelope: DebugEnvelope, contracts?: DebugContractSnapshot): readonly DebugRecord[] {
+  public ingest(envelope: DebugEnvelope, contracts?: DebugContractSnapshot, origin?: DebugChannelOrigin): readonly DebugRecord[] {
     if (this.disposed) {
       return [];
     }
@@ -576,7 +623,7 @@ export class DebugInstanceManager {
     this.expirePending();
     switch (envelope.type) {
       case "debugCreate":
-        this.ingestCreate(envelope);
+        this.ingestCreate(envelope, origin);
         return [];
       case "debugFinish":
         this.finish(envelope.category, envelope.instance);
@@ -586,12 +633,12 @@ export class DebugInstanceManager {
         this.currentFrameValue = envelope.frame;
         return [];
       case "debug":
-        return this.ingestRecord(envelope, contracts);
+        return this.ingestRecord(envelope, contracts, {}, origin);
       case "debugResult":
         // 查询应答与事件共用时间轴，但**记录种类不同**（C.1/C.2 的 `kind`，F6 追加）。
         // 回看路径没有挂起表，JSON `debugResult` 只能按到达时的当前帧落地；在线路径由
         // `DebugQueryClient` 调 `appendQueryResult` 盖发起的帧（P1：不污染按帧步进边界）。
-        return this.ingestRecord(envelope, contracts, { kind: "queryResult" });
+        return this.ingestRecord(envelope, contracts, { kind: "queryResult" }, origin);
       default:
         return [];
     }
@@ -989,6 +1036,7 @@ export class DebugInstanceManager {
     this.droppedSuppressedValue = 0;
     this.droppedWithoutIdentityValue = 0;
     this.globalEvictionsValue = 0;
+    this.originConflictsValue = 0;
     this.router.reset();
   }
 
@@ -1000,14 +1048,14 @@ export class DebugInstanceManager {
     }
   }
 
-  private ingestCreate(envelope: DebugCreateEnvelope): void {
+  private ingestCreate(envelope: DebugCreateEnvelope, origin: DebugChannelOrigin | undefined): void {
     this.create({
       category: envelope.category,
       instanceId: envelope.instance,
       instanceSlot: envelope.instanceSlot,
       resName: envelope.resName,
       debugInfo: envelope.debugInfo,
-    });
+    }, origin);
   }
 
   /**
@@ -1041,6 +1089,7 @@ export class DebugInstanceManager {
     envelope: DebugEventEnvelope | DebugResultEnvelope,
     contracts: DebugContractSnapshot | undefined,
     options: { readonly kind?: DebugRecordKind; readonly frame?: number } = {},
+    origin?: DebugChannelOrigin,
   ): readonly DebugRecord[] {
     const input = this.buildRecord(envelope, contracts, options);
     if (input === undefined) {
@@ -1050,6 +1099,8 @@ export class DebugInstanceManager {
     const key = debugInstanceKey(input.category, input.instanceId);
     const entry = this.activeEntry(key);
     if (entry !== undefined) {
+      // 记录先于 Create 时占位实例没有来源；真正的 Create / 首条记录到达后补上（显示层）。
+      entry.origin ??= origin;
       const record = this.appendRecord(entry, input);
       return record === undefined ? [] : [record];
     }
@@ -1074,6 +1125,7 @@ export class DebugInstanceManager {
         instanceId: input.instanceId,
         instanceSlot: this.slotOf(envelope),
         firstAt: input.receivedAt,
+        origin,
         records: [],
         nextAttemptAt: input.receivedAt + this.limits.pendingTimeoutMs,
       };
@@ -1123,6 +1175,7 @@ export class DebugInstanceManager {
         debugInfo: "",
       },
       true,
+      bucket.origin,
     );
     // 暂存批次由 `drainPending` 在投递成功后删除（失败时留下剩余记录，见评审 P2-4）。
     this.drainPending(entry);
@@ -1341,7 +1394,11 @@ export class DebugInstanceManager {
     return Number.isInteger(envelope.instanceSlot) && envelope.instanceSlot > 0 ? envelope.instanceSlot : 0;
   }
 
-  private openEntry(descriptor: DebugInstanceDescriptor, descriptorMissing: boolean): DebugInstanceEntry {
+  private openEntry(
+    descriptor: DebugInstanceDescriptor,
+    descriptorMissing: boolean,
+    origin?: DebugChannelOrigin,
+  ): DebugInstanceEntry {
     this.enforceInstanceLimit();
     const timestamp = this.now();
     this.orderCounter += 1;
@@ -1359,6 +1416,8 @@ export class DebugInstanceManager {
       endedReason: undefined,
       descriptorMissing,
       frame: this.currentFrameValue,
+      origin,
+      originConflict: false,
       store: new DebugStore({
         instanceId: descriptor.instanceId,
         category: descriptor.category,
@@ -1446,6 +1505,8 @@ export class DebugInstanceManager {
       endedReason: entry.endedReason,
       descriptorMissing: entry.descriptorMissing,
       frame: entry.frame,
+      origin: entry.origin,
+      originConflict: entry.originConflict,
     });
     while (this.suppressed.size > this.limits.maxInstances) {
       const oldestKey = this.suppressed.keys().next().value;
@@ -1519,6 +1580,8 @@ export class DebugInstanceManager {
       cursor: entry.store.cursor,
       keyframeCount: this.keyframes.count(entry.category),
       frame: entry.store.newest()?.frame ?? entry.frame,
+      origin: entry.origin,
+      originConflict: entry.originConflict,
     };
   }
 
@@ -1544,6 +1607,8 @@ export class DebugInstanceManager {
       // 关键帧是分类级的：墓碑也能看到所属分类还有几个基线可用。
       keyframeCount: this.keyframes.count(entry.category),
       frame: entry.frame,
+      origin: entry.origin,
+      originConflict: entry.originConflict,
     };
   }
 }
