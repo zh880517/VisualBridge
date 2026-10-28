@@ -4980,6 +4980,11 @@ exports.run = async function run() {
       await panelCommand("togglePause");
       const paused = await panelState();
       assert.equal(paused.paused, true);
+      // 下限守卫：先证明暂停前时间轴确实有行可丢，否则下面的行数相等在 0 vs 0 时恒真。
+      assert.ok(
+        paused.timeline.records.length >= 1,
+        "暂停前时间轴必须至少有一行：否则 equal(before, after) 在 0 vs 0 时恒真，无法证明暂停未丢记录",
+      );
       const recordsWhilePaused = paused.status.records;
 
       await ingestDebug([
