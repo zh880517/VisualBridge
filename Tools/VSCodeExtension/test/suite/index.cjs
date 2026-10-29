@@ -5378,9 +5378,11 @@ exports.run = async function run() {
       debugEvent("graph", "facet-hero", 1, "NodeStarted", "node-a"),
       debugEvent("graph", "facet-hero", 2, "NodeFinished", "node-b"),
     ]);
-    await flushFacetBatch();
-
-    const after = await facetSnapshot();
+    // `flushFacets` 从 HEAD 起就是"排空 + 在同一个同步段里返回快照"（产品侧 0 改动，这里只是开始
+    // 使用它的返回值）。不要写成 `await flushFacetBatch(); await facetSnapshot();`：两次 await 之间
+    // 迟到的 `projects/modules.onDidChange` rebuild 会把新消费者的 delivered 清零、把重放留在待投
+    // 队列里，读到的就是 F10 那条 flake 的中间态。
+    const after = await flushFacetBatch();
     const window = graphWindowOf(after);
     assert.ok(window, "The Graph facet window must exist once the module declared the category.");
     assert.equal(window.state, "active");
@@ -5434,9 +5436,8 @@ exports.run = async function run() {
       debugEvent("graph", "fault-hero", 1, "NodeStarted", "node-fault"),
       debugEvent("graph", "fault-hero", 2, "NodeStarted", "node-fault-2"),
     ]);
-    await flushFacetBatch();
-
-    const failed = await facetSnapshot();
+    // 同「F4 routes graph records」用例里第一处 flushFacets 用法的说明：用排空命令的返回值，避免在"排空"与"再读快照"之间被迟到的 rebuild 插队。
+    const failed = await flushFacetBatch();
     const window = graphWindowOf(failed);
     assert.equal(window.state, "fallback");
     assert.equal(window.diagnostics[0].code, "module.callFailed");
@@ -5449,8 +5450,9 @@ exports.run = async function run() {
     await vscode.commands.executeCommand("visualbridge.test.debugPanel.resetFacets");
     await flushFacetBatch();
     await ingestDebug([debugEvent("graph", "fault-hero", 3, "NodeStarted", "node-recovered")]);
-    await flushFacetBatch();
-    const recovered = graphWindowOf(await facetSnapshot());
+    // 同「F4 routes graph records」用例里第一处 flushFacets 用法的说明：排空与读快照必须在同一个同步段（`resetFacets` / `ingest` 之后迟到的 rebuild
+    // 会让 `recovered.content` 变成半截状态）。
+    const recovered = graphWindowOf(await flushFacetBatch());
     assert.equal(recovered.state, "active");
     assert.equal(recovered.content.nodeId, "node-recovered");
   });
@@ -5498,8 +5500,10 @@ exports.run = async function run() {
         debugCreate("graph", "options-hero"),
         debugEvent("graph", "options-hero", 1, "NodeStarted", "node-options"),
       ]);
-      await flushFacetBatch();
-      const window = graphWindowOf(await facetSnapshot());
+      // 本例自己触发 `refreshProjects` + `reloadModules`，而 `projects.onDidChange → syncProjects`
+      // 是 fire-and-forget：rebuild 会在命令返回之后迟到 fire。所以排空与读快照必须用同一个同步段
+      // （`flushFacets` 的返回值），否则迟到的 rebuild 会让 content 读到"新消费者 + 重放待投"。
+      const window = graphWindowOf(await flushFacetBatch());
       assert.equal(window.state, "active");
       assert.deepEqual(
         window.content.options,
@@ -5530,8 +5534,8 @@ exports.run = async function run() {
       // 模块被停用后，该分类立即回退通用视图，面板给出"模块未加载"。
       await flushFacetBatch();
       await ingestDebug([debugEvent("graph", "options-hero", 2, "NodeStarted", "node-disabled")]);
-      await flushFacetBatch();
-      const unavailable = graphWindowOf(await facetSnapshot());
+      // 同「F4 routes graph records」用例里第一处 flushFacets 用法的说明：排空 + 快照一个同步段（本例期间 `syncProjects` 的 rebuild 可能迟到 fire）。
+      const unavailable = graphWindowOf(await flushFacetBatch());
       assert.equal(unavailable.state, "unavailable");
       assert.match(unavailable.message, /模块未加载/u);
     } finally {
@@ -5543,10 +5547,39 @@ exports.run = async function run() {
   });
 
   await test("F4 revoking module trust invalidates the route immediately and replay never double-feeds generic", async () => {
-    const before = await facetSnapshot();
-    const genericBefore = before.generic.records;
-    // 撤销信用前旧消费者已投递的条数 = 该分类在 store 里的可见记录数（上一次 rebuild 已全量重放）。
-    const beforeRecords = graphWindowOf(before).records;
+    // 前置：模块 facet 已在路由里。缺了它，"撤销信任后立刻走通用视图"就没有因果意义；这是因果
+    // 等待，不是把下面的断言重试到绿（断言本身仍然是一次性的精确等式）。
+    await waitForAsync(
+      async () => graphWindowOf(await facetSnapshot()),
+      (window) => window?.state === "active",
+      20_000,
+      "The Graph facet route must be active before the trust-revocation baseline.",
+    );
+
+    // 自己造确定性起点（F10）：`resetFacets` 在**同一个同步段**里完成重建 → 全量重放 → 排空 →
+    // 返回快照（HEAD 起就是这样，产品代码本轮 0 改动），所以 `beforeRecords` 与 store 里该分类的
+    // 可见记录数在这一刻必然相等，用例不再依赖上一个用例留下的 facet 状态。
+    // 旧写法直接读当时的 facet 计数，而那是个会被 rebuild 清零的计数器：`modules.onDidChange` /
+    // `projects.onDidChange` 触发的重建若恰好落在取基线之前，新消费者的 delivered 是 0、重放还在
+    // 待投队列里（实测抓到过一次 `records:0 / pending:8`），于是 `beforeRecords=0` 而 store 里该
+    // 分类已有若干条历史记录——断言就退化成"全量重放 N+1 是否等于 0+1"。
+    const baseline = await vscode.commands.executeCommand("visualbridge.test.debugPanel.resetFacets");
+    const baselineWindow = graphWindowOf(baseline);
+    assert.ok(baselineWindow, "The Graph facet window must exist right after the baseline rebuild.");
+    const beforeRecords = baselineWindow.records;
+    const genericBefore = baseline.generic.records;
+    // 基线必须等于 store 里 graph 分类的可见记录数（面板实例表是同一时刻的另一个真相源）。
+    // 这条等式一旦不成立，下面那条"重放 = 基线 + 卸载期间"就又会变回"猜上一轮用例的状态"。
+    // 依赖：面板 `filter` 已清空、回看已关（`filter` 会过滤实例行，回看会换一套 manager；两者
+    // 在当前套件的执行顺序里都成立，且都不改变 store 里的记录数）。
+    const storeGraphRecords = (await panelState()).instances
+      .filter((row) => row.category === "graph")
+      .reduce((total, row) => total + row.recordCount, 0);
+    assert.equal(
+      beforeRecords,
+      storeGraphRecords,
+      "The baseline must equal the graph category's visible store records.",
+    );
     try {
       await vscode.commands.executeCommand("visualbridge.test.setModuleTrustOverride", false);
       await waitForAsync(
@@ -5559,8 +5592,7 @@ exports.run = async function run() {
         debugCreate("graph", "revoked-hero"),
         debugEvent("graph", "revoked-hero", 1, "NodeStarted", "node-offline"),
       ]);
-      await flushFacetBatch();
-      const offline = await facetSnapshot();
+      const offline = await flushFacetBatch();
       // 验收 A：注销后的消费者一次都没有再被调用，分类立刻走通用视图。
       assert.equal(offline.lateRecords, 0);
       assert.equal(offline.generic.records, genericBefore + 1);
@@ -5575,17 +5607,35 @@ exports.run = async function run() {
       20_000,
       "The Graph facet route did not recover after trust was restored.",
     );
-    await flushFacetBatch();
-    const replayed = await facetSnapshot();
-    // 信任恢复后新 facet 在 rebuild() 里按分类全量重放该分类**当前可用**的记录，所以投递数是
-    // 精确值而不是"至少 1 条"：撤销前旧消费者已投递的 beforeRecords + 卸载期间存下的条数。
+    // `flushFacets` 从 HEAD 起就是"排空待投批次 + 在同一个同步段里返回快照"（产品代码 0 改动，
+    // 这里只是使用它的返回值）：两者之间不可能再插进一次重建，所以下面读到的计数一定属于
+    // "重放已经投完"的那个消费者。
+    const replayed = await flushFacetBatch();
+    const replayedWindow = graphWindowOf(replayed);
+    assert.ok(replayedWindow, "The Graph facet window must exist after trust was restored.");
+    // 信任恢复后新 facet 在 rebuild() 里按分类全量重放该分类**当前可用**的记录。新消费者的
+    // delivered 就是 onRecord 的调用次数，所以正确值是精确的 `beforeRecords + 1`（卸载期间那条），
+    // 不是"至少 1 条"：单次漏投（少 1）或单条重复投递（多 1）都会让这个等式失配。等式锁的是
+    // **净数量**——"漏一条 + 重一条"净数量不变，见下面对身份断言覆盖范围的说明。
     // 卸载期间存下的条数由通用视图基线算出（观察者始终收到每条记录；debugCreate 不是记录）。
     const storedWhileUnloaded = replayed.generic.records - genericBefore;
     assert.equal(storedWhileUnloaded, 1, "卸载期间恰好只存下 1 条记录");
     assert.equal(
-      graphWindowOf(replayed).records,
+      replayedWindow.records,
       beforeRecords + storedWhileUnloaded,
       "records stored while unloaded must all be replayed to the new facet",
+    );
+    // 按身份锁住"最后投递的那条就是卸载期间产生的记录"：重放按到达序，它排在最后。
+    // **覆盖范围（不要读成"逐条查重"）**：这只能发现牵动最后一条的漏投/重复投递——最后一条被漏
+    // 则 content 还是前一条，被重复投则仍等于它（重复投递不改变 content，靠上面的计数 +1 抓到）。
+    // 若"漏一条 + 重复一条"且都不涉及最后一条，净数量不变、content 也不变，本用例不会红；
+    // 要逐条查重需要 facet 快照暴露 record 身份集合（当前 `DebugFacetWindow` 只有计数与
+    // content），本轮只改测试，所以这里不声称覆盖那种情况。
+    const replayedContent = replayedWindow.content ?? {};
+    assert.deepEqual(
+      { instanceId: replayedContent.instanceId, nodeId: replayedContent.nodeId },
+      { instanceId: "revoked-hero", nodeId: "node-offline" },
+      "the record stored while unloaded must be delivered to the new facet",
     );
     assert.equal(replayed.generic.records, genericBefore + 1, "replay must not feed the generic observer twice");
   });
