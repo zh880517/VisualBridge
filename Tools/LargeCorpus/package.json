@@ -10,7 +10,7 @@
   "scripts": {
     "build": "npm run check",
     "check": "node --check src/corpus.mjs && node --check src/cli.mjs && node --check src/benchmark.mjs && node --check test/largeCorpus.test.mjs",
-    "test": "npm run build --workspace @visualbridge/core && npm run build --workspace @visualbridge/entity && npm run build --workspace @visualbridge/graph && npm run build --workspace @visualbridge/structured && npm run build --workspace @visualbridge/table && node --test test/largeCorpus.test.mjs",
+    "test": "node ../../Modules/scripts/ensure.mjs && npm run build --workspace @visualbridge/core && npm run build --workspace @visualbridge/node-host && node --test test/largeCorpus.test.mjs",
     "generate": "node src/cli.mjs",
     "benchmark": "node src/benchmark.mjs"
   }

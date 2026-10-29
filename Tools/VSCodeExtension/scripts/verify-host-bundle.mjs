@@ -4,7 +4,7 @@
  * 字符串标记只能覆盖"碰巧留下字符串"的依赖（`@xyflow/react`、`exceljs` 之类只出现在 Webview
  * 源里），把 Entity / Structured 重新 import 回宿主时一个标记都不会红。所以第一层判据是
  * **esbuild metafile 的输入图**：宿主 bundle 只能由 `Core/`、`Protocol/`、`Tools/`（NodeHost）
- * 与 `node_modules/` 组成，出现 `BuiltInExtensions/`、`Modules/`、`Editors/`、`Packages/`、
+ * 与 `node_modules/` 组成，出现 `Modules/`、`Editors/`、`Packages/`、
  * `Samples/`、`UnityProject/` 就是领域代码泄漏。
  *
  * 第二层是四域各一个**只存在于领域产物里的符号**：领域包一旦被 import，这些字符串必然被内联进

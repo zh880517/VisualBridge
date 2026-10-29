@@ -16,11 +16,8 @@ import {
 } from "../src/corpus.mjs";
 
 test("corpus documents load through ModuleLoader with identical semantics", async (context) => {
-  // C2：大语料工具也经 Loader 取模块，证明分发产物在真实生成工程上可用。
-  if (process.env.VB_SKIP_MODULES === "1") {
-    context.diagnostic("VB_SKIP_MODULES=1: skipping bundled module checks for the generated corpus.");
-    return;
-  }
+  // C2 / G2a2：大语料工具也经 Loader 取模块，证明分发产物在真实生成工程上可用。
+  // 不再提供跳过开关：语料语义现在**只**从 bundle 来，跳过就等于不验证。
   const rootPath = await mkdtemp(join(tmpdir(), "visualbridge-corpus-modules-"));
   context.after(() => rm(rootPath, { recursive: true, force: true }));
   const manifest = await generateCorpus(rootPath, { profile: "correctness", seed: 8675309 });

@@ -198,7 +198,7 @@ async function verifyInstalledFiles(extensionsDirectory, expectedManifest) {
  * C2 断言：打包后的宿主 bundle 里没有领域源码，`dist/webview` 里也没有领域 Webview 产物。
  *
  * 结构判据来自 `verify-host-bundle.mjs`（esbuild metafile 输入图 + 四域标记），它比纯字符串标记
- * 可证伪：把领域包重新 import 回宿主入口时，metafile 会列出 `BuiltInExtensions/`、`Modules/`、
+ * 可证伪：把领域代码重新 import 回宿主入口时，metafile 会列出 `Modules/`、
  * `Editors/` 的输入，四域标记也会从 0 变成非 0（实测 28/109/20/41）。
  * 重型依赖标记作为第二层，只能证明 Webview 依赖没进宿主。
  */

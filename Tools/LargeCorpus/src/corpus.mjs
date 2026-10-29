@@ -109,74 +109,47 @@ export async function refreshCorpusManifest(rootPath, manifest) {
   return refreshed;
 }
 
+/**
+ * 装载生成语料并构建四域 Catalog Registry（C2 / G2a2）。
+ *
+ * 领域能力**只经分发产物**取得：`<root>/Modules/*.vbmodule.js` 由 `installCorpusModules` 放入，
+ * 再经 `ModuleLoader` 求值拿 facet。生成器本身仍只产数据，装载前先补 bundle。
+ */
 export async function loadCorpusValidation(rootPath, manifest) {
   await verifyCorpusManifest(rootPath, manifest);
+  await installCorpusModules(rootPath);
+  const modules = await loadCorpusModules(rootPath);
   const core = require("../../../Core/dist/index.js");
-  const graph = require("../../../BuiltInExtensions/Graph/dist/index.js");
-  const entity = require("../../../BuiltInExtensions/Entity/dist/index.js");
-  const structured = require("../../../BuiltInExtensions/StructuredConfig/dist/index.js");
-  const table = require("../../../BuiltInExtensions/Table/dist/index.js");
-
-  const projectResult = core.parseProjectFile(
-    await readFile(join(rootPath, "VisualBridge.project.vbjson"), "utf8"),
+  const documentTypes = new Map(
+    modules.project.documentTypes.map((documentType) => [documentType.editor, documentType]),
   );
-  if (!projectResult.success) {
-    throw new Error(`VisualBridge Project failed to parse:\n${projectResult.issues
-      .map((issue) => `${issue.path}: ${issue.message}`)
-      .join("\n")}`);
+  const registries = new Map();
+  for (const [editor, entry] of modules.editors) {
+    const documentType = documentTypes.get(editor);
+    if (documentType === undefined) continue;
+    const built = await buildModuleCatalogRegistry(modules, documentType);
+    registries.set(editor, built.registry);
+    // 绑定校验走模块自己的 facet：Catalog 与 Document Type 对不上时必须在这里失败，
+    // 否则各域 `validate()` 会静默返回空诊断（facet 拿不到 registry 时的契约），语料门禁变假绿。
+    const issue = entry.registration.catalog.bindingIssue?.(built.registry, documentType.id);
+    if (issue !== undefined) {
+      throw new Error(`Catalog binding for '${documentType.id}' is invalid: ${issue.code}: ${issue.message}`);
+    }
   }
-  const project = projectResult.value;
-  const graphRegistry = buildOrThrow(
-    "Graph Catalog Registry",
-    graph.buildGraphCatalogRegistry(await parseCatalogSet(rootPath, [
-      "Catalog/GraphNodes.vbgraphcatalog",
-      "Catalog/GraphTypes.vbgraphcatalog",
-    ], graph.parseGraphCatalog)),
-  );
-  const entityRegistry = buildOrThrow(
-    "Entity Catalog Registry",
-    entity.buildEntityCatalogRegistry(await parseCatalogSet(rootPath, [
-      "Catalog/EntityTypes.vbentitycatalog",
-      "Catalog/EntityComponents.vbentitycatalog",
-    ], entity.parseEntityCatalog)),
-  );
-  const structuredRegistry = buildOrThrow(
-    "Structured Catalog Registry",
-    structured.buildStructuredCatalogRegistry(await parseCatalogSet(rootPath, [
-      "Catalog/StructuredPrimary.vbstructuredcatalog",
-      "Catalog/StructuredAuxiliary.vbstructuredcatalog",
-    ], structured.parseStructuredCatalog)),
-  );
-  const tableRegistry = buildOrThrow(
-    "Table Catalog Registry",
-    table.buildTableCatalogRegistry(await parseCatalogSet(rootPath, [
-      "Catalog/TablePrimary.vbtablecatalog",
-      "Catalog/TableAuxiliary.vbtablecatalog",
-    ], table.parseTableCatalog)),
-  );
-  const tableType = table.resolveTableType(tableRegistry, "corpus.records");
-  if (tableType === undefined) {
-    throw new Error("Generated Table Catalog Registry does not contain 'corpus.records'.");
-  }
-  const tableLayout = table.resolveProjectTableLayout(project);
-  if (tableLayout === undefined) {
-    throw new Error("Generated VisualBridge Project does not declare the Table module tableLayout option.");
+  for (const editor of ["graph", "entity", "structured", "table"]) {
+    if (!registries.has(editor)) {
+      throw new Error(`Generated corpus did not load a module for the '${editor}' editor.`);
+    }
   }
   return Object.freeze({
     rootPath,
     manifest,
-    project,
+    project: modules.project,
+    loader: modules.loader,
     core,
-    graph,
-    entity,
-    structured,
-    table,
-    graphRegistry,
-    entityRegistry,
-    structuredRegistry,
-    tableRegistry,
-    tableType,
-    tableLayout,
+    editors: modules.editors,
+    registries,
+    documentTypes,
   });
 }
 
@@ -198,16 +171,11 @@ export async function verifyCorpusManifest(rootPath, manifest) {
 }
 
 /**
- * 经 `ModuleLoader` 装载生成语料的模块（C2）。
- *
- * 与 `loadCorpusValidation` 的静态包路径并存：Loader 路径证明"分发到工程里的 `.vbmodule.js`
- * 能被真实装载，且 facet 语义与包内实现一致"；`VB_SKIP_MODULES=1` 时由调用方跳过。
- */
-/**
  * 把仓库里已构建的四个 bundle 放进生成语料的 `Modules/`。
  *
  * 语料生成器只产出数据（不依赖构建产物），而 Project File 已声明
- * `Modules/<editor>.vbmodule.js`；真实部署里这一步由 `npm run build:bundles` 完成。
+ * `Modules/<editor>.vbmodule.js`；`npm run prepare:modules` / `build:bundles` 负责生成它们。
+ * `loadCorpusValidation` 在装载前自己补一次，因此语料根永远自洽。
  */
 export async function installCorpusModules(rootPath) {
   const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
@@ -215,10 +183,18 @@ export async function installCorpusModules(rootPath) {
   const to = join(rootPath, "Modules");
   await mkdir(to, { recursive: true });
   for (const editor of ["graph", "entity", "structured", "table"]) {
-    await copyFile(join(from, `${editor}.vbmodule.js`), join(to, `${editor}.vbmodule.js`));
+    try {
+      await copyFile(join(from, `${editor}.vbmodule.js`), join(to, `${editor}.vbmodule.js`));
+    } catch (errorValue) {
+      throw new Error(
+        `无法分发模块 '${editor}'：${from} 下没有 ${editor}.vbmodule.js（先跑 npm run prepare:modules）。\n`
+        + String(errorValue),
+      );
+    }
   }
 }
 
+/** 经 `ModuleLoader` 装载生成语料的模块（C2）；`loadCorpusValidation` 的装载核心。 */
 export async function loadCorpusModules(rootPath) {
   const core = require("../../../Core/dist/index.js");
   const nodeHost = require("../../../Tools/NodeHost/dist/index.js");
@@ -277,41 +253,35 @@ export function createCorpusSemanticSources(validation, loadCounts = new Map()) 
     async load(signal) {
       throwIfAborted(signal);
       loadCounts.set(entry.path, (loadCounts.get(entry.path) ?? 0) + 1);
-      const text = await readFile(join(validation.rootPath, ...entry.path.split("/")), "utf8");
-      throwIfAborted(signal);
       const kind = classifyDocument(entry.path);
-      if (kind === "graph") {
-        const document = parseOrThrow(entry.path, validation.graph.parseGraphDocument(text));
-        assertNoErrors(entry.path, validation.graph.validateGraphDocument(document, validation.graphRegistry));
-        return freezeSummary(entry, kind, document.documentId);
+      const editor = validation.editors.get(kind);
+      const documentType = validation.documentTypes.get(kind);
+      if (editor === undefined || documentType === undefined) {
+        throw new Error(`Generated corpus has no loaded module for the '${kind}' editor.`);
       }
-      if (kind === "entity") {
-        const document = parseOrThrow(entry.path, validation.entity.parseEntityDocument(text));
-        assertNoErrors(entry.path, validation.entity.validateEntityDocument(document, validation.entityRegistry));
-        return freezeSummary(entry, kind, document.documentId);
-      }
-      if (kind === "structured") {
-        const document = parseOrThrow(entry.path, validation.structured.parseStructuredDocument(text));
-        assertNoErrors(
-          entry.path,
-          validation.structured.validateStructuredDocument(
-            document,
-            validation.structuredRegistry,
-            "corpus.settings",
-          ),
-        );
-        return freezeSummary(entry, kind, document.documentId);
-      }
+      const bytes = await readFile(join(validation.rootPath, ...entry.path.split("/")));
+      throwIfAborted(signal);
+      // 文档类型、Catalog Registry 与模块 options 全部由装载结果给出：语料路径不另存一份语义入口。
+      const context = {
+        projectId: validation.project.projectId,
+        documentTypeId: documentType.id,
+        path: entry.path,
+        sourcePaths: [entry.path],
+        registry: validation.registries.get(kind),
+        projectDefinition: validation.project,
+        moduleOptions: editor.options,
+      };
+      const parsed = kind === "table"
+        ? await editor.registration.semantic.parseSources([{ path: entry.path, bytes }], context)
+        : await editor.registration.semantic.parseText(bytes.toString("utf8"), context);
+      const document = parseOrThrow(entry.path, parsed);
+      assertNoErrors(entry.path, await editor.registration.semantic.validate(document, context));
       if (kind === "table") {
         const physicalName = basename(entry.path, ".tsv");
-        const document = parseOrThrow(
-          entry.path,
-          validation.table.parseCsvTable(text, validation.tableType, validation.tableLayout, physicalName),
-        );
-        assertNoErrors(entry.path, validation.table.validateTableDocument(document, validation.tableType));
-        return freezeSummary(entry, kind, document.sheets[0]?.id ?? physicalName, document.sheets[0]?.rows.length ?? 0);
+        const sheet = document.sheets[0];
+        return freezeSummary(entry, kind, sheet?.id ?? physicalName, sheet?.rows.length ?? 0);
       }
-      throw new Error(`Unsupported generated document '${entry.path}'.`);
+      return freezeSummary(entry, kind, document.documentId);
     },
   }));
 }
@@ -682,25 +652,12 @@ async function ensureEmptyDirectory(rootPath) {
   }
 }
 
-async function parseCatalogSet(rootPath, paths, parse) {
-  const results = [];
-  for (const path of paths) {
-    const text = await readFile(join(rootPath, ...path.split("/")), "utf8");
-    results.push(parseOrThrow(path, parse(text)));
-  }
-  return results;
-}
-
 function parseOrThrow(label, result) {
   if (!result.success) {
     throw new Error(`${label} failed to parse:\n${formatDiagnostics(result.diagnostics)}`);
   }
   assertNoErrors(label, result.diagnostics ?? []);
   return result.document;
-}
-
-function buildOrThrow(label, result) {
-  return parseOrThrow(label, result);
 }
 
 function assertNoErrors(label, diagnostics) {

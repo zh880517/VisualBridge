@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { access, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import Ajv2020 from "ajv/dist/2020.js";
 import GithubSlugger from "github-slugger";
 import { JSDOM } from "jsdom";
@@ -11,8 +12,17 @@ import { unified } from "unified";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = path.resolve(packageRoot, "../..");
+const require = createRequire(import.meta.url);
 const errors = [];
 const parserModules = new Map();
+/** 四个领域模块的分发入口；`null` 表示还没装载（`editorFacets()` 内惰性装载一次）。 */
+let moduleFacets;
+const EDITOR_MODULES = [
+  ["graph", "visualbridge.graph", "Modules/graph.vbmodule.js"],
+  ["entity", "visualbridge.entity", "Modules/entity.vbmodule.js"],
+  ["structured", "visualbridge.structured", "Modules/structured.vbmodule.js"],
+  ["table", "visualbridge.table", "Modules/table.vbmodule.js"],
+];
 const markdownProcessor = unified().use(remarkParse).use(remarkGfm);
 const ignoredDirectories = new Set([
   ".git",
@@ -385,14 +395,8 @@ async function validateParserExample(marker, text, document, line) {
     fail(`${document}:${line} names unknown production parser '${marker}'.`);
     return;
   }
-  const [modulePath, exportName, inputKind] = definition;
   try {
-    let module = parserModules.get(modulePath);
-    if (module === undefined) {
-      module = await import(pathToFileURL(path.join(repositoryRoot, ...modulePath.split("/"))).href);
-      parserModules.set(modulePath, module);
-    }
-    const result = module[exportName](inputKind === "json-value" ? JSON.parse(text) : text);
+    const result = await runProductionParser(definition, text, document);
     const diagnostics = result?.issues ?? result?.diagnostics ?? [];
     const failed = result?.success !== true || diagnostics.some((diagnostic) => diagnostic.severity === "error");
     if (failed) fail(`${document}:${line} fails production parser '${marker}': ${JSON.stringify(diagnostics)}`);
@@ -401,18 +405,107 @@ async function validateParserExample(marker, text, document, line) {
   }
 }
 
+/**
+ * marker → 生产实现。
+ *
+ * 领域文档/目录不再经 legacy 包的 `dist` 校验，而是走分发形态：`Modules/*.vbmodule.js` 由
+ * `ModuleLoader` 求值，再调该 editor 注册的 `semantic` / `catalog` facet（附录 D.2/D.3）。
+ * 因此这里校验的是**随产品发出去的 bundle**，标记名保持与正式文档一致（改文档归 G2b）。
+ */
 function parserDefinition(marker) {
   return {
-    "project": ["Core/dist/index.js", "parseProjectFile"],
-    "catalog-source": ["Core/dist/index.js", "parseCatalogSourceDefinition", "json-value"],
-    "graph-document": ["BuiltInExtensions/Graph/dist/index.js", "parseGraphDocument"],
-    "graph-catalog": ["BuiltInExtensions/Graph/dist/index.js", "parseGraphCatalog"],
-    "entity-document": ["BuiltInExtensions/Entity/dist/index.js", "parseEntityDocument"],
-    "entity-catalog": ["BuiltInExtensions/Entity/dist/index.js", "parseEntityCatalog"],
-    "structured-document": ["BuiltInExtensions/StructuredConfig/dist/index.js", "parseStructuredDocument"],
-    "structured-catalog": ["BuiltInExtensions/StructuredConfig/dist/index.js", "parseStructuredCatalog"],
-    "table-catalog": ["BuiltInExtensions/Table/dist/index.js", "parseTableCatalog"],
+    "project": { target: "core", exportName: "parseProjectFile" },
+    "catalog-source": { target: "core", exportName: "parseCatalogSourceDefinition", inputKind: "json-value" },
+    "graph-document": { target: "editor", editor: "graph", facet: "semantic" },
+    "graph-catalog": { target: "editor", editor: "graph", facet: "catalog" },
+    "entity-document": { target: "editor", editor: "entity", facet: "semantic" },
+    "entity-catalog": { target: "editor", editor: "entity", facet: "catalog" },
+    "structured-document": { target: "editor", editor: "structured", facet: "semantic" },
+    "structured-catalog": { target: "editor", editor: "structured", facet: "catalog" },
+    "table-catalog": { target: "editor", editor: "table", facet: "catalog" },
   }[marker];
+}
+
+async function runProductionParser(definition, text, document) {
+  if (definition.target === "core") {
+    let module = parserModules.get("core");
+    if (module === undefined) {
+      module = await import(pathToFileURL(path.join(repositoryRoot, "Core", "dist", "index.js")).href);
+      parserModules.set("core", module);
+    }
+    return module[definition.exportName](definition.inputKind === "json-value" ? JSON.parse(text) : text);
+  }
+  const facets = await editorFacets();
+  const registration = facets.get(definition.editor);
+  if (registration === undefined) {
+    throw new Error(`module '${definition.editor}' did not register an editor facet`);
+  }
+  const facet = registration[definition.facet];
+  if (facet === undefined) {
+    throw new Error(`module '${definition.editor}' has no '${definition.facet}' facet`);
+  }
+  return definition.facet === "catalog"
+    ? facet.parse(text, document)
+    : facet.parseText(text, parserFacetContext(definition.editor, document));
+}
+
+/** facet 只读上下文：解析单个示例不需要 Project/Catalog，给一份最小的可辨识上下文。 */
+function parserFacetContext(editor, document) {
+  return {
+    projectId: "visualbridge.documentation-check",
+    documentTypeId: `documentation-check.${editor}`,
+    path: document,
+    sourcePaths: [document],
+    registry: undefined,
+    projectDefinition: null,
+    moduleOptions: undefined,
+  };
+}
+
+/**
+ * 四个领域 bundle 的 facet 表（装载一次）。
+ *
+ * bundle 只导出 `manifest` / `activate` / `webviews`；能力全在 `activate()` 的返回值里，
+ * 所以必须经 `ModuleLoader` 而不是直接 require 产物模块。
+ */
+async function editorFacets() {
+  if (moduleFacets !== undefined) return moduleFacets;
+  const nodeHost = require(path.join(repositoryRoot, "Tools", "NodeHost", "dist", "index.js"));
+  const modules = EDITOR_MODULES.map(([editor, id, entry]) => ({ id, entry }));
+  let loader;
+  try {
+    loader = await nodeHost.ModuleLoader.create({
+      projectRoot: repositoryRoot,
+      projectId: "visualbridge.documentation-check",
+      modules,
+      trusted: true,
+    });
+  } catch (error) {
+    throw new Error(
+      `无法装载 Modules/*.vbmodule.js（先跑 npm run prepare:modules）：${formatError(error)}`,
+    );
+  }
+  const facets = new Map();
+  const failures = [];
+  for (const module of loader.result.modules) {
+    if (module.status !== "loaded") {
+      failures.push(`${module.id}: ${module.status} ${formatDiagnosticsSummary(module.diagnostics)}`);
+      continue;
+    }
+    for (const registration of module.registration?.editors ?? []) facets.set(registration.editor, registration);
+  }
+  if (failures.length > 0) {
+    throw new Error(
+      `无法装载领域模块（先跑 npm run prepare:modules）：${failures.join("; ")}`,
+    );
+  }
+  moduleFacets = facets;
+  return moduleFacets;
+}
+
+function formatDiagnosticsSummary(diagnostics) {
+  if (diagnostics === undefined || diagnostics.length === 0) return "";
+  return diagnostics.map((diagnostic) => `${diagnostic.code} ${diagnostic.path}: ${diagnostic.message}`).join(" | ");
 }
 
 async function checkVsCodeSurface(allDocuments) {
