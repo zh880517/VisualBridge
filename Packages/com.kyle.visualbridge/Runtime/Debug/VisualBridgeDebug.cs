@@ -63,6 +63,32 @@ namespace VisualBridge.Diagnostics
         }
 
         /// <summary>
+        /// 实例是否仍在**当前会话**里登记（纯只读查询，没有任何副作用）。会话重置（Install/Uninstall/
+        /// Detach/断连）会清空实例集合，所以跨重连长时间运行的发射端必须用它判断"实例是不是真的登记着"：
+        /// <see cref="Create"/> 的返回值只表示"这次调用被接受"（未连接时是入待发队列），不能当成长期状态。
+        /// 未挂接/宏关闭时返回 false（与 <see cref="Create"/> 一致，没有状态）。
+        /// </summary>
+        public static bool isInstanceRegistered(string instanceId)
+        {
+#if UNITY_EDITOR || VISUALBRIDGE_RUNTIME_BRIDGE
+            return VisualBridgeDebugSession.IsInstanceRegistered(instanceId);
+#else
+            return false;
+#endif
+        }
+
+        /// <summary>
+        /// 一行调试运行期 trace（仅当 <c>VISUALBRIDGE_DEBUG_TRACE=1</c> 时输出，sink 由宿主 Install 时注入）。
+        /// 只用于排障观察：不进 Warning 公告、不计 dropped、不改任何会话状态。宏关闭时是空操作。
+        /// </summary>
+        public static void trace(string message)
+        {
+#if UNITY_EDITOR || VISUALBRIDGE_RUNTIME_BRIDGE
+            VisualBridgeDebugDiagnostics.Log(message);
+#endif
+        }
+
+        /// <summary>
         /// 结束实例：移出实例集合并发送结束；实例不存在或未挂接时返回 false。
         /// </summary>
         public static bool Finish(string instanceId)
@@ -71,6 +97,20 @@ namespace VisualBridge.Diagnostics
             return VisualBridgeDebugSession.Finish(instanceId);
 #else
             return false;
+#endif
+        }
+
+        /// <summary>
+        /// 当前会话帧号（最近一次 <see cref="SetFrame"/> 的值；从未设置时为 -1 = "无帧"）。
+        /// 与 <see cref="SetFrame"/> 对称的只读访问：结束实例等"没有新帧可传"的路径要按它补齐帧号，
+        /// 而不是用一个合法帧号（如 0）冒充"没有帧"。
+        /// </summary>
+        public static long frame
+        {
+#if UNITY_EDITOR || VISUALBRIDGE_RUNTIME_BRIDGE
+            get { return VisualBridgeDebugSession.CurrentFrame; }
+#else
+            get { return -1; }
 #endif
         }
 

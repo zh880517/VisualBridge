@@ -12,6 +12,12 @@ namespace VisualBridge.Runtime
     /// 缓冲——无订阅时全部节点方法走零分配快速路径。采集与传输解耦：
     /// RuntimeBridgeServer 的执行泵线程按「满 64 条或 100ms」冲刷缓冲。
     /// Runtime 程序集禁止 Unity API；所有方法线程安全。
+    ///
+    /// 另有**观察者缝**（G1c）：<see cref="SetObserver"/> 注入的
+    /// <see cref="IVisualBridgeGraphExecutionObserver"/> 会在每条事实处理后同步收到一次回调，
+    /// 供宿主侧的 Graph 调试发射端转成 <c>category = "graph"</c> 的调试契约事件。观察者**只吃回调参数**：
+    /// 它不改变旧路径的任何可观察输出（入队仍只看 <c>subscribed</c>，实例快照的当前节点/帧号也只在
+    /// 订阅时更新），因此"装不装观察者"对旧 graphExecution 消费者完全不可见（G1b 才删旧路径）。
     /// </summary>
     public static class VisualBridgeGraphExecutionCapture
     {
@@ -26,12 +32,59 @@ namespace VisualBridge.Runtime
         private static long executionCounter;
         private static volatile bool tracking;
         private static volatile bool subscribed;
+        private static IVisualBridgeGraphExecutionObserver observer;
 
         /// <summary>服务端是否在追踪（Editor Play / Player 运行期间为 true）。</summary>
         public static bool IsTracking => tracking;
 
         /// <summary>当前是否存在至少一个执行事件订阅者。</summary>
         public static bool IsSubscribed => subscribed;
+
+        /// <summary>
+        /// 订阅 Graph 执行事实（G1c）：宿主侧的调试发射端用它把每条事实转成调试契约事件。
+        /// Runtime 不引用调试程序集，因此观察者由宿主注入；传 null 取消订阅。
+        /// 订阅时若已有运行中实例，会按 executionId 顺序补发一次实例开始事实，避免「发射端装晚了」
+        /// 导致面板上永久缺实例。回调在调用 <c>On*</c> 的线程上同步执行且不在采集锁内，
+        /// 被替换/清空时旧观察者会收到 <see cref="IVisualBridgeGraphExecutionObserver.Reset"/>。
+        /// </summary>
+        public static void SetObserver(IVisualBridgeGraphExecutionObserver value)
+        {
+            List<VisualBridgeRuntimeGraphExecutionInstance> replay = null;
+            IVisualBridgeGraphExecutionObserver previous;
+            lock (Gate)
+            {
+                previous = observer;
+                observer = value;
+                if (value != null && tracking)
+                {
+                    replay = new List<VisualBridgeRuntimeGraphExecutionInstance>(Instances.Count);
+                    foreach (var instance in Instances.Values)
+                    {
+                        replay.Add(Clone(instance));
+                    }
+
+                    // Dictionary 的枚举顺序不是契约：按 executionId 排序，补发顺序确定。
+                    replay.Sort((left, right) => string.CompareOrdinal(left.ExecutionId, right.ExecutionId));
+                }
+            }
+
+            previous?.Reset();
+            if (replay == null)
+            {
+                return;
+            }
+
+            foreach (var instance in replay)
+            {
+                value.OnInstanceStarted(
+                    instance.ExecutionId,
+                    instance.DocumentTypeId,
+                    instance.DocumentId,
+                    instance.GraphName,
+                    instance.DebugKey,
+                    instance.FrameIndex);
+            }
+        }
 
         /// <summary>
         /// 上报执行实例开始。documentTypeId/documentId 是 VisualBridge 图文档
@@ -51,6 +104,8 @@ namespace VisualBridge.Runtime
                 return false;
             }
 
+            var target = Volatile.Read(ref observer);
+            var resolvedDebugKey = debugKey ?? string.Empty;
             lock (Gate)
             {
                 executionCounter++;
@@ -61,7 +116,7 @@ namespace VisualBridge.Runtime
                     DocumentTypeId = documentTypeId,
                     DocumentId = documentId,
                     GraphName = graphName,
-                    DebugKey = debugKey ?? string.Empty,
+                    DebugKey = resolvedDebugKey,
                     State = "running",
                     CurrentNodeId = null,
                     FrameIndex = 0,
@@ -78,6 +133,7 @@ namespace VisualBridge.Runtime
                 }
             }
 
+            target?.OnInstanceStarted(executionId, documentTypeId, documentId, graphName, resolvedDebugKey, 0);
             return true;
         }
 
@@ -89,6 +145,8 @@ namespace VisualBridge.Runtime
                 return;
             }
 
+            var target = Volatile.Read(ref observer);
+            var stoppedFrame = 0;
             lock (Gate)
             {
                 if (!Instances.TryGetValue(executionId, out var instance))
@@ -96,22 +154,27 @@ namespace VisualBridge.Runtime
                     return;
                 }
 
+                stoppedFrame = instance.FrameIndex;
                 Instances.Remove(executionId);
                 if (subscribed)
                 {
                     EnqueueLocked(new VisualBridgeRuntimeGraphExecutionEvent
                     {
                         ExecutionId = executionId,
-                        FrameIndex = instance.FrameIndex,
+                        FrameIndex = stoppedFrame,
                         Kind = "instanceStopped",
                     });
                 }
             }
+
+            target?.OnInstanceStopped(executionId, stoppedFrame);
         }
 
         public static void OnNodeStart(string executionId, string nodeId, int frameIndex)
         {
-            if (!tracking || !subscribed)
+            // 观察者与旧订阅者相互独立：没有观察者时保持原来的「无订阅零开销」快速路径。
+            var target = Volatile.Read(ref observer);
+            if (!tracking || (!subscribed && target == null))
             {
                 return;
             }
@@ -123,21 +186,29 @@ namespace VisualBridge.Runtime
                     return;
                 }
 
-                instance.CurrentNodeId = nodeId;
-                instance.FrameIndex = frameIndex;
-                EnqueueLocked(new VisualBridgeRuntimeGraphExecutionEvent
+                if (subscribed)
                 {
-                    ExecutionId = executionId,
-                    FrameIndex = frameIndex,
-                    Kind = "nodeStart",
-                    NodeId = nodeId,
-                });
+                    // 旧路径语义（Doc/UnityGraphExecutionDebug.md）：无订阅期间当前节点与帧号**不更新**。
+                    // 观察者只吃回调参数，不动实例快照——否则"装个观察者"就会改变旧路径的可观察输出。
+                    instance.CurrentNodeId = nodeId;
+                    instance.FrameIndex = frameIndex;
+                    EnqueueLocked(new VisualBridgeRuntimeGraphExecutionEvent
+                    {
+                        ExecutionId = executionId,
+                        FrameIndex = frameIndex,
+                        Kind = "nodeStart",
+                        NodeId = nodeId,
+                    });
+                }
             }
+
+            target?.OnNodeStarted(executionId, nodeId, frameIndex);
         }
 
         public static void OnNodeOutput(string executionId, string nodeId, int outputIndex, int frameIndex)
         {
-            if (!tracking || !subscribed)
+            var target = Volatile.Read(ref observer);
+            if (!tracking || (!subscribed && target == null))
             {
                 return;
             }
@@ -149,22 +220,30 @@ namespace VisualBridge.Runtime
                     return;
                 }
 
-                instance.CurrentNodeId = nodeId;
-                instance.FrameIndex = frameIndex;
-                EnqueueLocked(new VisualBridgeRuntimeGraphExecutionEvent
+                if (subscribed)
                 {
-                    ExecutionId = executionId,
-                    FrameIndex = frameIndex,
-                    Kind = "nodeOutput",
-                    NodeId = nodeId,
-                    OutputIndex = outputIndex,
-                });
+                    // 旧路径语义（Doc/UnityGraphExecutionDebug.md）：无订阅期间当前节点与帧号**不更新**。
+                    // 观察者只吃回调参数，不动实例快照——否则"装个观察者"就会改变旧路径的可观察输出。
+                    instance.CurrentNodeId = nodeId;
+                    instance.FrameIndex = frameIndex;
+                    EnqueueLocked(new VisualBridgeRuntimeGraphExecutionEvent
+                    {
+                        ExecutionId = executionId,
+                        FrameIndex = frameIndex,
+                        Kind = "nodeOutput",
+                        NodeId = nodeId,
+                        OutputIndex = outputIndex,
+                    });
+                }
             }
+
+            target?.OnNodeOutput(executionId, nodeId, outputIndex, frameIndex);
         }
 
         public static void OnDataNode(string executionId, string nodeId, int frameIndex)
         {
-            if (!tracking || !subscribed)
+            var target = Volatile.Read(ref observer);
+            if (!tracking || (!subscribed && target == null))
             {
                 return;
             }
@@ -176,21 +255,30 @@ namespace VisualBridge.Runtime
                     return;
                 }
 
-                instance.CurrentNodeId = nodeId;
-                instance.FrameIndex = frameIndex;
-                EnqueueLocked(new VisualBridgeRuntimeGraphExecutionEvent
+                if (subscribed)
                 {
-                    ExecutionId = executionId,
-                    FrameIndex = frameIndex,
-                    Kind = "dataNode",
-                    NodeId = nodeId,
-                });
+                    // 旧路径语义（Doc/UnityGraphExecutionDebug.md）：无订阅期间当前节点与帧号**不更新**。
+                    // 观察者只吃回调参数，不动实例快照——否则"装个观察者"就会改变旧路径的可观察输出。
+                    instance.CurrentNodeId = nodeId;
+                    instance.FrameIndex = frameIndex;
+                    EnqueueLocked(new VisualBridgeRuntimeGraphExecutionEvent
+                    {
+                        ExecutionId = executionId,
+                        FrameIndex = frameIndex,
+                        Kind = "dataNode",
+                        NodeId = nodeId,
+                    });
+                }
             }
+
+            target?.OnDataNode(executionId, nodeId, frameIndex);
         }
 
         public static void OnEdgeValueChanged(string executionId, string nodeId, int outputIndex, string value, int frameIndex)
         {
-            if (!tracking || !subscribed || value == null)
+            var target = Volatile.Read(ref observer);
+            // value 为 null 在两条路径上都不产生事件：旧路径没有可传的值，调试契约的 value 是必填载荷。
+            if (!tracking || value == null || (!subscribed && target == null))
             {
                 return;
             }
@@ -202,18 +290,25 @@ namespace VisualBridge.Runtime
                     return;
                 }
 
-                instance.CurrentNodeId = nodeId;
-                instance.FrameIndex = frameIndex;
-                EnqueueLocked(new VisualBridgeRuntimeGraphExecutionEvent
+                if (subscribed)
                 {
-                    ExecutionId = executionId,
-                    FrameIndex = frameIndex,
-                    Kind = "edgeValueChanged",
-                    NodeId = nodeId,
-                    OutputIndex = outputIndex,
-                    Value = value,
-                });
+                    // 旧路径语义（Doc/UnityGraphExecutionDebug.md）：无订阅期间当前节点与帧号**不更新**。
+                    // 观察者只吃回调参数，不动实例快照——否则"装个观察者"就会改变旧路径的可观察输出。
+                    instance.CurrentNodeId = nodeId;
+                    instance.FrameIndex = frameIndex;
+                    EnqueueLocked(new VisualBridgeRuntimeGraphExecutionEvent
+                    {
+                        ExecutionId = executionId,
+                        FrameIndex = frameIndex,
+                        Kind = "edgeValueChanged",
+                        NodeId = nodeId,
+                        OutputIndex = outputIndex,
+                        Value = value,
+                    });
+                }
             }
+
+            target?.OnEdgeValueChanged(executionId, nodeId, outputIndex, value, frameIndex);
         }
 
         /// <summary>按 documentId 过滤的运行中实例快照（documentIdFilter 为 null 时不过滤）。</summary>
@@ -249,9 +344,10 @@ namespace VisualBridge.Runtime
             }
         }
 
-        /// <summary>服务端开始/停止追踪；停止时清空注册表与缓冲。</summary>
+        /// <summary>服务端开始/停止追踪；停止时清空注册表与缓冲（并让观察者丢弃已登记实例）。</summary>
         internal static void SetTracking(bool value)
         {
+            IVisualBridgeGraphExecutionObserver target;
             lock (Gate)
             {
                 tracking = value;
@@ -261,6 +357,13 @@ namespace VisualBridge.Runtime
                     Pending.Clear();
                     executionCounter = 0;
                 }
+
+                target = observer;
+            }
+
+            if (!value)
+            {
+                target?.Reset();
             }
         }
 

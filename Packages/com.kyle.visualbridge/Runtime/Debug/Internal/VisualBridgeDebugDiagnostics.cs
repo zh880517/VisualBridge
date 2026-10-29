@@ -69,6 +69,43 @@ namespace VisualBridge.Diagnostics
             }
         }
 
+        /// <summary>
+        /// 一行调试 trace（仅 <c>VISUALBRIDGE_DEBUG_TRACE=1</c> 时输出）：会话重置时序、发射端重建实例等。
+        /// 只读观察：不进 Warning 公告、不计 dropped、不改任何会话状态。Runtime 程序集禁止 Unity API，
+        /// 所以日志走宿主 Install 时注入的 sink（与 Warning 共用同一条通道）。
+        /// </summary>
+        internal static void Log(string message)
+        {
+            if (string.IsNullOrEmpty(message) || !TraceEnabled)
+            {
+                return;
+            }
+
+            Action<string> sink;
+            lock (Gate)
+            {
+                sink = s_sink;
+            }
+
+            if (sink == null)
+            {
+                return;
+            }
+
+            try
+            {
+                sink(message);
+            }
+            catch (Exception)
+            {
+                // 诊断输出失败不得影响业务调用。
+            }
+        }
+
+        /// <summary>trace 是否开启：环境变量 <c>VISUALBRIDGE_DEBUG_TRACE=1</c>（会话时序排障用）。</summary>
+        private static readonly bool TraceEnabled =
+            string.Equals(Environment.GetEnvironmentVariable("VISUALBRIDGE_DEBUG_TRACE"), "1", StringComparison.Ordinal);
+
         internal static void SetSink(Action<string> sink)
         {
             lock (Gate)

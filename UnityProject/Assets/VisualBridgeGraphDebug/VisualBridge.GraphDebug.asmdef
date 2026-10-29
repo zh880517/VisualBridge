@@ -1,0 +1,17 @@
+{
+    "name": "VisualBridge.GraphDebug",
+    "rootNamespace": "VisualBridge.GraphDebug",
+    "references": [
+        "VisualBridge.Runtime",
+        "VisualBridge.Debug"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

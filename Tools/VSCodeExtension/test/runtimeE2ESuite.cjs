@@ -13,6 +13,8 @@ const FRAME_HEADER_BYTES = 6;
 const FRAME_PAYLOAD_KIND_SHIFT = 29;
 /** E9 样例实例在面板里的键（`channel\u0000instance`）：多条用例共用，必须在文件顶部提前声明。 */
 const DEBUG_INSTANCE_KEY = "e9-channel\u0000e9-debug-instance";
+/** 单用例过滤（空串 = 跑全部）：只在显式设置 `VISUALBRIDGE_RUNTIME_E2E_ONLY` 时生效。 */
+const onlyFilter = process.env.VISUALBRIDGE_RUNTIME_E2E_ONLY ?? "";
 
 exports.run = async function run() {
   const repositoryRoot = requiredEnvironmentPath("VISUALBRIDGE_REPOSITORY_ROOT");
@@ -433,6 +435,92 @@ exports.run = async function run() {
       + `data=${state.debugDataFrames} stored=${state.debugStoredRecords} records=${row.recordCount} origin=${row.origin}`);
   });
 
+  // ---- G1c：Graph 执行事实经**生成的调试契约**（category=graph）进面板 ----
+  // 判据读的是 Unity 生成的真产物（debug-contracts.json），不是测试里的方法名副本：
+  // 契约改了名字而发射端没跟上，这条用例就会红。
+  await test("ingests real graph execution facts through the generated graph debug contract (G1c)", async () => {
+    // 自足：不依赖前面任何用例。前置全部在本用例内建立，且**只用产品已有的用户动作**：
+    // ① 显式激活扩展（命令注册发生在 activate 里；只开过一次工作区时才是懒激活）；
+    // ② **先等** Unity 写出 `editor-play` 发现记录，**再**打开调试面板——顺序反过来（先开面板再等记录）
+    //    会让首次 `ensureConnected` 注定落在"记录还不存在"的窗口里，那是测试自己造出来的失败，
+    //    不能当成"面板首次连接成功率"的证据（对照数据见报告）；
+    // ③ 等面板把共享 Runtime 桥连上（有界等待：60 s 上限，超时打印面板状态与已等时长）；
+    // ④ 连接建立后，本用例只断言"graph 实例到达面板 + ack 内容"，不把"连上"算作它的产出。
+    const candidate = vscode.extensions.getExtension(EXTENSION_ID);
+    assert.ok(candidate, `Extension '${EXTENSION_ID}' was not discovered.`);
+    await candidate.activate();
+    await waitForAsync(
+      () => vscode.commands.executeCommand("visualbridge.test.enumerateRuntimeInstances"),
+      (value) => Array.isArray(value) && value.some((instance) => instance.kind === "editor-play" && instance.staleReason === undefined),
+      180_000,
+      "No live editor-play runtime instance was discovered for the G1c case.",
+    );
+    await vscode.commands.executeCommand("visualbridge.openDebugPanel");
+    const waitedMs = await waitForRuntimeBridgeConnected(60_000);
+    console.log(`[runtime-e2e] G1c precondition: runtime bridge connected after ${waitedMs} ms`);
+    const contractsPath = path.join(
+      repositoryRoot, "UnityProject", "Assets", "VisualBridgeGenerated", "Debug", "debug-contracts.json");
+    const contracts = JSON.parse(await readFile(contractsPath, "utf8"));
+    const graphCategory = contracts.categories.find((category) => category.name === "graph");
+    assert.ok(graphCategory, "The Unity project must declare the graph debug category.");
+    const contractMethods = new Set(
+      graphCategory.interfaces.flatMap((contractInterface) => contractInterface.methods.map((method) => method.name)),
+    );
+    assert.ok(contractMethods.has("NodeStarted"), "The graph contract must declare NodeStarted.");
+    assert.ok(contractMethods.has("EdgeValueChanged"), "The graph contract must declare EdgeValueChanged.");
+
+    // 实例由 Unity 侧执行模拟器真实产生（executionId 由采集门面分配），面板键是 category\u0000instanceId。
+    const listed = await waitForAsync(
+      () => vscode.commands.executeCommand("visualbridge.test.debugPanel.state"),
+      (state) => Array.isArray(state?.instances)
+        && state.instances.some((row) => row.key.startsWith("graph\u0000") && row.recordCount >= 2),
+      60_000,
+      "The graph debug instance produced by the Unity execution simulator never reached the panel.",
+    );
+    const row = listed.instances
+      .filter((entry) => entry.key.startsWith("graph\u0000"))
+      .sort((left, right) => right.recordCount - left.recordCount)[0];
+    assert.equal(row.origin, "runtime", "The graph execution instance must come from the runtime leg.");
+    const executionId = row.key.slice("graph\u0000".length);
+    assert.ok(executionId.length > 0, "The panel key must carry the Unity execution id.");
+
+    await vscode.commands.executeCommand("visualbridge.test.debugPanel.command", "select", { key: row.key });
+    const timeline = await waitForAsync(
+      () => vscode.commands.executeCommand("visualbridge.test.debugPanel.state"),
+      (state) => {
+        if (state?.timeline?.selected !== true) {
+          return false;
+        }
+
+        const methods = new Set((state.timeline.records ?? []).map((record) => record.method));
+        return methods.has("NodeStarted") && methods.has("EdgeValueChanged");
+      },
+      60_000,
+      "The graph instance timeline never showed NodeStarted + EdgeValueChanged rows.",
+    );
+
+    const records = timeline.timeline.records;
+    assert.ok(records.length >= 2, `Expected graph timeline rows, got ${records.length}.`);
+    for (const record of records) {
+      assert.ok(contractMethods.has(record.method),
+        `Timeline method '${record.method}' is not declared by the graph debug contract.`);
+      assert.equal(record.interfaceId, "IGraphDebuger", "Every graph record must come from IGraphDebuger.");
+      assert.equal(record.instanceId, executionId, "Every graph record must belong to the same execution instance.");
+    }
+
+    // 载荷本身：同一批帧在 ingest 时已按生成契约解出参数名与值（面板详情用的是同一份
+    // `contractState` + named args），这里直接证明"契约身份被识别、载荷是真值"。
+    // 不用面板详情（快照字段、跟随光标时不主动推送，反复 select 还会切到回看模式），也不用
+    // `debugStoredRecords >= rows`：时间轴窗口会随新事件前移，帧数在涨时那个比较是竞态。
+    const ingested = await vscode.commands.executeCommand("visualbridge.test.getRuntimeBridgeState");
+    assert.ok((ingested?.debugStoredRecords ?? 0) >= 1,
+      `The graph records must come from ingested debug frames (stored=${ingested?.debugStoredRecords}).`);
+    const ingestCount = new Set(records.map((record) => record.method)).size;
+    console.log(`[runtime-e2e] graph contract ingest: instance=${row.key} records=${row.recordCount} `
+      + `rows=${records.length} methods=${[...new Set(records.map((record) => record.method))].join(",")} `
+      + `contractMethods=${contractMethods.size} distinctMethods=${ingestCount}`);
+  });
+
   await test("completes a real debug query roundtrip on the runtime leg (E9)", async () => {
     const before = await vscode.commands.executeCommand("visualbridge.test.debugPanel.state");
     const beforeRow = before.instances.find((entry) => entry.key === DEBUG_INSTANCE_KEY);
@@ -455,7 +543,7 @@ exports.run = async function run() {
       key: DEBUG_INSTANCE_KEY,
       interfaceId: "IE9SampleQuery",
       method: "Echo",
-      // 样例工程没有调试契约（categories 为空）：方法名无法解析成方法号，显式给号（C.1 的字段）。
+      // G1c 之后契约里有 graph 类别，但不含 E9 的查询接口：方法名无法解析成方法号，显式给号（C.1 的字段）。
       methodId: 10,
     });
     assert.equal(result.ok, true, `The debug query failed: ${result.error} (${result.code})`);
@@ -475,6 +563,11 @@ exports.run = async function run() {
     try {
       const before = await vscode.commands.executeCommand("visualbridge.test.getRuntimeBridgeState");
       assert.equal(before.connected, true);
+      // G1c 之后 runtime 腿上有两个生产者（E9 探针 + Graph 执行发射端），"总帧数"不再是 E9 实例记录数的代理：
+      // 录制窗口必须真的夹住 E9 自己的事件，回看才可能重建它的时间轴。
+      const panelBeforeRecording = await vscode.commands.executeCommand("visualbridge.test.debugPanel.state");
+      const e9RecordsBefore = panelBeforeRecording.instances
+        .find((row) => row.key === DEBUG_INSTANCE_KEY)?.recordCount ?? 0;
       const started = await vscode.commands.executeCommand("visualbridge.test.debugPanel.recordingStart", filePath);
       assert.equal(started.active, true);
       assert.equal(started.origin, "runtime", "Recording must bind to the runtime-leg connection that is producing frames.");
@@ -485,6 +578,14 @@ exports.run = async function run() {
         (value) => (value?.debugFrames ?? 0) >= (before.debugFrames ?? 0) + 3,
         20_000,
         "The runtime leg stopped delivering debug frames while recording.",
+      );
+      // 录制是旁路（同一批帧也进在线面板）：等到 E9 实例自己多出两条记录，文件里才必然有它的 ≥2 条数据帧。
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.debugPanel.state"),
+        (state) => ((state?.instances ?? []).find((row) => row.key === DEBUG_INSTANCE_KEY)?.recordCount ?? 0)
+          >= e9RecordsBefore + 2,
+        20_000,
+        "The E9 instance gained fewer than two events while the channel recording was active.",
       );
       const stopped = await vscode.commands.executeCommand("visualbridge.test.debugPanel.recordingStop");
       assert.ok(stopped.footer, "Stopping the recording must produce a footer.");
@@ -665,7 +766,44 @@ exports.run = async function run() {
   });
 };
 
+/**
+ * 建立"面板已连上 Runtime 桥"这个前置：只等待 `state.connected === true`（有界），返回已等待的毫秒数。
+ *
+ * 这里**故意不点「重试连接」**：面板自身的 `ensureConnected` 是单飞的（`pending` 在途时早退），
+ * 在本用例的时序下首轮尝试总是成功（实测每次都是首读即已连接），重试分支从未被执行过——
+ * 为一个不再发生的场景保留的分支就是死代码。产品侧重试入口的问题归 E11 §4.2。
+ */
+async function waitForRuntimeBridgeConnected(timeoutMilliseconds) {
+  const readBridgeState = () => vscode.commands.executeCommand("visualbridge.test.getRuntimeBridgeState");
+  const readPanelState = () => vscode.commands.executeCommand("visualbridge.test.debugPanel.state");
+  const started = Date.now();
+  const deadline = started + timeoutMilliseconds;
+  let last = await readBridgeState();
+  while (last?.connected !== true || typeof last?.instanceId !== "string") {
+    if (Date.now() >= deadline) {
+      const panel = await readPanelState().catch(() => undefined);
+      throw new Error(
+        `The debug panel runtime leg did not connect within ${timeoutMilliseconds} ms `
+        + `(waited=${Date.now() - started} ms, last=${JSON.stringify(last)}, `
+        + `panelState=${JSON.stringify(panel?.connection?.state)}).`,
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    last = await readBridgeState();
+  }
+
+  return Date.now() - started;
+}
+
 async function test(name, action) {
+  // 单用例过滤（排障/取证用，默认不启用）：`VISUALBRIDGE_RUNTIME_E2E_ONLY=<名字子串>` 时只执行名字
+  // 匹配的用例，其余整体跳过（打印 SKIP）。用于不依赖前序用例的独立取证，例如 kill-switch 双向证据。
+  if (onlyFilter.length > 0 && !name.includes(onlyFilter)) {
+    console.log(`[runtime-e2e] SKIP ${name}`);
+    return;
+  }
+
   console.log(`[runtime-e2e] ${name}`);
   try {
     await action();
@@ -700,6 +838,7 @@ async function waitForAsync(read, accepts, timeoutMilliseconds, message) {
   }
   throw new Error(`${message} Last observed value: ${JSON.stringify(lastValue)}`);
 }
+
 
 function requiredEnvironmentPath(name) {
   const value = process.env[name];

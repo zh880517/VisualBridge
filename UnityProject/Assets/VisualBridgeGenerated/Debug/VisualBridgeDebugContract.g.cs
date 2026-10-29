@@ -7,7 +7,7 @@ namespace VisualBridge.Diagnostics.Generated
     public static class VisualBridgeDebugContract
     {
         /// <summary>分类/接口/方法/参数/枚举的规范化文本取 SHA-256 前 8 字节（16 位十六进制）。</summary>
-        public const string Hash = "efbd32c726d801eb";
+        public const string Hash = "52e099f471f56ca8";
     }
 
     /// <summary>系统方法号段（附录 B.5）：0 保留、1/2 = Create/Finish、3–9 预留、10+ 业务分类。</summary>

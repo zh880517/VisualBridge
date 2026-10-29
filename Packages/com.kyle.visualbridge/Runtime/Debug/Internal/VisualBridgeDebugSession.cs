@@ -87,6 +87,22 @@ namespace VisualBridge.Diagnostics
             }
         }
 
+        /// <summary>
+        /// 实例是否在当前会话里登记（G1c 的发射端用它做幂等 Create）。纯只读：与 <see cref="Start"/> 一样
+        /// 只做一次 volatile 快照读，不触发连接刷新、不改任何状态。待发 Create 已把实例登记进快照，
+        /// 所以"已挂接、无连接"也算已登记；会话重置后则为 false。
+        /// </summary>
+        internal static bool IsInstanceRegistered(string instanceId)
+        {
+            if (string.IsNullOrEmpty(instanceId))
+            {
+                return false;
+            }
+
+            var snapshot = Volatile.Read(ref s_snapshot);
+            return snapshot.Instances.Contains(instanceId);
+        }
+
         /// <summary>运行环境类型；未注入传输时按编译平台给出默认值。</summary>
         internal static ConnectType CurrentConnectType
         {
@@ -774,6 +790,12 @@ namespace VisualBridge.Diagnostics
                 VisualBridgeDebugDiagnostics.Warning("VisualBridgeDebug 发送失败应答失败：" + exception.Message);
                 return false;
             }
+        }
+
+        /// <summary>当前会话帧号（只读；从未设置时为 -1）。供"没有新帧可传"的路径补齐帧号。</summary>
+        internal static long CurrentFrame
+        {
+            get { return Volatile.Read(ref s_frame); }
         }
 
         internal static void SetFrame(long frame)

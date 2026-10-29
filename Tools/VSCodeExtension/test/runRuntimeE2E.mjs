@@ -26,7 +26,11 @@ const quitPath = path.join(temporaryPath, "quit.txt");
 await Promise.all([mkdir(userDataPath, { recursive: true }), mkdir(extensionsPath, { recursive: true }), mkdir(cachePath, { recursive: true })]);
 
 console.log("[runtime-e2e] launching the real Unity Editor in hosted play mode");
-const unityLogPath = path.join(temporaryPath, "unity.log");
+// 显式开启 trace 时把 Unity 日志放到运行前面创建的目录（临时目录在 finally 里会被删，失败现场需要它）。
+const traceDirectory = process.env.VISUALBRIDGE_DEBUG_TRACE === "1"
+  ? await mkdtemp(path.join(tmpdir(), "visualbridge-unity-trace-"))
+  : temporaryPath;
+const unityLogPath = path.join(traceDirectory, "unity.log");
 const controlPath = path.join(temporaryPath, "e2e-control.txt");
 const unity = spawn(UNITY_EDITOR, [
   "-batchmode",
@@ -53,6 +57,24 @@ const unity = spawn(UNITY_EDITOR, [
 const unityExit = new Promise((resolve) => {
   unity.once("exit", (code) => resolve(code));
 });
+// 会话诊断（显式开启时才有日志）：把 Unity 侧的 `[debug-session]` / `[graph-debug]` 行实时转出来，
+// 用例失败时能直接看到"谁重开了调试会话"，不必事后翻临时目录（目录随进程结束被删）。
+if (process.env.VISUALBRIDGE_DEBUG_TRACE === "1") {
+  const traceTail = () => {
+    try {
+      const content = readFileSync(unityLogPath, "utf8");
+      for (const line of content.split(/\r?\n/)) {
+        if (line.includes("[debug-session]") || line.includes("[graph-debug]")) {
+          console.log(`[unity-trace] ${line}`);
+        }
+      }
+    } catch {
+      // Unity 日志可能已被清理：忽略。
+    }
+  };
+  // 两条退出路径都打印一次（用例失败也会走到这里），保证失败现场不缺诊断。
+  process.on("exit", traceTail);
+}
 
 let completed = false;
 try {
@@ -67,6 +89,12 @@ try {
       VISUALBRIDGE_RUNTIME_E2E_CONTROL: controlPath,
       // 用例读 Unity 自己的日志做因果正控（stacked / session kept），只读、不参与运行控制。
       VISUALBRIDGE_RUNTIME_E2E_LOG: unityLogPath,
+      // 排障：把 IDE 侧的运行日志（含面板连接触发 tag / 调用栈）原样带出来；只在显式开 trace 时生效。
+      ...(process.env.VISUALBRIDGE_DEBUG_TRACE === "1" ? { VISUALBRIDGE_TEST_LOG: "1" } : {}),
+      // 单用例过滤（取证用）：透传给运行时套件，空/未设置时跑全部。
+      ...(process.env.VISUALBRIDGE_RUNTIME_E2E_ONLY === undefined
+        ? {}
+        : { VISUALBRIDGE_RUNTIME_E2E_ONLY: process.env.VISUALBRIDGE_RUNTIME_E2E_ONLY }),
     },
     launchArgs: [
       unityProjectPath,
@@ -103,7 +131,12 @@ try {
     });
   }
 
-  await rm(temporaryPath, { recursive: true, force: true }).catch(() => undefined);
+  // 显式开启 trace 时把 Unity 日志原样留在临时目录并打印路径（默认仍删除，不污染产品 diff）。
+  if (process.env.VISUALBRIDGE_DEBUG_TRACE === "1") {
+    console.log(`[runtime-e2e] unity log kept at ${unityLogPath}`);
+  } else {
+    await rm(temporaryPath, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 /**
