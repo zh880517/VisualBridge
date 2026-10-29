@@ -5411,11 +5411,19 @@ exports.run = async function run() {
 
     // 投递诊断不是"吞掉就完"：Webview 消息失败计数必须出现在面板快照里（验收 D）。
     // 计数是**进程级**的：无头宿主里前序面板用例的 `postMessage` 本来就可能返回 false，
-    // 因此这里断言"注入恰好 +1"，而不是假设全局计数从 0 开始。
-    const beforeFailures = (await panelState()).delivery.webviewFailures;
-    const failures = await vscode.commands.executeCommand("visualbridge.test.debugPanel.noteWebviewFailure");
-    assert.equal(failures, beforeFailures + 1);
-    assert.equal((await panelState()).delivery.webviewFailures, beforeFailures + 1);
+    // 因此这里只断言"这次注入恰好 +N"，以及"同一同步段里快照已看到同一个值"。
+    // 原子性（F8-§7-e / 评审必修六）：`{before, after, snapshot}` 全部由控制器在**一次同步调用**
+    // 里产生——before/after/snapshot 之间不存在可被真实失败插队的 await；也不再在读快照与调命令
+    // 之间留窗口（旧写法在 await 之后读快照，随排程随机红/绿）。
+    // `snapshot === after` 是**近恒真**的（同一字段经 model 回调再读一次）：它只证明
+    // `delivery.webviewFailures` 这条回调接线通了、计数没在快照路径上丢掉，**不**证明并发安全。
+    const injected = await vscode.commands.executeCommand("visualbridge.test.debugPanel.noteWebviewFailure");
+    assert.equal(typeof injected.before, "number", "命令必须返回注入前计数");
+    assert.equal(injected.after, injected.before + 1, "一次注入恰好 +1");
+    assert.equal(injected.snapshot, injected.after, "同一同步段的快照必须已反映这次注入");
+    const twice = await vscode.commands.executeCommand("visualbridge.test.debugPanel.noteWebviewFailure", 2);
+    assert.equal(twice.after, twice.before + 2, "注入两次恰好 +2");
+    assert.equal(twice.snapshot, twice.after, "同一同步段的快照必须已反映这两次注入");
   });
 
   await test("F4 falls back to generic when onRecord throws and keeps other categories intact", async () => {

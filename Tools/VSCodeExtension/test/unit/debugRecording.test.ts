@@ -600,6 +600,9 @@ test("replay produces the same DebugRecord sequence as the live ingress", async 
       assert.deepEqual(normalizeRecords(result.manager, key), normalizeRecords(liveManager, key));
       assert.equal(result.manager.storeFor(key)?.recordCount, liveManager.storeFor(key)?.recordCount);
       assert.equal(result.ingressCounters.unattributableBinaryFrames, 0, "JSON-only recording has no unattributable frames");
+      // F8-§8-4：回看实例的来源腿从文件头的 `connectType`（`editor` ⇒ Editor 桥）还原，
+      // 旧实现不传来源，视图显示"来源未标注"——来源本来就在文件头里。
+      assert.equal(result.manager.instance(key)?.origin, "editor", "replay must label the instance with the header's leg");
     } finally {
       await source.close();
     }
@@ -1300,8 +1303,8 @@ test("without the recorder cap the same budget rejects the file (P1-A red state)
 
     await assert.rejects(DebugReplaySession.load(filePath, { preflight: { maxRecords: cappedRecords } }), (errorValue: unknown) => {
       const message = errorValue instanceof Error ? errorValue.message : String(errorValue);
-      assert.match(message, /120 条记录/u, "拒绝信息必须给出实际条数");
-      assert.match(message, /超过回看上限（50 条/u, "拒绝信息必须给出预算");
+      assert.match(message, /120 帧/u, "拒绝信息必须给出实际帧数（单位是「帧」，不是「条记录」）");
+      assert.match(message, /超过回看上限（50 帧/u, "拒绝信息必须给出预算");
       return true;
     });
   });
@@ -1502,7 +1505,7 @@ test("a 32 MB-class recording (70k records, ~74 MB decoded) still opens (P1-A gr
       assert.equal(
         session.manager.storeFor(key)?.recordCount,
         records,
-        "70k 条记录（约 74 MB 解码）必须完整进回看，不能被上限挡在门外",
+        "70k 帧（约 74 MB 解码）必须完整进回看，不能被上限挡在门外",
       );
     } finally {
       session.dispose();

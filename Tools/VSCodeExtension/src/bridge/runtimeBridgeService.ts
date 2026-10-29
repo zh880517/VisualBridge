@@ -84,6 +84,22 @@ export interface RuntimeBridgeConnectionState {
   readonly debugFrames?: number;
   readonly debugEnvelopes?: number;
   readonly debugInstances?: number;
+  /**
+   * F8-§8-6 的可解释等式两侧（与 `debugFrames` 同一快照）：
+   * `debugFrames === debugDataFrames + debugControlFrames`——ingress 收下的每一帧都恰好解出
+   * 一条包络，且只属于一侧：
+   * - 数据类 = **只有** `debug`（数据通道上唯一会产出时间轴记录的入站类型）；
+   * - 控制类 = `debugCreate`、`debugFinish`、`debugFrame`、`debugResult`、`response`
+   *   （结果与应答虽走数据通道，却不进事件流，交给查询客户端结算——C.1）。
+   * 等式不成立 = 有帧被静默丢掉（畸形/超长帧），"至少一条记录"这类弱断言看不出来。
+   */
+  readonly debugDataFrames?: number;
+  readonly debugControlFrames?: number;
+  /**
+   * F8-§8-6：`ingest` 真正落进时间轴的记录数（`storedRecords <= debugDataFrames`：记录先于
+   * Create 会先暂存）。**不含** `queryResult`：查询结果记录由 `DebugQueryClient` 直接追加。
+   */
+  readonly debugStoredRecords?: number;
 }
 
 /**
@@ -428,6 +444,17 @@ export class RuntimeBridgeConnection {
           debugFrames: counters.frames,
           debugEnvelopes: counters.envelopes,
           debugInstances: this.debugWiring?.manager.instances.length ?? 0,
+          // F8-§8-6：可解释等式 `frames = controlEnvelopes + dataEnvelopes` 需要两侧的来源计数，
+          // 外加"真正落进时间轴的记录数"（`storedRecords <= dataEnvelopes`）。
+          // 三者取自同一次 `DebugChannelSession.recordCounters`，因此可以在同一快照里做等式断言，
+          // 而不是"至少 1 条"这种弱断言。
+          ...(this.debugSessionValue === undefined
+            ? {}
+            : {
+              debugDataFrames: this.debugSessionValue.recordCounters.dataEnvelopes,
+              debugControlFrames: this.debugSessionValue.recordCounters.controlEnvelopes,
+              debugStoredRecords: this.debugSessionValue.recordCounters.storedRecords,
+            }),
         }),
     };
   }
@@ -462,7 +489,17 @@ export class RuntimeBridgeConnection {
       }, timeoutMs);
 
       const bridge = new BridgeSocket(socket, {
-        onControlPayload: (payload) => this.handlePayload(payload),
+        onControlPayload: (payload) => {
+          // **已知差异（F8-§8-5）**：Editor 腿在控制载荷入口先调录制 tap（录 ch0），再解业务消息；
+          // Runtime 腿这里是 VS Code **拨号方**，ch0 只有 hello/welcome/ping/pong 这类握手保活，
+          // 没有 Unity→VS Code 的调试控制帧（`debugCreate`/`debugFinish`/`debugFrame` 都走 ch1，
+          // 由下面 `onDebugFrame` 录）。所以 Runtime 腿的录制文件里没有 ch0 帧：
+          // - 不会丢调试信息（调试控制帧本来就在 ch1）；
+          // - 回看时 `controlFrames=0`，帧分组靠录制头里的 `connectType`（`editor` vs `runtime`）区分来源腿，
+          //   面板的"来源"列直接显示它（§8-2/§8-4）。
+          // 不在这里硬凑一条 ch0 录制旁路：那会把握手帧写进数据面，反而污染回看。
+          this.handlePayload(payload);
+        },
         onDebugFrame: (payloadKind: BridgePayloadKind, payload: Buffer) => {
           if (this.debugSessionValue === undefined) {
             // 握手完成前（或宿主未接线）收到的 ch1 帧：没有契约/实例表可落，只记日志。

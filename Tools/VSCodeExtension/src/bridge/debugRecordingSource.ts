@@ -19,6 +19,7 @@ import { promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { inflateSync } from "node:zlib";
 import type { BridgeWelcomeMessage } from "./bridgeProtocol";
+import type { DebugChannelOrigin } from "./debugChannel";
 import {
   DebugIngress,
   type DebugIngressCounters,
@@ -386,6 +387,17 @@ export class FileDebugSource {
     return this.welcomeValue;
   }
 
+  /**
+   * 回看实例的**来源腿**（F8-§8-4）：从文件头的 `connectType` 还原。
+   *
+   * 录制文件只记 `connectType`（A.3）：`editor` 只可能来自 Editor 桥，`editor-player`/`player`
+   * 只可能来自 Runtime 腿。旧实现回看不传来源，实例的"来源"列显示"来源未标注"——
+   * 而来源本来就在文件头里，不需要协议改动。
+   */
+  public get origin(): DebugChannelOrigin {
+    return this.header.connectType === "editor" ? "editor" : "runtime";
+  }
+
   /** 文件内契约快照（C.8：回看不读工作区契约）。 */
   public get contracts(): DebugContractSnapshot | undefined {
     return this.contractsValue;
@@ -412,7 +424,7 @@ export class FileDebugSource {
 
     for await (const block of this.reader.dataBlocks()) {
       for (const envelope of ingress.acceptRecordedBytes(block)) {
-        manager.ingest(envelope, this.contractsValue);
+        manager.ingest(envelope, this.contractsValue, this.origin);
       }
 
       if (ingress.recordedStopped) {
@@ -486,7 +498,7 @@ export async function preflightRecordingFile(
         throw new DebugRecordingError(
           "recording.tooLarge",
           `该录制文件 ${formatMegabytes(fileBytes)} MB，超过回看上限（${formatMegabytes(maxFileBytes)} MB），`
-            + "且没有可用的文件尾（截断文件无法判定记录条数）。请录制更短的会话，或改用分段录制。",
+            + "且没有可用的文件尾（截断文件无法判定帧数）。请录制更短的会话，或改用分段录制。",
         );
       }
 
@@ -497,8 +509,8 @@ export async function preflightRecordingFile(
       // footer.records 是帧数，解码后的记录数 ≤ 帧数；用它做上界已经足够保守。
       throw new DebugRecordingError(
         "recording.tooLarge",
-        `该录制包含 ${footer.records} 条记录（约 ${formatMegabytes(footer.records * DEBUG_REPLAY_DECODED_BYTES_PER_RECORD)} MB 解码内存），`
-          + `超过回看上限（${maxRecords} 条 / ${formatMegabytes(maxRecords * DEBUG_REPLAY_DECODED_BYTES_PER_RECORD)} MB）。`
+        `该录制包含 ${footer.records} 帧（约 ${formatMegabytes(footer.records * DEBUG_REPLAY_DECODED_BYTES_PER_RECORD)} MB 解码内存），`
+          + `超过回看上限（${maxRecords} 帧 / ${formatMegabytes(maxRecords * DEBUG_REPLAY_DECODED_BYTES_PER_RECORD)} MB）。`
           + "请录制更短的会话，或改用分段录制。",
       );
     }
@@ -507,8 +519,8 @@ export async function preflightRecordingFile(
       // 记录数没超限也可能因为“1 MB 重复载荷”装进天量解压字节；原始线上字节才是内存预算。
       throw new DebugRecordingError(
         "recording.tooLarge",
-        `该录制包含 ${footer.records} 条记录、原始帧字节 ${formatMegabytes(footer.wireBytes)} MB，`
-          + `超过回看上限（${maxRecords} 条 / ${formatMegabytes(maxWireBytes)} MB 原始字节）。`
+        `该录制包含 ${footer.records} 帧、原始帧字节 ${formatMegabytes(footer.wireBytes)} MB，`
+          + `超过回看上限（${maxRecords} 帧 / ${formatMegabytes(maxWireBytes)} MB 原始字节）。`
           + "请录制更短的会话，或改用分段录制。",
       );
     }

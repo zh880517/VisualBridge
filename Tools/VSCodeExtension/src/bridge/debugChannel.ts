@@ -28,7 +28,7 @@ import {
   type DebugResultEnvelope,
 } from "./debugIngress";
 import type { DebugContractSnapshot } from "./debugContractRegistry";
-import { DebugInstanceManager, type DebugInstanceView } from "./debugInstanceManager";
+import { DebugInstanceManager, debugInstanceKey, type DebugInstanceView } from "./debugInstanceManager";
 import {
   DebugQueryClient,
   debugQueryOwnsInstance,
@@ -85,6 +85,16 @@ export class DebugChannelSession {
   private readonly log: (message: string) => void;
   private readonly onIngestError: ((envelope: DebugEnvelope, error: unknown) => void) | undefined;
   private disposed = false;
+  /**
+   * 落账（§8-6）：`dataEnvelopes` = `debug` 包络（唯一会产生时间轴记录的入站类型），
+   * `controlEnvelopes` = 其余全部包络（`debugCreate`/`debugFinish`/`debugFrame`/
+   * `debugResult`/`response`），`storedRecords` = `ingest` 真正落进时间轴的记录数
+   * （不含 `queryResult`——那由查询客户端追加）。三者都按"入站包络"计数，
+   * 见 {@link DebugChannelSession.recordCounters}。
+   */
+  private dataEnvelopes = 0;
+  private controlEnvelopes = 0;
+  private storedRecords = 0;
 
   public constructor(options: DebugChannelSessionOptions) {
     this.channel = options.channel;
@@ -100,7 +110,13 @@ export class DebugChannelSession {
         const view = this.manager.instance(key);
         return view === undefined
           ? undefined
-          : { category: view.category, instanceId: view.instanceId, active: view.active };
+          : {
+            category: view.category,
+            instanceId: view.instanceId,
+            active: view.active,
+            ...(view.endedReason === undefined ? {} : { endedReason: view.endedReason }),
+            ...(view.historyMissing ? { historyMissing: true } : {}),
+          };
       },
       resolveMethod: (category, interfaceId, method) =>
         this.contracts?.resolveByMethodName(category, interfaceId, method),
@@ -157,14 +173,22 @@ export class DebugChannelSession {
       // 同批剩余帧），因此逐条兜住、计数、记日志。
       try {
         if (envelope.type === "debugResult" || envelope.type === "response") {
+          this.controlEnvelopes += 1;
           this.handleQueryEnvelope(this.queries, envelope);
           continue;
         }
 
-        this.manager.ingest(envelope, this.contracts, this.channel.origin);
+        if (envelope.type === "debug") {
+          this.dataEnvelopes += 1;
+          this.storedRecords += this.manager.ingest(envelope, this.contracts, this.channel.origin).length;
+        } else {
+          this.controlEnvelopes += 1;
+          this.manager.ingest(envelope, this.contracts, this.channel.origin);
+        }
+
         if (envelope.type === "debugFinish" && envelope.instance.length > 0) {
-          // 实例在结果前结束：该实例的挂起查询全部取消并提示"实例已结束"（P1），不重试。
-          this.queries.handleInstanceFinished(envelope.instance);
+          // 实例在结果前结束：该实例的挂起查询全部取消并提示"实例已结束"/"连接正在重建"（§2），不重试。
+          this.queries.handleInstanceFinished(envelope.instance, this.endedReasonOf(envelope));
         }
       } catch (errorValue) {
         if (this.onIngestError !== undefined) {
@@ -177,6 +201,52 @@ export class DebugChannelSession {
   }
 
   /**
+   * 本次会话的落账（E2E 的**可解释等式**用，§8-6）。三个数都是"入站包络"级的：
+   *
+   * - `dataEnvelopes`：`debug` 包络——数据通道上唯一会产出时间轴记录的入站类型；
+   * - `controlEnvelopes`：其余包络（`debugCreate` / `debugFinish` / `debugFrame` /
+   *   `debugResult` / `response`）。**结果与应答也算控制类**：它们不进事件流，交给查询客户端
+   *   结算（C.1）——这与"数据 vs 控制"的直觉相反，写成等式就是
+   *   `frames === dataEnvelopes + controlEnvelopes`（每个入站包络恰好属于一侧）；
+   * - `storedRecords`：`ingest` 真正落进时间轴的记录数（返回值之和）。**不含** `queryResult`
+   *   （查询结果记录由 `DebugQueryClient` 直接追加，不经过 `ingest`）。
+   *
+   * 恒等式 `frames === dataEnvelopes + controlEnvelopes` 必须成立：`frames` 是 ingress 收下的
+   * 帧数，每个帧都该解出一条包络。等式不成立 = ingress 静默丢帧（畸形 JSON / 超长帧等），
+   * 这正是"至少一条记录"那种弱断言看不出来的东西。
+   *
+   * `storedRecords ≤ dataEnvelopes` 是不等关系：记录先于 Create 时会先暂存（C.3），
+   * 那一帧此刻不算"已落进时间轴"。
+   */
+  public get recordCounters(): {
+    readonly dataEnvelopes: number;
+    readonly controlEnvelopes: number;
+    readonly storedRecords: number;
+  } {
+    return {
+      dataEnvelopes: this.dataEnvelopes,
+      controlEnvelopes: this.controlEnvelopes,
+      storedRecords: this.storedRecords,
+    };
+  }
+
+  private endedReasonOf(envelope: DebugEnvelope): "finished" | "reconnect" {
+    if (envelope.type !== "debugFinish") {
+      return "finished";
+    }
+
+    // `Finish` 已落到实例表：结束原因就是表里记的那个（只有重连窗口里"没再出现"的旧实例是 reconnect）。
+    const key = envelope.category === undefined
+      ? undefined
+      : debugInstanceKey(envelope.category, envelope.instance);
+    if (key === undefined) {
+      return "finished";
+    }
+
+    return this.manager.instance(key)?.endedReason === "reconnect" ? "reconnect" : "finished";
+  }
+
+  /**
    * 发起一次查询：结果按所属实例写进时间轴（`kind: "queryResult"`），帧号默认取本连接的当前帧。
    * `methodId` 显式给出时优先（样例工程没有调试契约时 E2E 用它驱动真实往返）。
    */
@@ -185,11 +255,17 @@ export class DebugChannelSession {
     interfaceId: string,
     method: string,
     args: readonly DebugArg[] = [],
-    options: { readonly frame?: number; readonly methodId?: number } = {},
+    options: {
+      readonly frame?: number;
+      readonly methodId?: number;
+      /** 请求号入表后的同步回调（§5：把面板的本地提示绑到具体 `requestId`）。 */
+      readonly onIssued?: (requestId: string) => void;
+    } = {},
   ): Promise<DebugQueryResult> {
     return this.queries.query(instanceKey, interfaceId, method, args, {
       frame: options.frame ?? this.ingress.frame,
       ...(options.methodId === undefined ? {} : { methodId: options.methodId }),
+      ...(options.onIssued === undefined ? {} : { onIssued: options.onIssued }),
     });
   }
 

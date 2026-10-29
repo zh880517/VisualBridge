@@ -412,8 +412,25 @@ exports.run = async function run() {
     const row = snapshot.instances.find((entry) => entry.key === DEBUG_INSTANCE_KEY);
     assert.equal(row.origin, "runtime", "The runtime-leg instance must be labeled with its origin.");
     assert.equal(row.originConflict, false, "No Editor-leg instance shares this identity.");
+    // F8-§8-6：把"至少一条"换成**可解释的等式**。三个计数取自同一快照（`getRuntimeBridgeState`
+    // 里的同一份 `DebugChannelSession.recordCounters`），所以这里的等式不受采样竞态影响：
+    // 每个 ingress 收下的帧都恰好解出一条包络，且只属于一侧：数据类**只有** debug；
+    // 控制类 = debugCreate/debugFinish/debugFrame/**debugResult**/**response**（结果与应答虽走
+    // 数据通道，却不进事件流，交给查询客户端结算）。等式不成立 = 有帧被静默丢掉。
+    assert.equal(
+      state.debugFrames,
+      state.debugControlFrames + state.debugDataFrames,
+      `every received runtime ch1 frame must be accounted for exactly once `
+        + `(frames=${state.debugFrames}, control=${state.debugControlFrames}, data=${state.debugDataFrames})`,
+    );
+    // 数据类包络里必须真有一条落进时间轴（`storedRecords <= dataEnvelopes`：记录先于 Create 会先暂存；
+    // storedRecords 不含 queryResult，后者由查询客户端直接追加）。
+    assert.ok(state.debugStoredRecords >= 1, `The runtime leg must store at least one record (stored=${state.debugStoredRecords}).`);
+    assert.ok(state.debugStoredRecords <= state.debugDataFrames,
+      `Stored records can never exceed the data envelopes that produced them (stored=${state.debugStoredRecords}, data=${state.debugDataFrames}).`);
     assert.ok(row.recordCount >= 1, `The runtime leg must ingest debug events (recordCount=${row.recordCount}).`);
-    console.log(`[runtime-e2e] runtime ch1 debug: frames=${state.debugFrames} envelopes=${state.debugEnvelopes} records=${row.recordCount} origin=${row.origin}`);
+    console.log(`[runtime-e2e] runtime ch1 debug: frames=${state.debugFrames} control=${state.debugControlFrames} `
+      + `data=${state.debugDataFrames} stored=${state.debugStoredRecords} records=${row.recordCount} origin=${row.origin}`);
   });
 
   await test("completes a real debug query roundtrip on the runtime leg (E9)", async () => {

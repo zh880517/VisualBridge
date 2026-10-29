@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { BridgeChannel, BridgePayloadKind } from "../../src/bridge/framing";
+import { DebugIngress } from "../../src/bridge/debugIngress";
 import {
   DebugQueryTracker,
   DEBUG_QUERY_RETIRED_TTL_MS,
+  INBOUND_IDLE_TIMEOUT_MS,
   MAX_PENDING_QUERIES,
   MAX_RETIRED_REQUEST_IDS,
+  RETIRED_TTL_GROSS_CAP_MS,
   QUERY_TIMEOUT_MS,
+  RETIRED_TTL_MARGIN_MS,
   parseRequestSeq,
+  retiredRecognitionBudgetViolation,
 } from "../../src/bridge/debugQueryTracker";
 
 /**
@@ -249,11 +255,53 @@ test("the retired-id table is a TTL table with a safety cap so long sessions do 
   assert.equal(next?.requestId, `req-${MAX_RETIRED_REQUEST_IDS + 9}`);
 });
 
-test("a retired id stays known for the 60 s TTL and is still classified as late", () => {
+test("the retired-id TTL is derived from the two timeouts and stays inside the table budget", () => {
+  // 下界：必须覆盖"客户端超时 + 一次完整空闲重连"这段最坏迟到（推导式，不是写死的 60 s）。
+  assert.equal(
+    DEBUG_QUERY_RETIRED_TTL_MS,
+    QUERY_TIMEOUT_MS + INBOUND_IDLE_TIMEOUT_MS + RETIRED_TTL_MARGIN_MS,
+    "TTL 必须是 queryTimeout + inboundIdleTimeout + margin 的推导结果",
+  );
+  assert.ok(
+    DEBUG_QUERY_RETIRED_TTL_MS > QUERY_TIMEOUT_MS + INBOUND_IDLE_TIMEOUT_MS,
+    "TTL 必须严格大于最坏迟到，否则晚到的二进制结果会退化成垃圾 debug 事件",
+  );
+  // 粗差保护（gross cap）：作废表容量 / 结算速率下界。它只挡"成倍放大"，不是安全预算：
+  // 按 200 条/s 表只覆盖 20.5 s，短于 TTL，见源码里 MAX_RETIRED_REQUEST_IDS 的取舍说明。
+  assert.ok(
+    DEBUG_QUERY_RETIRED_TTL_MS <= RETIRED_TTL_GROSS_CAP_MS,
+    `TTL 必须落在作废表容量推导的 ${RETIRED_TTL_GROSS_CAP_MS} ms 粗差保护上限内（容量 ${MAX_RETIRED_REQUEST_IDS} 条）；它不是安全预算，见 MAX_RETIRED_REQUEST_IDS 注释`,
+  );
+
+  // 两个方向都要**真的**报违规（单测直接跑同一份判定，不只依赖导入期的断言）。
+  assert.equal(
+    retiredRecognitionBudgetViolation({
+      ttlMs: DEBUG_QUERY_RETIRED_TTL_MS,
+      queryTimeoutMs: QUERY_TIMEOUT_MS,
+      idleTimeoutMs: INBOUND_IDLE_TIMEOUT_MS,
+    }),
+    undefined,
+  );
+  assert.match(
+    retiredRecognitionBudgetViolation({
+      ttlMs: QUERY_TIMEOUT_MS + INBOUND_IDLE_TIMEOUT_MS,
+      queryTimeoutMs: QUERY_TIMEOUT_MS,
+      idleTimeoutMs: INBOUND_IDLE_TIMEOUT_MS,
+    }) ?? "",
+    /must exceed query timeout 8000 ms \+ inbound idle timeout 30000 ms/u,
+    "TTL 缩到『刚好等于最坏迟到』时必须判违规",
+  );
+  assert.match(
+    retiredRecognitionBudgetViolation({ ttlMs: RETIRED_TTL_GROSS_CAP_MS + 1, queryTimeoutMs: 8000, idleTimeoutMs: 30000 }) ?? "",
+    /exceeds the \d+ ms gross cap/u,
+    "调大 queryTimeout（TTL 跟着变长）撑破粗差保护上限时必须判违规",
+  );
+});
+
+test("a retired id stays known for the TTL and is still classified as late", () => {
   const clock = manualClock();
   const timer = manualTimer();
   const tracker = trackerOf({ clock, timer });
-  assert.equal(DEBUG_QUERY_RETIRED_TTL_MS, 60_000, "TTL 依据：客户端 8 s + 服务端 2 s/3 s，迟到结果 1–2 s 内到达");
 
   const request = tracker.createRequest({ instance: "hero", methodId: 10 });
   const requestSeq = parseRequestSeq(request?.requestId ?? "");
@@ -344,4 +392,84 @@ test("an undersized request-id space fails closed instead of stealing a live id"
   assert.equal(tracker.pendingCount, 2);
   assert.equal(tracker.isPendingRequest(1), true);
   assert.equal(tracker.isPendingRequest(2), true);
+});
+
+test("within the injected TTL a late binary result is late; past the TTL it must not become a garbage debug record", () => {
+  // 把 TTL 缩到 40 ms（仍满足 ttl > timeout + idle = 20 ms，构造时同一份断言会校验），
+  // 这样"边界"两侧都能在一个用例里走到，不必真等 58 s。
+  const clock = manualClock();
+  const timer = manualTimer();
+  const tracker = new DebugQueryTracker({
+    now: () => clock.now(),
+    setTimer: (callback) => timer.setTimer(callback, 0),
+    clearTimer: (handle) => timer.clearTimer(handle),
+    timeoutMs: 10,
+    idleTimeoutMs: 10,
+    retiredTtlMs: 40,
+    initialRequestSeq: 7,
+  });
+
+  const request = tracker.createRequest({ instance: "hero", methodId: 12, category: "graph" });
+  assert.equal(request?.requestId, "req-7");
+
+  const ingress = new DebugIngress({
+    isPendingRequest: (requestSeq) => tracker.isPendingRequest(requestSeq),
+    isKnownRequest: (requestSeq) => tracker.isKnownRequest(requestSeq),
+  });
+  ingress.acceptFrame({
+    channel: BridgeChannel.Debug,
+    payloadKind: BridgePayloadKind.Json,
+    payload: Buffer.from(JSON.stringify({
+      type: "debugCreate",
+      category: "graph",
+      instance: "hero",
+      instanceSlot: 1,
+      resName: "R",
+      debugInfo: "",
+    })),
+  });
+  // `Query(12)` 的二进制 result：methodId/slot + u32 requestId=7 + 参数区（A.4 的布局）。
+  const lateResult = Buffer.from("000c0001" + "00000007", "hex");
+
+  // 1) TTL 内：仍识别为重试窗口，解成 debugResult，由挂起表判 late（丢弃，不进时间轴）。
+  clock.advance(10);
+  assert.deepEqual(tracker.expireDue().map((query) => query.requestId), ["req-7"], "超时后进作废表");
+  clock.advance(39);
+  assert.equal(tracker.isKnownRequest(7), true, "TTL 内必须仍识别");
+  const lateEnvelopes = ingress.acceptFrame({
+    channel: BridgeChannel.Debug,
+    payloadKind: BridgePayloadKind.Binary,
+    payload: lateResult,
+  });
+  assert.deepEqual(lateEnvelopes.map((envelope) => envelope.type), ["debugResult"], "TTL 内必须解成结果，不得解成事件");
+  assert.equal(tracker.settle("req-7", "result").status, "late");
+  assert.equal(ingress.counters.envelopes, 2, "Create + 晚到结果各一条包络");
+
+  // 2) 过 TTL：号不再被识别，这一帧退回"未知形态"——关键是它**不得**变成一条垃圾 debug 事件。
+  clock.advance(2);
+  assert.equal(tracker.isKnownRequest(7), false, "过 TTL 后不再识别");
+  const pastEnvelopes = ingress.acceptFrame({
+    channel: BridgeChannel.Debug,
+    payloadKind: BridgePayloadKind.Binary,
+    payload: lateResult,
+  });
+  assert.deepEqual(pastEnvelopes, [], "过 TTL 的二进制帧不得落成 debug 事件");
+  assert.equal(ingress.counters.envelopes, 2, "时间轴没有多出记录");
+  // 这类 u32 形态解不成参数区（tag 0 / wire type 0）⇒ 计 unknownMethods 后丢弃，可观测。
+  assert.equal(ingress.counters.unknownMethods, 1, "丢弃必须计数，不能只落日志");
+  assert.equal(tracker.settle("req-7", "result").status, "unknown");
+  assert.equal(tracker.metrics.unknownSettlements, 1);
+});
+
+test("a shrinking TTL below the worst-case lateness is rejected at construction", () => {
+  // 直接违反下界：TTL 比"超时 + 空闲重连"还短 ⇒ 构造即失败（fail-closed，不留静默窗口）。
+  assert.throws(
+    () => new DebugQueryTracker({ timeoutMs: 10, idleTimeoutMs: 10, retiredTtlMs: 20 }),
+    /must exceed query timeout 10 ms \+ inbound idle timeout 10 ms = 20 ms/u,
+  );
+  // 直接违反粗差保护：窗口宽到作废表覆盖不了（成倍放大）⇒ 构造即失败（要求重新推导容量）。
+  assert.throws(
+    () => new DebugQueryTracker({ retiredTtlMs: RETIRED_TTL_GROSS_CAP_MS + 1 }),
+    /exceeds the \d+ ms gross cap/u,
+  );
 });

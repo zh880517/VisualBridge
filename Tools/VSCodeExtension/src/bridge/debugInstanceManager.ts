@@ -61,8 +61,18 @@ export const DEBUG_PENDING_RECORD_LIMIT = 64;
 /** 记录先于 `Create` 时的暂存超时（C.3：1 s）。 */
 export const DEBUG_PENDING_TIMEOUT_MS = 1_000;
 
-/** 实例结束原因；`reconnect` / `disconnect` 由 F3/F5 的会话层赋值，F2 只产生前两个。 */
-export type DebugInstanceEndReason = "finished" | "evicted" | "reconnect" | "disconnect";
+/**
+ * 实例结束原因（F8-§2 去死枚举）：只有这两个值真的会被赋值——
+ * - `finished`：`debugFinish`（显式结束，含被淘汰实例的墓碑）；
+ * - `reconnect`：可恢复中断（C.3）里没再出现的旧实例。
+ *
+ * 旧版本还声明了 `evicted` / `disconnect`，但**从来没有代码路径赋这两个值**：容量淘汰只把实例
+ * 变成"墓碑"（`historyMissing`，`active` 仍为 true），断连走 `reconnect()` / `reset()`，
+ * 都不会写 `endedReason`。保留它们只会让人以为存在"实例被淘汰而结束"或"断连结束"两条路径，
+ * 于是按 union 写分支的人会写出永远不执行的代码。需要区分淘汰用 `historyMissing`，
+ * 需要区分断连用会话层（`DebugQueryCancelReason`），都不要挤进这个联合。
+ */
+export type DebugInstanceEndReason = "finished" | "reconnect";
 
 /** 建实例的入参（`debugCreate` 的字段 + 来源标识）。 */
 export interface DebugInstanceDescriptor {
@@ -559,8 +569,14 @@ export class DebugInstanceManager {
     const key = debugInstanceKey(descriptor.category, descriptor.instanceId);
     const existing = this.activeEntry(key);
     if (existing !== undefined) {
-      // 两条腿可能各自 Create 同一个 `(category, instanceId)`：保留首条实例与来源，
-      // 但把冲突显式标出来（E9 的显示层；不静默把两条腿的记录混成一条）。
+      // 两条腿可能各自 Create 同一个 `(category, instanceId)`：**实例只有一条**，来源取首条、
+      // 冲突用 `originConflict` 显式标出（E9 的显示层）。
+      //
+      // 但"实例只有一条"不等于"记录不混"：之后的记录按 `(category, instanceId)` **合并**进同一个
+      // store（见 `ingestRecord`），另一条腿的同名记录也会进来。所以这里**不能**宣称
+      // "不把两条腿的记录混成一条"——那正是旧注释的错（F8-§8-1 纠正）。真正的隔离手段只有
+      // 两个：不同 `(category, instanceId)` 就是不同实例；同名的两条腿在显示层靠
+      // `originConflict` + 首条 `origin` 区分来源，记录本身仍按到达顺序共享一条时间轴。
       this.noteOriginConflict(existing, origin);
       if (!existing.descriptorMissing) {
         this.duplicateCreatesValue += 1;
@@ -1099,7 +1115,11 @@ export class DebugInstanceManager {
     const key = debugInstanceKey(input.category, input.instanceId);
     const entry = this.activeEntry(key);
     if (entry !== undefined) {
-      // 记录先于 Create 时占位实例没有来源；真正的 Create / 首条记录到达后补上（显示层）。
+      // **跨腿合并点**（F8-§8-1）：同名实例只有一条 store，记录按 `(category, instanceId)`
+      // 合并进来，`origin` 只保留**首条**（`??=`），后续不同来源的记录不会另开一条时间轴、
+      // 也不会改写 `origin`。两条腿的同名实例因此共享一条记录序列——冲突只能靠
+      // `originConflict`（Create 时标注）与首条 `origin` 识别，记录级来源**不再逐条保留**。
+      // 这是既有行为（不与 `create()` 的注释矛盾：那里说的是"实例只有一条"，不是"记录不混"）。
       entry.origin ??= origin;
       const record = this.appendRecord(entry, input);
       return record === undefined ? [] : [record];

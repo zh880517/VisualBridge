@@ -9,13 +9,14 @@
  * - 时钟与定时器都可注入，单测不需要真实等待 8 s。
  *
  * `u32` 回绕（评审 P0）：序号单调自增，只在**回绕后**从头找号，并跳过仍挂起或仍在作废表里的号。
- * 在途最多 8 条、作废表最多 4104 条（8 + 4096），因此回绕后最多探测这么多次就必得空号——
- * 要串号得先分配满 2^32 次。
+ * 被占号最多 4104 个（在途 8 + 作废 4096），其中作废表自身封顶 4096，因此回绕后最多探测这么多
+ * 次就必得空号——要串号得先分配满 2^32 次。
  *
  * 作废表按**时间**保留（F6 收敛轮 P2-1）：条目上限 64 会被 8 并发的自动循环在几十秒内挤爆，
- * 被挤出的号迟到的二进制 `debugResult` 会被当成"自发 `debug`"解出垃圾参数并插入时间轴。
- * 改为 `expireAt = 结算时刻 + 60 s`，TTL 内一律识别为 `late`（丢弃 + 计数 + warning），
- * 只有 TTL 之后才不再识别（见 {@link DEBUG_QUERY_RETIRED_TTL_MS}）。
+ * 被挤出的号迟到的二进制 `debugResult` 会退化：多数按 `unknownMethod` 丢弃，极端形状会解出
+ * 垃圾参数并插入时间轴（细节见 {@link MAX_RETIRED_REQUEST_IDS}）。
+ * 改为 `expireAt = 结算时刻 + TTL`，TTL 内一律识别为 `late`（丢弃 + 计数 + warning），
+ * 只有 TTL 之后才不再识别（见 {@link DEBUG_QUERY_RETIRED_TTL_MS}，由两个超时推导而非写死）。
  *
  * **协议没有类型位导致的固有歧义**（本次不修协议，只写清）：自发 `debug` 帧没有 `requestId`，
  * 解码器用"`payload` offset 4 处的 `u32` 是否命中 live/retired"来判别 `debug` 与 `debugResult`。
@@ -23,6 +24,7 @@
  * 概率约为（在途 + TTL 内作废号数）/ 2^32；它只能靠协议加类型位消除。
  */
 
+import { DEFAULT_BRIDGE_IDLE_TIMEOUT_MS } from "./bridgeSocket";
 import type { DebugArg, DebugRequestMessage } from "./debugMessages";
 
 /** 在途查询上限（附录 A.6/B.6；与 F6 对齐）。 */
@@ -32,21 +34,123 @@ export const MAX_PENDING_QUERIES = 8;
 export const QUERY_TIMEOUT_MS = 8000;
 
 /**
- * 作废请求号的保留时长（F6 收敛轮 P2-1）。
+ * 入站空闲判死（附录 A.8/A.9）：连接连续这么久没收到任何字节就断开重连。
  *
- * 依据：客户端总超时 8 s（{@link QUERY_TIMEOUT_MS}），服务端最坏 2 s 排队 + 3 s 执行，
- * 因此**迟到结果应在超时后 1–2 s 内到达**；60 s 比这个上限大一个数量级以上，留足重传/排程余量。
- * TTL 内到达的结果必须被识别为 `late`（丢弃 + 计数），**绝不解码成事件**。
+ * 与 `bridgeSocket` 的默认值同源（同一个常量，不是抄一遍数字）：作废号的保留窗口必须把它算进
+ * "最坏迟到"，否则一次 30 s 的空闲重连就能让结果跨过 TTL，退化成垃圾 `debug` 事件。
  */
-export const DEBUG_QUERY_RETIRED_TTL_MS = 60_000;
+export const INBOUND_IDLE_TIMEOUT_MS = DEFAULT_BRIDGE_IDLE_TIMEOUT_MS;
+
+/** 识别窗口在"最坏迟到"之上再留的余量（覆盖服务端排队抖动、重传与事件循环排程）。 */
+export const RETIRED_TTL_MARGIN_MS = 20_000;
+
+/** 结算速率下界（条/s）：服务端每帧最多结算 1 条，实测 60–200 条/s，取保守下界。 */
+export const MIN_SETTLEMENT_PER_SECOND = 60;
 
 /**
- * 作废请求号的安全上限（防无界增长；正常速率下达不到）。
+ * 作废请求号的保留时长（F6 收敛轮 P2-1）＝ **最坏迟到上界 + 余量**，由两个超时推导，不写死。
  *
- * 8 并发、8 s 超时的极端自动循环每秒最多收敛约 1 条，60 s TTL 内约 60 条，远小于 4096。
- * 真正超限时：先惰性清理过期项；若全部未过期，淘汰最旧的一条并**如实记日志**（不静默）。
+ * 最坏迟到 = 客户端超时（{@link QUERY_TIMEOUT_MS}）+ 入站空闲判死（{@link INBOUND_IDLE_TIMEOUT_MS}）：
+ * 一条结果可能在客户端超时之后又被空闲重连推迟整整一个空闲窗口才到达。
+ * TTL 内到达的结果必须被识别为 `late`（丢弃 + 计数），**绝不解码成事件**。
+ *
+ * 推导关系由 {@link assertRetiredRecognitionBudget} 在模块加载与每个挂起表构造时校验：
+ * - **下界**（能力保证）：TTL 必须 > 最坏迟到，否则晚到结果会跨过 TTL 变成垃圾事件；
+ * - **粗差保护**（防放大）：TTL 不得超过作废表容量推导的
+ *   {@link RETIRED_TTL_GROSS_CAP_MS}。它挡不住"TTL 内被提前挤号"（表覆盖 20.5–68.3 s，
+ *   短于 58 s 的 TTL，取舍见 {@link MAX_RETIRED_REQUEST_IDS}），只挡"把窗口随手放大一倍"。
+ * 任一侧被撑破都**当场 fail-fast**，不允许悄悄放宽窗口。
+ */
+export const DEBUG_QUERY_RETIRED_TTL_MS =
+  QUERY_TIMEOUT_MS + INBOUND_IDLE_TIMEOUT_MS + RETIRED_TTL_MARGIN_MS;
+
+/**
+ * 作废表容量（防无界增长）。
+ *
+ * 表增速是**结算速率 S**（每次结算都进表：正常结果、失败应答、超时、取消），不是"约 1 条/s"。
+ * 服务端每帧最多结算 1 条 ⇒ S = 60–200 条/s，因此 4096 条覆盖 **4096/S ≈ 20.5 s（S=200/s）
+ * – 68.3 s（S=60/s）**。同文件 TTL 是 **58 s**，所以：
+ * - 表只在 **S > 4096/58 ≈ 70.6 条/s** 时才短于 TTL——按文档记的 60–200 条/s 结算率，**高负载侧
+ *   （服务器每帧都在结算）表覆盖时间确实短于 TTL**，TTL 内可能已经有普通号被挤出；
+ * - 低负载侧（S≈60/s）表能覆盖 68.3 s，比 TTL 长，TTL 内不会挤出。
+ * 这个"可能性"是 gross cap 挡不住的部分（它只按最慢速率 60/s 算上限），靠下面的性质兜底：
+ *
+ * "必须被二次识别"的只有**超时/取消的号**：最多 8 条 / 8 s ≈ 1 条/s，TTL 内 ≤ 60 条，远小于
+ * 4096，**永远不会被挤出**——它们正是"迟到结果绝不能当成事件"的那批。
+ * 被提前挤出的是**普通已结算号**（占结算量绝大多数），它们的晚到结果只会退化解码：
+ * - JSON 帧自带 `type`，不受挂起表影响，仍按 `debugResult` 识别并判 `late`；
+ * - 二进制帧的 `u32 requestId` 认不出来 ⇒ 从 offset 4 起按 `debug` 的参数区解码。参数头是
+ *   `u16 tag + u8 typeCode`，所以**第一个 typeCode 恰好是 requestId 的 byte2**（`req-7` ⇒ 0）：
+ *   - 多数情况 byte2 不是合法 wire type（0 = 无类型位）⇒ 解参数直接失败，计 `unknownMethods`
+ *     丢弃这条帧——注意**不会**是 `unknownSlot`：槽位在 offset 2 就解析完了，错位从 offset 4 开始，
+ *     动不到槽位判定；
+ *   - **最坏形状**是 byte2 = 1（Bool，即 `req-256`–`req-511` 这一段号）：`tag=0`、typeCode=Bool，
+ *     只吃掉 offset 7 那 1 个字节，游标落到 8 —— 正好与真实参数区起点重合，于是解出一条
+ *     `{tag:0,type:"bool"}` **伪参数 + 真实参数**的 `debug` 事件；
+ *   - 这条垃圾记录按**当前** `instanceSlot` 路由：若该槽位已被新实例复用，它就落进那个新实例的
+ *     时间轴（这是唯一会"看起来像真事件"的后果）。
+ * 明确**不会**发生的三件事：不会把某条查询判成成功或失败（那条查询早已结算，错误文案来自本地
+ * 码）、不会污染 `DebugSlotRegistry`（方法号/槽位解析都发生在 offset 4 之前，与 requestId 判别
+ * 无关）、不会污染挂起表。代价仅此而已，所以这是容量与识别率的取舍，写在这里而不是留给读者猜。
+ *
+ * 真正超限时：先惰性清理过期项；若仍超限（极端速率），淘汰最旧的一条并**如实记日志**（不静默）。
  */
 export const MAX_RETIRED_REQUEST_IDS = 4096;
+
+/**
+ * 识别窗口的**粗差保护上限（gross cap）**＝ 作废表容量 / 结算速率下界（4096 / 60 ≈ 68.3 s）。
+ *
+ * 它**不是**"安全预算"：4096/60 是"最慢结算率下能承受的最长 TTL"，按实测 200 条/s 表只覆盖
+ * 20.5 s，而 TTL 是 58 s（取舍与"高负载侧可能提前挤号"的说明见 {@link MAX_RETIRED_REQUEST_IDS}）。
+ * 所以它只能挡住"成倍放大"这类粗差（例如把 TTL 随手调到 100 s，连 S=60/s 下表都覆盖不到），
+ * **不能**证明 TTL 内的号不会被提前挤出。真正保证识别能力的是下面这条下界：
+ * TTL > 最坏迟到（超时 + 空闲判死）。超过本上限时**必须重新推导容量**，不允许只调大 TTL。
+ */
+export const RETIRED_TTL_GROSS_CAP_MS = Math.floor((MAX_RETIRED_REQUEST_IDS / MIN_SETTLEMENT_PER_SECOND) * 1000);
+
+/** 识别窗口的预算（默认值见 {@link DEBUG_QUERY_RETIRED_TTL_MS}；挂起表可用注入值覆盖）。 */
+export interface RetiredRecognitionBudget {
+  readonly ttlMs: number;
+  readonly queryTimeoutMs: number;
+  readonly idleTimeoutMs: number;
+}
+
+/**
+ * 检查识别窗口是否合规：下界 `TTL > queryTimeout + idleTimeout`，上界 `TTL ≤ RETIRED_TTL_GROSS_CAP_MS`。
+ * 合规返回 `undefined`，否则返回可读的违规说明（供 fail-fast 与单测共用一份判定）。
+ */
+export function retiredRecognitionBudgetViolation(budget: RetiredRecognitionBudget): string | undefined {
+  const latenessMs = budget.queryTimeoutMs + budget.idleTimeoutMs;
+  if (!(budget.ttlMs > latenessMs)) {
+    return `retired request-id TTL ${budget.ttlMs} ms must exceed query timeout ${budget.queryTimeoutMs} ms `
+      + `+ inbound idle timeout ${budget.idleTimeoutMs} ms = ${latenessMs} ms; a later arrival would lose its `
+      + "request id and be decoded as a garbage debug event";
+  }
+
+  if (budget.ttlMs > RETIRED_TTL_GROSS_CAP_MS) {
+    return `retired request-id TTL ${budget.ttlMs} ms exceeds the ${RETIRED_TTL_GROSS_CAP_MS} ms gross cap `
+      + `(${MAX_RETIRED_REQUEST_IDS} entries / ${MIN_SETTLEMENT_PER_SECOND} settlements per second); `
+      + "re-derive MAX_RETIRED_REQUEST_IDS instead of silently widening the recognition window";
+  }
+
+  return undefined;
+}
+
+/** 违反 {@link retiredRecognitionBudgetViolation} 时**立即**抛错（模块加载/构造时调用）。 */
+export function assertRetiredRecognitionBudget(budget: RetiredRecognitionBudget): void {
+  const violation = retiredRecognitionBudgetViolation(budget);
+  if (violation !== undefined) {
+    throw new Error(`DebugQueryTracker: ${violation}`);
+  }
+}
+
+// 模块加载即校验一次：把 QUERY_TIMEOUT_MS / 空闲判死调大而不同步重新推导 TTL（或反过来调小 TTL）
+// 会在 import 阶段就炸，而不是等某条晚到结果把垃圾记录写进时间轴。
+assertRetiredRecognitionBudget({
+  ttlMs: DEBUG_QUERY_RETIRED_TTL_MS,
+  queryTimeoutMs: QUERY_TIMEOUT_MS,
+  idleTimeoutMs: INBOUND_IDLE_TIMEOUT_MS,
+});
 
 const MAX_REQUEST_SEQ = 0xffffffff;
 
@@ -114,6 +218,18 @@ export interface DebugQueryTrackerOptions {
   readonly maxPending?: number;
   /** 总超时毫秒；默认 {@link QUERY_TIMEOUT_MS}。 */
   readonly timeoutMs?: number;
+  /**
+   * 入站空闲判死毫秒；默认 {@link INBOUND_IDLE_TIMEOUT_MS}。
+   * 宿主若真的把空闲判死调大（目前没有这个设置项），必须一起传进来，否则构造时断言失败。
+   */
+  readonly idleTimeoutMs?: number;
+  /**
+   * 作废号保留毫秒；默认 {@link DEBUG_QUERY_RETIRED_TTL_MS}。
+   *
+   * **只为测试注入**：单测要能把窗口缩到几十毫秒验证"TTL 内 `late` / TTL 后 `unknown`"，
+   * 生产必须用推导值——构造时会用注入的 `timeoutMs` / `idleTimeoutMs` 重新校验下界。
+   */
+  readonly retiredTtlMs?: number;
   /** 毫秒时钟（可注入）；默认 `Date.now`。 */
   readonly now?: () => number;
   /** 定时器（可注入）；默认 `setTimeout` 且 `unref()`，不阻止进程退出。 */
@@ -153,6 +269,7 @@ interface RetiredRequestId {
 export class DebugQueryTracker {
   private readonly maxPending: number;
   private readonly timeoutMs: number;
+  private readonly retiredTtlMs: number;
   private readonly now: () => number;
   private readonly setTimer: (callback: () => void, timeoutMs: number) => unknown;
   private readonly clearTimer: (handle: unknown) => void;
@@ -184,6 +301,14 @@ export class DebugQueryTracker {
   public constructor(options: DebugQueryTrackerOptions = {}) {
     this.maxPending = options.maxPending ?? MAX_PENDING_QUERIES;
     this.timeoutMs = options.timeoutMs ?? QUERY_TIMEOUT_MS;
+    this.retiredTtlMs = options.retiredTtlMs ?? DEBUG_QUERY_RETIRED_TTL_MS;
+    // 生效值再校验一次（不是抄一遍模块加载的断言）：注入的 timeoutMs/idleTimeoutMs/retiredTtlMs
+    // 只要撑破推导关系就当场拒绝构造，避免"单测/宿主注入把窗口调小"悄悄跑起来。
+    assertRetiredRecognitionBudget({
+      ttlMs: this.retiredTtlMs,
+      queryTimeoutMs: this.timeoutMs,
+      idleTimeoutMs: options.idleTimeoutMs ?? INBOUND_IDLE_TIMEOUT_MS,
+    });
     this.now = options.now ?? (() => Date.now());
     this.setTimer = options.setTimer ?? defaultSetTimer;
     this.clearTimer = options.clearTimer ?? defaultClearTimer;
@@ -306,7 +431,13 @@ export class DebugQueryTracker {
    * 仍按 `debugResult` 解出，而不是把 `u32 requestId` 当参数区解成垃圾（A.5 的按 `requestId` 关联）。
    *
    * TTL 之后返回 `false`：解析器会按 `debug` 解参数区（协议无类型位的固有歧义，见文件头）。
-   * 迟到结果应在超时后 1–2 s 内到达，60 s 的 TTL 远大于该上限。
+   *
+   * 识别窗口的时长**不是**按"迟到最多几秒"拍的，而是由两个超时派生：
+   * `DEBUG_QUERY_RETIRED_TTL_MS = QUERY_TIMEOUT_MS + INBOUND_IDLE_TIMEOUT_MS + RETIRED_TTL_MARGIN_MS`
+   * ——一条结果可能在客户端超时后又被一整段入站空闲判死推迟，最坏迟到就是这两段之和。
+   * `retired` 里记录的是**需要二次识别**的号（超时/取消/已结算，见
+   * {@link MAX_RETIRED_REQUEST_IDS}）；普通已结算号若在高负载下被提前挤出，只会让迟到结果退化
+   * 成按 `debug` 解码的事件（后果与取舍见同处注释），不会误判任何查询的结论。
    */
   public readonly isKnownRequest = (requestSeq: number): boolean => {
     this.pruneRetired();
@@ -417,7 +548,7 @@ export class DebugQueryTracker {
     this.retired.set(requestSeq, {
       requestId,
       settledAt: nowMs,
-      expireAt: nowMs + DEBUG_QUERY_RETIRED_TTL_MS,
+      expireAt: nowMs + this.retiredTtlMs,
     });
     this.retiredOrder.push(requestSeq);
 

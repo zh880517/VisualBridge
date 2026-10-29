@@ -22,6 +22,26 @@ export interface EditorBridgeTransport {
   readonly isTerminated: boolean;
 }
 
+/**
+ * 服务端用到的**全部**传输能力（`BridgeSocket` 与单测的假传输都满足）。
+ *
+ * 单独抽出来的原因（F8-§4）：要把"服务端路由/查询/握手"的用例跑在**真实 `EditorBridgeServer`**
+ * 上，就不能被"必须开 TCP 端口"绑住——注入一个内存传输即可驱动完整的入站/出站路径，
+ * 服务端本身仍是生产代码，不是测试用的影子实现。
+ */
+export interface EditorBridgeServerTransport extends EditorBridgeTransport {
+  /** 还能不能写（发送前要再查一次）。 */
+  readonly isOpen: boolean;
+  /** 通道 0 的 JSON 控制消息；返回是否入队成功。 */
+  sendControlJson(message: unknown): boolean;
+  /** 通道 1 的 JSON 控制消息（查询 `request`、调试控制）；返回是否入队成功。 */
+  sendDebugControl(payload: Uint8Array): boolean;
+  /** 立即断开（不发 FIN 语义，服务端主动关闭用）。 */
+  close(): void;
+  /** 优雅结束（先冲刷队列）。 */
+  end(): void;
+}
+
 export class EditorBridgeConnectionSlot<TTransport extends EditorBridgeTransport = EditorBridgeTransport> {
   private handshakeCompleted = false;
 

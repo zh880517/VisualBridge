@@ -32,6 +32,7 @@
  */
 
 import type { DebugResultEnvelope, DebugResponseEnvelope } from "./debugIngress";
+import type { DebugInstanceEndReason } from "./debugInstanceManager";
 import {
   DEBUG_QUERY_ERROR_CODES,
   isDebugQueryErrorCode,
@@ -49,6 +50,13 @@ import {
   type PendingDebugQuery,
 } from "./debugQueryTracker";
 import type { DebugRecord } from "./debugStore";
+
+/**
+ * 实例"不可查询"的原因（与 `DebugInstanceView.endedReason` **同一个类型**，不复制枚举）：
+ * - `finished`：正常 `debugFinish`；
+ * - `reconnect`：可恢复中断里没再出现的旧实例（C.3），等重连后重建。
+ */
+export type DebugQueryInstanceEndReason = DebugInstanceEndReason;
 
 /** 7 个线上查询错误码的 UI 文案（键集合由权威清单派生，少一个都编译失败）。 */
 export const DEBUG_QUERY_ERROR_MESSAGES: Readonly<Record<DebugQueryErrorCode, string>> = {
@@ -69,6 +77,7 @@ export type DebugQueryLocalErrorCode =
   | "local.sendFailed"
   | "local.instanceNotFound"
   | "local.instanceFinished"
+  | "local.instanceEvicted"
   | "local.unknownMethod"
   | "local.disconnected"
   | "local.cancelled"
@@ -84,12 +93,36 @@ const LOCAL_ERROR_MESSAGES: Readonly<Record<DebugQueryLocalErrorCode, string>> =
   "local.sendFailed": "查询请求发送失败（连接已关闭或队列拒绝）：请检查连接后重试。",
   "local.instanceNotFound": "实例不存在：请重新选择实例。",
   "local.instanceFinished": "实例已结束：本次查询已取消，不会重试。",
+  "local.instanceEvicted": "该实例已被淘汰，历史未记录：本次查询没有发出（容量上限只保留最近的实例）。",
   "local.unknownMethod": "契约里找不到该接口/方法（或缺少方法号）：无法发起查询。",
   "local.disconnected": "连接已断开：该实例未完成的查询已全部取消。",
   "local.cancelled": "查询已取消（切换实例）。",
   "local.disposed": "调试面板已关闭：未完成的查询已取消。",
   "local.unexpectedResponse": "服务端返回了成功应答但没有结果（协议不一致）：本次查询失败。",
 };
+
+/**
+ * `local.instanceFinished` 的**原因文本**（§2：同一个本地码，不加第 8 个码、不动权威清单）。
+ *
+ * 两种原因对用户意味着完全不同的下一步：
+ * - `finished`：实例真的结束了 ⇒ 换实例；
+ * - `reconnect`：连接正在 15 s 宽限内重建（C.3），实例只是**暂时**不可查询 ⇒ 等恢复后重试。
+ * 混成一句会把"等一会就好"说成"没了"。
+ */
+function instanceFinishedMessage(
+  reason: DebugQueryInstanceEndReason | undefined,
+  phase: "cancelled" | "rejected",
+): string {
+  if (reason === "reconnect") {
+    return phase === "cancelled"
+      ? "连接正在重建，该实例暂不可查询：在途查询已取消，恢复后请重试。"
+      : "连接正在重建，该实例暂不可查询：本次查询没有发出，恢复后请重试。";
+  }
+
+  return phase === "cancelled"
+    ? "实例已结束：本次查询已取消，不会重试。"
+    : "实例已结束：本次查询没有发出，请重新选择仍存活的实例。";
+}
 
 /** 查询失败的统一形态：`message` 已是可直接展示的中文文案。 */
 export class DebugQueryError extends Error {
@@ -151,6 +184,13 @@ export interface DebugQueryInstanceInfo {
   readonly category: string;
   readonly instanceId: string;
   readonly active: boolean;
+  /** 不可查询的原因（`active=false` 时必填；决定 `local.instanceFinished` 的文案，§2）。 */
+  readonly endedReason?: DebugQueryInstanceEndReason;
+  /**
+   * 容量淘汰留下的空壳：实例视图还在（`active` 仍为 `true`，`Finish` 语义未变），
+   * 但历史已不记录 ⇒ 查询必须**在路由处**明确拒绝，不能发出去再等空结果（§3）。
+   */
+  readonly historyMissing?: boolean;
 }
 
 /** 查询入口参数（C.1 的 `options`）：`frame` 由宿主传发起时的当前帧。 */
@@ -160,6 +200,11 @@ export interface DebugQueryOptions {
   readonly methodId?: number;
   readonly category?: string;
   readonly instanceId?: string;
+  /**
+   * 请求号分配并**入挂起表之后、发送之前**的同步回调（§5）。
+   * 面板用它把本地提示绑定到具体 `requestId`，而不是"按时间窗口猜哪条提示该撤"。
+   */
+  readonly onIssued?: (requestId: string) => void;
 }
 
 export type DebugQueryCancelReason = "disconnect" | "user" | "dispose";
@@ -342,6 +387,8 @@ export class DebugQueryClient {
         reject,
       };
       this.pending.set(request.requestId, entry);
+      // 入表之后、发送之前同步回调：面板此时已经能拿到 `requestId`（§5 的绑定点）。
+      options.onIssued?.(request.requestId);
 
       let sent = false;
       try {
@@ -460,14 +507,21 @@ export class DebugQueryClient {
     return "settled";
   }
 
-  /** 实例 `Finish`：该实例在途查询全部取消，提示"实例已结束"（P1，不重试）。 */
-  public handleInstanceFinished(instanceId: string): readonly PendingDebugQuery[] {
+  /**
+   * 实例 `Finish`：该实例在途查询全部取消，提示"实例已结束"或"连接正在重建"（P1，不重试）。
+   * `reason` 来自实例视图的 `endedReason`（§2：同一个本地码，两种原因两套文案）。
+   */
+  public handleInstanceFinished(
+    instanceId: string,
+    reason: DebugQueryInstanceEndReason = "finished",
+  ): readonly PendingDebugQuery[] {
     const cancelled = this.tracker.cancelInstance(instanceId);
+    const message = instanceFinishedMessage(reason, "cancelled");
     for (const query of cancelled) {
       const pending = this.pending.get(query.requestId);
       if (pending !== undefined) {
         this.pending.delete(query.requestId);
-        pending.reject(this.fail("local.instanceFinished", LOCAL_ERROR_MESSAGES["local.instanceFinished"], {
+        pending.reject(this.fail("local.instanceFinished", message, {
           requestId: query.requestId,
         }));
       }
@@ -476,7 +530,9 @@ export class DebugQueryClient {
     if (cancelled.length !== 0) {
       this.publish({
         kind: "warning",
-        message: `实例 ${instanceId} 已结束：${cancelled.length} 条未完成的查询已取消，不会重试。`,
+        message: reason === "reconnect"
+          ? `连接正在重建：实例 ${instanceId} 的 ${cancelled.length} 条未完成查询已取消，恢复后请重试。`
+          : `实例 ${instanceId} 已结束：${cancelled.length} 条未完成的查询已取消，不会重试。`,
       });
     }
 
@@ -556,8 +612,17 @@ export class DebugQueryClient {
       throw this.fail("local.instanceNotFound", LOCAL_ERROR_MESSAGES["local.instanceNotFound"]);
     }
 
+    if (resolved !== undefined && resolved.historyMissing === true) {
+      // 容量淘汰的空壳实例：视图还在（可选中），但没有历史可查。必须在**发请求之前**说清楚，
+      // 否则用户看到的是一条永远没有结果的查询（§3）。
+      throw this.fail("local.instanceEvicted", LOCAL_ERROR_MESSAGES["local.instanceEvicted"]);
+    }
+
     if (resolved !== undefined && !resolved.active) {
-      throw this.fail("local.instanceFinished", LOCAL_ERROR_MESSAGES["local.instanceFinished"]);
+      throw this.fail(
+        "local.instanceFinished",
+        instanceFinishedMessage(resolved.endedReason, "rejected"),
+      );
     }
 
     if (resolved === undefined && this.options.resolveInstance !== undefined) {
@@ -620,6 +685,13 @@ export class DebugQueryClient {
     });
   }
 
+  /**
+   * 构造并发布一条失败提示。
+   *
+   * `requestId` **只**进提示（`DebugQueryNotice.requestId`，面板据此把"正在查询 `req-7`"这条
+   * 本地提示只撤掉对应的一条），不再复制到 `DebugQueryError` 上：错误对象是对调用方的
+   * 返回值，调用方拿不到挂起表，也无法对号入座；生产链路里没有第二个消费方（F8 评审必修五）。
+   */
   private fail(
     code: string,
     message: string,
@@ -750,8 +822,27 @@ export function isKnownDebugQueryMessage(code: string): boolean {
 }
 
 /** 构造一个本地条件错误（服务端等宿主侧需要不经过查询就拒绝时用）。 */
-export function debugQueryLocalError(code: DebugQueryLocalErrorCode): DebugQueryError {
-  return new DebugQueryError(code, LOCAL_ERROR_MESSAGES[code], { generatedBy: "client" });
+export function debugQueryLocalError(
+  code: DebugQueryLocalErrorCode,
+  options: { readonly message?: string } = {},
+): DebugQueryError {
+  return new DebugQueryError(code, options.message ?? LOCAL_ERROR_MESSAGES[code], { generatedBy: "client" });
+}
+
+/**
+ * 实例不可查询的本地错误：**同一个码**（`local.instanceFinished`），按原因给不同文案（§2）。
+ * 不加第 8 个码、不动 `Protocol/contract-manifest.json`。
+ */
+export function debugQueryInstanceFinishedError(
+  reason: DebugQueryInstanceEndReason | undefined,
+  phase: "cancelled" | "rejected" = "rejected",
+): DebugQueryError {
+  return debugQueryLocalError("local.instanceFinished", { message: instanceFinishedMessage(reason, phase) });
+}
+
+/** 容量淘汰（`historyMissing`）实例的本地错误：路由处明确拒绝，不发空查询（§3）。 */
+export function debugQueryInstanceEvictedError(): DebugQueryError {
+  return debugQueryLocalError("local.instanceEvicted");
 }
 
 /**

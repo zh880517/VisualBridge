@@ -32,7 +32,13 @@ import type { BridgePayloadKind } from "./framing";
 
 /** 会话录制能力的状态（F3 面板的"录制"按钮只读它）。 */
 export interface EditorBridgeRecordingState {
-  /** 桥接服务已启动、能写文件（与"当前有没有连接"无关：可以先开录再连）。 */
+  /**
+   * **此刻能否开录**：至少有一个已握手、仍打开的源（Editor 桥或 Runtime 桥的连接）。
+   *
+   * 注意它与实现一致——**不是**"服务端已启动就能开录"：一条录制绑定一条连接，
+   * 没有连接时 `start()` 会直接拒绝（`Recording requires a handshaken debug connection`）。
+   * 所以"先开录再连"是不支持的；面板按 `available` 置灰按钮。
+   */
   readonly available: boolean;
   readonly active: boolean;
   readonly filePath: string | undefined;
@@ -115,15 +121,19 @@ export class DebugRecordingHost {
 
   /**
    * 注销源（连接关闭）：活跃源注销会**自动收尾**（`disconnect`），其它源注销无副作用。
+   *
+   * 来源腿必须在**清掉 `activeSourceId` 之前**取出来（F8-§8-3）：否则收尾写进
+   * `lastRecording.origin` 的是 `undefined`，面板把一次 Runtime 腿的录制显示成"来源未标注"。
    */
   public unregisterSource(id: string): void {
+    const origin = this.sources.get(id)?.origin ?? this.sourceOrigin(this.activeSourceId);
     this.sources.delete(id);
     if (this.activeSourceId !== id) {
       return;
     }
 
     this.activeSourceId = undefined;
-    void this.stop("disconnect").catch((errorValue: unknown) => {
+    void this.stop("disconnect", origin).catch((errorValue: unknown) => {
       this.log(`[debug] failed to finish the session recording: ${String(errorValue)}`);
     });
   }
@@ -183,8 +193,13 @@ export class DebugRecordingHost {
   }
 
   /**
-   * 开始录制：固定**第一个可用源**（注册顺序 = Editor 腿优先），把契约快照与身份写进文件头。
-   * 没有可用源时拒绝——不能录一个"还没有源"的会话。
+   * 开始录制：固定**一个**源，把契约快照与身份写进文件头。
+   *
+   * 选源规则（F8-§8-2）：**Editor 腿优先**，同一条腿内按注册顺序；不再是"Map 插入顺序碰运气"。
+   * 注释曾经写"注册顺序 = Editor 腿优先"，而实现只是取第一个插入的源——Runtime 腿先握手时
+   * 就会录到 Runtime 腿，与文档相反。现在显式分档。
+   *
+   * 没有可用源时拒绝——不能录一个"还没有源"的会话（见 {@link EditorBridgeRecordingState.available}）。
    */
   public async start(options: EditorBridgeRecordingOptions): Promise<DebugRecordingHeader> {
     if (this.recorder?.active === true) {
@@ -241,38 +256,57 @@ export class DebugRecordingHost {
    * 顺序（F5-05）：先 `await recorder.stop()` 拿到 footer（文件尾已写出并 close），再撤掉
    * `this.recorder`——自动收尾的轮询在 finalize 期间仍能读到 stats，收尾后也能从
    * {@link lastRecording} 读到 footer 统计。
+   *
+   * 收尾失败（F8-§7-a）：`recorder.stop()` reject 时**也必须**把 `lastRecording` 填上
+   * （`finalized=true` / `deliverable=false` / `failure=…`）。旧实现在 reject 路径上什么都没写，
+   * 于是 `DebugRecordingMonitor` 永远等不到 `!active && finalized`，`onFailed` 从不触发——
+   * 用户只看到"录制中"卡住，文件其实已经坏了。
+   *
+   * `originOverride` 由调用方在清掉活跃源之前给出（§8-3：断连自动收尾时源已经注销）。
    */
-  public async stop(reason: DebugRecordingEndReason = "disconnect"): Promise<DebugRecordingFooter | undefined> {
+  public async stop(
+    reason: DebugRecordingEndReason = "disconnect",
+    originOverride?: DebugChannelOrigin,
+  ): Promise<DebugRecordingFooter | undefined> {
     const recorder = this.recorder;
     if (recorder === undefined) {
       return undefined;
     }
 
+    const origin = originOverride ?? this.sourceOrigin(this.activeSourceId);
     try {
       const footer = await recorder.stop(reason);
-      const stats = recorder.stats;
-      this.lastRecording = {
-        available: this.hasOpenSource,
-        active: false,
-        filePath: stats.filePath,
-        startedAt: stats.startedAt,
-        records: stats.records,
-        droppedRecords: stats.droppedRecords,
-        droppedBytes: stats.droppedBytes,
-        endedReason: stats.endedReason,
-        endedAt: stats.endedAt,
-        finalized: stats.finalized,
-        deliverable: stats.deliverable,
-        failure: stats.failure,
-        origin: this.sourceOrigin(this.activeSourceId),
-      };
+      this.captureLastRecording(recorder, origin);
       return footer;
+    } catch (errorValue) {
+      this.captureLastRecording(recorder, origin);
+      throw errorValue;
     } finally {
       if (this.recorder === recorder) {
         this.recorder = undefined;
         this.activeSourceId = undefined;
       }
     }
+  }
+
+  /** 把收尾后的统计固化成面板可读的"最近一次录制"（成功与失败路径共用）。 */
+  private captureLastRecording(recorder: DebugSessionRecorder, origin: DebugChannelOrigin | undefined): void {
+    const stats = recorder.stats;
+    this.lastRecording = {
+      available: this.hasOpenSource,
+      active: false,
+      filePath: stats.filePath,
+      startedAt: stats.startedAt,
+      records: stats.records,
+      droppedRecords: stats.droppedRecords,
+      droppedBytes: stats.droppedBytes,
+      endedReason: stats.endedReason,
+      endedAt: stats.endedAt,
+      finalized: stats.finalized,
+      deliverable: stats.deliverable,
+      failure: stats.failure,
+      origin,
+    };
   }
 
   /**
@@ -292,14 +326,28 @@ export class DebugRecordingHost {
     }
   }
 
+  /**
+   * 选一个可录制的源：**Editor 腿优先**（同腿内按注册顺序）。
+   *
+   * 为什么 Editor 优先：Editor 腿录得到 ch0（`debugCreate`/`debugFinish`/`debugFrame`）+ ch1，
+   * 回看能还原帧分组；Runtime 腿当前只入了 ch1（E9 的已知差异，见 `runtimeBridgeService`）。
+   * 两条腿都开时先选 Editor 腿，回看信息更全；只有 Runtime 腿在线时才录它。
+   */
   private firstOpenSource(): DebugRecordingSource | undefined {
+    let fallback: DebugRecordingSource | undefined;
     for (const source of this.sources.values()) {
-      if (source.isOpen()) {
+      if (!source.isOpen()) {
+        continue;
+      }
+
+      if (source.origin === "editor") {
         return source;
       }
+
+      fallback ??= source;
     }
 
-    return undefined;
+    return fallback;
   }
 
   private sourceOrigin(sourceId: string | undefined): DebugChannelOrigin | undefined {

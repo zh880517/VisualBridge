@@ -153,12 +153,16 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
         text += " · " + status.detail;
       }
     }
+    if (state.recording.active) {
+      // 录制中：来源腿必须与"来源"分开显示——录制只绑一条腿，在线数据面可能两条腿都在。
+      text += " · 录制中（" + (state.recording.origin === "runtime" ? "Runtime 桥" : "Editor 桥") + "）";
+    }
     text += " · endpoint=" + (status.endpointId || "-");
     text += " · target=" + (status.target || "-");
     text += " · 帧 " + state.connection.frame;
     if (state.replay) {
       // 录制文件尾的标注（C.6）：sizeLimit 必须让人看得出来，而不是当普通断开。
-      text += " · " + (state.replay.records === undefined ? "未正常收尾" : state.replay.records + " 条记录");
+      text += " · " + (state.replay.records === undefined ? "未正常收尾" : state.replay.records + " 帧");
       if (state.replay.endedReason === "sizeLimit") {
         text += " · 达到文件上限（sizeLimit）";
       } else if (state.replay.endedReason === undefined) {
@@ -280,10 +284,14 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
   function renderToolbar() {
     shell.pause.textContent = state.paused ? "继续" : "暂停";
     // 录制由 F5 提供：未接入时置灰并说明，不伪造"正在录制"。
+    // 来源腿（E9 / F8-§8-2）：Editor 腿录 ch0+ch1，Runtime 腿只有 ch1，必须标出来。
+    var recordingOrigin = state.recording.origin === "editor"
+      ? "Editor 桥"
+      : state.recording.origin === "runtime" ? "Runtime 桥" : "";
     shell.record.textContent = state.recording.active ? "停止录制" : "录制";
     shell.record.disabled = !state.recording.available;
     shell.record.title = state.recording.available
-      ? "会话录制（F5）"
+      ? "会话录制（F5）" + (recordingOrigin ? "：绑定 " + recordingOrigin : "")
       : state.replay
         ? "回看模式下不可录制（先返回实时）"
         : "录制由 F5（会话录制）提供，尚未接入";
@@ -294,7 +302,7 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
     if (state.replay) {
       var replayInfo = state.replay.records === undefined
         ? "（录制未正常收尾）"
-        : "（" + state.replay.records + " 条记录" + (state.replay.endedReason === "sizeLimit" ? "，达到文件上限" : "") + "）";
+        : "（" + state.replay.records + " 帧" + (state.replay.endedReason === "sizeLimit" ? "，达到文件上限" : "") + "）";
       shell.replayExit.title = "回看 " + state.replay.filePath + replayInfo + "；点击退出回看";
     }
     shell.pause.setAttribute("aria-pressed", state.paused ? "true" : "false");

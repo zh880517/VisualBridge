@@ -39,6 +39,7 @@ import {
   type DebugPanelSource,
 } from "./debugPanelState";
 import type { DebugFacetReplayView, DebugFacetSnapshot } from "./debugFacetRouter";
+import { DebugPanelQueryNotices } from "./debugPanelQueryNotices";
 
 export const DEBUG_PANEL_VIEW_TYPE = "visualbridge.debugPanel";
 export const DEBUG_PANEL_TITLE = "VisualBridge Debug";
@@ -68,8 +69,14 @@ export interface DebugPanelBridge {
     /**
      * `options.methodId` 显式给方法号：工作区没有调试契约（`debug-contracts.json` 的
      * `categories` 为空）时，"方法名 → 方法号"无从解析，只能由调用方给号（C.1 的字段）。
+     *
+     * `options.onIssued` 在请求号入表后**同步**回调（F8-§5）：面板据此把"正在查询…"绑到
+     * 具体请求上，完成时只撤这一条，而不是靠时间窗口猜。
      */
-    query(instanceKey: string, interfaceId: string, method: string, options?: { readonly methodId?: number }): Promise<DebugQueryResult>;
+    query(instanceKey: string, interfaceId: string, method: string, options?: {
+      readonly methodId?: number;
+      readonly onIssued?: (requestId: string) => void;
+    }): Promise<DebugQueryResult>;
     /** 切换实例时取消旧实例的在途查询（"用户取消"文案，区别于断连）。 */
     cancelInstance(instanceKey: string, reason?: "user" | "disconnect"): number;
   };
@@ -146,8 +153,21 @@ export class DebugPanelController implements vscode.Disposable {
   private webviewFailuresValue = 0;
   /** 测试专用：把连接类型钉成指定值（生产上只能来自 A.3 的 `connectType`）。 */
   private modeOverride: DebugEnableMode | undefined;
-  /** 最近一次查询动作的提示（F6）：由 Promise 结算写入，覆盖服务端的最近提示。 */
-  private queryNoticeValue: DebugPanelQueryNotice | undefined;
+  /**
+   * 查询提示状态机（F8-§5）：在途提示按 requestId 记账、完成时只清自己那条；
+   * 服务端最近提示按对象身份打点，本地提示只有在**更新**时才盖住它。
+   */
+  private readonly queryNotices = new DebugPanelQueryNotices();
+  /** 服务端最近一条查询提示（客户端 publish 出来的对象；身份变化 = 新提示）。 */
+  private lastServerQueryNotice: DebugPanelQueryNotice | undefined;
+  /** 上面那条提示出现时的面板序号（见 {@link noticeClock}）。 */
+  private lastServerQueryNoticeSeq = 0;
+  /**
+   * 提示的**单调序号**（不是墙钟）：本地提示与服务端提示必须用同一个全序比较"谁更新"，
+   * 而 `Date.now()` 的毫秒分辨率会让"同一毫秒内的先完成者"随排程随机取胜。序号每产生
+   * 一条提示 +1，服务端提示在**被观察到**时取号，因此它总是比此前的本地提示新。
+   */
+  private noticeClock = 0;
   /** 打开次数（宿主测试用它确认"重开"没有重新拉取）。 */
   private openCount = 0;
 
@@ -372,7 +392,10 @@ export class DebugPanelController implements vscode.Disposable {
           // 切换实例：旧实例的在途查询按"用户取消"结算并提示（P1，与断连文案区分）。
           const cancelled = this.options.bridge()?.debugQuery?.cancelInstance(previousKey, "user") ?? 0;
           if (cancelled > 0) {
-            this.queryNoticeValue = { kind: "warning", message: `已取消 ${cancelled} 条属于上一实例的查询。` };
+            this.queryNotices.record(
+              { kind: "warning", message: `已取消 ${cancelled} 条属于上一实例的查询。` },
+              ++this.noticeClock,
+            );
           }
         }
 
@@ -456,39 +479,54 @@ export class DebugPanelController implements vscode.Disposable {
 
   /**
    * 查询入口状态（F6）：回看没有传输层，固定不可用；在线时以 bridge 的在途/上限/最近提示为准。
-   * 最近一次查询动作的提示优先于服务端缓存（它是用户刚点的这条）。
+   *
+   * 提示来源（F8-§5）：本地提示（正在查询/本地拒绝）与服务端最近提示**同一时钟**比较，
+   * 谁更新显示谁——服务端一给出新提示（超时/失败/晚到），本地"正在查询"立刻让位。
    */
   private queryState(): DebugPanelQueryState {
-    const notice = this.queryNoticeValue;
+    const query = this.options.bridge()?.debugQuery;
     if (this.isReplaying) {
-      return { available: false, pending: 0, limit: 0, busy: false, notice };
+      return { available: false, pending: 0, limit: 0, busy: false, notice: this.queryNotices.select(undefined, 0) };
     }
 
-    const query = this.options.bridge()?.debugQuery;
     if (query === undefined) {
-      return { available: false, pending: 0, limit: 0, busy: false, notice };
+      return { available: false, pending: 0, limit: 0, busy: false, notice: this.queryNotices.select(undefined, 0) };
     }
 
     // 按当前选中实例所属的连接取状态：多连接时不把别的连接的 pending/busy 算进来（F6 路由）。
     const state = query.state(this.model.selectedKey);
+    if (state.notice !== this.lastServerQueryNotice) {
+      // 客户端每 publish 一次就是一条**新**提示：记下它出现的时刻（对象身份即版本）。
+      this.lastServerQueryNotice = state.notice;
+      this.lastServerQueryNoticeSeq = ++this.noticeClock;
+      if (state.notice?.requestId !== undefined) {
+        // 服务端已经就这条请求结算（结果/失败/晚到）：对应的"正在查询"**立刻**退休，不等
+        // Promise settle——同毫秒内两者并存时，这是"服务端提示不被旧本地提示压住"的保证（§5）。
+        this.queryNotices.completeRequest(state.notice.requestId);
+      }
+    }
+
     return {
       available: state.available,
       pending: state.pending,
       limit: state.limit,
       busy: state.busy,
-      notice: notice ?? state.notice,
+      notice: this.queryNotices.select(state.notice, this.lastServerQueryNoticeSeq),
     };
   }
 
   /**
    * 发起一次查询（F6）：失败/超时/忙都只变成一条可读提示，**不重试**、不影响接收。
    * 结果由 bridge 以 `kind: "queryResult"` 记录写进时间轴（`frame` 是发起时的帧）。
+   *
+   * 并发（F8-§5）：每条查询有自己的 token + `requestId`，完成时**只撤自己那条**"正在查询"，
+   * 另一条仍在途的提示照常显示（旧实现是单槽覆盖，两条并发时后一条会把前一条挤掉）。
    */
   private runQuery(payload: { key?: unknown; interfaceId?: unknown; method?: unknown; methodId?: unknown }): void {
     if (this.isReplaying) {
       // 回看没有传输层：即使命令绕过 Webview 的置灰也必须拒绝（不能把历史面板的点击
       // 变成一条发往当前实时连接的查询）。
-      this.queryNoticeValue = { kind: "warning", message: "回看模式下不能发起查询：请先返回实时。" };
+      this.queryNotices.record({ kind: "warning", message: "回看模式下不能发起查询：请先返回实时。" }, ++this.noticeClock);
       this.sendState();
       return;
     }
@@ -498,7 +536,7 @@ export class DebugPanelController implements vscode.Disposable {
     const interfaceId = typeof payload.interfaceId === "string" ? payload.interfaceId : undefined;
     const method = typeof payload.method === "string" ? payload.method : undefined;
     if (query === undefined || instanceKey === undefined || interfaceId === undefined || method === undefined) {
-      this.queryNoticeValue = { kind: "error", message: "查询缺少实例/接口/方法，未发出。" };
+      this.queryNotices.record({ kind: "error", message: "查询缺少实例/接口/方法，未发出。" }, ++this.noticeClock);
       this.options.log?.("[debug] query ignored: missing instance/interfaces/method");
       this.sendState();
       return;
@@ -507,18 +545,26 @@ export class DebugPanelController implements vscode.Disposable {
     const methodId = typeof payload.methodId === "number" && Number.isInteger(payload.methodId) && payload.methodId > 0
       ? payload.methodId
       : undefined;
-    this.queryNoticeValue = { kind: "info", message: `正在查询 ${interfaceId}.${method}…` };
+    const token = this.queryNotices.begin(`正在查询 ${interfaceId}.${method}…`, ++this.noticeClock);
     this.sendState();
-    void query.query(instanceKey, interfaceId, method, methodId === undefined ? {} : { methodId }).then(
+    void query.query(instanceKey, interfaceId, method, {
+      ...(methodId === undefined ? {} : { methodId }),
+      // 请求号入表后同步回调：面板的"正在查询"从此**绑到这一条**请求上（§5）。
+      onIssued: (requestId) => {
+        this.queryNotices.bind(token, requestId);
+      },
+    }).then(
       (result) => {
-        this.queryNoticeValue = result.record === undefined
+        this.queryNotices.complete(token);
+        this.queryNotices.record(result.record === undefined
           ? { kind: "warning", message: "查询已返回，但实例已不在时间轴：结果未插入。" }
-          : { kind: "info", message: `查询结果已插入时间轴（帧 ${result.target.frame}）。` };
+          : { kind: "info", message: `查询结果已插入时间轴（帧 ${result.target.frame}）。` }, ++this.noticeClock);
         this.sendState();
       },
       (errorValue: unknown) => {
+        this.queryNotices.complete(token);
         const message = errorValue instanceof Error ? errorValue.message : String(errorValue);
-        this.queryNoticeValue = { kind: "error", message };
+        this.queryNotices.record({ kind: "error", message }, ++this.noticeClock);
         this.options.log?.(`[debug] query failed: ${message}`);
         this.sendState();
       },
@@ -527,6 +573,23 @@ export class DebugPanelController implements vscode.Disposable {
 
   public getStateForTest(): DebugPanelSnapshot {
     return this.getSnapshot();
+  }
+
+  /**
+   * 测试专用：查询提示状态机的在途记账（F8-§5）。
+   *
+   * `pending` 是仍在途的"正在查询"提示条数，`requestIds` 是它们各自绑定到的请求号
+   * （顺序 = 产生顺序）。面板可见的 `query.notice` 只是"最新一条"，并发时无法只靠它
+   * 判断"另一条在途提示是否还活着"，所以把记账本身暴露给用例。
+   */
+  public getQueryNoticesForTest(): {
+    readonly pending: number;
+    readonly requestIds: readonly (string | undefined)[];
+  } {
+    return {
+      pending: this.queryNotices.pendingCount,
+      requestIds: this.queryNotices.pendingNotices.map((entry) => entry.requestId),
+    };
   }
 
   /** `debugEnabled` 广播（A.5）：唯一能在运行期改写开关的入口。 */
@@ -556,7 +619,9 @@ export class DebugPanelController implements vscode.Disposable {
     } else {
       this.enable.applyWelcome(enabled);
       // 连接换代/断开：上一条查询提示属于旧连接，不能继续冒充当前状态。
-      this.queryNoticeValue = undefined;
+      this.queryNotices.reset();
+      this.lastServerQueryNotice = undefined;
+      this.lastServerQueryNoticeSeq = 0;
     }
 
     this.sendState();
@@ -574,10 +639,28 @@ export class DebugPanelController implements vscode.Disposable {
     this.sendState();
   }
 
-  /** 测试专用：模拟一次 Webview 状态消息投递失败（验证计数没有被吞掉）。 */
-  public noteWebviewFailureForTest(reason = "injected for test"): number {
-    this.noteWebviewFailure(reason);
-    return this.webviewFailuresValue;
+  /**
+   * 测试专用：模拟 Webview 状态消息投递失败（验证计数没有被吞掉，也没有从快照里消失）。
+   *
+   * 三个数在**同一次同步调用**里取：`before` 是注入前，`after` 是注入后，`snapshot` 是注入后
+   * 立刻从 `model.snapshot().delivery.webviewFailures` 读到的值。旧实现只返回一个数，宿主测试
+   * 得先读一次快照再调命令，中间只要有一次真实 `postMessage` 失败（无头宿主里很常见），断言
+   * 就会随机红/绿（F8-§7-e / 评审必修六）。`count` 支持一次注入多条，把"注入两次 ⇒ +2"也做成
+   * 原子断言。
+   */
+  public noteWebviewFailureForTest(reason = "injected for test", count = 1): {
+    readonly before: number;
+    readonly after: number;
+    readonly snapshot: number;
+  } {
+    const before = this.webviewFailuresValue;
+    const times = Number.isInteger(count) && count > 0 ? count : 1;
+    for (let index = 0; index < times; index++) {
+      this.noteWebviewFailure(reason);
+    }
+
+    // 同一同步段内读快照：调用返回后计数器可能被真实投递失败继续推进，这里不跨任何 await。
+    return { before, after: this.webviewFailuresValue, snapshot: this.model.snapshot().delivery.webviewFailures };
   }
 
   public dispose(): void {

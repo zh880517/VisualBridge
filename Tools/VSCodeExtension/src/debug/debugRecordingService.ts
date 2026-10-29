@@ -18,6 +18,7 @@ import type {
 import type { DebugPanelRecordingState } from "./debugPanelState";
 import {
   DebugRecordingMonitor,
+  recordingStopSummary,
   type DebugRecordingStopSummary,
 } from "./debugRecordingMonitor";
 
@@ -84,12 +85,14 @@ export class DebugRecordingService implements vscode.Disposable {
     });
   }
 
-  /** 面板按钮的状态：能力位 + 是否在录。 */
+  /** 面板按钮的状态：能力位 + 是否在录 + 当前/最近一次录制绑定的腿（E9 显示层）。 */
   public get state(): DebugPanelRecordingState {
     const bridge = this.options.bridge();
+    const origin = bridge?.recordingState.origin;
     return {
       available: bridge?.recordingState.available === true,
       active: bridge?.recordingState.active === true,
+      ...(origin === undefined ? {} : { origin }),
     };
   }
 
@@ -161,20 +164,27 @@ export class DebugRecordingService implements vscode.Disposable {
     }
   }
 
-  /** 停止录制并写文件尾；没有在录时返回 `undefined`。 */
+  /**
+   * 停止录制并写文件尾；没有在录时返回 `undefined`。
+   *
+   * 自动收尾窗口（F8-§7-d）：bridge 可能在本地的 1 s 轮询之间就已经自动收尾（`sizeLimit`/
+   * 断连）。此时 `recordingState.active` 已经是 `false`，旧实现会**静默**返回 `undefined`——
+   * 用户既听不到"已保存"、`onStopped` 也不会触发（回看入口就没了）。现在：只要监视器还欠着
+   * 这一次结果（`monitor.watching`），手动停止就把那次收尾**显式**交付出去。
+   */
   public async stop(): Promise<DebugRecordingStopSummary | undefined> {
     const bridge = this.options.bridge();
-    if (bridge === undefined || !bridge.recordingState.active) {
-      this.monitor.stop();
-      return undefined;
+    const state = bridge?.recordingState;
+    if (bridge === undefined || state === undefined || !state.active) {
+      return this.stopAutoFinished(state);
     }
 
     // 手动停止由这里负责提示；先撤掉自动轮询，避免两边对同一次收尾各发一条 toast。
-    this.monitor.stop();
+    this.monitor.forget();
     try {
       const footer = await bridge.stopRecording();
-      const filePath = this.lastFilePath ?? bridge.recordingState.filePath;
-      this.options.log?.(`[debug] recording stopped: ${filePath ?? "?"} (${footer?.records ?? 0} records)`);
+      const filePath = this.lastFilePath ?? state.filePath;
+      this.options.log?.(`[debug] recording stopped: ${filePath ?? "?"} (${footer?.records ?? 0} frames)`);
       if (filePath !== undefined) {
         this.options.onStopped?.(filePath, footer);
       }
@@ -186,6 +196,40 @@ export class DebugRecordingService implements vscode.Disposable {
       void vscode.window.showErrorMessage(`无法停止录制：${message}`);
       return undefined;
     }
+  }
+
+  /**
+   * 手动停止落在自动收尾窗口里：`active` 已经为 `false`。
+   *
+   * 只有在"监视器还欠这一条"时才交付（`monitor.watching`），否则重复点停止会重复 toast；
+   * 交付规则与 {@link DebugRecordingMonitor.check} 完全一致（finalized + deliverable）。
+   */
+  private stopAutoFinished(
+    state: EditorBridgeRecordingState | undefined,
+  ): DebugRecordingStopSummary | undefined {
+    const owed = this.monitor.watching;
+    this.monitor.forget();
+    if (owed === undefined || state === undefined || state.filePath !== owed || !state.finalized) {
+      return undefined;
+    }
+
+    if (!state.deliverable || state.failure !== undefined) {
+      this.options.log?.(`[debug] recording failed to finalize: ${owed}: ${state.failure ?? "unknown"}`);
+      if (this.options.onFailed !== undefined) {
+        this.options.onFailed(owed, state.failure ?? "the recording footer was not written");
+      } else {
+        void vscode.window.showErrorMessage(
+          `调试录制结束但文件尾写入失败，不能打开回看：${path.basename(owed)}（${state.failure ?? "unknown"}）`,
+        );
+      }
+
+      return undefined;
+    }
+
+    const summary = recordingStopSummary(state);
+    this.options.log?.(`[debug] recording auto-finished before the poll: ${owed} (${state.endedReason ?? "unknown"})`);
+    this.options.onStopped?.(owed, summary);
+    return summary;
   }
 
   public dispose(): void {

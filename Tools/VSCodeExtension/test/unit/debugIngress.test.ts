@@ -382,6 +382,9 @@ test("a binary debugResult without a pending-request table is counted as ambiguo
   });
   assert.deepEqual(envelopes, [], "缺挂起表时不得把 u32 requestId 当参数区静默解析（A.4）");
   assert.equal(ingress.counters.ambiguousMessages, 1, "E4 的 ambiguousEnvelope 保护必须真的被走到");
+  // `ambiguousMessages` / `unattributableBinaryFrames` 是**同一个事实**的两个字段名（F8-§6）：
+  // 同一次解码失败里同步自增，任何只看其中一个的判定都必须同时看到另一个。
+  assert.equal(ingress.counters.unattributableBinaryFrames, 1, "回看可观测的计数必须与 E4 的旧名同步自增");
   assert.equal(ingress.counters.unknownMethods, 0, "不得退化成 unknownMethod（那会把 result 帧误当 Create 分支）");
   assert.equal(ingress.counters.envelopes, 1, "只有 Create 落成包络");
 });

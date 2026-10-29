@@ -1002,7 +1002,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     onStopped: (filePath, footer) => {
       const summary = footer === undefined
         ? ""
-        : `（${footer.records} 条记录${footer.endedReason === "sizeLimit" ? "，达到文件上限" : ""}${footer.droppedRecords > 0 ? `，丢弃 ${footer.droppedRecords} 条` : ""}）`;
+        : `（${footer.records} 帧${footer.endedReason === "sizeLimit" ? "，达到文件上限" : ""}${footer.droppedRecords > 0 ? `，丢弃 ${footer.droppedRecords} 帧` : ""}）`;
       void vscode.window.showInformationMessage(
         `调试录制已保存${summary}：${path.basename(filePath)}`,
         "打开回看",
@@ -1087,7 +1087,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const preflight = await DebugReplaySession.preflight(filePath);
       const decoded = preflight.records === undefined
         ? "正在解码录制内容…"
-        : `正在解码 ${preflight.records} 条记录（约 ${(preflight.estimatedDecodedBytes / (1024 * 1024)).toFixed(1)} MB）…`;
+        : `正在解码 ${preflight.records} 帧（约 ${(preflight.estimatedDecodedBytes / (1024 * 1024)).toFixed(1)} MB）…`;
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
@@ -1304,8 +1304,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }),
       vscode.commands.registerCommand("visualbridge.test.debugPanel.replayCategory", (category: unknown) =>
         (typeof category === "string" ? debugFacetHost.replayCategory(category) : undefined)),
-      vscode.commands.registerCommand("visualbridge.test.debugPanel.noteWebviewFailure", () =>
-        debugPanel.noteWebviewFailureForTest()),
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.noteWebviewFailure", (count: unknown) =>
+        debugPanel.noteWebviewFailureForTest(
+          "injected for test",
+          typeof count === "number" && Number.isInteger(count) && count > 0 ? count : 1,
+        )),
       vscode.commands.registerCommand("visualbridge.test.parseBridgeMessage", (value: unknown) => {
         try {
           return { ok: true, message: parseBridgeMessage(value) };

@@ -185,13 +185,20 @@ export interface DebugIngressCounters {
   readonly unknownMethods: number;
   /** 契约级未知方法：`(category, methodId)` 不在约定产物里（A.5：不计入服务端 dropped）。 */
   readonly unknownContractMethods: number;
-  /** 二进制载荷无法判定 `debug` / `debugResult`（缺挂起表）。 */
+  /**
+   * 二进制载荷无法判定 `debug` / `debugResult`（缺挂起表）。
+   *
+   * **与 `unattributableBinaryFrames` 是同一个事实**（`ambiguousEnvelope`），两个字段都保留只为
+   * 兼容既有调用方：`ambiguousMessages` 是 E4 的旧名（解码层计数），`unattributableBinaryFrames`
+   * 是 F6 冲突三要求的"回看可观测"名字（录制层/面板展示）。二者在同一次解码失败里同步自增，
+   * 任何只看其中一个的判定都必须同时看到另一个（`debugIngress.test.ts` 有用例锁定）。
+   */
   readonly ambiguousMessages: number;
   /**
    * 无法归属的二进制数据帧（F6，冲突三）：录制只含 Unity→VS Code 的单向帧，
    * `request`（VS Code→Unity）不在文件里 ⇒ 回看无法判断 `u32 requestId` 是否存在，
    * 也就无法区分 `debug` / `debugResult`。这类帧**计数并透出**，不静默丢弃。
-   * 在线路径注入挂起表后不会出现；`ambiguousMessages` 保留为历史计数（两者同源）。
+   * 在线路径注入挂起表后不会出现。与 {@link ambiguousMessages} 同源、同一次自增。
    */
   readonly unattributableBinaryFrames: number;
   /** `request` 消息字段非法。 */

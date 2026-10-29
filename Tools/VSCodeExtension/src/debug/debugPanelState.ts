@@ -24,6 +24,7 @@ import {
   type DebugRecord,
 } from "../bridge/debugStore";
 import type { DebugClearInstanceResult, DebugInstanceView } from "../bridge/debugInstanceManager";
+import type { DebugChannelOrigin } from "../bridge/debugChannel";
 import type { DebugFacetSnapshot } from "./debugFacetRouter";
 import type { DebugEnableState, DebugEnableSwitch } from "./debugEnableSwitch";
 
@@ -306,6 +307,12 @@ export interface DebugPanelRecordingState {
   /** F5 是否已接入（未接入时按钮置灰并说明原因，而不是假装能录）。 */
   readonly available: boolean;
   readonly active: boolean;
+  /**
+   * 这次录制绑定的是哪条腿（E9 / F8-§8-2）：`editor` = Editor 桥，`runtime` = Runtime 桥。
+   * 两条腿都能录，但内容不同（Runtime 腿只有 ch1），所以面板必须显式标出来，
+   * 不能让人把"Runtime 腿的录制"当成"Editor 腿的录制"。
+   */
+  readonly origin?: DebugChannelOrigin;
 }
 
 /** 回看状态（F5）：文件身份 + 文件尾统计；`footer` 缺失 = 录制被截断或未正常收尾。 */

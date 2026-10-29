@@ -28,11 +28,12 @@ import {
   touchDiscoveryRecord,
   writeDiscoveryRecordAtomically,
 } from "./bridgeDiscovery";
-import { BridgeSocket } from "./bridgeSocket";
+import { BridgeSocket, type BridgeSocketHandlers } from "./bridgeSocket";
 import { planReconnectGrace, type ReconnectGraceDecision } from "./reconnectGrace";
 import {
   EditorBridgeConnectionGate,
   EditorBridgeConnectionSlot,
+  type EditorBridgeServerTransport,
 } from "./editorBridgeConnections";
 import { BridgeChannel, BridgePayloadKind } from "./framing";
 import {
@@ -45,11 +46,14 @@ import type { DebugFrameRecorder } from "./debugIngress";
 import { DebugInstanceManager, type DebugInstanceView } from "./debugInstanceManager";
 import {
   debugQueryAvailability,
+  debugQueryInstanceEvictedError,
+  debugQueryInstanceFinishedError,
   debugQueryLocalError,
   debugQueryUnresolvedError,
   resolveDebugQueryClient,
   type DebugQueryClient,
   type DebugQueryConnection,
+  type DebugQueryInstanceEndReason,
   type DebugQueryNotice,
   type DebugQueryResult,
 } from "./debugQueryClient";
@@ -106,7 +110,7 @@ export interface EditorBridgeServerOptions {
   readonly recordingHost?: DebugRecordingHost;
 }
 
-type BridgeConnection = EditorBridgeConnectionSlot<BridgeSocket>;
+type BridgeConnection = EditorBridgeConnectionSlot<EditorBridgeServerTransport>;
 
 /**
  * 调试上报开关的可观测状态（附录 A.2 的通道 0 控制消息 / C.7）。
@@ -181,7 +185,7 @@ export class EditorBridgeServer implements vscode.Disposable {
   private readonly output: vscode.LogOutputChannel;
   private readonly disposables: vscode.Disposable[] = [];
   // 一对一槽位由连接门同步维护（建立/关闭路径都释放，不依赖异步 close 事件）。
-  private readonly connections = new EditorBridgeConnectionGate<BridgeSocket>();
+  private readonly connections = new EditorBridgeConnectionGate<EditorBridgeServerTransport>();
 
   private tcpServer: net.Server | undefined;
   private heartbeat: NodeJS.Timeout | undefined;
@@ -347,7 +351,9 @@ export class EditorBridgeServer implements vscode.Disposable {
    * `runtime.instanceNotFound`），`available` / `busy` 也不按实例算。现在：
    * - 唯一归属 → 该连接；多个归属或没有任何存活连接持有它 → `unresolved`（**不猜**，
    *   即使只剩一条连接也不回退：实例的原连接可能已断）；
-   * - 没有已握手连接 → `notConnected`；实例键查不到 → `instanceNotFound`；实例已结束 → `instanceFinished`。
+   * - 没有已握手连接 → `notConnected`；实例键查不到 → `instanceNotFound`；
+   *   容量淘汰的空壳（`historyMissing`，视图仍 `active`）→ `instanceEvicted`（§3：路由处就拒绝）；
+   *   实例已结束 → `instanceFinished`（带 `endedReason`，§2：`finished` 与 `reconnect` 文案不同）。
    */
   private resolveDebugQueryRoute(instanceKey: string | undefined):
     | {
@@ -359,7 +365,8 @@ export class EditorBridgeServer implements vscode.Disposable {
     }
     | { readonly status: "notConnected" }
     | { readonly status: "instanceNotFound" }
-    | { readonly status: "instanceFinished" }
+    | { readonly status: "instanceEvicted" }
+    | { readonly status: "instanceFinished"; readonly reason: DebugQueryInstanceEndReason | undefined }
     | { readonly status: "unresolved"; readonly reason: "ambiguous" | "noOwner" } {
     const connections = this.activeDebugQueryConnections();
     if (connections.length === 0) {
@@ -371,9 +378,14 @@ export class EditorBridgeServer implements vscode.Disposable {
       return { status: "instanceNotFound" };
     }
 
+    if (view !== undefined && view.historyMissing) {
+      // 容量淘汰：视图还在（`active` 仍为 true，`Finish` 语义未变）但历史没记 ⇒ 查询注定空转。
+      return { status: "instanceEvicted" };
+    }
+
     if (view !== undefined && !view.active) {
-      // 实例已结束：给"实例已结束"的明确文案，不落到"连接无法确定"。
-      return { status: "instanceFinished" };
+      // 实例已结束：给"实例已结束"或"连接正在重建"的明确文案，不落到"连接无法确定"。
+      return { status: "instanceFinished", reason: view.endedReason };
     }
 
     const route = resolveDebugQueryClient(view, connections);
@@ -412,7 +424,11 @@ export class EditorBridgeServer implements vscode.Disposable {
     interfaceId: string,
     method: string,
     args: readonly DebugArg[] = [],
-    options: { readonly methodId?: number } = {},
+    options: {
+      readonly methodId?: number;
+      /** 请求号入表后的同步回调（§5：面板把本地提示绑到具体 `requestId`）。 */
+      readonly onIssued?: (requestId: string) => void;
+    } = {},
   ): Promise<DebugQueryResult> {
     const route = this.resolveDebugQueryRoute(instanceKey);
     switch (route.status) {
@@ -420,9 +436,12 @@ export class EditorBridgeServer implements vscode.Disposable {
         return Promise.reject(debugQueryLocalError("local.notConnected"));
       case "instanceNotFound":
         return Promise.reject(debugQueryLocalError("local.instanceNotFound"));
+      case "instanceEvicted":
+        // 容量淘汰的空壳：路由处就明确拒绝（附本地码 + 文案），不发一条注定空转的查询（§3）。
+        return Promise.reject(debugQueryInstanceEvictedError());
       case "instanceFinished":
-        // 实例可能在结果前 `Finish`（验收 P1）：明确提示已结束，不重试、不发请求。
-        return Promise.reject(debugQueryLocalError("local.instanceFinished"));
+        // 实例可能在结果前 `Finish`（验收 P1）：明确提示已结束/正在重建，不重试、不发请求。
+        return Promise.reject(debugQueryInstanceFinishedError(route.reason));
       case "unresolved":
         return Promise.reject(debugQueryUnresolvedError(route.reason));
       default:
@@ -431,6 +450,7 @@ export class EditorBridgeServer implements vscode.Disposable {
         return route.queries.query(instanceKey, interfaceId, method, args, {
           frame: route.frame?.() ?? this.debugManager.currentFrame,
           ...(options.methodId === undefined ? {} : { methodId: options.methodId }),
+          ...(options.onIssued === undefined ? {} : { onIssued: options.onIssued }),
         });
     }
   }
@@ -438,7 +458,10 @@ export class EditorBridgeServer implements vscode.Disposable {
   /** 面板桥接用的查询面（`DebugPanelBridge.debugQuery`）；与上面的方法一一对应。 */
   public get debugQuery(): {
     state(instanceKey?: string): EditorBridgeDebugQueryState;
-    query(instanceKey: string, interfaceId: string, method: string, options?: { readonly methodId?: number }): Promise<DebugQueryResult>;
+    query(instanceKey: string, interfaceId: string, method: string, options?: {
+      readonly methodId?: number;
+      readonly onIssued?: (requestId: string) => void;
+    }): Promise<DebugQueryResult>;
     cancelInstance(instanceKey: string, reason?: "user" | "disconnect"): number;
   } {
     return {
@@ -681,6 +704,17 @@ export class EditorBridgeServer implements vscode.Disposable {
   }
 
   private accept(socket: net.Socket): void {
+    this.acceptTransport(
+      (handlers) => new BridgeSocket(socket, handlers, { log: (message) => this.output.appendLine(message) }),
+    );
+  }
+
+  /**
+   * 接一条传输（F8-§4 的**注入点**）：连接生命周期、握手、路由与查询都在这里，与"传输是 TCP 还是
+   * 内存"无关。生产只有 `accept(socket)` → `BridgeSocket` 一条路径；单测注入假传输就能用真实
+   * 服务端驱动"实例已结束/正在重建/被淘汰/无主/歧义"五个映射与两类取消，不必开端口。
+   */
+  public acceptTransport(create: (handlers: BridgeSocketHandlers) => EditorBridgeServerTransport): void {
     // 每次传输建立 generation +1（附录 A.3）；sessionId 不受影响。
     this.generation += 1;
     void this.writeDiscoveryRecord();
@@ -702,7 +736,7 @@ export class EditorBridgeServer implements vscode.Disposable {
         this.recordingHost.noteFrame(sourceId, channel, payloadKind, payload);
       },
     };
-    const bridge = new BridgeSocket(socket, {
+    const bridge = create({
       onControlPayload: (payload, payloadKind) => {
         // 通道 0 的录制在控制载荷入口：这里还没有 JSON 解码，录制判定只按消息类型过滤
         // （握手/保活/`debugEnabled` 广播不录），业务帧原样入队。`payloadKind` 由连接层带出，
@@ -743,7 +777,7 @@ export class EditorBridgeServer implements vscode.Disposable {
           this.notifyDebugReporting("connection");
         }
       },
-    }, { log: (message) => this.output.appendLine(message) });
+    });
 
     // 同步占位；accept 会先剔除已终止（对端已断）的连接，避免误拒重连。
     connection = this.connections.accept(bridge);

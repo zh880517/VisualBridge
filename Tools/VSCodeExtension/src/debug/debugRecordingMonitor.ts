@@ -51,6 +51,25 @@ export interface DebugRecordingMonitorOptions {
 
 export const DEBUG_RECORDING_MONITOR_MS = 1_000;
 
+/**
+ * 从 bridge 的录制状态里取收尾摘要（成功路径）。
+ *
+ * `endedReason` 缺失 = 没有 footer，此时不编造条数（`undefined`）——与 `DebugRecordingStopSummary`
+ * 的约定一致：缺 footer 的录制不能宣称"已保存 N 帧"。
+ */
+export function recordingStopSummary(
+  state: DebugRecordingMonitorSource["recordingState"],
+): DebugRecordingStopSummary | undefined {
+  return state.endedReason === undefined
+    ? undefined
+    : {
+        records: state.records,
+        droppedRecords: state.droppedRecords,
+        droppedBytes: state.droppedBytes,
+        endedReason: state.endedReason,
+      };
+}
+
 export class DebugRecordingMonitor {
   private readonly options: DebugRecordingMonitorOptions;
   private filePathValue: string | undefined;
@@ -58,6 +77,16 @@ export class DebugRecordingMonitor {
 
   public constructor(options: DebugRecordingMonitorOptions) {
     this.options = options;
+  }
+
+  /**
+   * 仍在监视、且**还欠一条**收尾结果的录制文件（`undefined` = 已经交付或没在监视）。
+   *
+   * 手动停止落在自动收尾窗口（两次轮询之间）时，`DebugRecordingService` 用它与
+   * {@link DebugRecordingMonitor} 交付完之后的状态对齐：欠着就必须补一次显式提示（§7-d）。
+   */
+  public get watching(): string | undefined {
+    return this.filePathValue;
   }
 
   /** 开始监视一次录制；重复调用以最后一次为准。 */
@@ -77,9 +106,17 @@ export class DebugRecordingMonitor {
     }
   }
 
-  public dispose(): void {
+  /**
+   * 停止轮询并放弃"欠一条"的记账：调用方**自己**负责这一次的提示（手动停止 /
+   * 已由手动路径交付过的收尾）。不清掉它会让下一次 `stop()` 重复交付同一条。
+   */
+  public forget(): void {
     this.stop();
     this.filePathValue = undefined;
+  }
+
+  public dispose(): void {
+    this.forget();
   }
 
   /** 一次轮询：仅在 `!active && finalized` 时交付一次（测试可直接调用）。 */
@@ -100,23 +137,14 @@ export class DebugRecordingMonitor {
       return;
     }
 
-    this.stop();
-    this.filePathValue = undefined;
+    this.forget();
     if (!state.deliverable || state.failure !== undefined) {
       // sink 已 close 但文件尾没写成功：文件不可交付。宁可报错，也不能让用户以为"已保存"。
       this.options.onFailed?.(filePath, state.failure ?? "the recording footer was not written");
       return;
     }
 
-    const summary = state.endedReason === undefined
-      ? undefined
-      : {
-          records: state.records,
-          droppedRecords: state.droppedRecords,
-          droppedBytes: state.droppedBytes,
-          endedReason: state.endedReason,
-        };
-    this.options.onStopped(filePath, summary);
+    this.options.onStopped(filePath, recordingStopSummary(state));
   }
 }
 

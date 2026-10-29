@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import {
@@ -144,6 +145,8 @@ interface Harness {
   readonly timer: ManualTimer;
   readonly clock: ManualClock;
   readonly appended: { requestId: string; frame: number }[];
+  /** 客户端 publish 出来的提示（F8-§5：面板靠提示里的 `requestId` 退休在途提示）。 */
+  readonly notices: DebugQueryNotice[];
 }
 
 function createHarness(overrides: {
@@ -156,6 +159,7 @@ function createHarness(overrides: {
   const timer = manualTimer();
   const sent: Harness["sent"] = [];
   const appended: { requestId: string; frame: number }[] = [];
+  const notices: DebugQueryNotice[] = [];
   const client = new DebugQueryClient({
     now: () => clock.now(),
     setTimer: (callback, timeoutMs) => timer.setTimer(callback, timeoutMs),
@@ -185,8 +189,11 @@ function createHarness(overrides: {
     },
     ...(overrides.maxPending === undefined ? {} : { maxPending: overrides.maxPending }),
     ...(overrides.timeoutMs === undefined ? {} : { timeoutMs: overrides.timeoutMs }),
+    onNotice: (notice) => {
+      notices.push(notice);
+    },
   });
-  return { client, sent, timer, clock, appended };
+  return { client, sent, timer, clock, appended, notices };
 }
 
 async function rejectionOf(promise: Promise<unknown>): Promise<DebugQueryError> {
@@ -202,17 +209,21 @@ async function rejectionOf(promise: Promise<unknown>): Promise<DebugQueryError> 
 
 const INSTANCE = debugInstanceKey("graph", "hero");
 
-test("the authoritative manifest exposes exactly seven query error codes and each maps to readable text", () => {
-  assert.equal(DEBUG_QUERY_ERROR_CODES.length, 7);
-  assert.deepEqual([...DEBUG_QUERY_ERROR_CODES].sort(), [
-    "runtime.debugNotEnabled",
-    "runtime.instanceNotFound",
-    "runtime.invalidArgument",
-    "runtime.queryBusy",
-    "runtime.queryRejected",
-    "runtime.queryTimeout",
-    "runtime.queryUnregistered",
-  ]);
+test("the authoritative manifest exposes exactly seven query error codes and each maps to readable text", async () => {
+  // 这个用例以前只比对常量自身（改名成"authoritative"也不会红）。现在**真的读**权威清单：
+  // 清单增删一个码、或本地常量与清单漂移，都会在这里失败（F8-§6）。
+  const manifest = JSON.parse(
+    await readFile(path.join(repositoryRoot, "Protocol", "contract-manifest.json"), "utf8"),
+  ) as { readonly errors?: { readonly debugQuery?: readonly string[] } };
+  const authoritative = manifest.errors?.debugQuery;
+  assert.ok(Array.isArray(authoritative), "contract-manifest.json must declare errors.debugQuery");
+  assert.deepEqual(
+    [...DEBUG_QUERY_ERROR_CODES].sort(),
+    [...(authoritative ?? [])].sort(),
+    "本地 DEBUG_QUERY_ERROR_CODES 必须与 Protocol/contract-manifest.json 的 errors.debugQuery 完全一致",
+  );
+  assert.equal(authoritative?.length, 7, "权威清单里只能有 7 个查询错误码（§2/§3 不得加码）");
+
   const messages = DEBUG_QUERY_ERROR_CODES.map((code) => DEBUG_QUERY_ERROR_MESSAGES[code]);
   assert.equal(new Set(messages).size, messages.length, "每条错误码的文案都不同");
   for (const message of messages) {
@@ -238,6 +249,33 @@ test("maps every authoritative query error code received in a server response on
   }
 
   assert.equal(harness.client.pendingCount, 0);
+});
+
+test("every settled notice carries the requestId the panel binds via onIssued (F8 二轮评审 P3)", async () => {
+  // 面板的 `completeRequest` 只认提示里的 `requestId`：生产侧漏传就会**静默失效而全绿**
+  // （控制器用例是直接塞 notice 对象的，覆盖不到这一步），所以在这里把契约钉住。
+  const harness = createHarness();
+  const issued: string[] = [];
+  const succeeded = harness.client.query(INSTANCE, "IGraphDebuger", "NodeStarted", [], {
+    frame: 7,
+    onIssued: (requestId) => issued.push(requestId),
+  });
+  assert.deepEqual(issued, [harness.sent[0]?.requestId], "onIssued 必须在请求入表后同步给出 requestId");
+  assert.equal(harness.client.handleEnvelope(resultEnvelope(issued[0]!)), "settled");
+  await succeeded;
+  const resultNotice = harness.notices[harness.notices.length - 1];
+  assert.equal(resultNotice?.requestId, issued[0], "结果提示必须带 requestId（面板靠它退休在途提示）");
+
+  const failing = harness.client.query(INSTANCE, "IGraphDebuger", "NodeStarted", [], { frame: 7 });
+  failing.catch(() => undefined);
+  const failingId = harness.sent[harness.sent.length - 1]?.requestId;
+  assert.equal(harness.client.handleEnvelope(responseEnvelope(failingId!, "runtime.queryTimeout")), "settled");
+  await rejectionOf(failing);
+  assert.equal(
+    harness.notices[harness.notices.length - 1]?.requestId,
+    failingId,
+    "失败提示也必须带 requestId（`fail()` 只把它交给提示，不复制到错误对象上）",
+  );
 });
 
 test("a client timeout uses runtime.queryTimeout and is marked client-generated", async () => {
