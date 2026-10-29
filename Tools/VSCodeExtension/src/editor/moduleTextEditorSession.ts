@@ -18,7 +18,6 @@ import type { DocumentMatch, ProjectRegistry } from "../project/projectRegistry"
 import type { DocumentDiagnostic } from "@visualbridge/core";
 import type {
   ModuleEditorFacets,
-  ModuleHostMessageHandler,
   ModuleRevealMailbox,
 } from "./moduleEditorFacets";
 import { stampRevealMessage } from "./moduleEditorFacets";
@@ -93,7 +92,6 @@ export class ModuleTextEditorSession {
   private readyExhausted = false;
   private readonly webviewEpoch = new WebviewEpoch();
   private readonly revealMailbox: ModuleRevealMailbox | undefined;
-  private readonly hostMessageHandler: ModuleHostMessageHandler | undefined;
   private lastRevealResult: { readonly target: unknown; readonly found: boolean } | undefined;
   /** 最近一次推给 Webview 的拒绝文案（宿主测试断言"可读提示"用）。 */
   private lastRejectionForTest: string | undefined;
@@ -111,12 +109,6 @@ export class ModuleTextEditorSession {
     this.options = options;
     this.match = options.match;
     this.revealMailbox = options.facets.reveal?.createMailbox();
-    this.hostMessageHandler = options.facets.createHostMessageHandler?.({
-      match: options.match,
-      postMessage: (message) => this.postMessage(message),
-      getText: () => options.document.getText(),
-      log: (line) => options.output.appendLine(`[${options.facets.editor}-debug] ${line}`),
-    });
   }
 
   public async open(): Promise<void> {
@@ -244,7 +236,7 @@ export class ModuleTextEditorSession {
   /**
    * 当前文档的语义 `documentId`（G1d 的 facet 文档作用域）。
    *
-   * 与旧 `graphExecution` 路径的 `getDocumentId()` 同源（模块 `parseText` → `document.documentId`），
+   * 与 Graph 编辑器的当前文档标识同源（模块 `parseText` → `document.documentId`），
    * 解析失败为 `undefined`（宿主按"身份未知"降级为 editor 面投递）。广播按事件调用它，
    * 因此按文档版本缓存：一次编辑只重新解析一次，而不是每条增量都解析。
    */
@@ -339,11 +331,7 @@ export class ModuleTextEditorSession {
     await operation;
   }
 
-  public get debugTestState(): unknown {
-    return this.hostMessageHandler?.testState;
-  }
-
-  /** Graph 执行调试窗口的 facet 状态（G1a；与旧 `debugTestState` 分开，旧路径测试不受影响）。 */
+  /** Graph 执行调试窗口的 facet 状态（G1a）。 */
   public get debugFacetTestState(): {
     readonly lastAck?: DebugFacetAck;
     readonly ready: boolean;
@@ -368,7 +356,6 @@ export class ModuleTextEditorSession {
     readonly active: boolean;
     readonly visible: boolean;
     readonly lastRevealResult?: { readonly target: unknown; readonly found: boolean };
-    readonly debugState?: unknown;
   } {
     const state = {
       ready: this.webviewReady && this.webviewEpoch.isReady && !this.disposed,
@@ -376,7 +363,6 @@ export class ModuleTextEditorSession {
       active: this.options.panel.active,
       visible: this.options.panel.visible,
       ...(this.lastRevealResult === undefined ? {} : { lastRevealResult: this.lastRevealResult }),
-      debugState: this.hostMessageHandler?.testState,
     };
     const readyToken = this.webviewEpoch.isReady ? this.webviewEpoch.currentToken : undefined;
     return readyToken === undefined ? state : { ...state, readyToken };
@@ -425,10 +411,6 @@ export class ModuleTextEditorSession {
       await this.postMessage({ type: "clipboardData", text: await vscode.env.clipboard.readText() });
       return;
     }
-    if (this.hostMessageHandler !== undefined && await this.hostMessageHandler.handle(message)) {
-      return;
-    }
-
     if (message.type === "applyOperations") {
       if (typeof message.documentVersion !== "number"
         || message.documentVersion !== this.options.document.version) {
@@ -863,7 +845,6 @@ export class ModuleTextEditorSession {
       clearTimeout(this.readyRetry);
       this.readyRetry = undefined;
     }
-    this.hostMessageHandler?.dispose?.();
     this.options.controller.dispose?.();
     for (const disposable of this.catalogDisposables.splice(0)) {
       disposable.dispose();

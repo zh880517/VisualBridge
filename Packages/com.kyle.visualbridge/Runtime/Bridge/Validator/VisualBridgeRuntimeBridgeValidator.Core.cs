@@ -37,9 +37,8 @@ namespace VisualBridge.Runtime
         // 无点段（./ ../）、无重复斜杠、无尾斜杠。
         private static readonly Regex NormalizedPathPattern = new Regex("^(?!/)(?!.*:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*/$).+$", RegexOptions.Compiled);
         private static readonly Regex Sha256Pattern = new Regex("^[a-f0-9]{64}$", RegexOptions.Compiled);
-        private static readonly Regex ExecutionIdPattern = new Regex("^exec-[0-9]+$", RegexOptions.Compiled);
 
-        private static readonly HashSet<string> Capabilities = new HashSet<string>(StringComparer.Ordinal) { "snapshot", "events", "lease", "sources", "graphExecution" };
+        private static readonly HashSet<string> Capabilities = new HashSet<string>(StringComparer.Ordinal) { "snapshot", "events", "lease", "sources" };
         private static readonly HashSet<string> InstanceKinds = new HashSet<string>(StringComparer.Ordinal) { "editor-play", "player" };
         private static readonly HashSet<string> ConnectTypes = new HashSet<string>(StringComparer.Ordinal) { "editor-player", "player" };
         private static readonly HashSet<string> PayloadKinds = new HashSet<string>(StringComparer.Ordinal) { "json", "binary" };
@@ -50,27 +49,11 @@ namespace VisualBridge.Runtime
             "acquireLease",
             "releaseLease",
             "getDocumentSources",
-            "getGraphExecutionInstances",
-            "subscribeGraphExecution",
-            "unsubscribeGraphExecution",
-            "getGraphExecutionSnapshot",
-        };
-
-        private static readonly HashSet<string> GraphExecutionStates = new HashSet<string>(StringComparer.Ordinal) { "running", "stopped" };
-        private static readonly HashSet<string> GraphExecutionEventKinds = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "instanceStarted",
-            "instanceStopped",
-            "nodeStart",
-            "nodeOutput",
-            "dataNode",
-            "edgeValueChanged",
         };
 
         private static readonly HashSet<string> ErrorCodes = new HashSet<string>(StringComparer.Ordinal)
         {
             "runtime.alreadyConnected",
-            "runtime.executionNotFound",
             "runtime.internalError",
             "runtime.invalidJson",
             "runtime.invalidMessage",
@@ -265,14 +248,6 @@ namespace VisualBridge.Runtime
                     {
                         value["documentTypeIds"] = new JArray(message.DocumentTypeIds);
                     }
-                    if (message.DocumentId != null)
-                    {
-                        value["documentId"] = message.DocumentId;
-                    }
-                    if (message.ExecutionId != null)
-                    {
-                        value["executionId"] = message.ExecutionId;
-                    }
                     break;
                 case VisualBridgeRuntimeBridgeMessageType.Response:
                     value["type"] = "response";
@@ -280,8 +255,7 @@ namespace VisualBridge.Runtime
                     value["status"] = message.IsOk ? "ok" : "error";
                     if (message.IsOk)
                     {
-                        // documents / sources / executions / execution 互斥；都缺省为
-                        // 租约与订阅控制的 ok（无载荷）。
+                        // documents / sources 互斥；都缺省为租约控制的 ok（无载荷）。
                         if (message.Sources != null)
                         {
                             var sources = new JArray();
@@ -302,20 +276,6 @@ namespace VisualBridge.Runtime
 
                             value["documents"] = documents;
                         }
-                        else if (message.Executions != null)
-                        {
-                            var executions = new JArray();
-                            foreach (var execution in message.Executions)
-                            {
-                                executions.Add(execution.ToJson());
-                            }
-
-                            value["executions"] = executions;
-                        }
-                        else if (message.Execution != null)
-                        {
-                            value["execution"] = message.Execution.ToJson();
-                        }
                     }
                     else
                     {
@@ -329,27 +289,13 @@ namespace VisualBridge.Runtime
                 case VisualBridgeRuntimeBridgeMessageType.Event:
                     value["type"] = "event";
                     value["event"] = message.EventName;
-                    if (message.EventName == "graphExecution")
+                    var eventDocuments = new JArray();
+                    foreach (var document in message.Documents ?? Array.Empty<VisualBridgeRuntimeDocumentSnapshot>())
                     {
-                        var executionEvents = new JArray();
-                        foreach (var executionEvent in message.ExecutionEvents ?? Array.Empty<VisualBridgeRuntimeGraphExecutionEvent>())
-                        {
-                            executionEvents.Add(executionEvent.ToJson());
-                        }
-
-                        value["executionEvents"] = executionEvents;
-                    }
-                    else
-                    {
-                        var eventDocuments = new JArray();
-                        foreach (var document in message.Documents ?? Array.Empty<VisualBridgeRuntimeDocumentSnapshot>())
-                        {
-                            eventDocuments.Add(document.ToJson());
-                        }
-
-                        value["documents"] = eventDocuments;
+                        eventDocuments.Add(document.ToJson());
                     }
 
+                    value["documents"] = eventDocuments;
                     break;
                 case VisualBridgeRuntimeBridgeMessageType.Error:
                     value["type"] = "error";

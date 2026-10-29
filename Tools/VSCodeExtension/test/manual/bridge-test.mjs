@@ -14,7 +14,7 @@ import { attachJsonLines, encodeFrame, encodeJsonFrame, KIND_JSON } from '../sup
 const PROTOCOL_VERSION = 1;
 const CORE_VERSION = 1;
 const DISCOVERY_FORMAT_VERSION = 1;
-const CAPABILITIES = ['snapshot', 'events', 'lease', 'sources', 'graphExecution'];
+const CAPABILITIES = ['snapshot', 'events', 'lease', 'sources'];
 const INSTANCE_KINDS = ['editor-play', 'player'];
 const HEARTBEAT_TIMEOUT_MS = 5000;
 
@@ -279,7 +279,7 @@ async function cmdComm(args) {
   const { record } = target;
 
   // 1. 握手：hello → welcome。
-  const conn = new BridgeConnection(record.tcpPort, record.token, ['snapshot', 'events', 'lease', 'sources', 'graphExecution']);
+  const conn = new BridgeConnection(record.tcpPort, record.token, ['snapshot', 'events', 'lease', 'sources']);
   const welcome = await conn.expectWelcome();
   check('comm: welcome 到达且结构合法',
     welcome.message?.type === 'welcome' && welcome.message.instanceId === record.instanceId
@@ -384,7 +384,7 @@ async function cmdWatch(args) {
   const initialGeneration = current.record.generation;
   const initialPort = current.record.tcpPort;
 
-  const conn = new BridgeConnection(current.record.tcpPort, current.record.token, ['snapshot', 'events', 'lease', 'sources', 'graphExecution']);
+  const conn = new BridgeConnection(current.record.tcpPort, current.record.token, ['snapshot', 'events', 'lease', 'sources']);
   const welcome = await conn.expectWelcome();
   check('watch: 初始连接握手成功', welcome.message?.type === 'welcome' && welcome.message.generation === initialGeneration);
   console.log(`watch: connected gen=${initialGeneration} port=${initialPort}, waiting for domain reload...`);
@@ -419,7 +419,7 @@ async function cmdWatch(args) {
 
   const rebound = reborn.record.tcpPort === initialPort;
   console.log(`watch: new record gen=${reborn.record.generation} port=${reborn.record.tcpPort} (preferred port ${rebound ? 'rebound' : 'changed'}), reconnecting...`);
-  const conn2 = new BridgeConnection(reborn.record.tcpPort, reborn.record.token, ['snapshot', 'events', 'lease', 'sources', 'graphExecution']);
+  const conn2 = new BridgeConnection(reborn.record.tcpPort, reborn.record.token, ['snapshot', 'events', 'lease', 'sources']);
   const welcome2 = await conn2.expectWelcome(10000);
   check('watch: 用新 token 重连握手成功',
     welcome2.message?.type === 'welcome' && welcome2.message.generation === initialGeneration + 1 && welcome2.message.instanceId === instanceId,

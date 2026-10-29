@@ -11,8 +11,7 @@ namespace VisualBridge.GraphDebug
     /// 经生成的 <see cref="GraphDebuger"/> 门面写进统一调试通道（<c>category = "graph"</c>）。
     ///
     /// 设计约束：
-    /// 1. **两路并存**。旧 graphExecution 缓冲照旧由服务端泵发给旧订阅者（G1b 才删），这里只是额外发一条
-    ///    调试事件；是否给旧订阅者入队仍只由 <c>IsSubscribed</c> 决定，本类型不碰旧缓冲。
+    /// 1. **唯一出口**。采集门面只把事实回调给观察者，本类型把它们转成统一调试流事件（G1b 删除了旧的通路）。
     /// 2. **实例生命周期**：实例开始 → <c>Create</c> + <c>InstanceStarted</c>；事实 → 节点/边事件；
     ///    实例结束 → <c>InstanceStopped</c> + <c>Finish</c>。每个实例在一个会话里只 Create 一次，
     ///    绝不每条事件都 Create。会话重置（断连/重装）会把实例集合清空，因此每条事实前用

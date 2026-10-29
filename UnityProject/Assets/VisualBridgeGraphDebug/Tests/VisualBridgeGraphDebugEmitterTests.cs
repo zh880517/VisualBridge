@@ -62,7 +62,7 @@ namespace VisualBridge.GraphDebug.Tests
             Assert.That(transport.Finishes.Count, Is.EqualTo(1));
             Assert.That(transport.Finishes[0].InstanceId, Is.EqualTo("exec-1"));
 
-            // 方法名与顺序：契约方法名（PascalCase）逐条对应旧 graphExecution 的六种事实。
+            // 方法名与顺序：契约方法名（PascalCase）逐条对应六种执行事实。
             Assert.That(Methods(encoder), Is.EqualTo(new[]
             {
                 "InstanceStarted",

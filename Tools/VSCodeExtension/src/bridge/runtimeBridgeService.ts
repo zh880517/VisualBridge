@@ -8,23 +8,18 @@ import {
   RUNTIME_BRIDGE_DISCOVERY_DIRECTORY,
   RuntimeBridgeDocumentSnapshot,
   RuntimeBridgeDocumentSource,
-  RuntimeBridgeGraphExecutionInstance,
   RuntimeBridgeLeaseRequest,
   RuntimeBridgeResponseMessage,
   RuntimeBridgeSourcesRequest,
   RuntimeBridgeEventMessage,
   RuntimeBridgeProtocolError,
   RuntimeBridgeSnapshotRequest,
-  RuntimeBridgeGraphExecutionInstancesRequest,
-  RuntimeBridgeGraphExecutionSubscriptionRequest,
-  RuntimeBridgeGraphExecutionSnapshotRequest,
   RuntimeBridgeWelcomeMessage,
 } from "./runtimeBridgeProtocol";
 import { BridgeSocket } from "./bridgeSocket";
 import { probeBridgePorts } from "./bridgeProbe";
 import { BRIDGE_PROTOCOL_VERSION } from "./bridgeProtocol";
 import { BridgePayloadKind } from "./framing";
-import { GraphExecutionRecording } from "./graphExecutionRecording";
 import { DebugChannelSession, type DebugChannel } from "./debugChannel";
 import type { DebugContractSnapshot } from "./debugContractRegistry";
 import type { DebugEnvelope } from "./debugIngress";
@@ -79,7 +74,6 @@ export interface RuntimeBridgeConnectionState {
   readonly resumed?: boolean;
   readonly lastSnapshotCount?: number;
   readonly lastEventCount?: number;
-  readonly subscribedExecutionId?: string;
   /** E9：本连接的 ch1 接收计数（没有调试会话时缺省）。 */
   readonly debugFrames?: number;
   readonly debugEnvelopes?: number;
@@ -127,7 +121,6 @@ export interface RuntimeBridgeServiceOptions {
 export class RuntimeBridgeService {
   private connection: RuntimeBridgeConnection | undefined;
   private eventListener: ((event: RuntimeBridgeEventMessage) => void) | undefined;
-  private recording: GraphExecutionRecording | undefined;
   private readonly debugWiring: RuntimeBridgeDebugWiring | undefined;
 
   public constructor(
@@ -279,7 +272,6 @@ export class RuntimeBridgeService {
   public disconnect(): void {
     this.connection?.dispose();
     this.connection = undefined;
-    this.recording = undefined;
   }
 
 
@@ -288,16 +280,7 @@ export class RuntimeBridgeService {
     this.eventListener = listener === undefined ? undefined : listener;
   }
 
-  /** 当前执行订阅的会话记录（未订阅时为 undefined；记录随退订从服务摘除，引用归会话持有方）。 */
-  public get activeRecording(): GraphExecutionRecording | undefined {
-    return this.recording;
-  }
-
   private handleEvent(event: RuntimeBridgeEventMessage): void {
-    if (event.event === "graphExecution") {
-      this.recording?.append(event.executionEvents);
-    }
-
     this.eventListener?.(event);
   }
 
@@ -332,54 +315,6 @@ export class RuntimeBridgeService {
 
     return this.connection.getDocumentSources();
   }
-
-  public async getGraphExecutionInstances(documentId?: string): Promise<readonly RuntimeBridgeGraphExecutionInstance[]> {
-    if (this.connection === undefined) {
-      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$", "Runtime bridge is not connected.");
-    }
-
-    return this.connection.getGraphExecutionInstances(documentId);
-  }
-
-  /**
-   * 订阅单个执行实例并开始会话记录（§19.5）：记录对象在发送订阅请求前挂上，
-   * 服务端紧随 ok 推送的合成 instanceStarted 开流标记不会丢失。
-   */
-  public async subscribeGraphExecution(executionId: string): Promise<GraphExecutionRecording> {
-    if (this.connection === undefined) {
-      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$", "Runtime bridge is not connected.");
-    }
-
-    const snapshot = await this.connection.getGraphExecutionSnapshot(executionId);
-    const recording = new GraphExecutionRecording(snapshot);
-    this.recording = recording;
-    try {
-      await this.connection.subscribeGraphExecution(executionId);
-    } catch (errorValue) {
-      this.recording = undefined;
-      throw errorValue;
-    }
-
-    return recording;
-  }
-
-  /** 退订当前实例（幂等）；服务端随即停录，记录引用归会话持有方处置。 */
-  public async unsubscribeGraphExecution(): Promise<void> {
-    const executionId = this.recording?.executionId;
-    if (this.connection !== undefined && executionId !== undefined) {
-      await this.connection.unsubscribeGraphExecution(executionId);
-    }
-
-    this.recording = undefined;
-  }
-
-  public async getGraphExecutionSnapshot(executionId: string): Promise<RuntimeBridgeGraphExecutionInstance> {
-    if (this.connection === undefined) {
-      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$", "Runtime bridge is not connected.");
-    }
-
-    return this.connection.getGraphExecutionSnapshot(executionId);
-  }
 }
 
 interface PendingRequest {
@@ -402,7 +337,6 @@ export class RuntimeBridgeConnection {
   private readonly clientEndpointId = `vscode-${randomUUID()}`;
   private welcome: RuntimeBridgeWelcomeMessage | undefined;
   private snapshotCount = 0;
-  private subscribedExecutionId: string | undefined;
   private disposed = false;
   private connectionError: Error | undefined;
   private debugSessionValue: DebugChannelSession | undefined;
@@ -437,7 +371,6 @@ export class RuntimeBridgeConnection {
       resumed: this.welcome.resumed,
       lastSnapshotCount: this.snapshotCount,
       lastEventCount: this.events.length,
-      ...(this.subscribedExecutionId === undefined ? {} : { subscribedExecutionId: this.subscribedExecutionId }),
       ...(counters === undefined
         ? {}
         : {
@@ -591,73 +524,11 @@ export class RuntimeBridgeConnection {
     return response.sources;
   }
 
-  public async getGraphExecutionInstances(documentId?: string): Promise<readonly RuntimeBridgeGraphExecutionInstance[]> {
-    const response = await this.request({
-      type: "request",
-      requestId: this.nextRequestId(),
-      action: "getGraphExecutionInstances",
-      ...(documentId === undefined ? {} : { documentId }),
-    });
-    if (response.status !== "ok" || response.executions === undefined) {
-      throw new RuntimeBridgeProtocolError("runtime.invalidMessage", "$", "Execution instances response did not carry executions.");
-    }
-
-    return response.executions;
-  }
-
-  public async subscribeGraphExecution(executionId: string): Promise<void> {
-    const response = await this.request({
-      type: "request",
-      requestId: this.nextRequestId(),
-      action: "subscribeGraphExecution",
-      executionId,
-    });
-    if (response.status !== "ok") {
-      throw new RuntimeBridgeProtocolError(response.error, "$", response.detail ?? "Graph execution subscription failed.");
-    }
-
-    this.subscribedExecutionId = executionId;
-  }
-
-  public async unsubscribeGraphExecution(executionId: string): Promise<void> {
-    const response = await this.request({
-      type: "request",
-      requestId: this.nextRequestId(),
-      action: "unsubscribeGraphExecution",
-      executionId,
-    });
-    if (response.status !== "ok") {
-      throw new RuntimeBridgeProtocolError(response.error, "$", response.detail ?? "Graph execution unsubscription failed.");
-    }
-
-    if (this.subscribedExecutionId === executionId) {
-      this.subscribedExecutionId = undefined;
-    }
-  }
-
-  public async getGraphExecutionSnapshot(executionId: string): Promise<RuntimeBridgeGraphExecutionInstance> {
-    const response = await this.request({
-      type: "request",
-      requestId: this.nextRequestId(),
-      action: "getGraphExecutionSnapshot",
-      executionId,
-    });
-    if (response.status !== "ok" || response.execution === undefined) {
-      throw new RuntimeBridgeProtocolError(
-        response.status === "error" ? response.error : "runtime.invalidMessage",
-        "$",
-        response.status === "error" ? response.detail ?? "Graph execution snapshot failed." : "Snapshot response did not carry an execution.",
-      );
-    }
-
-    return response.execution;
-  }
-
   private nextRequestId(): string {
     return `req-${randomUUID().slice(0, 8)}`;
   }
 
-  private request(payload: RuntimeBridgeSnapshotRequest | RuntimeBridgeLeaseRequest | RuntimeBridgeSourcesRequest | RuntimeBridgeGraphExecutionInstancesRequest | RuntimeBridgeGraphExecutionSubscriptionRequest | RuntimeBridgeGraphExecutionSnapshotRequest): Promise<RuntimeBridgeResponseMessage> {
+  private request(payload: RuntimeBridgeSnapshotRequest | RuntimeBridgeLeaseRequest | RuntimeBridgeSourcesRequest): Promise<RuntimeBridgeResponseMessage> {
     if (this.welcome === undefined || this.connectionError !== undefined
       || this.bridge === undefined || !this.bridge.isOpen) {
       return Promise.reject(new RuntimeBridgeProtocolError("runtime.invalidMessage", "$", "Runtime bridge is not connected."));

@@ -3,6 +3,7 @@ import test from "node:test";
 import { BridgeProtocolError } from "../../src/bridge/bridgeProtocol";
 import {
   RuntimeBridgeProtocolError,
+  parseRuntimeBridgeDiscoveryRecord,
   parseRuntimeBridgeMessage,
   translateDelegatedHandshakeError,
 } from "../../src/bridge/runtimeBridgeProtocol";
@@ -86,5 +87,45 @@ test("a welcome with an empty payload list surfaces as runtime.invalidMessage", 
     }),
     (errorValue: unknown) => errorValue instanceof RuntimeBridgeProtocolError
       && errorValue.code === "runtime.invalidMessage",
+  );
+});
+
+// 反向守卫：显式保留被删除的能力值/事件名，用于断言它们必须被拒绝。
+// 零命中验收对本文件做精确路径豁免（命中清单入 G1b 报告）；禁止用转义/拼接隐藏守卫。
+const REMOVED_CAPABILITY = "graphExecution";
+
+function discoveryValue(capabilities: readonly string[]): Record<string, unknown> {
+  return {
+    formatVersion: 1,
+    protocolVersion: 4,
+    coreVersion: 1,
+    instanceId: "editor-44936",
+    kind: "editor-play",
+    capabilities,
+    tcpPort: 4594,
+    token: TOKEN,
+    pid: 44936,
+    generation: 1,
+    startedAt: "2026-08-31T12:00:00.000Z",
+  };
+}
+
+test("the removed graph execution capability and event are rejected instead of silently accepted", () => {
+  assert.throws(
+    () => parseRuntimeBridgeDiscoveryRecord(discoveryValue([REMOVED_CAPABILITY])),
+    (errorValue: unknown) => errorValue instanceof RuntimeBridgeProtocolError
+      && errorValue.code === "runtime.invalidMessage",
+  );
+  // 事件载荷必须是**非空的合法批次**：空数组会在旧分支的 minItems 早退路径上被拒，
+  // 那样的通过理由不是"该事件被移除"。jsonPath 钉死拒绝发生在 $.event 上。
+  assert.throws(
+    () => parseRuntimeBridgeMessage({
+      type: "event",
+      event: REMOVED_CAPABILITY,
+      executionEvents: [{ executionId: "exec-1", frameIndex: 0, kind: "instanceStarted" }],
+    }),
+    (errorValue: unknown) => errorValue instanceof RuntimeBridgeProtocolError
+      && errorValue.code === "runtime.invalidMessage"
+      && errorValue.jsonPath === "$.event",
   );
 });

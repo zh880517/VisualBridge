@@ -10,16 +10,16 @@ namespace VisualBridge.GraphDebug
     /// <c>VisualBridge.GraphDebug</c> 程序集）；而调试运行期（<c>VisualBridge.Debug</c>）在包内，
     /// 不能反向引用工程程序集。工程的调试契约因此和它的执行采集门面一样，属于工程侧。
     ///
-    /// 与旧 graphExecution 录制一一对应（G1b 才删旧）：<c>instanceStarted</c> / <c>nodeStart</c> /
-    /// <c>nodeOutput</c> / <c>dataNode</c> / <c>edgeValueChanged</c> / <c>instanceStopped</c>。
+    /// 六种执行事实：<c>InstanceStarted</c> / <c>NodeStarted</c> / <c>NodeOutput</c> / <c>DataNode</c> /
+    /// <c>EdgeValueChanged</c> / <c>InstanceStopped</c>。
     /// 方法名是调试流的<b>唯一真源</b>：消费端 <c>Modules/Graph/src/graphDebugFacet.ts</c> 的别名表
     /// 由守卫测试逐一对齐（<c>debug-contracts.json</c> 的 graph 类别全部方法名 = 别名表键）。
     ///
     /// 参数约定：
     /// - 每个方法恰好一个 <c>[VisualBridgeDebugInstance]</c> 实例参数（执行实例 id，采集门面分配）；
     /// - 节点/边事件带稳定的 <c>nodeId</c>；边由 <c>nodeId + outputIndex</c>（节点内的输出序号）标识；
-    /// - <c>frameIndex</c> 是图执行的帧号（旧路径同名字段），不是 Unity 的 <c>Time.frameCount</c>；
-    /// - <c>value</c> 是引擎侧字符串化的边值（与旧录制的 <c>value: string</c> 一致）。
+    /// - <c>frameIndex</c> 是图执行的帧号，不是 Unity 的 <c>Time.frameCount</c>；
+    /// - <c>value</c> 是引擎侧字符串化的边值。
     /// </summary>
     [VisualBridgeDebuger(
         "graph",

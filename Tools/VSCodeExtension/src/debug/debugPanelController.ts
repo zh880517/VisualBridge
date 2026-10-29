@@ -7,7 +7,7 @@
  *   按内容哈希落到 `<globalStorage>/debugPanel/<sha256>/`。落地根**不是** `<globalStorage>/modules`，
  *   因为那个目录由模块装载器独占清理（`cleanModuleWebviewDirectories` 会删掉没被任何模块引用的
  *   hash 目录），面板不是模块，放进去会在下次模块重载时被删成空白；
- * - **数据只从 `EditorBridgeServer.debug` 取**（F2），不新建连接、不解析 `graphExecution`；
+ * - **数据只从 `EditorBridgeServer.debug` 取**（F2），不新建连接、不解析旧的执行调试消息；
  * - 开关状态只以 `welcome.debugEnabled` 与 `debugEnabled` 广播为准（{@link DebugEnableSwitch}）。
  *
  * 面板关闭时**保留**模型与已缓存记录（同一 manager 的内存），重开只重绘、不重新拉取。

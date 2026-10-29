@@ -94,10 +94,8 @@ namespace VisualBridge.Runtime
     }
 
     /// <summary>
-    /// 一个 Graph 执行实例（graphExecutionInstance）：游戏侧某个执行者
-    /// （debugKey）对一张图文档的一次运行；executionId 由采集门面分配。
-    /// 同时是 getGraphExecutionSnapshot 的浅快照载荷（当前节点 + 运行
-    /// 状态，不含变量池 dump）。
+    /// 一个 Graph 执行实例：游戏侧某个执行者（debugKey）对一张图文档的一次运行；
+    /// executionId 由采集门面分配，观察者用它把同一实例的调试事实串起来。
     /// </summary>
     public sealed class VisualBridgeRuntimeGraphExecutionInstance
     {
@@ -111,75 +109,19 @@ namespace VisualBridge.Runtime
 
         public string DebugKey { get; internal set; }
 
+        /// <summary>
+        /// 当前无读者（恒为 "running"）；保留为公开数据模型（供未来观察者/诊断使用）。
+        /// </summary>
         public string State { get; internal set; }
 
-        /// <summary>当前节点的稳定 ID；无当前节点时为 null。</summary>
+        /// <summary>
+        /// 当前无读者；保留为公开数据模型（供未来观察者/诊断使用）。
+        /// **不是**「补发时要用」的字段——观察者补发只读 <see cref="FrameIndex"/>，
+        /// 且停追踪会清空实例注册表。
+        /// </summary>
         public string CurrentNodeId { get; internal set; }
 
         public int FrameIndex { get; internal set; }
-
-        internal JObject ToJson()
-        {
-            return new JObject
-            {
-                ["executionId"] = ExecutionId,
-                ["documentTypeId"] = DocumentTypeId,
-                ["documentId"] = DocumentId,
-                ["graphName"] = GraphName,
-                ["debugKey"] = DebugKey,
-                ["state"] = State,
-                ["currentNodeId"] = CurrentNodeId == null ? JValue.CreateNull() : new JValue(CurrentNodeId),
-                ["frameIndex"] = FrameIndex,
-            };
-        }
-    }
-
-    /// <summary>
-    /// 单条 Graph 执行观察事件（graphExecutionEvent）；NodeId 是
-    /// VisualBridge 文档的稳定节点 ID，字段出现与事件类型耦合。
-    /// </summary>
-    public sealed class VisualBridgeRuntimeGraphExecutionEvent
-    {
-        public string ExecutionId { get; internal set; }
-
-        public int FrameIndex { get; internal set; }
-
-        public string Kind { get; internal set; }
-
-        /// <summary>实例生命周期事件不带节点。</summary>
-        public string NodeId { get; internal set; }
-
-        /// <summary>仅 nodeOutput / edgeValueChanged 携带。</summary>
-        public int? OutputIndex { get; internal set; }
-
-        /// <summary>仅 edgeValueChanged 携带（引擎侧字符串化的值）。</summary>
-        public string Value { get; internal set; }
-
-        internal JObject ToJson()
-        {
-            var value = new JObject
-            {
-                ["executionId"] = ExecutionId,
-                ["frameIndex"] = FrameIndex,
-                ["kind"] = Kind,
-            };
-            if (NodeId != null)
-            {
-                value["nodeId"] = NodeId;
-            }
-
-            if (OutputIndex.HasValue)
-            {
-                value["outputIndex"] = OutputIndex.Value;
-            }
-
-            if (Value != null)
-            {
-                value["value"] = Value;
-            }
-
-            return value;
-        }
     }
 
     /// <summary>
@@ -245,26 +187,11 @@ namespace VisualBridge.Runtime
 
         public IReadOnlyList<string> DocumentTypeIds { get; internal set; }
 
-        /// <summary>getGraphExecutionInstances 的可选图文档过滤。</summary>
-        public string DocumentId { get; internal set; }
-
-        /// <summary>subscribe/unsubscribe/getGraphExecutionSnapshot 的执行实例 ID。</summary>
-        public string ExecutionId { get; internal set; }
-
         public bool IsOk { get; internal set; }
 
         public IReadOnlyList<VisualBridgeRuntimeDocumentSnapshot> Documents { get; internal set; }
 
         public IReadOnlyList<VisualBridgeRuntimeDocumentSource> Sources { get; internal set; }
-
-        /// <summary>getGraphExecutionInstances ok 响应的实例列表。</summary>
-        public IReadOnlyList<VisualBridgeRuntimeGraphExecutionInstance> Executions { get; internal set; }
-
-        /// <summary>getGraphExecutionSnapshot ok 响应的浅快照。</summary>
-        public VisualBridgeRuntimeGraphExecutionInstance Execution { get; internal set; }
-
-        /// <summary>graphExecution 事件的批量载荷。</summary>
-        public IReadOnlyList<VisualBridgeRuntimeGraphExecutionEvent> ExecutionEvents { get; internal set; }
 
         public string EventName { get; internal set; }
 

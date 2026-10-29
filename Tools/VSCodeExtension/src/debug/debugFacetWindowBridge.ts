@@ -17,8 +17,8 @@
  *
  * ## 文档作用域（G1d）
  *
- * 同一编辑器类型可以同时开多个文档（两个 `.vbgraph`），而一个执行实例只属于**一个**文档：
- * 旧 `graphExecution` 路径用 `getDocumentId()` 过滤实例（`graphExecutionDebugController.ts`）。
+ * 同一编辑器类型可以同时开多个文档（两个 `.vbgraph`），而一个执行实例只属于**一个**文档。
+ * 被 G1b 删除的旧执行调试路径按"当前文档"过滤实例；facet 路径必须保持同样的文档作用域。
  *
  * 本桥的投递目标是 {@link DebugFacetWindowTarget}（editor + documentId），而不是 editor：
  * - 增量：`update.documentId`（模块透传的 `InstanceStarted`/`InstanceStopped` 载荷）给出归属；
@@ -51,7 +51,7 @@ export const DEBUG_FACET_RESET_MESSAGE = "debugFacetReset";
 /**
  * 模块 Webview → 宿主的调试 facet 消息类型。
  *
- * 与旧 `graphExecution*` 无关：这里只有"回执"与"重新同步"两类，宿主按 `category` 定位窗口。
+ * 这里只有"回执"与"重新同步"两类，宿主按 `category` 定位窗口。
  */
 export const DEBUG_FACET_ACK_MESSAGE = "debugFacetAck";
 export const DEBUG_FACET_RESYNC_MESSAGE = "debugFacetResync";

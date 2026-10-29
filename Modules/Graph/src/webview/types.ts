@@ -402,40 +402,6 @@ export type HostMessage =
       readonly update: GraphDebugFacetRecord;
     }
   | { readonly type: "debugFacetReset"; readonly category: string }
-  /**
-   * 旧 `graphExecution*` 执行调试路径（5d8d3e7 的消息面，逐字符保留）。
-   *
-   * G1a 把渲染源切到了 facet 增量（见 `GraphDebugFacetRecord`），但宿主
-   * `GraphExecutionDebugController` 仍在推这批消息；Webview 必须继续消费事件并回
-   * `graphDebugAck`，否则 `runtime-e2e` 的"执行调试"用例等不到回执。
-   * 除事件累计外，其余字段（实例表 / 执行描述 / 停止标志 / 运行时连接）自 G1a 起
-   * 没有消费者，Webview 收到后不留副本；G1b 会连同这些类型一起删除。
-   */
-  | {
-      readonly type: "graphExecutionInstances";
-      readonly requestId: string;
-      readonly executions: readonly GraphDebugExecution[];
-      readonly runtimeConnected: boolean;
-      readonly runtimeInstanceId?: string;
-    }
-  | {
-      readonly type: "graphExecutionSubscribed";
-      readonly requestId: string;
-      readonly ok: boolean;
-      readonly execution?: GraphDebugExecution;
-      readonly error?: string;
-    }
-  | { readonly type: "graphExecutionUnsubscribed"; readonly requestId: string }
-  | { readonly type: "graphExecutionEvents"; readonly events: readonly GraphDebugEvent[]; readonly totalEvents: number; readonly stopped: boolean }
-  | { readonly type: "graphExecutionStopped"; readonly executionId: string; readonly totalEvents: number }
-  | {
-      readonly type: "graphExecutionDebugState";
-      readonly requestId: string;
-      readonly subscribed: boolean;
-      readonly execution?: GraphDebugExecution;
-      readonly events: readonly GraphDebugEvent[];
-      readonly stopped: boolean;
-    }
   | GraphRevealRequest;
 
 /**
@@ -473,27 +439,10 @@ export interface DebugFacetHistoryEntry {
   readonly update: GraphDebugFacetRecord;
 }
 
-/** 一个执行实例的展示模型（由增量按 `instanceId` 聚合；渲染源，不再来自 `graphExecution` 消息）。 */
+/** 一个执行实例的展示模型（由增量按 `instanceId` 聚合；渲染源）。 */
 export interface GraphDebugInstance {
   readonly instanceId: string;
   readonly state: "running" | "stopped";
-  readonly currentNodeId: string | null;
-  readonly frameIndex: number;
-}
-
-/**
- * 旧路径的执行实例描述（5d8d3e7 的 `GraphDebugExecution`，消息面逐字符保留）。
- *
- * 只描述 `graphExecutionInstances` 等旧消息里的实例；Webview **不再保存**它——
- * 渲染用的是 facet 聚合出来的 `GraphDebugInstance`。G1b 随旧消息一起删除。
- */
-export interface GraphDebugExecution {
-  readonly executionId: string;
-  readonly documentTypeId: string;
-  readonly documentId: string;
-  readonly graphName: string;
-  readonly debugKey: string;
-  readonly state: string;
   readonly currentNodeId: string | null;
   readonly frameIndex: number;
 }

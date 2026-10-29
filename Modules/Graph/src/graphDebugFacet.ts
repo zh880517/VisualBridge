@@ -9,9 +9,10 @@
  *    累积时间轴与回放光标在 Webview 侧，不在 facet 里（G1a）。
  * 2. **不碰原始字节/宿主内部字段**。`DebugRecord` 只有 `seq`/`sessionId`/`instanceId`/
  *    `category`/`frame`/`method`/`params`/`wireBytes`/`at`（以及 G1a 追加的 `kind`）。
- * 3. **事件种类从 `method` 归一**。旧 `graphExecution` 的 `kind`（`nodeStart` 等）在统一调试流里
- *    变成契约方法名（`NodeStarted` 等）；别名表是"同一执行、两种编码"的唯一定义，迁移对比测试
- *    （`test:vscode:host`）与契约守卫测试（`graphDebugFacet.test.ts`）都以它为准，G1b 删除旧路径时一并复核。
+ * 3. **事件种类从 `method` 归一**。旧执行调试通道的 `kind`（`nodeStart` 等）在统一调试流里
+ *    变成契约方法名（`NodeStarted` 等）；别名表是"同一执行、两种编码"的唯一定义，判据是
+ *    `graphDebugFacet.test.ts` 的契约元断言（`Graph debug alias table mirrors the generated Unity
+ *    graph contract exactly`）：键集合必须逐一等于生成契约 `graph` 类别的全部方法名。
  * 4. **`documentId` 只是给宿主的投递提示**。契约里 `InstanceStarted`/`InstanceStopped` 的载荷带
  *    `documentId`，其余事件不带；facet 把记录里**恰好出现**的那个值原样透传（不缓存、不推断），
  *    宿主 `DebugFacetWindowBridge` 据此把增量投给产生该实例的文档（G1d）。它不改变
@@ -38,7 +39,7 @@ export const GRAPH_DEBUG_WINDOW_TITLE = "Graph";
 export const GRAPH_DEBUG_UPDATE_KIND = "graph.debug";
 
 /**
- * 契约方法名 → 旧 `graphExecution` 事件种类。
+ * 契约方法名 → 统一调试流的事件种类。
  *
  * 这张表是**真实调试契约的镜像**，不是猜出来的：键集合必须逐一等于
  * `UnityProject/Assets/VisualBridgeGenerated/Debug/debug-contracts.json` 里 `graph` 类别的全部方法名
@@ -47,7 +48,7 @@ export const GRAPH_DEBUG_UPDATE_KIND = "graph.debug";
  *
  * 查表前先做词形归一（大小写、下划线、连字符），于是 `NodeStarted` / `node-started` / `NODE_STARTED`
  * 命中同一个键；但**键本身**只允许是契约里存在的方法。没有命中（契约外的自定义方法）原样作为种类，
- * 时间轴照常显示但不会点亮节点（旧路径的点亮集合见 `GraphDebugPanel` 的 `GRAPH_DEBUG_EXECUTING_KINDS`，
+ * 时间轴照常显示但不会点亮节点（面板的点亮集合见 `GraphDebugPanel` 的 `GRAPH_DEBUG_EXECUTING_KINDS`，
  * 与这里的六个种类不是同一件事）。
  */
 export const GRAPH_DEBUG_EVENT_KIND_ALIASES: Readonly<Record<string, string>> = {

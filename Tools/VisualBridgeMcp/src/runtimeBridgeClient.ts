@@ -12,13 +12,10 @@ export const RUNTIME_BRIDGE_DISCOVERY_FORMAT_VERSION = 1;
 export const RUNTIME_BRIDGE_DISCOVERY_DIRECTORY = "visualbridge-runtime";
 
 // 全能力 hello：MCP 客户端声明支持全部能力，具体可用性由实例 welcome 返回。
-// MCP 客户端不消费 graphExecution（执行观察属 VS Code 扩展），但解析侧
-// 必须接受该能力值——实例发现记录会通告它。
 const CLIENT_CAPABILITIES = ["snapshot", "events", "lease", "sources"] as const;
-const KNOWN_CAPABILITIES = ["snapshot", "events", "lease", "sources", "graphExecution"] as const;
+const KNOWN_CAPABILITIES = ["snapshot", "events", "lease", "sources"] as const;
 const ERROR_CODES = new Set([
   "runtime.capabilityMissing",
-  "runtime.executionNotFound",
   "runtime.internalError",
   "runtime.invalidJson",
   "runtime.invalidMessage",

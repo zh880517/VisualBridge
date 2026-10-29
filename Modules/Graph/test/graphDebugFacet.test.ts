@@ -67,7 +67,7 @@ test("Graph debug facet maps a record to a JSON render update without host inter
   assert.ok(!JSON.stringify(update).includes("contractState"));
 });
 
-test("Graph debug facet maps every legacy graphExecution kind from the contract method name", () => {
+test("Graph debug facet maps every execution event kind from the contract method name", () => {
   const cases: readonly [string, string][] = [
     ["NodeStarted", "nodeStart"],
     ["NODE-STARTED", "nodeStart"],

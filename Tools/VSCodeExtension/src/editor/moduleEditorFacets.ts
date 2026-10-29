@@ -33,7 +33,6 @@ import type {
   ModuleSourcesStorage,
 } from "../document/moduleSessionContract";
 import type { HostModuleBundle } from "../modules/moduleRegistration";
-import { GraphExecutionDebugController, isGraphDebugMessage } from "./graphExecutionDebugController";
 import { createModuleWebviewHtml } from "./moduleWebviewHtml";
 
 /** 定位 mailbox 的宿主侧视图：直接复用 SDK 的 `RevealMailbox`（不再自抄一份接口）。 */
@@ -76,21 +75,6 @@ export interface ModuleWebviewFacet {
     readonly styleUri: string;
     readonly metadata: ModuleWebviewMetadata;
   }): string;
-}
-
-/** 宿主先处理的调试窗口消息（不转发给控制器）。 */
-export interface ModuleHostMessageContext {
-  readonly match: DocumentMatch;
-  postMessage(message: unknown): Promise<boolean>;
-  getText(): string;
-  log(line: string): void;
-}
-
-export interface ModuleHostMessageHandler {
-  /** 返回 true 表示已消费；未消费的消息继续走控制器。 */
-  handle(message: Readonly<Record<string, unknown>>): Promise<boolean>;
-  readonly testState?: unknown;
-  dispose?(): void;
 }
 
 /** 多源文档登记/注销引用数据用（`WorkspaceReferenceService.updateModuleDocument`）。 */
@@ -202,12 +186,11 @@ export interface ModuleEditorFacets {
   /**
    * 从文档文本解析语义 `documentId`（G1d 的 facet 文档作用域）。
    *
-   * 与旧 `graphExecution` 路径的 `getDocumentId()` 同源（模块 `parseText` → `document.documentId`），
+   * 与 Graph 编辑器的当前文档标识同源（模块 `parseText` → `document.documentId`），
    * 因此"产生实例的文档"与"显示增量的 Webview"用的是同一个标识。解析失败/异步结果返回
    * `undefined`（宿主按"身份未知"降级为 editor 面投递）。
    */
   readDocumentId(text: string, match: DocumentMatch): string | undefined;
-  createHostMessageHandler?(context: ModuleHostMessageContext): ModuleHostMessageHandler | undefined;
 }
 
 export interface ModuleEditorFacetServices {
@@ -276,7 +259,7 @@ function createFacets(
     ),
     // 文档作用域（G1d）：宿主按需解析当前文本的 `documentId`，不引入第二套"文档身份"判定。
     readDocumentId: (text, match) => documentIdOf(facet, match.project, match, text),
-  } satisfies Omit<ModuleEditorFacets, "reveal" | "sources" | "createHostMessageHandler">;
+  } satisfies Omit<ModuleEditorFacets, "reveal" | "sources">;
 
   const reveal = editorRegistration.reveal;
   const sources = facet.storage === "sources" ? createSourcesFacet(facet, moduleId, project, services) : undefined;
@@ -292,7 +275,6 @@ function createFacets(
       } satisfies ModuleRevealFacet,
     }),
     ...(sources === undefined ? {} : { sources }),
-    createHostMessageHandler: (context) => createRuntimeDebugHandler(facet, context),
   };
 }
 
@@ -451,31 +433,6 @@ async function publishSourcesReferenceData(
 
 async function readSourceBytes(uri: vscode.Uri): Promise<Uint8Array> {
   return vscode.workspace.fs.readFile(uri);
-}
-
-/** 执行调试消息的宿主侧处理器；延迟创建，只有真的收到调试消息才连接 Runtime Bridge。 */
-function createRuntimeDebugHandler(
-  facet: DocumentFacet<unknown, unknown>,
-  context: ModuleHostMessageContext,
-): ModuleHostMessageHandler {
-  let controller: GraphExecutionDebugController | undefined;
-  return {
-    async handle(message) {
-      const type = message.type;
-      if (typeof type !== "string" || !isGraphDebugMessage(type)) return false;
-      controller ??= new GraphExecutionDebugController({
-        postMessage: (outgoing) => context.postMessage(outgoing),
-        getDocumentId: () => documentIdOf(facet, context.match.project, context.match, context.getText()),
-        output: (line) => context.log(line),
-      });
-      await controller.handleWebviewMessage(message);
-      return true;
-    },
-    get testState() {
-      return controller?.testState;
-    },
-    dispose: () => controller?.dispose(),
-  };
 }
 
 /** 文档 id 是 Core 的通用约定（`documentId`），由模块自己的解析器给出。 */

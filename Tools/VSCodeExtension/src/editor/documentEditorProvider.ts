@@ -246,7 +246,6 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
       readonly target: unknown;
       readonly found: boolean;
     }[];
-    readonly debugStates: readonly unknown[];
   } {
     const uriKey = uri.toString();
     const sessions = [...this.textSessions.get(uriKey) ?? []];
@@ -261,7 +260,6 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
       lastRevealResults: states.flatMap((state) => (
         state.lastRevealResult === undefined ? [] : [state.lastRevealResult]
       )),
-      debugStates: sessions.flatMap((session) => session.debugTestState === undefined ? [] : [session.debugTestState]),
       maxReadyGeneration: states.reduce(
         (maximum, state) => Math.max(maximum, state.readyGeneration),
         0,
@@ -271,12 +269,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     };
   }
 
-  /** 首个 Graph 会话的执行调试状态（测试轮询用）。 */
-  public getGraphEditorDebugState(uri: vscode.Uri): unknown {
-    return [...this.textSessions.get(uri.toString()) ?? []][0]?.debugTestState;
-  }
-
-  /** 向首个 Graph 会话注入执行调试消息（带 token，与真实 Webview 同路径）。 */
+  /** 向首个 Graph 会话注入一条宿主消息（带 token，与真实 Webview 同路径；G1d 的 resync 用例用）。 */
   public async sendGraphEditorDebugMessage(uri: vscode.Uri, message: unknown): Promise<void> {
     const session = [...this.textSessions.get(uri.toString()) ?? []][0];
     if (session === undefined) throw new Error("No active graph editor session was found.");
@@ -367,7 +360,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
    * 否则回看桥独有的分类拿不到（G1d 评审 P1）。不要在这里回退读字段。
    */
   private clearDebugFacetSessions(
-    bridges: readonly (DebugFacetWindowBridge | undefined)[] = [this.debugFacetWindow, this.replayDebugFacetWindow],
+    bridges: readonly (DebugFacetWindowBridge | undefined)[],
   ): void {
     const seen = new Set<string>();
     for (const bridge of bridges) {
@@ -394,7 +387,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     return posted;
   }
 
-  /** Graph 执行调试窗口的 facet 状态（G1a 宿主测试；与旧 `getGraphEditorDebugState` 分开）。 */
+  /** Graph 执行调试窗口的 facet 状态（G1a 宿主测试）。 */
   public getGraphEditorFacetDebugState(uri: vscode.Uri): {
     readonly sessions: readonly unknown[];
     readonly lastAck?: unknown;

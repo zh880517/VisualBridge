@@ -8,8 +8,7 @@ namespace VisualBridge.Editor.Tests
 {
     /// <summary>
     /// G1c 的第一段接线：采集门面 → 观察者（<see cref="IVisualBridgeGraphExecutionObserver"/>）。
-    /// 这里只验证「缝」本身——每条事实都回调一次、订阅状态与观察者互不影响（旧 graphExecution 缓冲
-    /// 的输出逐字不变）、订阅时补发运行中实例、停追踪/换观察者会 Reset。
+    /// 这里只验证「缝」本身——每条事实都回调一次、注册时补发运行中实例、停追踪/换观察者会 Reset。
     /// 观察者之后的事情（调试契约事件序列）在工程侧的 VisualBridge.GraphDebug.Tests 里验。
     /// </summary>
     public sealed class VisualBridgeGraphExecutionObserverTests
@@ -18,7 +17,6 @@ namespace VisualBridge.Editor.Tests
         public void SetUp()
         {
             VisualBridgeGraphExecutionCapture.SetObserver(null);
-            VisualBridgeGraphExecutionCapture.SetSubscribed(false);
             VisualBridgeGraphExecutionCapture.SetTracking(false);
         }
 
@@ -26,12 +24,11 @@ namespace VisualBridge.Editor.Tests
         public void TearDown()
         {
             VisualBridgeGraphExecutionCapture.SetObserver(null);
-            VisualBridgeGraphExecutionCapture.SetSubscribed(false);
             VisualBridgeGraphExecutionCapture.SetTracking(false);
         }
 
         [Test]
-        public void ObserverReceivesEveryFactWhileTheLegacyBufferStaysEmpty()
+        public void ObserverReceivesEveryFact()
         {
             var observer = new RecordingObserver();
             VisualBridgeGraphExecutionCapture.SetObserver(observer);
@@ -63,15 +60,10 @@ namespace VisualBridge.Editor.Tests
             Assert.That(edge.NodeId, Is.EqualTo("data_b"));
             Assert.That(edge.OutputIndex, Is.EqualTo(1));
             Assert.That(edge.Value, Is.EqualTo("42"));
-
-            // 旧路径：没有订阅者就一条都不进缓冲（观察者不改变这个语义）。
-            var drained = new List<VisualBridgeRuntimeGraphExecutionEvent>();
-            Assert.That(VisualBridgeGraphExecutionCapture.WaitAndDrain(TimeSpan.Zero, drained), Is.False);
-            Assert.That(VisualBridgeGraphExecutionCapture.IsSubscribed, Is.False);
         }
 
         [Test]
-        public void ObserverReplaysLiveInstancesWhenSubscribedMidRun()
+        public void ObserverReplaysLiveInstancesWhenInstalledMidRun()
         {
             VisualBridgeGraphExecutionCapture.SetTracking(true);
             VisualBridgeGraphExecutionCapture.OnInstanceStarted("logicGraph", "encounter", "Encounter", "b", out _);
@@ -80,137 +72,47 @@ namespace VisualBridge.Editor.Tests
             var observer = new RecordingObserver();
             VisualBridgeGraphExecutionCapture.SetObserver(observer);
 
-            // 补发按 executionId 排序，订阅时机不影响顺序确定性。
+            // 补发按 executionId 排序，注册时机不影响顺序确定性。
             Assert.That(observer.Started.Select(started => started.ExecutionId), Is.EqualTo(new[] { "exec-1", "exec-2" }));
         }
 
-        [Test]
-        public void LegacyStreamIsUnchangedWhenObserverIsInstalled()
-        {
-            var observer = new RecordingObserver();
-            VisualBridgeGraphExecutionCapture.SetSubscribed(true);
-            VisualBridgeGraphExecutionCapture.SetObserver(observer);
-            VisualBridgeGraphExecutionCapture.SetTracking(true);
-            VisualBridgeGraphExecutionCapture.OnInstanceStarted("logicGraph", "encounter", "Encounter", "hero", out var executionId);
-
-            VisualBridgeGraphExecutionCapture.OnNodeStart(executionId, "step_a", 3);
-            VisualBridgeGraphExecutionCapture.OnEdgeValueChanged(executionId, "data_b", 1, "x", 3);
-
-            var drained = new List<VisualBridgeRuntimeGraphExecutionEvent>();
-            Assert.That(VisualBridgeGraphExecutionCapture.WaitAndDrain(TimeSpan.Zero, drained), Is.True);
-            Assert.That(drained.Select(item => item.Kind).ToArray(), Is.EqualTo(new[]
-            {
-                "instanceStarted",
-                "nodeStart",
-                "edgeValueChanged",
-            }));
-            Assert.That(drained[1].FrameIndex, Is.EqualTo(3));
-            Assert.That(drained[1].NodeId, Is.EqualTo("step_a"));
-            Assert.That(drained[2].OutputIndex, Is.EqualTo(1));
-            Assert.That(drained[2].Value, Is.EqualTo("x"));
-
-            // 观察者拿到的事实与旧缓冲逐条同源。
-            Assert.That(observer.Kinds, Is.EqualTo(drained.Select(item => item.Kind).ToArray()));
-        }
-
-        [Test]
-        public void NodeFactsChangeNothingWhenThereIsNeitherSubscriberNorObserver()
-        {
-            VisualBridgeGraphExecutionCapture.SetTracking(true);
-            VisualBridgeGraphExecutionCapture.OnInstanceStarted("logicGraph", "encounter", "Encounter", "hero", out var executionId);
-
-            // 没有任何接收者：保持旧的零分配快速路径——节点方法在锁外早退，连实例快照都不更新。
-            VisualBridgeGraphExecutionCapture.OnNodeStart(executionId, "step_a", 1);
-            var drained = new List<VisualBridgeRuntimeGraphExecutionEvent>();
-            Assert.That(VisualBridgeGraphExecutionCapture.WaitAndDrain(TimeSpan.Zero, drained), Is.False);
-            Assert.That(VisualBridgeGraphExecutionCapture.GetSnapshot(executionId).CurrentNodeId, Is.Null);
-        }
-
         /// <summary>
-        /// P0-2：装观察者**不得**改变旧路径的可观察输出。旧语义是"无订阅期间当前节点/帧号不更新"
-        /// （Doc/UnityGraphExecutionDebug.md），观察者只吃回调参数，不能顺手把实例快照也写了。
+        /// 观察者补发/结束只消费 <c>FrameIndex</c>：停止事实报出的帧号必须是**最后一条节点事实**的帧号，而不是 0。
+        /// 这张四分支表锁的是 <c>FrameIndex</c> 那一半（经停止事实间接断言）；<c>CurrentNodeId</c> 的四处写入
+        /// 当前无读者，**有意不做断言**——不给死状态上锁，不是遗漏。
+        ///
+        /// **新增第五条事实分支时，这个数组必须加一行**——G1c 三轮打回都栽在「分支表漏一行」上。
         /// </summary>
         [Test]
-        public void InstallingAnObserverKeepsTheLegacySnapshotFrozen()
+        public void EveryNodeFactFeedsTheStoppedFrame()
         {
-            var observer = new RecordingObserver();
-            VisualBridgeGraphExecutionCapture.SetObserver(observer);
-            VisualBridgeGraphExecutionCapture.SetTracking(true);
-            VisualBridgeGraphExecutionCapture.OnInstanceStarted("logicGraph", "encounter", "Encounter", "hero", out var executionId);
-
-            VisualBridgeGraphExecutionCapture.OnNodeStart(executionId, "step_a", 1);
-            VisualBridgeGraphExecutionCapture.OnEdgeValueChanged(executionId, "step_a", 1, "v", 2);
-
-            // 观察者照常收到事实（参数里带着 nodeId / frameIndex）……
-            // 注意 SetObserver 时的补发事实也在列（instanceStarted），这里只断言这几条事实都在。
-            Assert.That(observer.Kinds, Is.EqualTo(new[] { "instanceStarted", "nodeStart", "edgeValueChanged" }));
-            Assert.That(observer.Facts.Last().NodeId, Is.EqualTo("step_a"));
-            Assert.That(observer.Facts.Last().FrameIndex, Is.EqualTo(2));
-
-            // ……但实例快照必须与"没有订阅者"的 HEAD 行为一致：不更新。
-            var snapshot = VisualBridgeGraphExecutionCapture.GetSnapshot(executionId);
-            Assert.That(snapshot.CurrentNodeId, Is.Null, "无订阅期间当前节点不更新（观察者不得改写旧路径）。");
-            Assert.That(snapshot.FrameIndex, Is.EqualTo(0), "无订阅期间帧号不更新。");
-        }
-
-        /// <summary>
-        /// 表 C 的类级断言：**四条**节点事实分支（nodeStart / nodeOutput / dataNode / edgeValueChanged）
-        /// 在"装了观察者但没有订阅者"时都不得改写旧快照；装了订阅者时四条都必须更新。
-        /// 新增一条写快照的分支时，这张表要跟着加一行。
-        /// </summary>
-        [Test]
-        public void EveryNodeFactRespectsTheSubscribedGate()
-        {
-            var branches = new (string Name, Action<string> Drive)[]
+            var branches = new (string Name, Action<string> Drive, int Frame)[]
             {
-                ("nodeStart", id => VisualBridgeGraphExecutionCapture.OnNodeStart(id, "step_a", 5)),
-                ("nodeOutput", id => VisualBridgeGraphExecutionCapture.OnNodeOutput(id, "step_a", 1, 5)),
-                ("dataNode", id => VisualBridgeGraphExecutionCapture.OnDataNode(id, "step_a", 5)),
-                ("edgeValueChanged", id => VisualBridgeGraphExecutionCapture.OnEdgeValueChanged(id, "step_a", 1, "v", 5)),
+                ("nodeStart", id => VisualBridgeGraphExecutionCapture.OnNodeStart(id, "step_a", 11), 11),
+                ("nodeOutput", id => VisualBridgeGraphExecutionCapture.OnNodeOutput(id, "step_a", 1, 12), 12),
+                ("dataNode", id => VisualBridgeGraphExecutionCapture.OnDataNode(id, "step_a", 13), 13),
+                ("edgeValueChanged", id => VisualBridgeGraphExecutionCapture.OnEdgeValueChanged(id, "step_a", 1, "v", 14), 14),
             };
 
             foreach (var branch in branches)
             {
-                // ① 装观察者、无订阅者 ⇒ 快照必须保持初始值（HEAD 语义：无订阅期间不更新）。
                 var observer = new RecordingObserver();
                 VisualBridgeGraphExecutionCapture.SetObserver(observer);
                 VisualBridgeGraphExecutionCapture.SetTracking(true);
-                VisualBridgeGraphExecutionCapture.OnInstanceStarted("logicGraph", "encounter", "Encounter", "hero", out var unsubscribedId);
-                branch.Drive(unsubscribedId);
+                VisualBridgeGraphExecutionCapture.OnInstanceStarted(
+                    "logicGraph", "encounter", "Encounter", "hero", out var executionId);
 
-                var frozen = VisualBridgeGraphExecutionCapture.GetSnapshot(unsubscribedId);
-                Assert.That(frozen.CurrentNodeId, Is.Null, branch.Name + "：无订阅期间当前节点不得更新。");
-                Assert.That(frozen.FrameIndex, Is.EqualTo(0), branch.Name + "：无订阅期间帧号不得更新。");
-                Assert.That(observer.Kinds.Count, Is.GreaterThanOrEqualTo(2), branch.Name + "：观察者仍应收到事实。");
+                branch.Drive(executionId);
+                VisualBridgeGraphExecutionCapture.OnInstanceStopped(executionId);
+
+                var stopped = observer.Facts.Last(fact => fact.Kind == "instanceStopped");
+                Assert.That(stopped.ExecutionId, Is.EqualTo(executionId));
+                Assert.That(stopped.FrameIndex, Is.EqualTo(branch.Frame),
+                    branch.Name + "：停止事实必须带该节点事实的帧号。");
+
                 VisualBridgeGraphExecutionCapture.SetObserver(null);
-
-                // ② 有订阅者 ⇒ 快照必须更新（否则①的"不更新"可能恒真而抓不到缺陷）。
-                VisualBridgeGraphExecutionCapture.SetSubscribed(true);
-                VisualBridgeGraphExecutionCapture.SetTracking(true);
-                VisualBridgeGraphExecutionCapture.OnInstanceStarted("logicGraph", "encounter", "Encounter", "hero", out var subscribedId);
-                branch.Drive(subscribedId);
-
-                var tracked = VisualBridgeGraphExecutionCapture.GetSnapshot(subscribedId);
-                Assert.That(tracked.CurrentNodeId, Is.EqualTo("step_a"), branch.Name + "：有订阅时必须更新当前节点。");
-                Assert.That(tracked.FrameIndex, Is.EqualTo(5), branch.Name + "：有订阅时必须更新帧号。");
-                VisualBridgeGraphExecutionCapture.SetSubscribed(false);
+                VisualBridgeGraphExecutionCapture.SetTracking(false);
             }
-        }
-
-        /// <summary>订阅者存在时旧语义照常生效（观察者不改变它）。</summary>
-        [Test]
-        public void SubscribedInstanceStillTracksCurrentNodeAndFrame()
-        {
-            VisualBridgeGraphExecutionCapture.SetObserver(new RecordingObserver());
-            VisualBridgeGraphExecutionCapture.SetSubscribed(true);
-            VisualBridgeGraphExecutionCapture.SetTracking(true);
-            VisualBridgeGraphExecutionCapture.OnInstanceStarted("logicGraph", "encounter", "Encounter", "hero", out var executionId);
-
-            VisualBridgeGraphExecutionCapture.OnNodeStart(executionId, "step_a", 5);
-
-            var snapshot = VisualBridgeGraphExecutionCapture.GetSnapshot(executionId);
-            Assert.That(snapshot.CurrentNodeId, Is.EqualTo("step_a"));
-            Assert.That(snapshot.FrameIndex, Is.EqualTo(5));
         }
 
         [Test]
