@@ -147,8 +147,16 @@ namespace VisualBridge.GraphDebug.Tests
             Assert.That(Parameters(encoder.Messages[1]), Is.EqualTo(new[] { "nodeId=1:step_a" }));
         }
 
+        /// <summary>
+        /// E11 §2/§3：宿主结算过的断连（<c>Detach</c>）之后，实例由**会话层**按原槽位重放，
+        /// 不再依赖发射端自己补建。发射端的 <c>EnsureCreated</c> 自愈仍然保留（见下一条用例），
+        /// 但在这条路径上它是**第二道**防线：实例在下一帧之前就已经回到会话里。
+        ///
+        /// 旧断言（"必须重新 Create 并补发 InstanceStarted"）对应的是"会话复位 = 实例消失"的旧语义；
+        /// E11 把"仍然活着的登记"跨会话保留下来，所以这里改成断言重放本身（槽位不变、事件送达）。
+        /// </summary>
         [Test]
-        public void RecreatesTheInstanceAfterTheDebugSessionResets()
+        public void RestoresTheInstanceByReplayAfterTheDebugSessionResets()
         {
             var transport = new RecordingTransport();
             VisualBridgeDebugBridge.Install(transport);
@@ -159,25 +167,64 @@ namespace VisualBridge.GraphDebug.Tests
             emitter.OnInstanceStarted("exec-1", "logicGraph", "encounter", "Encounter", "hero", 1);
             emitter.OnNodeStarted("exec-1", "step_a", 2);
             Assert.That(transport.Creates.Count, Is.EqualTo(1));
+            ushort originalSlot = transport.Creates[0].Slot;
 
-            // 断连：宿主 Detach，会话按断连语义清空实例集合；重连后 Attach。
+            // 断连：宿主 Detach（会话快照清空、**登记保留**）；重连后 Attach。
             transport.SetConnected(false);
             VisualBridgeDebugBridge.Detach();
             transport.SetConnected(true);
             VisualBridgeDebugBridge.Attach();
 
+            // 新会话里会话层已经把仍活着的实例重放回来，且**沿用原槽位**（E11 §3）。
+            Assert.That(transport.Creates.Count, Is.EqualTo(2), "会话复位后必须重放 debugCreate。");
+            Assert.That(transport.Creates[1].InstanceId, Is.EqualTo("exec-1"));
+            Assert.That(transport.Creates[1].Slot, Is.EqualTo(originalSlot), "重放必须沿用原槽位。");
+            Assert.That(VisualBridgeDebug.isInstanceRegistered("exec-1"), Is.True);
+
             emitter.OnNodeStarted("exec-1", "step_b", 3);
 
-            // 新会话里实例已丢：必须重新 Create 并补发 InstanceStarted，之后事件才能送达。
-            Assert.That(transport.Creates.Count, Is.EqualTo(2), "会话重置后必须补建实例。");
+            // 实例已在会话里：发射端不得再 Create（Create 幂等，但重复描述是噪声）；事件照常送达。
+            Assert.That(transport.Creates.Count, Is.EqualTo(2), "重放之后发射端不得再次 Create。");
             Assert.That(Methods(encoder), Is.EqualTo(new[]
             {
                 "InstanceStarted",
                 "NodeStarted",
-                "InstanceStarted",
                 "NodeStarted",
             }));
-            Assert.That(Parameters(encoder.Messages[3]), Is.EqualTo(new[] { "nodeId=1:step_b", "frameIndex=2:3" }));
+            Assert.That(Parameters(encoder.Messages[2]), Is.EqualTo(new[] { "nodeId=1:step_b", "frameIndex=2:3" }));
+            Assert.That(transport.Events.Count, Is.EqualTo(3));
+            Assert.That(transport.Events[2].Slot, Is.EqualTo(originalSlot), "事件必须按重放后的槽位发出。");
+        }
+
+        /// <summary>
+        /// E11 的分界：**宿主没有结算**（没有 <c>Detach</c>）的断连仍按旧语义作废登记，此时
+        /// 发射端的自愈（<c>EnsureCreated</c>）是恢复路径——它必须继续有效，否则这类断连就再也回不来。
+        /// </summary>
+        [Test]
+        public void RecreatesTheInstanceWhenTheDisconnectWasNotSettledByTheHost()
+        {
+            var transport = new RecordingTransport();
+            VisualBridgeDebugBridge.Install(transport);
+            var encoder = new RecordingEncoder();
+            VisualBridgeDebug.SetEncoder(encoder);
+            var emitter = VisualBridgeGraphDebugEmitter.Instance;
+
+            emitter.OnInstanceStarted("exec-1", "logicGraph", "encounter", "Encounter", "hero", 1);
+            Assert.That(transport.Creates.Count, Is.EqualTo(1));
+
+            // 断连但没有宿主结算：一次冷路径调用让会话自己观察到断连（登记随旧语义作废）。
+            transport.SetConnected(false);
+            Assert.That(VisualBridgeDebug.Create("other", Category, "R", string.Empty), Is.True);
+            transport.SetConnected(true);
+            VisualBridgeDebugBridge.Attach();
+            encoder.Messages.Clear();
+
+            emitter.OnNodeStarted("exec-1", "step_b", 3);
+
+            // 发射端自愈：重新 Create 并补发 InstanceStarted，事件才能送达。
+            Assert.That(transport.Creates.Count, Is.EqualTo(3), "未被宿主结算的断连后，发射端必须自愈补建。");
+            Assert.That(Methods(encoder), Is.EqualTo(new[] { "InstanceStarted", "NodeStarted" }));
+            Assert.That(Parameters(encoder.Messages[1]), Is.EqualTo(new[] { "nodeId=1:step_b", "frameIndex=2:3" }));
         }
 
         [Test]
@@ -260,12 +307,89 @@ namespace VisualBridge.GraphDebug.Tests
             transport.SetConnected(false);
             VisualBridgeDebugBridge.Detach();
             encoder.Messages.Clear();
+            Assert.That(VisualBridgeDebugSession.LiveRegistrations, Is.EqualTo(1),
+                "Detach 只清会话快照，登记仍在（E11）。");
 
             emitter.Reset();
 
             // 不能对不存在的实例 Finish（那只会得到 false + 告警），也不该发 InstanceStopped。
             Assert.That(transport.Finishes.Count, Is.EqualTo(0), "会话已清空时不得 Finish 一个不存在的实例。");
             Assert.That(encoder.Messages.Count, Is.EqualTo(0));
+            // **E11（评审 P1-2）的判别点**：`Reset` 必须把登记一起结清（`Finish` 不再被
+            // "实例已不在快照"跳过）；回退那处改动会让僵尸登记留到下一次重连被重放。
+            Assert.That(VisualBridgeDebugSession.LiveRegistrations, Is.EqualTo(0),
+                "Reset 必须注销登记，否则下一次重连会重放已经停止的执行。");
+        }
+
+        /// <summary>
+        /// E11（评审 P1-2）：<c>OnInstanceStopped</c> 的 `Finish` 也不能被"会话已复位"跳过。
+        /// 回退那处改动 ⇒ <c>LiveRegistrations</c> 停在 1，下一次重连会把已经结束的执行重放回来。
+        /// 同时锁定"未登记时不发 InstanceStopped"（与改动前同一行为：会话对未登记实例的 Start 返回
+        /// false，消息整条被丢弃、不编码也不计数）。
+        /// </summary>
+        [Test]
+        public void InstanceStoppedDropsTheRegistrationWhenTheSessionAlreadyReset()
+        {
+            var transport = new RecordingTransport();
+            VisualBridgeDebugBridge.Install(transport);
+            var encoder = new RecordingEncoder();
+            VisualBridgeDebug.SetEncoder(encoder);
+            var emitter = VisualBridgeGraphDebugEmitter.Instance;
+
+            emitter.OnInstanceStarted("exec-1", "logicGraph", "encounter", "Encounter", "hero", 1);
+            transport.SetConnected(false);
+            VisualBridgeDebugBridge.Detach();
+            encoder.Messages.Clear();
+            Assert.That(VisualBridgeDebugSession.LiveRegistrations, Is.EqualTo(1));
+
+            emitter.OnInstanceStopped("exec-1", 3);
+
+            Assert.That(transport.Finishes.Count, Is.EqualTo(0), "远端没有这个实例，不得写 Finishes。");
+            Assert.That(encoder.Messages.Count, Is.EqualTo(0), "未登记实例的 InstanceStopped 不编码、不发。");
+            Assert.That(VisualBridgeDebugSession.LiveRegistrations, Is.EqualTo(0),
+                "实例结束必须注销登记，否则下一次重连会复活它。");
+        }
+
+        /// <summary>
+        /// E11（评审 P2-1）：**结束没生效**（抑制期 / 队列满）时，发射端不能丢本地实例。
+        ///
+        /// 会话会保留登记（P1-1 的修复），重连时把它重放给面板；若发射端已经把本地实例删掉，
+        /// 面板上就会出现一个"活着但永不更新"的**幽灵**——发送端再也不产事件，会话却认为它还在跑。
+        /// 红态（改回无条件 `Instances.Remove` / `FinishAll` 清空）：抑制期 Finish 之后
+        /// `OnNodeStarted` 不再产出任何事件，本用例第一条断言即红。
+        /// </summary>
+        [Test]
+        public void SuppressedFinishKeepsTheLocalInstanceSoAReplayCannotCreateAGhost()
+        {
+            var transport = new RecordingTransport();
+            VisualBridgeDebugBridge.Install(transport);
+            var encoder = new RecordingEncoder();
+            VisualBridgeDebug.SetEncoder(encoder);
+            var emitter = VisualBridgeGraphDebugEmitter.Instance;
+
+            emitter.OnInstanceStarted("exec-1", "logicGraph", "encounter", "Encounter", "hero", 1);
+            Assert.That(transport.Creates.Count, Is.EqualTo(1));
+
+            // 结束没生效：真实触发是关闭期抑制 / 控制队列满，二者都表现为**传输层**让 SendFinish 返回 false。
+            transport.FailFinish = true;
+            emitter.OnInstanceStopped("exec-1", 2);
+            Assert.That(transport.Finishes.Count, Is.EqualTo(0));
+            transport.FailFinish = false;
+
+            // 结束没生效 ⇒ 发射端必须保留本地登记：下一条事实仍然产事件（不是"活着但静默"）。
+            encoder.Messages.Clear();
+            emitter.OnNodeStarted("exec-1", "step_b", 3);
+            Assert.That(Methods(encoder), Is.EqualTo(new[] { "NodeStarted" }),
+                "抑制期 Finish 失败后，发射端不得丢掉本地实例（否则后续事实全部静默）。");
+
+            // 会话结算断连 → 重连：登记被重放，而且**仍然产事件** —— 与"被重放成活实例"自洽。
+            VisualBridgeDebugBridge.Detach();
+            VisualBridgeDebugBridge.Attach();
+            Assert.That(transport.Creates.Count, Is.EqualTo(2), "仍活着的登记必须在重连时重放。");
+            encoder.Messages.Clear();
+            emitter.OnNodeStarted("exec-1", "step_c", 4);
+            Assert.That(Methods(encoder), Is.EqualTo(new[] { "NodeStarted" }),
+                "重放之后发射端仍须为该实例产事件——否则面板上就是一个永不更新的幽灵。");
         }
 
         [Test]
@@ -504,9 +628,17 @@ namespace VisualBridge.GraphDebug.Tests
                 return true;
             }
 
+            /// <summary>模拟"结束没生效"（关闭期抑制 / 控制队列满）：Finish 返回 false 且不记录。</summary>
+            public bool FailFinish { get; set; }
+
             public bool SendFinish(string instanceId, ushort instanceSlot)
             {
                 EnsureConnected();
+                if (FailFinish)
+                {
+                    return false;
+                }
+
                 Finishes.Add((instanceId, instanceSlot));
                 return true;
             }

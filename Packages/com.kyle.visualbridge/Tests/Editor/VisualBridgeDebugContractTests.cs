@@ -387,8 +387,19 @@ namespace VisualBridge.Editor.Tests
             Assert.That((long)transport.Events[1].Frame, Is.EqualTo(-1L));
         }
 
+        /// <summary>
+        /// E11 §2/§3：宿主 <c>Detach()</c> 之后的会话复位**不再等于实例消失**。
+        ///
+        /// 语义变化（E11 明确覆盖 D1 的旧断言）：断连只复位"会话快照"（实例集合/槽位/待发描述），
+        /// 实例登记与**首选槽位**保留；下次 <c>Attach()</c> 时按原槽位重放 <c>debugCreate</c>。
+        /// 理由：一次连接抖动（端口探测落选、临时连接退出、面板重开）不该让仍然活着的实例丢槽位——
+        /// 消费端按 (category, instanceId, instanceSlot) 建立的查询归属会因此永久失效（E11 的 #10 抖动）。
+        ///
+        /// 红态（把 <c>ReplayRegistrationsLocked</c> 从 <c>Attach</c>/建连分支删掉）：
+        /// <c>transport.Creates.Count</c> 停在 3、Attach 后 <c>Start("a")</c> 为 false（实例已随会话消失）。
+        /// </summary>
         [Test]
-        public void DetachResetsTheSessionAndRestartsSlotsFromOne()
+        public void DetachKeepsLiveRegistrationsAndTheirSlotsForReplay()
         {
             var transport = InstallTransport();
             var encoder = new FakeEncoder();
@@ -400,16 +411,114 @@ namespace VisualBridge.Editor.Tests
 
             VisualBridgeDebug.Detach();
             Assert.That(VisualBridgeDebug.isConnected, Is.False);
-            Assert.That(VisualBridgeDebug.Start("a", Category, 10, InterfaceId, "NodeStart"), Is.False);
+            Assert.That(VisualBridgeDebug.Start("a", Category, 10, InterfaceId, "NodeStart"), Is.False,
+                "断连期间事件仍然发不出去（会话快照已复位）。");
+            Assert.That(VisualBridgeDebugSession.LiveRegistrations, Is.EqualTo(2),
+                "断连只复位会话快照，登记必须保留（E11 §3 的\"仍活着的登记\"）。");
+            // 断连期间的新登记拿新槽位：不能抢占活登记的首选槽位（否则重放会撞号）。
             Assert.That(VisualBridgeDebug.Create("c", Category, "res-c", ""), Is.True);
+            Assert.That(transport.Creates.Count, Is.EqualTo(2), "未连接时 Create 只入待发队列，不写线上。");
 
             VisualBridgeDebug.Attach();
             Assert.That(VisualBridgeDebug.isConnected, Is.True);
-            Assert.That(transport.Creates.Count, Is.EqualTo(3));
+            // 顺序：先 flush 断连期间的待发描述（c，槽位 3），再重放活登记（a、b，沿用原槽位）。
+            Assert.That(transport.Creates.Count, Is.EqualTo(5));
             Assert.That(transport.Creates[2].InstanceId, Is.EqualTo("c"));
-            Assert.That((int)transport.Creates[2].Slot, Is.EqualTo(1));
-            Assert.That(VisualBridgeDebug.Start("c", Category, 10, InterfaceId, "NodeStart"), Is.True);
+            Assert.That((int)transport.Creates[2].Slot, Is.EqualTo(3),
+                "断连期间的新实例不能抢占活登记的首选槽位。");
+            Assert.That(transport.Creates[3].InstanceId, Is.EqualTo("a"));
+            Assert.That((int)transport.Creates[3].Slot, Is.EqualTo(1),
+                "重放必须沿用原槽位：槽位漂移会让消费端的查询归属失效（#10）。");
+            Assert.That(transport.Creates[4].InstanceId, Is.EqualTo("b"));
+            Assert.That((int)transport.Creates[4].Slot, Is.EqualTo(2));
+            Assert.That(VisualBridgeDebugSession.ReplayedCreates, Is.EqualTo(2L));
+
+            Assert.That(VisualBridgeDebug.Start("a", Category, 10, InterfaceId, "NodeStart"), Is.True,
+                "重放后实例必须重新可路由。");
+            Assert.That(encoder.Begins.Count, Is.EqualTo(1));
+            Assert.That((int)encoder.Begins[0].Slot, Is.EqualTo(1));
             VisualBridgeDebug.End();
+        }
+
+        /// <summary>
+        /// E11 §3 的红线：**只重放仍活着的登记**。已 <c>Finish</c> 的实例不能借一次重连复活。
+        /// 红态（让 <c>Finish</c> 不注销登记）：Attach 后 <c>Creates</c> 多出一条 a，且
+        /// <c>Start("a")</c> 重新变成 true——消费端会看到一个已经结束的实例复活。
+        /// </summary>
+        [Test]
+        public void ReplayDoesNotResurrectFinishedInstances()
+        {
+            var transport = InstallTransport();
+            VisualBridgeDebug.SetEncoder(new FakeEncoder());
+            Assert.That(VisualBridgeDebug.Create("finished", Category, "res", ""), Is.True);
+            Assert.That(VisualBridgeDebug.Create("alive", Category, "res", ""), Is.True);
+            Assert.That(VisualBridgeDebug.Finish("finished"), Is.True);
+
+            VisualBridgeDebug.Detach();
+            VisualBridgeDebug.Attach();
+
+            // 首连的 2 条 + 重放的 1 条（只有 "alive"）。
+            Assert.That(transport.Creates.Count, Is.EqualTo(3));
+            Assert.That(transport.Creates[2].InstanceId, Is.EqualTo("alive"));
+            Assert.That(VisualBridgeDebugSession.ReplayedCreates, Is.EqualTo(1L));
+            Assert.That(VisualBridgeDebug.Start("finished", Category, 10, InterfaceId, "NodeStart"), Is.False,
+                "已结束的实例不能被重放复活。");
+            Assert.That(VisualBridgeDebug.Finish("alive"), Is.True);
+            Assert.That(VisualBridgeDebugSession.LiveRegistrations, Is.EqualTo(0));
+        }
+
+        /// <summary>
+        /// E11 §3：**宿主没有结算**的断连（会话自己惰性观察到）仍按旧语义作废登记——那时没有
+        /// "观察到整栈断开"这个事实，无法区分抖动与真断开，保守丢弃比复活幽灵实例安全。
+        /// 红态（把惰性重置也改成 keepRegistrations）：重连后 <c>Creates</c> 多出 inst-1，
+        /// 与 D1 的"断连未被观察 ⇒ 旧实例作废"契约冲突。
+        /// </summary>
+        [Test]
+        public void UnsettledDisconnectStillDiscardsRegistrations()
+        {
+            var transport = InstallTransport();
+            VisualBridgeDebug.SetEncoder(new FakeEncoder());
+            Assert.That(VisualBridgeDebug.Create("inst-1", Category, "res", ""), Is.True);
+
+            transport.SetConnected(false);
+            // 冷路径调用观察到断连（没有宿主 Detach）。
+            Assert.That(VisualBridgeDebug.Create("inst-2", Category, "res", ""), Is.True);
+            Assert.That(VisualBridgeDebugSession.LiveRegistrations, Is.EqualTo(1),
+                "惰性断连清空登记，只剩刚 Create 的 inst-2。");
+
+            transport.SetConnected(true);
+            VisualBridgeDebug.Attach();
+            Assert.That(transport.Creates.Count, Is.EqualTo(2), "没有宿主结算的断连不重放旧实例。");
+            Assert.That(transport.Creates[1].InstanceId, Is.EqualTo("inst-2"));
+            Assert.That(VisualBridgeDebug.Start("inst-1", Category, 10, InterfaceId, "NodeStart"), Is.False);
+        }
+
+        /// <summary>
+        /// E11（评审 P3-2）：`Detach` 之后**链路还没建立**就 `Attach`，这次重放不得被消费掉——
+        /// 否则"断连 → 宿主先挂接 → 连接稍后才建立"这条时序会把登记永久漏掉（P2-1 的守卫）。
+        /// 红态（`ReplayRegistrationsLocked` 在未连接时也清 `s_replayPending`）：
+        /// 第二次 Attach（链路建立后）不再重放，`Creates` 停在 1、`ReplayedCreates` 停在 0。
+        /// </summary>
+        [Test]
+        public void AttachWhileStillDisconnectedDefersTheReplayUntilTheLinkComesUp()
+        {
+            var transport = InstallTransport();
+            VisualBridgeDebug.SetEncoder(new FakeEncoder());
+            Assert.That(VisualBridgeDebug.Create("a", Category, "res", ""), Is.True);
+            Assert.That(transport.Creates.Count, Is.EqualTo(1));
+
+            VisualBridgeDebug.Detach();
+            transport.SetConnected(false);
+            VisualBridgeDebug.Attach();
+            Assert.That(VisualBridgeDebugSession.ReplayedCreates, Is.EqualTo(0L),
+                "链路还没建立：Attach 不得消费重放标记。");
+
+            transport.SetConnected(true);
+            VisualBridgeDebug.Attach();
+            Assert.That(transport.Creates.Count, Is.EqualTo(2), "链路建立后必须把仍活着的登记重放出去。");
+            Assert.That(transport.Creates[1].InstanceId, Is.EqualTo("a"));
+            Assert.That((int)transport.Creates[1].Slot, Is.EqualTo(1));
+            Assert.That(VisualBridgeDebugSession.ReplayedCreates, Is.EqualTo(1L));
         }
 
         [Test]

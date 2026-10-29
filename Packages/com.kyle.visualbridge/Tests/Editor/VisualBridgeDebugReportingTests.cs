@@ -406,6 +406,12 @@ namespace VisualBridge.Editor.Tests
             Assert.That(VisualBridgeDebug.Finish(InstanceId), Is.False, "关闭期的 Finish 是抑制，不是成功结束。");
             Assert.That(CountControls(wire, "{\"type\":\"debugFinish\""), Is.EqualTo(0));
 
+            // **E11（评审 P1-1）**：Finish 的"注销登记"必须发生在发送**成功之后**。抑制/队列满导致
+            // 发送失败时，快照回滚了，登记也必须仍在——否则这个"仍在跑的实例"在本会话余下时间里
+            // 不可重放（`Create` 的重复分支又会因实例仍在快照里早退，补不回来）。
+            Assert.That(VisualBridgeDebugSession.LiveRegistrations, Is.EqualTo(1),
+                "发送失败的 Finish 只回滚快照、不能注销登记（否则实例永久不可重放）。");
+
             VisualBridgeDebugReporting.SetEnabled(true);
 
             // 重开后同一实例必须仍可路由；旧实现里槽位已被提前删除，这里 Start 会直接失败。
@@ -420,10 +426,55 @@ namespace VisualBridge.Editor.Tests
             // 成功的 Finish 之后同 id 再 Create 是新实例（不是重复），必须重新补发描述并分配新槽位。
             Assert.That(VisualBridgeDebug.Finish(InstanceId), Is.True);
             Assert.That(CountControls(wire, "{\"type\":\"debugFinish\""), Is.EqualTo(1));
+            Assert.That(VisualBridgeDebugSession.LiveRegistrations, Is.EqualTo(0),
+                "成功的 Finish 必须注销登记。");
             Assert.That(VisualBridgeDebug.Create(InstanceId, Category, "R", string.Empty), Is.True,
                 "Re-creating a finished instance must not be treated as a duplicate.");
             Assert.That(CountControls(wire, "{\"type\":\"debugCreate\""), Is.EqualTo(1));
             StringAssert.Contains("\"instanceSlot\":2", FindLastControl(wire, "{\"type\":\"debugCreate\""));
+            Assert.That(VisualBridgeDebugSession.LiveRegistrations, Is.EqualTo(1),
+                "新实例重新登记。");
+        }
+
+        /// <summary>
+        /// E11（评审 P1-1）的红态用例：抑制期 Finish 失败后，登记必须仍在，并且**重连后按原槽位重放**。
+        /// 旧实现（注销先于发送、失败只回滚快照）会让 <c>LiveRegistrations==0</c>、重放缺席，
+        /// 而重复 `Create` 又因实例仍在快照里早退——实例在本会话余下时间内永久不可重放。
+        /// </summary>
+        [Test]
+        public void SuppressedFinishKeepsTheRegistrationSoItIsReplayedAfterReconnect()
+        {
+            var wire = new FakeWire();
+            var transport = new VisualBridgeDebugTransport(ConnectType.Editor, droppedReportIntervalMs: 0);
+            transport.Bind(wire);
+            VisualBridgeDebug.SetFrame(7);
+            VisualBridgeDebugBridge.Install(transport);
+            VisualBridgeDebug.SetEncoder(new VisualBridgeDebugJsonEncoder());
+            VisualBridgeDebug.Attach();
+            Assert.That(VisualBridgeDebug.Create(InstanceId, Category, "R", string.Empty), Is.True);
+            StringAssert.Contains("\"instanceSlot\":1", FindLastControl(wire, "{\"type\":\"debugCreate\""));
+
+            VisualBridgeDebugReporting.SetEnabled(false);
+            Assert.That(VisualBridgeDebug.Finish(InstanceId), Is.False, "关闭期的 Finish 是抑制，不是成功结束。");
+            Assert.That(VisualBridgeDebugSession.LiveRegistrations, Is.EqualTo(1),
+                "抑制失败的 Finish 必须保留登记（评审 P1-1）。");
+            VisualBridgeDebugReporting.SetEnabled(true);
+
+            // 会话结算断连（宿主 Detach）→ 重连（Attach）：仍活着的登记必须按原槽位重放。
+            VisualBridgeDebug.Detach();
+            wire.Controls.Clear();
+            VisualBridgeDebug.Attach();
+
+            int creates = CountControls(wire, "{\"type\":\"debugCreate\"");
+            Assert.That(creates, Is.EqualTo(1), "Detach/Attach 之后必须重放这条仍活着的登记。");
+            StringAssert.Contains("\"instanceSlot\":1", FindLastControl(wire, "{\"type\":\"debugCreate\""),
+                "重放必须沿用原槽位。");
+            Assert.That(VisualBridgeDebugSession.ReplayedCreates, Is.EqualTo(1L));
+            Assert.That(VisualBridgeDebug.Start(InstanceId, Category, MethodId, InterfaceId, MethodName), Is.True,
+                "重放后实例必须重新可路由。");
+            VisualBridgeDebug.PushParam("hp", 1, 5);
+            Assert.That(VisualBridgeDebug.End(), Is.True);
+            Assert.That(transport.GetDroppedSnapshot().UnknownSlot, Is.EqualTo(0));
         }
 
         // ---------- P2-5：关闭期的失败 Create 不得消耗槽位号 ----------

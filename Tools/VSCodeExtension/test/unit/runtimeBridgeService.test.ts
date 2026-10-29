@@ -402,6 +402,155 @@ test("runtime bridge service probes only the explicit port when one is configure
     service.disconnect();
   }
 });
+test("runtime bridge service probes with TCP liveness only and reuses an existing endpoint", async () => {
+  // 每条被接受的连接记"收到多少字节"：探活连接必须 0 字节（不发 hello ⇒ Unity 侧不会
+  // DebugLinkOpened ⇒ 不 Bind/不 Attach，E11 §1 的判据）。
+  const accepted: Array<{ bytes: number }> = [];
+  const server = net.createServer((socket) => {
+    const entry = { bytes: 0 };
+    accepted.push(entry);
+    socket.setNoDelay(true);
+    socket.on("data", (chunk) => {
+      entry.bytes += chunk.length;
+      socket.write(welcomeFrame());
+    });
+    socket.on("error", () => undefined);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address !== null && typeof address !== "string");
+  const service = new RuntimeBridgeService(() => undefined);
+  try {
+    const welcome = await service.probeAndConnect({
+      host: "127.0.0.1",
+      portRangeStart: address.port,
+      portRangeEnd: address.port,
+      token: TOKEN,
+      timeoutMs: 2000,
+    });
+    assert.equal(welcome.sessionId, SESSION_ID);
+    assert.equal(accepted.length, 2, "探活一条（不发字节）+ 唯一一条真连接");
+    const [liveness, handshake] = accepted;
+    assert.ok(liveness !== undefined && handshake !== undefined);
+    assert.equal(liveness.bytes, 0,
+      "探活连接一个字节都不写：没有 hello/welcome 就没有 debug link，探测不会被当成会话参与者");
+    assert.ok(handshake.bytes > 0, "只有被采纳的那条连接才发 hello");
+
+    // 已连着同一端点 + 相同 token：探测直接复用，连探活连接都不再建（探测不改变会话）。
+    const reused = await service.probeAndConnect({
+      host: "127.0.0.1",
+      portRangeStart: address.port,
+      portRangeEnd: address.port,
+      token: TOKEN,
+      timeoutMs: 2000,
+    });
+    assert.equal(reused.sessionId, SESSION_ID);
+    assert.equal(accepted.length, 2, "复用路径不得再建任何连接");
+  } finally {
+    service.disconnect();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("runtime bridge service keeps a healthy connection when the probe finds no endpoint", async () => {
+  const listener = await startPlayerStyleListener(TOKEN);
+  const service = new RuntimeBridgeService(() => undefined);
+  try {
+    // 先连上真实端点。
+    const instance = instanceFor(listener.port);
+    await service.connect(instance, 2000);
+    assert.equal(service.state.connected, true);
+
+    // 探测一个没人监听的端口段：必须报 noEndpoint，但**不得**顺手断开已有连接
+    // （旧实现先 disconnect 再探测：一次失败的探测会掐掉面板的健康连接）。
+    const closed = net.createServer();
+    await new Promise<void>((resolve) => closed.listen(0, "127.0.0.1", resolve));
+    const closedAddress = closed.address();
+    assert.ok(closedAddress !== null && typeof closedAddress !== "string");
+    const closedPort = closedAddress.port;
+    await new Promise<void>((resolve) => closed.close(() => resolve()));
+
+    await assert.rejects(
+      service.probeAndConnect({
+        host: "127.0.0.1",
+        portRangeStart: closedPort,
+        portRangeEnd: closedPort,
+        token: TOKEN,
+        timeoutMs: 300,
+      }),
+      (errorValue: unknown): boolean => {
+        assert.ok(errorValue instanceof RuntimeBridgeProtocolError);
+        assert.equal(errorValue.code, "runtime.noEndpoint");
+        return true;
+      },
+    );
+    assert.equal(service.state.connected, true, "失败的探测不能断开现有连接（探测不得影响会话）");
+
+    // 已连接端点 + 不同 token：该端点必然拒绝这次 hello，探测连"候选"都不该有 ⇒ 报 noEndpoint，
+    // 且**不得**先断开现有连接（旧实现先 disconnect 再探测，一次错误 token 的探测会掐掉面板连接）。
+    await assert.rejects(
+      service.probeAndConnect({
+        host: "127.0.0.1",
+        portRangeStart: listener.port,
+        portRangeEnd: listener.port,
+        token: "b".repeat(48),
+        timeoutMs: 300,
+      }),
+      (errorValue: unknown): boolean => {
+        assert.ok(errorValue instanceof RuntimeBridgeProtocolError);
+        assert.equal(errorValue.code, "runtime.noEndpoint");
+        return true;
+      },
+    );
+    assert.equal(service.state.connected, true, "token 不匹配的探测同样不得断开现有连接");
+  } finally {
+    service.disconnect();
+    await listener.close();
+  }
+});
+
+test("runtime bridge service drops the previous connection when a live port refuses the handshake (documented trade-off)", async () => {
+  // 评审 P2-3：上面两条只覆盖"无端点"与"token 不匹配"。"探活成功、但所有候选的 hello 都失败"
+  // 时旧连接**仍会被断开**——这是刻意取舍（换链必须先断开，否则新 link 会在旧连接仍绑定时 Bind，
+  // 传输层压栈、会话层看不到换代）。本用例把这条代价锁成已知行为，避免注释再写成"任何失败探测
+  // 都不断开"。
+  const listener = await startPlayerStyleListener(TOKEN);
+  const mute = net.createServer((socket) => {
+    // 收下 hello 但永不回应 ⇒ 握手超时（TCP 可连，但不是可握手的端点）。
+    socket.on("data", () => undefined);
+    socket.on("error", () => undefined);
+  });
+  await new Promise<void>((resolve) => mute.listen(0, "127.0.0.1", resolve));
+  const muteAddress = mute.address();
+  assert.ok(muteAddress !== null && typeof muteAddress !== "string");
+  const service = new RuntimeBridgeService(() => undefined);
+  try {
+    await service.connect(instanceFor(listener.port), 2000);
+    assert.equal(service.state.connected, true);
+
+    await assert.rejects(
+      service.probeAndConnect({
+        host: "127.0.0.1",
+        portRangeStart: muteAddress.port,
+        portRangeEnd: muteAddress.port,
+        token: TOKEN,
+        timeoutMs: 300,
+      }),
+      (errorValue: unknown): boolean => {
+        assert.ok(errorValue instanceof RuntimeBridgeProtocolError);
+        assert.equal(errorValue.code, "runtime.noEndpoint");
+        return true;
+      },
+    );
+    assert.equal(service.state.connected, false,
+      "换链失败后保持未连接：旧连接在握手前就被释放（已知取舍，见 probeAndConnect 的注释）。");
+  } finally {
+    service.disconnect();
+    await new Promise<void>((resolve) => mute.close(() => resolve()));
+    await listener.close();
+  }
+});
+
 test("runtime bridge client handles an event before the response without resending the request", async () => {
   let requestCount = 0;
   await withFakeServer((socket) => {

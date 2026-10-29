@@ -132,6 +132,60 @@ test("routes a query to the leg that owns the instance (E9 cross-leg)", async ()
   assert.equal(manager.instance("graph\u0000runtime-owned")?.recordCount, 2);
 });
 
+test("a reset that re-creates the instance on a different slot loses query ownership, and replaying the original slot restores it (E11/#10)", () => {
+  // 面板按 (category, instanceId, **instanceSlot**) 判查询归属（`debugQueryOwnsInstance`），
+  // 而重复 `debugCreate` 保留**首条**描述与槽位（C.3）。所以会话复位后只要运行时换了槽位，
+  // 面板就再也找不到属主 ⇒ `query.available === false`。这是 `runtime-e2e` 的 #10 飘红的
+  // **一种候选失效路径**（成因未做统计级 A/B 定论）；重放沿用原槽位 ⇒ 这条路径被消掉。
+  const manager = new DebugInstanceManager({ now: () => 3_000, log: () => undefined });
+  const create = (instanceSlot: number): Buffer => jsonPayload({
+    type: "debugCreate",
+    category: "e9-channel",
+    instance: "e9-debug-instance",
+    instanceSlot,
+    resName: "E9RuntimeProbe",
+    debugInfo: "",
+  });
+
+  // 会话 1：实例以 slot 1 建立，面板能路由到它。
+  const first = new DebugChannelSession({
+    channel: fakeChannel("runtime", "runtime-s1").channel,
+    manager,
+    log: () => undefined,
+  });
+  first.acceptFrame(BridgePayloadKind.Json, create(1));
+  const key = "e9-channel\u0000e9-debug-instance";
+  const created = manager.instance(key);
+  assert.ok(created !== undefined);
+  assert.equal(created.instanceSlot, 1);
+  assert.equal(resolveDebugQueryClient(created, [first.connection]).status, "ready");
+
+  // 会话复位后**没有重放**：运行时自愈时换了槽位（谁先重建谁拿 slot 1 的形态）。
+  const second = new DebugChannelSession({
+    channel: fakeChannel("runtime", "runtime-s2").channel,
+    manager,
+    log: () => undefined,
+  });
+  second.acceptFrame(BridgePayloadKind.Json, create(2));
+  const drifted = manager.instance(key);
+  assert.ok(drifted !== undefined);
+  assert.equal(drifted.instanceSlot, 1, "重复 Create 保留首条槽位（C.3）——这正是漂移的来源。");
+  assert.equal(resolveDebugQueryClient(drifted, [second.connection]).status, "noOwner",
+    "槽位漂移后旧槽位绑定不再指向该实例 ⇒ 查询无属主（#10 的 `query.available stayed false`）。");
+
+  // E11 的重放形态：重连后**沿用原槽位**（slot 1）⇒ 归属恢复。
+  const third = new DebugChannelSession({
+    channel: fakeChannel("runtime", "runtime-s3").channel,
+    manager,
+    log: () => undefined,
+  });
+  third.acceptFrame(BridgePayloadKind.Json, create(1));
+  const replayed = manager.instance(key);
+  assert.ok(replayed !== undefined);
+  assert.equal(resolveDebugQueryClient(replayed, [third.connection]).status, "ready",
+    "重放沿用原槽位后，面板重新拿到查询属主。");
+});
+
 test("same identity on both legs is kept as the first instance and never routed by guess (E9)", () => {
   const manager = new DebugInstanceManager({ now: () => 2_000, log: () => undefined });
   const editor = new DebugChannelSession({ channel: fakeChannel("editor", "editor-2").channel, manager, log: () => undefined });

@@ -38,6 +38,32 @@ namespace VisualBridge.Diagnostics
         private static readonly List<VisualBridgeDebugPendingCreate> s_pendingCreates =
             new List<VisualBridgeDebugPendingCreate>();
 
+        /// <summary>
+        /// **活跃实例登记**（E11）：与「会话快照」分开的一套状态，只有 <see cref="Finish"/> 与
+        /// 换传输（<see cref="SetTransport"/>/<see cref="ClearTransport"/>）才移除。
+        ///
+        /// 为什么需要它：宿主的断连结算（<see cref="Detach"/>，附录 A.9 的"最后一条连接关闭"）会清空
+        /// 会话快照（实例、槽位、待发描述），但**实例本身还在跑**。旧实现把"快照清空"当成"实例消失"，
+        /// 于是任何一次连接抖动（端口探测、临时连接、DAP 重连）之后，仍然活着的实例都只能等模块
+        /// 自己重新 Create；而模块重发的 Create 会拿到**新槽位**，消费端按 (category, instanceId,
+        /// instanceSlot) 建立的查询归属就对不上了——这是 `runtime-e2e` 的 #10 飘红的**一种候选机制**。
+        /// 登记表让"活着的实例"跨会话复位保留描述与**首选槽位**，重连后由
+        /// <see cref="ReplayRegistrationsLocked"/> 重放。
+        /// **边界**：#10 的成因未做统计级 A/B（探测建链的时序同样是候选），本机制只是"从机制上
+        /// 消除掉其中一种可能"，不宣称已被定为唯一成因。
+        /// </summary>
+        private static readonly List<Registration> s_registrations = new List<Registration>();
+
+        /// <summary>
+        /// 下一次连上时是否重放登记。只有宿主显式 <see cref="Detach"/>（它**观察到**整栈断开，
+        /// 附录 A.9 的结算入口）才置位；会话自己惰性发现的断连（没有宿主结算）仍按旧语义作废登记，
+        /// 因为那时无法区分"抖动"与"真的断开"，保守丢弃。
+        /// </summary>
+        private static bool s_replayPending;
+
+        /// <summary>累计重放的 <c>debugCreate</c> 条数（诊断/trace 用；不参与业务判断）。</summary>
+        private static long s_replayedCreates;
+
         // 查询处理器注册表：key 是 (category, interfaceId)。值里带 Dispatcher 与参数声明表两个委托，
         // 生产路径（生成 Dispatcher）直接调用两个运行期委托，不反射生成成员，IL2CPP 裁剪不会让结果归属
         // 静默失效（附录 B.2.3/B.5）；非标准签名的 Delegate 只作兼容适配。
@@ -157,7 +183,7 @@ namespace VisualBridge.Diagnostics
             }
         }
 
-        /// <summary>显式挂接（附录 B.2）：重连后调用，按需 flush 待发描述。</summary>
+        /// <summary>显式挂接（附录 B.2）：重连后调用，按需 flush 待发描述并重放仍活着的登记。</summary>
         internal static void Attach()
         {
             lock (Gate)
@@ -178,18 +204,28 @@ namespace VisualBridge.Diagnostics
                     // "已连接且同代次"时会早退。重开路径（面板打开上报）必须在这里强制补发一次，
                     // 否则会话快照有实例、传输层没有槽位，之后每条事件都计 unknownSlot，直到重连。
                     FlushPendingLocked(transport);
+                    // E11：宿主结算过的断连（Detach）在重连后把仍活着的登记重放回去（沿用原槽位）。
+                    ReplayRegistrationsLocked(transport);
                 }
             }
         }
 
-        /// <summary>显式解除挂接（附录 B.2）：按断连语义重置会话状态。</summary>
+        /// <summary>
+        /// 显式解除挂接（附录 B.2）：按断连语义重置会话快照，但**保留仍然活着的登记**（E11）。
+        /// 下一秒就可能有新连接压上来（探测落选、临时连接退出、面板重开），那时靠重放把实例
+        /// 描述送回去；只有 <see cref="Finish"/> 或换传输才会真正注销一条登记。
+        /// </summary>
         internal static void Detach()
         {
             lock (Gate)
             {
                 Volatile.Write(ref s_attached, false);
-                ResetSessionLocked();
+                ResetSessionLocked(keepRegistrations: true);
                 s_disconnectApplied = true;
+                s_replayPending = true;
+                VisualBridgeDebugDiagnostics.Log(
+                    "[debug-session] detached; " + s_registrations.Count
+                    + " live registration(s) kept for replay on the next attach");
             }
         }
 
@@ -232,15 +268,52 @@ namespace VisualBridge.Diagnostics
                     return false;
                 }
 
-                if (s_nextSlot > MaxInstanceSlot)
+                // E11：会话复位后同一实例会再次 Create（发射端自愈或模块重发）。登记还在 ⇒ 这不是
+                // "新实例"，而是"上一个会话的同一实例"：**沿用首选槽位**重建。槽位漂移会让消费端按
+                // instanceSlot 建立的查询归属失效——这是 #10 的一种候选机制（成因未定论，见字段注释）。
+                int slotsBefore = s_nextSlot;
+                var registration = FindRegistrationLocked(instanceId);
+                bool newRegistration = registration == null;
+                if (newRegistration)
+                {
+                    if (s_registrations.Count >= MaxInstances)
+                    {
+                        if (!s_instanceLimitWarned)
+                        {
+                            s_instanceLimitWarned = true;
+                            VisualBridgeDebugDiagnostics.Warning(
+                                "VisualBridgeDebug 登记数达到上限 " + MaxInstances + "，后续 Create 失败（每会话只告警一次）。");
+                        }
+
+                        return false;
+                    }
+
+                    registration = new Registration();
+                    registration.InstanceId = instanceId;
+                }
+
+                ushort instanceSlot;
+                if (!TryReserveSlotLocked(newRegistration ? 0 : registration.Slot, out instanceSlot))
                 {
                     VisualBridgeDebugDiagnostics.Warning(
                         "VisualBridgeDebug 槽位耗尽（上限 " + MaxInstanceSlot + "），Create '" + instanceId + "' 失败。");
                     return false;
                 }
 
-                ushort instanceSlot = (ushort)s_nextSlot;
-                s_nextSlot++;
+                registration.Category = category ?? string.Empty;
+                registration.ResName = resName ?? string.Empty;
+                registration.DebugInfo = debugInfo ?? string.Empty;
+                registration.Slot = instanceSlot;
+                if (newRegistration)
+                {
+                    s_registrations.Add(registration);
+                }
+                else if (!snapshot.Connected)
+                {
+                    VisualBridgeDebugDiagnostics.Log(
+                        "[debug-session] re-created '" + instanceId + "' from its live registration (slot="
+                        + instanceSlot + ") while the session was detached");
+                }
 
                 var instances = new HashSet<string>(snapshot.Instances, StringComparer.Ordinal) { instanceId };
                 var slots = new Dictionary<string, ushort>(snapshot.Slots, StringComparer.Ordinal)
@@ -263,11 +336,17 @@ namespace VisualBridge.Diagnostics
                         // 总开关关闭属于"抑制"而非失败：静默回滚，不告警也不计数（附录 A.5 的 encodeFailed 不含开关）。
                         PublishLocked(snapshot);
                         // 槽位也要退回去：发送失败从未对外公布这个槽位，不回退会让关闭期反复 Create
-                        // 耗尽 65535 个槽位（F7-P2-5）。Gate 内 next == instanceSlot + 1；若发送失败触发了
-                        // 会话重置（next 已被重置），则保留重置后的值，不能盲目回写。
-                        if (s_nextSlot == instanceSlot + 1)
+                        // 耗尽 65535 个槽位（F7-P2-5）。Gate 内 next == slotsBefore + 1；
+                        // 若发送失败触发了会话重置（next 已被重置），则保留重置后的值，不能盲目回写。
+                        if (s_nextSlot > slotsBefore)
                         {
-                            s_nextSlot = instanceSlot;
+                            s_nextSlot = slotsBefore;
+                        }
+
+                        if (newRegistration)
+                        {
+                            // 这一次 Create 没有落地：登记也不能留（否则会在下次重连时被重放成幽灵实例）。
+                            s_registrations.Remove(registration);
                         }
 
                         if (VisualBridgeDebugReporting.Enabled)
@@ -310,6 +389,16 @@ namespace VisualBridge.Diagnostics
                 var snapshot = s_snapshot;
                 if (!snapshot.Instances.Contains(instanceId))
                 {
+                    // E11：实例已随会话复位从快照消失，但**登记**还在。Finish 是"这条登记不再存活"
+                    // 的权威声明，必须在这里注销，否则下一次重连会把它当成仍活着的登记重放回来
+                    // （复活已结束的实例，验收红线）。
+                    if (RemoveRegistrationLocked(instanceId))
+                    {
+                        VisualBridgeDebugDiagnostics.Log(
+                            "[debug-session] finished '" + instanceId + "' while its session was already reset "
+                            + "(live registration dropped; it will not be replayed)");
+                    }
+
                     return false;
                 }
 
@@ -340,6 +429,11 @@ namespace VisualBridge.Diagnostics
                     {
                         // 结束帧没送达：恢复本地发布，让下一次 Finish 仍有机会送达。
                         // 关闭期抑制同理不告警（抑制 ≠ 失败）。
+                        //
+                        // **E11（评审 P1-1）：登记在发送前**从未**注销，所以这里也不需要回滚登记**——
+                        // 注销只发生在"结束确实生效"之后（下面 `return true` 之前）。旧写法先注销、
+                        // 失败只回滚快照，会让"在跑的实例"从登记表消失：本会话余下时间不可重放，
+                        // 而重复 `Create` 又因实例仍在快照里早退，补不回来。
                         PublishLocked(snapshot);
                         if (VisualBridgeDebugReporting.Enabled)
                         {
@@ -351,6 +445,8 @@ namespace VisualBridge.Diagnostics
                     }
                 }
 
+                // 结束确实生效（待发描述已撤销 / Finish 已送达 / 本来就没有连接可发）：注销登记。
+                RemoveRegistrationLocked(instanceId);
                 return true;
             }
         }
@@ -973,7 +1069,25 @@ namespace VisualBridge.Diagnostics
             return false;
         }
 
-        /// <summary>检测连接态变化；必须在 Gate 内调用。断连时重置，建连后 flush 待发描述。</summary>
+        /// <summary>累计重放的 <c>debugCreate</c> 条数（诊断/EditMode 用例读取；不参与业务判断）。</summary>
+        internal static long ReplayedCreates
+        {
+            get { return Interlocked.Read(ref s_replayedCreates); }
+        }
+
+        /// <summary>当前仍活着的登记条数（诊断用；与"会话快照里的实例数"是两套状态）。</summary>
+        internal static int LiveRegistrations
+        {
+            get
+            {
+                lock (Gate)
+                {
+                    return s_registrations.Count;
+                }
+            }
+        }
+
+        /// <summary>检测连接态变化；必须在 Gate 内调用。断连时重置，建连后 flush 待发描述并重放登记。</summary>
         private static void RefreshConnectionLocked()
         {
             var transport = Volatile.Read(ref s_transport);
@@ -988,7 +1102,8 @@ namespace VisualBridge.Diagnostics
 
                 if (!s_disconnectApplied)
                 {
-                    // 没观察到断连的重连（连接代次已变化）：上一个会话的实例、槽位与待发描述全部作废。
+                    // 没观察到断连的重连（连接代次已变化）：上一个会话的实例、槽位、待发描述与登记全部作废。
+                    // 这条路径没有宿主结算（没有 Detach），无法区分抖动与真断开 ⇒ 保守丢弃，不重放。
                     ResetSessionLocked();
                 }
 
@@ -998,6 +1113,8 @@ namespace VisualBridge.Diagnostics
                 // 附录 A.5：连接建立后先发一条当前帧；之后的数据消息只在帧值变化时补发。
                 SendCurrentFrameLocked(transport);
                 FlushPendingLocked(transport);
+                // E11：宿主结算过的断连（Detach）在重连后把仍活着的登记重放回去（沿用原槽位）。
+                ReplayRegistrationsLocked(transport);
                 return;
             }
 
@@ -1008,6 +1125,102 @@ namespace VisualBridge.Diagnostics
 
             ResetSessionLocked();
             s_disconnectApplied = true;
+        }
+
+        /// <summary>
+        /// 重放"仍活着的登记"（E11 §2/§3）：只在宿主 <see cref="Detach"/> 结算过的断连之后、
+        /// 重连（<see cref="RefreshConnectionLocked"/> 的建连分支或 <see cref="Attach"/>）时调用。
+        ///
+        /// 只重放**当前会话快照里没有**的登记：本会话已经发过的实例不重发（否则消费端会看到重复描述）；
+        /// 重放**沿用登记的首选槽位**，这样消费端按 (category, instanceId, instanceSlot) 做的查询归属
+        /// 在重连前后指向同一条绑定 ⇒ 机制上消除"槽位漂移导致归属失效"这一种 #10 候选成因
+        /// （成因未做统计级 A/B 定论，见 `s_registrations` 的注释）。
+        /// 发送失败时回滚本次发布并保留登记，等下一次重连/Attach 再试（不静默丢实例）。
+        /// </summary>
+        private static void ReplayRegistrationsLocked(IVisualBridgeDebugTransport transport)
+        {
+            if (!s_replayPending || transport == null)
+            {
+                return;
+            }
+
+            // 未连接时重放必然失败（`SendCreate` 没有活动 wire）：**不要**在这里消费标记，
+            // 否则"Detach 后先 Attach 一次、连接稍后才建立"会让这次重放永久丢失（评审 P2-1）。
+            if (!SafeIsConnected(transport))
+            {
+                return;
+            }
+
+            if (s_registrations.Count == 0)
+            {
+                s_replayPending = false;
+                return;
+            }
+
+            bool everyRegistrationHandled = true;
+            int replayed = 0;
+            for (int index = 0; index < s_registrations.Count; index++)
+            {
+                var registration = s_registrations[index];
+                if (s_snapshot.Instances.Contains(registration.InstanceId))
+                {
+                    continue;
+                }
+
+                int slotsBefore = s_nextSlot;
+                var previous = s_snapshot;
+                ushort instanceSlot;
+                if (!TryReserveSlotLocked(registration.Slot, out instanceSlot))
+                {
+                    everyRegistrationHandled = false;
+                    VisualBridgeDebugDiagnostics.Warning(
+                        "VisualBridgeDebug 重放实例 '" + registration.InstanceId + "' 失败：槽位耗尽。");
+                    continue;
+                }
+
+                registration.Slot = instanceSlot;
+                var instances = new HashSet<string>(previous.Instances, StringComparer.Ordinal) { registration.InstanceId };
+                var slots = new Dictionary<string, ushort>(previous.Slots, StringComparer.Ordinal)
+                {
+                    [registration.InstanceId] = instanceSlot,
+                };
+                var categories = new Dictionary<ushort, string>(previous.Categories)
+                {
+                    [instanceSlot] = registration.Category,
+                };
+                PublishLocked(new VisualBridgeDebugSnapshot(instances, slots, categories, previous.Connected));
+
+                if (!SendCreate(transport, registration.InstanceId, registration.Category, registration.ResName,
+                        registration.DebugInfo, instanceSlot))
+                {
+                    PublishLocked(previous);
+                    if (s_nextSlot > slotsBefore)
+                    {
+                        s_nextSlot = slotsBefore;
+                    }
+
+                    everyRegistrationHandled = false;
+                    if (VisualBridgeDebugReporting.Enabled)
+                    {
+                        VisualBridgeDebugDiagnostics.Warning(
+                            "VisualBridgeDebug 重放实例 '" + registration.InstanceId + "' 发送失败，保留登记等待下一次连接。");
+                    }
+
+                    continue;
+                }
+
+                replayed++;
+            }
+
+            // 只有"每一条都处理成功"才算这次重放完成；失败/槽位耗尽的条目留在登记里，
+            // 下一次 Attach/建连继续重试（与 `FlushPendingLocked` 的"只移除真正发出的项"同一纪律）。
+            s_replayPending = !everyRegistrationHandled;
+
+            Interlocked.Add(ref s_replayedCreates, replayed);
+            VisualBridgeDebugDiagnostics.Log(
+                "[debug-session] replayed " + replayed + "/" + s_registrations.Count
+                + " live debugCreate(s) after the session reset (slot-preserving)"
+                + (everyRegistrationHandled ? string.Empty : "; retry pending"));
         }
 
         private static void FlushPendingLocked(IVisualBridgeDebugTransport transport)
@@ -1054,12 +1267,95 @@ namespace VisualBridge.Diagnostics
             return removed;
         }
 
-        private static void ResetSessionLocked()
+        /// <summary>登记表里按实例 id 查找（Gate 内）。</summary>
+        private static Registration FindRegistrationLocked(string instanceId)
+        {
+            for (int index = 0; index < s_registrations.Count; index++)
+            {
+                if (string.Equals(s_registrations[index].InstanceId, instanceId, StringComparison.Ordinal))
+                {
+                    return s_registrations[index];
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>注销一条登记（实例真正结束）；返回是否确实移除了。</summary>
+        private static bool RemoveRegistrationLocked(string instanceId)
+        {
+            for (int index = s_registrations.Count - 1; index >= 0; index--)
+            {
+                if (string.Equals(s_registrations[index].InstanceId, instanceId, StringComparison.Ordinal))
+                {
+                    s_registrations.RemoveAt(index);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// 预留槽位（Gate 内）：<paramref name="preferred"/> &gt; 0 时优先沿用它（会话复位后的重放/重建），
+        /// 被本会话其它实例占用则退回单调分配。<see cref="VisualBridgeDebugSnapshot.Categories"/> 是
+        /// "本会话已占用槽位"的唯一真源（与快照一起整体替换），所以这里不需要第二份占用表。
+        /// </summary>
+        private static bool TryReserveSlotLocked(int preferred, out ushort instanceSlot)
+        {
+            if (preferred >= 1 && preferred <= MaxInstanceSlot && !s_snapshot.Categories.ContainsKey((ushort)preferred))
+            {
+                instanceSlot = (ushort)preferred;
+                if (s_nextSlot <= instanceSlot)
+                {
+                    s_nextSlot = instanceSlot + 1;
+                }
+
+                return true;
+            }
+
+            while (s_nextSlot <= MaxInstanceSlot)
+            {
+                var candidate = (ushort)s_nextSlot;
+                s_nextSlot++;
+                if (!s_snapshot.Categories.ContainsKey(candidate))
+                {
+                    instanceSlot = candidate;
+                    return true;
+                }
+            }
+
+            instanceSlot = 0;
+            return false;
+        }
+
+        private static void ResetSessionLocked(bool keepRegistrations = false)
         {
             // 会话重置前把本线程还没 End 的消息收尾，避免编码器留下半条消息（附录 B.2.1/B.4.1）。
             CloseAbandonedMessage();
             PublishLocked(VisualBridgeDebugSnapshot.Disconnected);
-            s_nextSlot = 1;
+            if (keepRegistrations)
+            {
+                // 重放要沿用原槽位：把分配游标抬到所有活登记之上，断连期间新 Create 不会抢占它们的槽位。
+                s_nextSlot = 1;
+                for (int index = 0; index < s_registrations.Count; index++)
+                {
+                    int next = s_registrations[index].Slot + 1;
+                    if (next > s_nextSlot)
+                    {
+                        s_nextSlot = next;
+                    }
+                }
+            }
+            else
+            {
+                // 换传输（Install/Uninstall）与"没有人结算"的断连：登记与游标一起作废（附录 B.3.2）。
+                s_registrations.Clear();
+                s_replayPending = false;
+                s_nextSlot = 1;
+                Interlocked.Exchange(ref s_replayedCreates, 0);
+            }
+
             s_pendingCreates.Clear();
             s_instanceLimitWarned = false;
             Interlocked.Exchange(ref s_droppedMessages, 0);
@@ -1172,6 +1468,26 @@ namespace VisualBridge.Diagnostics
                     "VisualBridgeDebug 读取传输层连接代次失败，按同一连接处理：" + exception.Message);
                 return s_sessionGeneration;
             }
+        }
+
+        /// <summary>
+        /// 一条"仍然活着"的实例登记（E11）：实例描述（会话复位后重放要用）+ **首选槽位**。
+        /// 首选槽位是"这个实例最近一次被消费端看到时用的槽位"，重连后沿用它，
+        /// 消费端按 (category, instanceId, instanceSlot) 建立的查询归属才不会被一次抖动切断。
+        /// 只有 <see cref="Finish"/> 与换传输会移除登记——**绝不**因为连接断开而移除。
+        /// </summary>
+        private sealed class Registration
+        {
+            internal string InstanceId { get; set; }
+
+            internal string Category { get; set; }
+
+            internal string ResName { get; set; }
+
+            internal string DebugInfo { get; set; }
+
+            /// <summary>首选槽位；0 表示还没有（新登记在分配时立即写入）。</summary>
+            internal ushort Slot { get; set; }
         }
     }
 #endif

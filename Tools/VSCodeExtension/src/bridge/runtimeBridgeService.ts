@@ -122,6 +122,9 @@ export class RuntimeBridgeService {
   private connection: RuntimeBridgeConnection | undefined;
   private eventListener: ((event: RuntimeBridgeEventMessage) => void) | undefined;
   private readonly debugWiring: RuntimeBridgeDebugWiring | undefined;
+  /** 当前连接对应的 welcome 与实例（探测复用已有连接时原样返回，不再重建一条连接）。 */
+  private connectedInstance: RuntimeBridgeInstance | undefined;
+  private connectedWelcome: RuntimeBridgeWelcomeMessage | undefined;
 
   public constructor(
     private readonly output: (message: string) => void,
@@ -203,6 +206,8 @@ export class RuntimeBridgeService {
     this.connection = connection;
     try {
       const welcome = await connection.connect(timeoutMs);
+      this.connectedInstance = instance;
+      this.connectedWelcome = welcome;
       return welcome;
     } catch (errorValue) {
       this.disconnect();
@@ -211,67 +216,179 @@ export class RuntimeBridgeService {
   }
 
   /**
-   * 端口段探测连接（附录 A.8）：并发 8、单口 300 ms，第一个握手成功者胜出。
-   * 显式 `port` 时只连该端口。整段都没有可握手端点时抛 `runtime.noEndpoint`
-   * （客户端本地错误码；禁用/端口占用/未启动不再区分）。
+   * 端口段探测连接（附录 A.8）：并发 8、单口 300 ms。
+   *
+   * **E11 §1：探活不建调试 link。** 探测分成两步：
+   * 1. **端口探活**：对候选端口只做 TCP 连接后立即关闭，**不发 hello**。Unity 侧的
+   *    `DebugLinkOpened` 只在握手成功（welcome 已写）之后才触发，所以这一步**不会**产生
+   *    `debug link stacked/closed`，也就不会 `Bind`/`Detach` 掉正在跑的调试会话。
+   *    整段都没有可连端口时直接抛 `runtime.noEndpoint`，**不动**现有连接（旧实现先 `disconnect()`
+   *    再探测，一次失败的探测会顺手掐掉面板的健康连接）。
+   * 2. **唯一一条真连接**：对可连端口（按端口号）逐个做一次完整握手，第一个成功者被采纳。
+   *    落选端口不会再建链，因此不会出现"探测建立了一条 link 又立刻关闭"。
+   *
+   * 如果现有连接已经指向同一端点且 token 一致，直接复用（返回原 welcome）：探测不产生任何新连接。
+   * 显式 `port` 时只探该端口。
    */
   public async probeAndConnect(options: RuntimeBridgeProbeOptions): Promise<RuntimeBridgeWelcomeMessage> {
-    this.disconnect();
-    const attempts: RuntimeBridgeConnection[] = [];
-    const outcome = await probeBridgePorts<{ readonly connection: RuntimeBridgeConnection; readonly welcome: RuntimeBridgeWelcomeMessage }>({
+    const host = options.host ?? "127.0.0.1";
+    const timeoutMs = options.timeoutMs ?? 300;
+
+    // 已经连着同一端点且 token 一致：直接复用（返回原 welcome）。探测连一次 TCP 都不做，
+    // 是对"探测不得影响会话"最强的保证。
+    const reused = this.reusableProbeConnection(options);
+    if (reused !== undefined) {
+      this.output(`[runtime-probe] already attached to the live endpoint on port ${this.connectedInstance?.tcpPort ?? -1}; reusing it.`);
+      return reused;
+    }
+
+    const alivePorts: number[] = [];
+    const liveness = await probeBridgePorts<number>({
       ...(options.host === undefined ? {} : { host: options.host }),
       ...(options.port === undefined ? {} : { explicitPort: options.port }),
       ...(options.port === undefined ? { portRangeStart: options.portRangeStart, portRangeEnd: options.portRangeEnd } : {}),
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
-      attempt: async (target, timeoutMs, signal) => {
-        const instance: RuntimeBridgeInstance = {
-          recordPath: "",
-          instanceId: target.host,
-          kind: options.kind ?? "player",
-          tcpPort: target.port,
-          token: options.token,
-          pid: 0,
-          generation: 1,
-          startedAt: "",
-          ...(options.contractHash === undefined ? {} : { contractHash: options.contractHash }),
-          ...(options.resumeSessionId === undefined ? {} : { resumeSessionId: options.resumeSessionId }),
-        };
-        const connection = new RuntimeBridgeConnection(instance, this.output, (event) => this.handleEvent(event), this.debugWiring);
-        attempts.push(connection);
-        const aborted = new Promise<never>((_, reject) => {
-          signal.addEventListener("abort", () => reject(new Error("Probe attempt aborted.")), { once: true });
-        });
-        const welcome = await Promise.race([connection.connect(timeoutMs), aborted]);
-        return { connection, welcome };
+      // 探活要"可连端口的全集"：第一个可连的端口不一定是 VisualBridge 端点（同段里可能还有别的服务）。
+      stopOnFirstSuccess: false,
+      attempt: async (target, attemptTimeoutMs, signal) => {
+        await probeTcpLiveness(target.host, target.port, attemptTimeoutMs, signal);
+        alivePorts.push(target.port);
+        return target.port;
       },
     });
 
-    for (const candidate of attempts) {
-      if (outcome.ok && candidate === outcome.value.connection) {
-        continue;
-      }
+    const portRangeText = options.port === undefined
+      ? `${options.portRangeStart}-${options.portRangeEnd}`
+      : String(options.port);
+    this.output(
+      `[runtime-probe] TCP liveness only on ${host}:${portRangeText}; `
+      + `${alivePorts.length} port(s) answered (attempts=${liveness.attempts}); no debug link was created.`,
+    );
 
-      candidate.dispose();
-    }
-
-    if (!outcome.ok) {
+    if (!liveness.ok) {
       throw new RuntimeBridgeProtocolError(
         "runtime.noEndpoint",
         "$",
-        `No runtime bridge endpoint answered the handshake on ${options.host ?? "127.0.0.1"} `
-        + `(${options.port === undefined ? `${options.portRangeStart}-${options.portRangeEnd}` : String(options.port)}; `
-        + `attempts=${outcome.attempts}${outcome.lastError === undefined ? "" : `; last error: ${outcome.lastError.message}`}).`,
+        `No runtime bridge endpoint answered the handshake on ${host} (${portRangeText}; `
+        + `attempts=${liveness.attempts}${liveness.lastError === undefined ? "" : `; last error: ${liveness.lastError.message}`}).`,
       );
     }
 
-    this.connection = outcome.value.connection;
-    return outcome.value.welcome;
+    if (alivePorts.length === 0) {
+      throw new RuntimeBridgeProtocolError(
+        "runtime.noEndpoint",
+        "$",
+        `No runtime bridge endpoint answered the handshake on ${host} (${portRangeText}; `
+        + `attempts=${liveness.attempts}).`,
+      );
+    }
+
+    alivePorts.sort((left, right) => left - right);
+
+    // 已连接端点的 token 与本次探测不同 ⇒ 这个端口一定拒绝本次 hello（服务端逐字比较 token），
+    // 它不再是"可握手候选"。剔除后没有候选就直接报错，**不碰现有连接**：探测不得影响会话。
+    const connectedPort = this.connection !== undefined && this.connection.state.connected === true
+      && this.connectedInstance !== undefined
+      ? this.connectedInstance.tcpPort
+      : undefined;
+    const authenticatedMismatch = connectedPort !== undefined
+      && this.connectedInstance !== undefined
+      && this.connectedInstance.token.length > 0
+      && this.connectedInstance.token !== options.token
+      ? connectedPort
+      : undefined;
+    const candidates = authenticatedMismatch === undefined
+      ? alivePorts
+      : alivePorts.filter((port) => port !== authenticatedMismatch);
+
+    if (candidates.length === 0) {
+      throw new RuntimeBridgeProtocolError(
+        "runtime.noEndpoint",
+        "$",
+        `No runtime bridge endpoint answered the handshake on ${host} (${portRangeText}; `
+        + `attempts=${liveness.attempts}; last error: the only live endpoint is already attached with a different token).`,
+      );
+    }
+
+    // 探活阶段的 TCP 连接**不发 hello**，它们不会变成 debug link；但下面的候选会真的握手：
+    // 成功的那条被采纳，失败的候选留下一条"只连过、没握手"的短连接（不 Bind、不进会话）。
+    // 先释放旧连接：新连接若在旧连接仍绑定时 `Bind`，传输层会把它压栈（代次不变），
+    // 会话层看不到换代 ⇒ 不会重置也不会重放槽位，活动 wire 上没有已存在实例的槽位。
+    // **已知代价（刻意取舍）**：若所有候选的 handshake 都失败，旧连接也已经断开；旧实现
+    // 无论如何都会先断开，这里没有更差，但也不承诺"换链失败仍保留旧连接"。
+    this.disconnect();
+
+    const lastErrors: string[] = [];
+    for (const port of candidates) {
+      const instance: RuntimeBridgeInstance = {
+        recordPath: "",
+        instanceId: host,
+        kind: options.kind ?? "player",
+        tcpPort: port,
+        token: options.token,
+        pid: 0,
+        generation: 1,
+        startedAt: "",
+        ...(options.contractHash === undefined ? {} : { contractHash: options.contractHash }),
+        ...(options.resumeSessionId === undefined ? {} : { resumeSessionId: options.resumeSessionId }),
+      };
+      const connection = new RuntimeBridgeConnection(instance, this.output, (event) => this.handleEvent(event), this.debugWiring);
+      try {
+        const welcome = await connection.connect(timeoutMs);
+        this.connection = connection;
+        this.connectedInstance = instance;
+        this.connectedWelcome = welcome;
+        return welcome;
+      } catch (errorValue) {
+        connection.dispose();
+        lastErrors.push(`${port}: ${(errorValue as Error).message}`);
+      }
+    }
+
+    throw new RuntimeBridgeProtocolError(
+      "runtime.noEndpoint",
+      "$",
+      `No runtime bridge endpoint answered the handshake on ${host} (${portRangeText}; `
+      + `attempts=${liveness.attempts}`
+      + `${lastErrors.length === 0 ? "" : `; last error: ${lastErrors[lastErrors.length - 1]}`}).`,
+    );
+  }
+
+  /**
+   * 探测复用判定：现有连接已经指向本次探测范围内的同一端点，且 token 一致 ⇒ 直接返回原 welcome。
+   * 复用不改变会话（不 Disconnect / 不重连 / 连探活都不做），是"探测不得影响会话"的最强形态。
+   * `RuntimeBridgeConnection.connect` 固定拨 127.0.0.1，所以非本机 host 不复用。
+   */
+  private reusableProbeConnection(options: RuntimeBridgeProbeOptions): RuntimeBridgeWelcomeMessage | undefined {
+    const instance = this.connectedInstance;
+    const welcome = this.connectedWelcome;
+    if (instance === undefined || welcome === undefined || this.connection === undefined) {
+      return undefined;
+    }
+
+    if (this.connection.state.connected !== true || (options.host ?? "127.0.0.1") !== "127.0.0.1") {
+      return undefined;
+    }
+
+    if (instance.token !== options.token) {
+      return undefined;
+    }
+
+    const inRange = options.port !== undefined
+      ? instance.tcpPort === options.port
+      : options.portRangeStart !== undefined
+        && options.portRangeEnd !== undefined
+        && instance.tcpPort >= options.portRangeStart
+        && instance.tcpPort <= options.portRangeEnd;
+    return inRange ? welcome : undefined;
   }
 
   public disconnect(): void {
     this.connection?.dispose();
     this.connection = undefined;
+    this.connectedInstance = undefined;
+    this.connectedWelcome = undefined;
   }
 
 
@@ -754,4 +871,46 @@ function processExists(pid: number): boolean {
   } catch (errorValue) {
     return (errorValue as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+/**
+ * 端口探活（E11 §1）：只建立 TCP 连接再立即关闭，**一个字节都不写**。
+ *
+ * Unity 侧在 `AcceptTcpClient` 后就创建了 link 对象，但 `DebugLinkOpened`（宿主 `Bind`/`Attach`
+ * 的唯一入口）只在**握手成功、welcome 已写**之后触发；未握手的连接关闭时 `Closed` 事件没有订阅者。
+ * 因此探活对调试会话是完全透明的：不产生 stacked/closed，不 Bind，不 Detach。
+ */
+function probeTcpLiveness(host: string, port: number, timeoutMs: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const socket = net.connect({ host, port });
+    const finish = (error?: Error): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+
+      signal.removeEventListener("abort", onAbort);
+      socket.removeAllListeners();
+      socket.destroy();
+      if (error === undefined) {
+        resolve();
+      } else {
+        reject(error);
+      }
+    };
+    const onAbort = (): void => finish(new Error(`TCP liveness probe of ${host}:${port} was aborted.`));
+    timer = setTimeout(
+      () => finish(new Error(`TCP liveness probe of ${host}:${port} timed out after ${timeoutMs} ms.`)),
+      timeoutMs,
+    );
+    signal.addEventListener("abort", onAbort, { once: true });
+    socket.once("connect", () => finish());
+    socket.once("error", (error) => finish(error));
+  });
 }

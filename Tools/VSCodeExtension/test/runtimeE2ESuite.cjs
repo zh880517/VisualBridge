@@ -318,7 +318,14 @@ exports.run = async function run() {
     );
     console.log(`[runtime-e2e] probed port range and adopted ${probed.instanceId} on port ${probed.port}`);
 
-    // 探测失败会把服务置为未连接（探测先断开再挑端点）：恢复连接，后续用例继续用同一条链路。
+    // E11 起：正向探测在"已连着同一端点且 token 一致"时**直接复用**（连一次 TCP 都不做）；
+    // **无端点**或**已连端点 token 不匹配**时也不再断开现有连接（旧实现第一句就是
+    // `disconnect()`）⇒ 这里不需要"恢复连接"。边界：探活到可连端点、但所有候选的 handshake
+    // 都失败时，旧连接仍会被断开（换链必须先断开，见 `probeAndConnect` 的注释）。
+    // **本用例在门禁里走的是复用路径**：正向探活（TCP 只连不握手、之后再建唯一一条真连接）由
+    // `runtimeBridgeService.test.ts` 的三条单元用例覆盖，E2E 不重复造它。
+    // 仍然显式 connect 一次：最后一步要覆盖"宿主结算断连 → 重连 → 重放 debugCreate"这条生产
+    // 路径（E11 §2/§3），并让后续用例从一条确定的新链上继续。
     const restored = await vscode.commands.executeCommand("visualbridge.test.connectRuntimeInstance", instance);
     assert.equal(restored.instanceId, instance.instanceId);
   });

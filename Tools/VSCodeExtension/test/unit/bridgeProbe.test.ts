@@ -144,6 +144,35 @@ test("probe bridge ports enforces the per-port timeout", async () => {
   assert.equal(DEFAULT_BRIDGE_PROBE_TIMEOUT_MS, 300);
 });
 
+test("probe bridge ports scans every candidate and reports the lowest answering port when collecting", async () => {
+  // `stopOnFirstSuccess === false` 是 E11 的端口探活语义：探活不建立连接，所以不能"第一个可连就收工"，
+  // 必须拿到全部可连端口；结果按端口号排序，不能把完成顺序（随调度变化）当成"第一个"。
+  const attempted: number[] = [];
+  const outcome = await probeBridgePorts<number>({
+    portRangeStart: 28300,
+    portRangeEnd: 28309,
+    timeoutMs: 1000,
+    concurrency: 3,
+    stopOnFirstSuccess: false,
+    attempt: async (target) => {
+      attempted.push(target.port);
+      await new Promise((resolve) => setTimeout(resolve, target.port % 3));
+      if (target.port === 28307 || target.port === 28302) {
+        return target.port;
+      }
+
+      throw new Error(`refused ${target.port}`);
+    },
+  });
+
+  assert.ok(outcome.ok);
+  assert.equal(outcome.target.port, 28302, "收集模式下用最低的可连端口作为结果，与完成顺序无关。");
+  assert.equal(outcome.value, 28302);
+  assert.equal(outcome.attempts, 10, "收集模式必须扫完全部候选端口。");
+  assert.deepEqual([...attempted].sort((left, right) => left - right),
+    [28300, 28301, 28302, 28303, 28304, 28305, 28306, 28307, 28308, 28309]);
+});
+
 test("probe bridge ports rejects an empty candidate set without attempting", async () => {
   let attempted = 0;
   const outcome = await probeBridgePorts<never>({

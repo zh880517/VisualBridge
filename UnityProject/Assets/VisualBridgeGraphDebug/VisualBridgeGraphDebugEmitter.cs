@@ -151,19 +151,56 @@ namespace VisualBridge.GraphDebug
                     {
                         // 帧号先同步再发：`record.frame` 取的是 Start 时刻的会话帧号，payload 用的是这里传的
                         // 图执行帧；两者必须同源，否则"实例结束于第 N 帧"会记成上一帧。
+                        // 未登记时这条发送会整条被会话丢弃（不编码、不计数），与改动前一致。
                         SyncFrame(frameIndex);
                         GraphDebuger.InstanceStopped(executionId, entry.DocumentId, frameIndex);
                     }
 
-                    // 会话可能已被服务端清空：那就不存在可 Finish 的实例（Finish 会返回 false 并告警）。
-                    if (VisualBridgeDebug.isInstanceRegistered(executionId))
+                    // E11：会话快照可能已被复位（那时远端没有可结束的实例），但 `Finish` **同时注销
+                    // 仍然活着的登记**——这一步不能跳，否则下一次重连会把已经结束的执行当成
+                    // "仍活着的登记"重放回来（对不存在的实例 Finish 只会返回 false）。
+                    if (FinishAndDecideLocalDrop(executionId))
                     {
-                        VisualBridgeDebug.Finish(executionId);
+                        Instances.Remove(executionId);
                     }
                 }
-
-                Instances.Remove(executionId);
+                else
+                {
+                    Instances.Remove(executionId);
+                }
             }
+        }
+
+        /// <summary>
+        /// 发送 <see cref="VisualBridgeDebug.Finish"/> 并回答"本地登记该不该丢"（E11 评审 P2-1）。
+        ///
+        /// <c>Finish</c> 返回 false 有两种完全不同的原因，发射端必须分开处理：
+        /// 1. **结束没生效**（关闭期抑制 / 控制队列满）：会话**保留**登记、实例仍在快照里。
+        ///    这时丢掉本地登记会造出**幽灵**——重连时会话把这条"仍活着"的登记重放给面板，
+        ///    而发射端已经不再为它产事件 ⇒ 面板上出现一个"活着但永不更新"的实例。
+        /// 2. **会话里已经没有这个实例**（已随断连复位）：<c>Finish</c> 顺带注销了登记，
+        ///    这里必须丢本地状态，否则后面一条事实会让它自愈重建（把已经停止的执行复活）。
+        ///
+        /// 判据用 <see cref="VisualBridgeDebug.isInstanceRegistered"/>（公开只读）：结束没生效时它仍为
+        /// true，会话已复位时为 false。返回 true = 丢弃本地登记。
+        /// </summary>
+        private static bool FinishAndDecideLocalDrop(string executionId)
+        {
+            bool finished = VisualBridgeDebug.Finish(executionId);
+            if (finished)
+            {
+                return true;
+            }
+
+            bool stillRegistered = VisualBridgeDebug.isInstanceRegistered(executionId);
+            if (!stillRegistered)
+            {
+                return true;
+            }
+
+            Trace("Finish '" + executionId + "' was not applied (suppressed or queue full); "
+                + "keeping the local instance so a later replay cannot create a ghost");
+            return false;
         }
 
         public void OnNodeStarted(string executionId, string nodeId, int frameIndex)
@@ -248,25 +285,32 @@ namespace VisualBridge.GraphDebug
         private static void FinishAll()
         {
             var frameIndex = VisualBridgeDebug.frame;
+            var drop = new List<string>();
             foreach (var pair in Instances)
             {
-                if (!VisualBridgeDebug.isInstanceRegistered(pair.Key))
-                {
-                    // 会话已重置：远端已没有这个实例，不能再 Finish（否则是"对不存在实例的 Finish"）。
-                    continue;
-                }
-
-                if (pair.Value.Announced)
+                // 与会话复位前的写法**等价**：旧版先 `if (!isInstanceRegistered) continue;`（整条跳过，
+                // 包括下面的 Finish），再 `if (Announced)` 发结束消息；这里把"未登记"折进消息条件的
+                // `registered &&`，因此 `SyncFrame`/`InstanceStopped` 的触发条件一个字没变。
+                // 未登记时远端没有这个实例：发送会被会话整条丢弃（不编码、不计数）。
+                if (VisualBridgeDebug.isInstanceRegistered(pair.Key) && pair.Value.Announced)
                 {
                     // `record.frame` 与 payload 同源：先按同一帧号同步会话，再发。
                     SyncFrame((int)frameIndex);
                     GraphDebuger.InstanceStopped(pair.Key, pair.Value.DocumentId, (int)frameIndex);
                 }
 
-                VisualBridgeDebug.Finish(pair.Key);
+                // E11（评审 P2-1）：结束**没生效**时不能丢本地登记，否则重连会重放出一个
+                // "面板上活着、发射端却不再产事件"的幽灵；只有结束生效（或会话已无此实例）才丢弃。
+                if (FinishAndDecideLocalDrop(pair.Key))
+                {
+                    drop.Add(pair.Key);
+                }
             }
 
-            Instances.Clear();
+            foreach (var key in drop)
+            {
+                Instances.Remove(key);
+            }
         }
 
         /// <summary>

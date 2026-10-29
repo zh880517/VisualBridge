@@ -27,6 +27,12 @@ export interface BridgeProbeOptions<TValue> {
   readonly timeoutMs?: number;
   /** 并发上限；缺省 8（A.8）。 */
   readonly concurrency?: number;
+  /**
+   * 缺省 `true`：第一个成功者胜出，其余在途尝试立即 abort（握手型探测的语义）。
+   * `false`：扫完全部候选端口并收集每一个成功值（**端口探活**型探测用——探活不建立连接，
+   * 不能拿"第一个可连的端口"当端点，必须拿到全部可连端口再逐个真握手）。
+   */
+  readonly stopOnFirstSuccess?: boolean;
   /** 对单个端口尝试握手；抛错或超时即视为该端口失败。 */
   readonly attempt: (target: BridgeProbeTarget, timeoutMs: number, signal: AbortSignal) => Promise<TValue>;
 }
@@ -57,6 +63,7 @@ export async function probeBridgePorts<TValue>(options: BridgeProbeOptions<TValu
   const host = options.host ?? "127.0.0.1";
   const timeoutMs = options.timeoutMs ?? DEFAULT_BRIDGE_PROBE_TIMEOUT_MS;
   const concurrency = Math.max(1, options.concurrency ?? DEFAULT_BRIDGE_PROBE_CONCURRENCY);
+  const stopOnFirstSuccess = options.stopOnFirstSuccess !== false;
   const candidates = candidatePorts(options);
   if (candidates.length === 0) {
     return { ok: false, code: "runtime.noEndpoint", attempts: 0 };
@@ -67,6 +74,11 @@ export async function probeBridgePorts<TValue>(options: BridgeProbeOptions<TValu
   let attempts = 0;
   let lastError: Error | undefined;
   let winner: { readonly target: BridgeProbeTarget; readonly value: TValue } | undefined;
+  /**
+   * `stopOnFirstSuccess === false` 时收集到的全部成功者：探活要求"可连端口的全集"，
+   * 结果按端口号排序后才算确定（完成顺序随调度变化，不能拿它当"第一个"）。
+   */
+  const successes: Array<{ readonly target: BridgeProbeTarget; readonly value: TValue }> = [];
 
   const worker = async (): Promise<void> => {
     while (!controller.signal.aborted) {
@@ -84,6 +96,11 @@ export async function probeBridgePorts<TValue>(options: BridgeProbeOptions<TValu
           controller.signal,
           `Probing ${host}:${port} timed out after ${timeoutMs} ms.`,
         );
+        if (!stopOnFirstSuccess) {
+          successes.push({ target, value });
+          continue;
+        }
+
         if (winner === undefined) {
           // 单线程事件循环内的同步赋值：第一个 resolve 的成功者胜出，后到者被忽略。
           winner = { target, value };
@@ -103,6 +120,14 @@ export async function probeBridgePorts<TValue>(options: BridgeProbeOptions<TValu
   }
 
   await Promise.all(workers);
+
+  if (!stopOnFirstSuccess) {
+    successes.sort((left, right) => left.target.port - right.target.port);
+    const [first] = successes;
+    return first === undefined
+      ? { ok: false, code: "runtime.noEndpoint", attempts, ...(lastError === undefined ? {} : { lastError }) }
+      : { ok: true, target: first.target, value: first.value, attempts };
+  }
 
   return winner === undefined
     ? { ok: false, code: "runtime.noEndpoint", attempts, ...(lastError === undefined ? {} : { lastError }) }
