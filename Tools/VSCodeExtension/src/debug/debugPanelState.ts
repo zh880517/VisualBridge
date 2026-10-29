@@ -88,14 +88,79 @@ export interface DebugPanelStoreSource {
   resume(): void;
 }
 
-/** 连接信息（状态栏：连接状态、`endpointId`、目标地址、当前帧）。 */
+/** 状态栏的两个收帧来源（E10）：四种组合（都无 / 仅 Editor / 仅 Runtime / 两者）都必须可区分。 */
+export interface DebugPanelConnectionSources {
+  readonly editor: boolean;
+  readonly runtime: boolean;
+}
+
+/** 宿主注入的 Runtime 腿状态（E10）；缺省 = 未接线，面板退回只读 Editor 腿。 */
+export interface DebugPanelRuntimeLeg {
+  readonly state: "disconnected" | "connecting" | "connected" | "failed";
+  /** 未连接/失败时的可读原因（Unity 未开、端口段无响应等）。 */
+  readonly detail?: string;
+  readonly endpointId?: string;
+  readonly target?: string;
+  readonly connectType?: "editor" | "editor-player" | "player";
+}
+
+/** 连接信息（状态栏：连接状态、收帧来源、`endpointId`、目标地址、当前帧）。 */
 export interface DebugPanelConnection {
   readonly state: "connected" | "disconnected";
+  /**
+   * 实际收帧来源（E10）：旧实现只读 Editor 腿，只有 Runtime 腿在线时状态栏显示"未连接"而实例行在更新。
+   */
+  readonly sources: DebugPanelConnectionSources;
+  /**
+   * "Debug 上报"开关能否发出去：只有 Editor 腿承载 `debugSetEnabled`（Runtime 腿的 ch0 只认 hello/request，
+   * 多发一条是连接级错误），因此 Runtime 腿在线不代表开关可点。
+   */
+  readonly canRequestEnable: boolean;
+  /** 未连接时的可读原因（E10：连接失败可重试，不弹模态框）。 */
+  readonly detail: string | undefined;
   readonly endpointId: string | undefined;
   readonly target: string | undefined;
   /** A.3 的 `connectType`；`player` 时开关置灰（C.7）。 */
   readonly connectType: "editor" | "editor-player" | "player" | undefined;
   readonly frame: number;
+}
+
+export interface DebugPanelConnectionInput {
+  /** Editor 腿的 `debugReporting`（只读 Editor 腿的连接状态）。 */
+  readonly editor: {
+    readonly available: boolean;
+    readonly endpointId?: string | undefined;
+    readonly target?: string | undefined;
+    readonly connectType?: "editor" | "editor-player" | "player" | undefined;
+  } | undefined;
+  /** Runtime 腿状态（E10 的生产连接触发器）。 */
+  readonly runtime: DebugPanelRuntimeLeg | undefined;
+  /** 宿主测试的 connectType 覆盖（生产上只能来自 A.3 的 `connectType`）。 */
+  readonly connectTypeOverride?: "editor" | "editor-player" | "player";
+  readonly frame: number;
+}
+
+/**
+ * 合并两条腿的连接信息（E10）：状态栏必须反映**实际收帧来源**，不得自相矛盾。
+ * 纯函数，单测直接覆盖四种来源组合与失败原因。
+ */
+export function mergeDebugPanelConnection(input: DebugPanelConnectionInput): DebugPanelConnection {
+  const editor = input.editor;
+  const editorConnected = editor?.available === true;
+  const runtimeConnected = input.runtime?.state === "connected";
+  const connected = editorConnected || runtimeConnected;
+  const connectType = input.connectTypeOverride
+    ?? (editorConnected ? editor?.connectType : runtimeConnected ? input.runtime?.connectType : undefined);
+  return {
+    state: connected ? "connected" : "disconnected",
+    sources: { editor: editorConnected, runtime: runtimeConnected },
+    canRequestEnable: editorConnected,
+    detail: connected ? undefined : input.runtime?.detail,
+    endpointId: editorConnected ? editor?.endpointId : runtimeConnected ? input.runtime?.endpointId : undefined,
+    target: editorConnected ? editor?.target : runtimeConnected ? input.runtime?.target : undefined,
+    connectType,
+    frame: input.frame,
+  };
 }
 
 /** 实例列表一行。 */
@@ -664,9 +729,10 @@ export class DebugPanelModel {
   public snapshot(): DebugPanelSnapshot {
     const connection = this.connection();
     this.enable.setMode(connection.connectType === "player" ? "player" : "editor");
-    // 没有已握手连接 ⇒ 请求发不出去，按钮置灰（连接断了也要把挂起请求结算掉）。
+    // 没有 Editor 腿的已握手连接 ⇒ 请求发不出去，按钮置灰（连接断了也要把挂起请求结算掉）。
     // 回看同理：没有传输层，显式置灰（不依赖 connection.state 的间接推断，F5-08）。
-    this.enable.setAvailable(connection.state === "connected" && !this.replayViewActive);
+    // E10：`canRequestEnable` 与"是否收到帧"解耦——Runtime 腿在线时面板有数据，但开关仍不可点。
+    this.enable.setAvailable(connection.canRequestEnable && !this.replayViewActive);
     const instances = this.instanceRows();
     const key = this.selectedKeyValue !== undefined && this.manager.instance(this.selectedKeyValue) !== undefined
       ? this.selectedKeyValue

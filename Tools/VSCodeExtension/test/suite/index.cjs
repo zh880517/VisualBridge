@@ -4850,6 +4850,48 @@ exports.run = async function run() {
     assert.equal(disconnected.connection.endpointId, undefined);
   });
 
+  await test("opens the Debug panel without waiting for a failing runtime connection and shows the reason", async () => {
+    // 隔离：发现目录是 runTest.mjs 为本轮建的空目录，探针地址是 TEST-NET-1（192.0.2.1，本机不可达），
+    // 因此「没有 Runtime 端点」是确定的，不会被开发者本机开着的 Play 模式或占用的端口干扰。
+    await vscode.commands.executeCommand("visualbridge.test.debugPanel.close");
+    const opened = await vscode.commands.executeCommand("visualbridge.test.debugPanel.open");
+    assert.ok(opened.openCount >= 1, "Opening the panel must create or reveal the panel.");
+
+    // 因果证据（不用墙钟阈值）：端口段探测至少 50 口 / 并发 8 / 单口 300 ms ≈ 1.9 s。
+    // 若 open 在等探测，返回时这里已经是 failed；返回时仍是 connecting 才说明尝试被留在后台。
+    const inFlight = await panelState();
+    assert.equal(inFlight.connection.state, "disconnected");
+    assert.equal(inFlight.connection.detail, "正在连接 Runtime Bridge（192.0.2.1）…",
+      "open 必须立即返回，把连接尝试留在后台（返回时仍应是 connecting）");
+
+    const failed = await waitForAsync(
+      () => panelState(),
+      (state) => state?.connection?.state === "disconnected" && typeof state?.connection?.detail === "string"
+        && /未找到 Runtime 端点|连接 Runtime Bridge 失败/u.test(state.connection.detail),
+      30_000,
+      "The Debug panel did not surface a readable runtime connection failure.",
+    );
+    assert.deepEqual(failed.connection.sources, { editor: false, runtime: false });
+    assert.equal(failed.enable.canToggle, false);
+    assert.match(failed.connection.detail, /已探测 192\.0\.2\.1:28300-28349/u,
+      "失败原因必须带上真实探针地址（隔离探针确实被用上了）");
+
+    // 可重试：命令通道不抛错，快照立刻回到 connecting（重试真的发起了新尝试），随后落回同一条原因。
+    const retried = await panelCommand("retryConnection");
+    assert.equal(retried.connection.state, "disconnected");
+    assert.equal(retried.connection.detail, "正在连接 Runtime Bridge（192.0.2.1）…",
+      "重试必须真的发起新尝试，而不是静默失败");
+    const afterRetry = await waitForAsync(
+      () => panelState(),
+      (state) => state?.connection?.state === "disconnected" && typeof state?.connection?.detail === "string"
+        && /未找到 Runtime 端点|连接 Runtime Bridge 失败/u.test(state.connection.detail),
+      30_000,
+      "The retry path did not settle back to a readable failure.",
+    );
+    assert.match(afterRetry.connection.detail, /未找到 Runtime 端点/u);
+    await vscode.commands.executeCommand("visualbridge.test.debugPanel.close");
+  });
+
   await test("sends debugSetEnabled without an optimistic switch and rolls back on timeout", async () => {
     // 先等上一条连接彻底退休：服务端的 close 通知会以 welcome 语义清掉挂起请求，
     // 迟到的 close 落进本用例的等待窗口就会把 pending 提前结算（宿主事件是异步的）。

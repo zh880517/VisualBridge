@@ -20,6 +20,7 @@ import {
   DEBUG_QUERY_ERROR_MESSAGES,
   debugQueryAvailability,
   debugQueryOwnsInstance,
+  debugQueryUnresolvedError,
   resolveDebugQueryClient,
   type DebugQueryConnection,
   type DebugQueryNotice,
@@ -804,6 +805,19 @@ test("P2-3: a query is routed to the connection that owns the instance (two live
   }
 
   await Promise.allSettled([queryA, b1, b2]);
+});
+
+test("E10: noOwner and ambiguous surfacing distinct local codes and texts", () => {
+  // 单连接、实例无主（原连接已断）与"多条连接互相歧义"是两回事：旧文案把两者都说成"多连接同时在线"，
+  // 排障会被带偏（实测单连接也报这句）。这里锁住两种原因各自的码与文案，且两者必须不同。
+  const noOwner = debugQueryUnresolvedError("noOwner");
+  const ambiguous = debugQueryUnresolvedError("ambiguous");
+  assert.equal(noOwner.code, "local.noOwner");
+  assert.equal(ambiguous.code, "local.noConnection");
+  assert.notEqual(noOwner.message, ambiguous.message, "两种原因不能共用一句文案");
+  assert.match(noOwner.message, /没有任何存活的调试连接持有/u);
+  assert.doesNotMatch(noOwner.message, /多条/u, "实例无主不能提示'多连接'");
+  assert.match(ambiguous.message, /多条调试连接同时在线/u);
 });
 
 function jsonFrames(ingress: DebugIngress, value: unknown): readonly DebugEnvelope[] {

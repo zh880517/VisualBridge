@@ -84,6 +84,9 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
       post({ type: "command", command: "step", direction: 1 });
     });
     var live = button("live", "回到实时", function () { command("live"); });
+    // E10：连接失败后可重试（Unity 未开是正常状态；不弹模态框）。
+    var retry = button("retry-connection", "重试连接", function () { command("retryConnection"); },
+      "重新发现/探测并连接 Unity Runtime Bridge");
     var filter = el("input", "vb-debug-filter");
     filter.id = "filter";
     filter.setAttribute("type", "search");
@@ -91,7 +94,7 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
     filter.addEventListener("input", function () {
       post({ type: "command", command: "filter", value: filter.value });
     });
-    [enable, pause, clear, record, replayExit, byRecord, byFrame, previous, next, live, filter].forEach(function (node) {
+    [enable, pause, clear, record, replayExit, byRecord, byFrame, previous, next, live, retry, filter].forEach(function (node) {
       toolbar.appendChild(node);
     });
 
@@ -110,7 +113,7 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
     body.appendChild(timeline);
     body.appendChild(detail);
     root.replaceChildren(toolbar, status, windows, body);
-    shell = { toolbar: toolbar, enable: enable, pause: pause, clear: clear, record: record, replayExit: replayExit, byRecord: byRecord, byFrame: byFrame, previous: previous, next: next, live: live, filter: filter, status: status, windows: windows, instances: instances, timeline: timeline, detail: detail };
+    shell = { toolbar: toolbar, enable: enable, pause: pause, clear: clear, record: record, replayExit: replayExit, byRecord: byRecord, byFrame: byFrame, previous: previous, next: next, live: live, retry: retry, filter: filter, status: status, windows: windows, instances: instances, timeline: timeline, detail: detail };
   }
 
   function renderEnable() {
@@ -125,6 +128,11 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
       enable.title = "Unity 没有回应 debugEnabled 广播，已回滚到服务端状态（" + (state_.enabled ? "开" : "关") + "）";
     } else if (state_.error === "sendFailed") {
       enable.title = "没有可用的调试连接，请求没有发出";
+    } else if (state.connection.sources !== undefined
+      && state.connection.sources.runtime
+      && !state.connection.sources.editor) {
+      // E10：只有 Runtime 腿在线时开关必然置灰；说明原因，别让人以为「连上了却点不动」是 bug。
+      enable.title = "当前连接是 Runtime 腿：Debug 上报开关只对 Editor 桥生效（debugSetEnabled 走 Editor 连接）";
     } else {
       enable.title = "向 Unity 发送 debugSetEnabled，并等服务端广播回写状态";
     }
@@ -134,6 +142,17 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
   function renderStatus() {
     var status = state.connection;
     var text = state.replay ? "回看中" : (status.state === "connected" ? "已连接" : "未连接");
+    if (!state.replay) {
+      // E10：状态栏必须反映**实际收帧来源**；只有 Runtime 腿在线时实例行在更新，不能显示"未连接"。
+      var sources = status.sources || { editor: false, runtime: false };
+      var sourceText = sources.editor && sources.runtime
+        ? "Editor+Runtime"
+        : sources.editor ? "Editor" : sources.runtime ? "Runtime" : "无";
+      text += " · 来源 " + sourceText;
+      if (status.detail) {
+        text += " · " + status.detail;
+      }
+    }
     text += " · endpoint=" + (status.endpointId || "-");
     text += " · target=" + (status.target || "-");
     text += " · 帧 " + state.connection.frame;
@@ -285,6 +304,13 @@ export const DEBUG_PANEL_SCRIPT = String.raw`(function () {
     shell.previous.disabled = state.paused || !timeline.selected || timeline.atStart;
     shell.next.disabled = state.paused || !timeline.selected || timeline.atEnd;
     shell.live.disabled = !timeline.selected || state.mode === "live";
+    // E10：只有"没连上"时才有重试的意义；回看没有实时连接，不显示。
+    var connectionRetryable = !state.replay && state.connection.state !== "connected";
+    shell.retry.hidden = !connectionRetryable;
+    shell.retry.disabled = !connectionRetryable;
+    shell.retry.title = state.connection.detail
+      ? "重试连接（上次失败：" + state.connection.detail + "）"
+      : "重新发现/探测并连接 Unity Runtime Bridge";
     if (shell.filter.value !== state.filter) {
       shell.filter.value = state.filter;
     }

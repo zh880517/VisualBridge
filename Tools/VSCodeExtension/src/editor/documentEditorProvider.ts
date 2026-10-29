@@ -55,6 +55,7 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     Map<symbol, readonly vscode.Diagnostic[]>
   >();
   private refreshingShells = false;
+  private readonly documentOpenedEmitter = new vscode.EventEmitter<DocumentMatch>();
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -64,6 +65,12 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     private readonly output: vscode.OutputChannel,
     private readonly modules: HostModuleRegistry,
   ) {}
+
+  /**
+   * 文本编辑器会话打开完成（E10：宿主据此在"图页面打开"时按需连接 Runtime 桥）。
+   * 只发成功打开的事件；模块回退/多源编辑器不算。
+   */
+  public readonly onDidOpenDocument = this.documentOpenedEmitter.event;
 
   public async resolveCustomTextEditor(
     document: vscode.TextDocument,
@@ -135,6 +142,8 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
         this.pendingReveals.delete(uriKey);
         await session.reveal(pendingReveal);
       }
+      // E10：页面已真正打开（webview 会话就绪）才通知宿主按需连接 Runtime 桥。
+      this.documentOpenedEmitter.fire(match);
     } catch (error) {
       panelSubscription.dispose();
       this.sessionPanels.delete(webviewPanel);

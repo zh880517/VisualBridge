@@ -11,6 +11,7 @@ using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
+using VisualBridge.Diagnostics;
 using VisualBridge.Diagnostics.Bridge;
 
 namespace VisualBridge.Editor.Tests
@@ -172,6 +173,203 @@ namespace VisualBridge.Editor.Tests
             }
             finally
             {
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        /// <summary>
+        /// E10 P0 的会话级验收（**真实装配**）：A 握手 → 临时连接 B 压栈 → B 关闭。
+        /// 走 <see cref="VisualBridgeRuntimeBridgeHost.InstallDebugTransport"/> 与 server 的
+        /// <c>DebugLinkOpened</c>，因此「wire 适配器先订阅 link.Closed、宿主后读 IsConnected」这个
+        /// 载重前提被真实覆盖：把宿主改回「无条件 Detach」，本用例必红。
+        /// </summary>
+        [Test]
+        public void ClosingATemporaryRuntimeLinkKeepsTheSessionAttachedAndTheRestoredLinkReceivesFrames()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-41011", generation: 7))
+                {
+                    VisualBridgeRuntimeBridgeHost.InstallDebugTransport(server);
+                    var transport = VisualBridgeRuntimeBridgeHost.InstalledDebugTransport;
+                    Assert.That(transport, Is.Not.Null, "InstallDebugTransport must publish the transport it installed.");
+
+                    using (var first = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                    {
+                        first.Send(HelloLine(ValidToken));
+                        Assert.That(first.ReadMessage().Type,
+                            Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+                        Assert.That(WaitUntil(() => VisualBridgeDebugSession.IsAttachedAndConnected, TimeSpan.FromSeconds(5)),
+                            Is.True, "the first link did not attach the debug session.");
+                        Assert.That(VisualBridgeDebug.Create("host-restore-a", "graph", "R", string.Empty), Is.True);
+                        Assert.That(
+                            first.TryReadChannelJson(
+                                VisualBridge.Runtime.VisualBridgeChannel.Debug,
+                                TimeSpan.FromSeconds(5),
+                                "host-restore-a"),
+                            Is.Not.Null, "the first link must be the active wire and receive ch1 messages.");
+
+                        using (var temporary = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                        {
+                            temporary.Send(HelloLine(ValidToken, ClientInstanceIdB));
+                            Assert.That(temporary.ReadMessage().Type,
+                                Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+                            // 正控：ch1 只走活动 wire。B 收到新的 debugCreate 才说明它确实压栈成了活动连接，
+                            // 而不是只完成了一次握手。
+                            Assert.That(VisualBridgeDebug.Create("host-restore-b", "graph", "R", string.Empty), Is.True);
+                            Assert.That(
+                                temporary.TryReadChannelJson(
+                                    VisualBridge.Runtime.VisualBridgeChannel.Debug,
+                                    TimeSpan.FromSeconds(5),
+                                    "host-restore-b"),
+                                Is.Not.Null, "the temporary link never became the active wire (no ch1 traffic).");
+                        }
+
+                        // 临时连接已关闭：不靠固定睡眠，轮询可观察状态——在 A 上 Create 一个探针实例，
+                        // 只有 A 已经是活动 wire 时才能从 A 的 ch1 读回；读回即"出栈恢复"已完成。
+                        // B 的 socket 关闭到传输层出栈之间有一小段"活动 wire 仍指向已关连接"的过渡态，
+                        // 期间 IsAttachedAndConnected 短暂为 false：那是等状态，不是失败，继续轮询。
+                        string restored = null;
+                        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+                        int probe = 0;
+                        while (restored == null && DateTime.UtcNow < deadline)
+                        {
+                            if (!VisualBridgeDebugSession.IsAttachedAndConnected)
+                            {
+                                Thread.Sleep(20);
+                                continue;
+                            }
+
+                            probe++;
+                            var probeId = "host-restore-a2-" + probe;
+                            VisualBridgeDebug.Create(probeId, "graph", "R", string.Empty);
+                            restored = first.TryReadChannelJson(
+                                VisualBridge.Runtime.VisualBridgeChannel.Debug,
+                                TimeSpan.FromMilliseconds(250),
+                                probeId);
+                        }
+
+                        Assert.That(VisualBridgeDebugSession.IsAttachedAndConnected, Is.True,
+                            $"临时连接断开后会话被 Detach：弹回的 A 收不到帧，面板会「已连接却无帧」。"
+                            + $"（probes={probe}, transportConnected={transport.IsConnected}, "
+                            + $"generation={transport.ConnectionGeneration}, restored={restored != null}）");
+                        Assert.That(restored, Is.Not.Null, "恢复后的 A 必须重新收到新消息。");
+                        Assert.That(transport.IsConnected, Is.True, "the restored link must still be connected.");
+                    }
+                }
+            }
+            finally
+            {
+                VisualBridgeRuntimeBridgeHost.RemoveDebugTransport();
+                VisualBridgeDebug.SetEncoder(null);
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        /// <summary>
+        /// 旧传输层迟到的 <c>link.Closed</c> 不得 Detach 当前会话（E10）：身份校验是"防误伤新会话"的
+        /// 唯一防线，必须有直接用例——用一个**未安装**的 transport 调结算函数，会话必须保持挂接。
+        /// </summary>
+        [Test]
+        public void ClosingALinkOfAFormerTransportDoesNotDetachTheCurrentSession()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-41013", generation: 2))
+                {
+                    VisualBridgeRuntimeBridgeHost.InstallDebugTransport(server);
+                    using (var link = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                    {
+                        link.Send(HelloLine(ValidToken));
+                        Assert.That(link.ReadMessage().Type,
+                            Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+                        Assert.That(WaitUntil(() => VisualBridgeDebugSession.IsAttachedAndConnected, TimeSpan.FromSeconds(5)),
+                            Is.True, "the current link did not attach the debug session.");
+
+                        // 另一个 transport（不是当前装配的那个）：栈里没有连接 ⇒ IsConnected == false，
+                        // 与"server 重启后旧连接迟到关闭"的形状一致。
+                        using (var former = new VisualBridgeDebugTransport(
+                                   VisualBridge.Diagnostics.ConnectType.EditorPlayer))
+                        {
+                            Assert.That(former.IsConnected, Is.False);
+                            VisualBridgeRuntimeBridgeHost.OnDebugLinkClosed(former);
+                        }
+
+                        Assert.That(VisualBridgeDebugSession.IsAttachedAndConnected, Is.True,
+                            "别的传输层关闭不能 Detach 当前会话（否则面板会「已连接却无帧」）");
+
+                        // 正控：当前会话仍然可用——Create 能从当前连接读回。
+                        Assert.That(VisualBridgeDebug.Create("former-transport-probe", "graph", "R", string.Empty),
+                            Is.True);
+                        Assert.That(
+                            link.TryReadChannelJson(
+                                VisualBridge.Runtime.VisualBridgeChannel.Debug,
+                                TimeSpan.FromSeconds(5),
+                                "former-transport-probe"),
+                            Is.Not.Null, "the current session must still deliver ch1 messages after the stale close.");
+                    }
+                }
+            }
+            finally
+            {
+                VisualBridgeRuntimeBridgeHost.RemoveDebugTransport();
+                VisualBridgeDebug.SetEncoder(null);
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        /// <summary>
+        /// A.9 的会话级验收：最后一条连接关闭 ⇒ 传输层断连 + 会话 Detach 并重置（槽位/代次作废）。
+        /// transport 层只断言了 <c>IsConnected</c>/代次；这里补会话状态这一层。
+        /// </summary>
+        [Test]
+        public void ClosingTheOnlyRuntimeLinkDetachesAndResetsTheSession()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-41012", generation: 3))
+                {
+                    VisualBridgeRuntimeBridgeHost.InstallDebugTransport(server);
+                    var transport = VisualBridgeRuntimeBridgeHost.InstalledDebugTransport;
+                    Assert.That(transport, Is.Not.Null);
+
+                    using (var only = RuntimeBridgeTestClient.Connect(server.TcpPort))
+                    {
+                        only.Send(HelloLine(ValidToken));
+                        Assert.That(only.ReadMessage().Type,
+                            Is.EqualTo(VisualBridge.Runtime.VisualBridgeRuntimeBridgeMessageType.Welcome));
+                        Assert.That(WaitUntil(() => VisualBridgeDebugSession.IsAttachedAndConnected, TimeSpan.FromSeconds(5)),
+                            Is.True, "the only link did not attach the debug session.");
+                        Assert.That(VisualBridgeDebug.Create("host-close-a", "graph", "R", string.Empty), Is.True);
+                        Assert.That(
+                            only.TryReadChannelJson(
+                                VisualBridge.Runtime.VisualBridgeChannel.Debug,
+                                TimeSpan.FromSeconds(5),
+                                "host-close-a"),
+                            Is.Not.Null, "the only link must be the active wire.");
+                    }
+
+                    // 等「连接观察 + 出栈重置」都落定：IsOpen 会在 Closed 回调之前就变 false，
+                    // 只等 IsConnected 会读到栈里还没弹掉的 wire（代次仍是旧值）。
+                    Assert.That(
+                        WaitUntil(
+                            () => !transport.IsConnected && transport.ConnectionGeneration == 0L,
+                            TimeSpan.FromSeconds(10)),
+                        Is.True,
+                        "the transport did not observe the last link closing and reset (generation 0).");
+                    Assert.That(WaitUntil(() => !VisualBridgeDebugSession.IsAttachedAndConnected, TimeSpan.FromSeconds(10)),
+                        Is.True, "the last link closing must Detach the session (A.9).");
+                    Assert.That(transport.TryAdmitEvent(1, "host-close-a", "graph", methodId: 10), Is.False,
+                        "the slot table must be empty after the session reset.");
+                }
+            }
+            finally
+            {
+                VisualBridgeRuntimeBridgeHost.RemoveDebugTransport();
+                VisualBridgeDebug.SetEncoder(null);
                 Directory.Delete(artifactsRoot, true);
             }
         }
@@ -1437,6 +1635,23 @@ namespace VisualBridge.Editor.Tests
             return -1;
         }
 
+        /// <summary>轮询直到条件成立（真实装配的回调在其它线程，先等状态落定再断言）。</summary>
+        private static bool WaitUntil(Func<bool> condition, TimeSpan timeout)
+        {
+            var deadline = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < deadline)
+            {
+                if (condition())
+                {
+                    return true;
+                }
+
+                Thread.Sleep(20);
+            }
+
+            return condition();
+        }
+
         private static VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer StartServer(
             string artifactsRoot, string instanceId, int generation = 1)
         {
@@ -1713,6 +1928,53 @@ namespace VisualBridge.Editor.Tests
                 }
 
                 return null;
+            }
+
+            /// <summary>
+            /// 读一条指定通道的 JSON 载荷，直到出现包含 <paramref name="expectedFragment"/> 的那条；
+            /// 其它通道/其它载荷跳过。超时或断开返回 null。
+            /// </summary>
+            public string TryReadChannelJson(
+                VisualBridge.Runtime.VisualBridgeChannel channel, TimeSpan timeout, string expectedFragment)
+            {
+                var previousTimeout = stream.ReadTimeout;
+                stream.ReadTimeout = Math.Max(1, (int)timeout.TotalMilliseconds);
+                try
+                {
+                    while (true)
+                    {
+                        while (frameReader.TryReadFrame(out var frame))
+                        {
+                            if (frame.Channel != channel)
+                            {
+                                continue;
+                            }
+
+                            var payload = Encoding.UTF8.GetString(frame.Payload);
+                            if (payload.Contains(expectedFragment))
+                            {
+                                return payload;
+                            }
+                        }
+
+                        var read = stream.Read(readBuffer, 0, readBuffer.Length);
+                        if (read == 0)
+                        {
+                            frameReader.DiscardPending();
+                            return null;
+                        }
+
+                        frameReader.Append(readBuffer, 0, read);
+                    }
+                }
+                catch (IOException)
+                {
+                    return null;
+                }
+                finally
+                {
+                    stream.ReadTimeout = previousTimeout;
+                }
             }
 
             public bool IsDisconnected()

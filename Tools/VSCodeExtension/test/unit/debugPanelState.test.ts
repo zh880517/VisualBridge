@@ -17,6 +17,7 @@ import {
   DEBUG_PANEL_VALUE_PREVIEW_LIMIT,
   DEBUG_PANEL_WINDOW_RECORDS,
   detailOf,
+  mergeDebugPanelConnection,
   previewValue,
 } from "../../src/debug/debugPanelState";
 import {
@@ -667,4 +668,51 @@ test("recording toggle is rejected in replay mode even through the command chann
   model.enterReplayView();
   model.requestRecordingToggle();
   assert.equal(toggles, 1, "回看没有录制源：命令通道也必须挡住");
+});
+
+test("connection sources distinguish editor, runtime, both and neither (E10)", () => {
+  const editor = { available: true, endpointId: "unity-editor", target: "127.0.0.1:4040", connectType: "editor" as const };
+  const runtime = { state: "connected" as const, endpointId: "editor-99", target: "127.0.0.1:28301", connectType: "editor-player" as const };
+
+  const both = mergeDebugPanelConnection({ editor, runtime, frame: 7 });
+  assert.equal(both.state, "connected");
+  assert.deepEqual(both.sources, { editor: true, runtime: true });
+  assert.equal(both.canRequestEnable, true, "Editor 腿在线时开关可点");
+  assert.equal(both.endpointId, "unity-editor", "两条腿都在时 Editor 腿的身份优先（上报开关只对它生效）");
+
+  const runtimeOnly = mergeDebugPanelConnection({ editor: { available: false }, runtime, frame: 3 });
+  assert.equal(runtimeOnly.state, "connected", "只有 Runtime 腿在线时不能显示未连接");
+  assert.deepEqual(runtimeOnly.sources, { editor: false, runtime: true });
+  assert.equal(runtimeOnly.canRequestEnable, false, "Runtime 腿不接受 debugSetEnabled，开关必须置灰");
+  assert.equal(runtimeOnly.endpointId, "editor-99");
+  assert.equal(runtimeOnly.target, "127.0.0.1:28301");
+  assert.equal(runtimeOnly.connectType, "editor-player");
+
+  const editorOnly = mergeDebugPanelConnection({ editor, runtime: { state: "failed", detail: "未找到 Runtime 端点" }, frame: 1 });
+  assert.deepEqual(editorOnly.sources, { editor: true, runtime: false });
+  assert.equal(editorOnly.detail, undefined, "有腿在线时不要把另一条腿的失败挂在已连接状态上");
+
+  const neither = mergeDebugPanelConnection({ editor: { available: false }, runtime: { state: "failed", detail: "未找到 Runtime 端点" }, frame: -1 });
+  assert.equal(neither.state, "disconnected");
+  assert.deepEqual(neither.sources, { editor: false, runtime: false });
+  assert.equal(neither.detail, "未找到 Runtime 端点", "未连接时必须显示原因，供用户判断是否重试");
+  assert.equal(neither.canRequestEnable, false);
+
+  const connecting = mergeDebugPanelConnection({ editor: undefined, runtime: { state: "connecting", detail: "正在连接…" }, frame: -1 });
+  assert.equal(connecting.state, "disconnected");
+  assert.equal(connecting.detail, "正在连接…");
+});
+
+test("the panel switch reflects the editor leg even when the runtime leg is connected (E10)", () => {
+  const { model } = createModel({
+    connection: mergeDebugPanelConnection({
+      editor: { available: false },
+      runtime: { state: "connected", endpointId: "editor-99", target: "127.0.0.1:28301", connectType: "editor-player" },
+      frame: 4,
+    }),
+  });
+  const snapshot = model.snapshot();
+  assert.equal(snapshot.connection.state, "connected");
+  assert.deepEqual(snapshot.connection.sources, { editor: false, runtime: true });
+  assert.equal(snapshot.enable.canToggle, false, "没有 Editor 腿就没有 debugSetEnabled 的发送通道");
 });

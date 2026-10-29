@@ -16,6 +16,9 @@ const cachePath = path.join(repositoryPath, ".utmp", "vscode-test");
 const temporaryPath = await mkdtemp(path.join(tmpdir(), TEST_DIRECTORY_PREFIX));
 const workspacePath = path.join(temporaryPath, "workspace");
 const providerStatePath = path.join(temporaryPath, "provider-state");
+// E10：面板 Runtime 腿的发现目录必须是本次运行独有的空目录，否则宿主机上开着的 Play 模式
+// 会让「没有端点」的用例真连上（`extension.ts` 在 activate 时读一次这个变量）。
+const runtimeDiscoveryPath = path.join(temporaryPath, "runtime-discovery");
 const userDataPath = path.join(temporaryPath, "user-data");
 const extensionsPath = path.join(temporaryPath, "extensions");
 
@@ -27,6 +30,7 @@ try {
     mkdir(extensionsPath, { recursive: true }),
     mkdir(cachePath, { recursive: true }),
     mkdir(providerStatePath, { recursive: true }),
+    mkdir(runtimeDiscoveryPath, { recursive: true }),
   ]);
   const providerProjectPath = path.join(
     workspacePath,
@@ -48,6 +52,10 @@ try {
       VISUALBRIDGE_TEST_EXTENSION_VERSION: extensionManifest.version,
       VISUALBRIDGE_TEST_WORKSPACE: workspacePath,
       VISUALBRIDGE_PROVIDER_TEST_STATE_DIR: providerStatePath,
+      VISUALBRIDGE_TEST_RUNTIME_DIR: runtimeDiscoveryPath,
+      // TEST-NET-1（RFC 5737 文档地址）：本机永远不可达，端口段探测每次都会吃满 300 ms 超时，
+      // 于是「open 不等待探测」可以靠因果断言（返回时仍是 connecting）而不是靠墙钟阈值来证明。
+      VISUALBRIDGE_TEST_RUNTIME_PROBE_HOST: "192.0.2.1",
     },
     launchArgs: [
       workspacePath,

@@ -748,7 +748,7 @@ namespace VisualBridge.Editor.Tests
         }
 
         [Test]
-        public void BindingANewConnectionClearsSlotsAndCounters()
+        public void BindingANewConnectionStartsFreshButUnbindingRestoresThePreviousConnection()
         {
             var wire = new FakeWire();
             var transport = CreateTransport(wire, droppedReportIntervalMs: 0);
@@ -763,8 +763,210 @@ namespace VisualBridge.Editor.Tests
             Assert.AreEqual(0, transport.GetDroppedSnapshot().UnknownSlot);
             Assert.IsFalse(transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId));
             Assert.AreEqual(1, transport.GetDroppedSnapshot().UnknownSlot);
+
+            // E10 栈语义：临时连接断开后回到上一条**仍然存活**的连接，而不是整体断连。
             next.RaiseClosed();
+            Assert.IsTrue(transport.IsConnected);
+            Assert.IsTrue(transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId));
+            Assert.AreEqual(1, transport.GetDroppedSnapshot().UnknownSlot, "计数随绑定存档一起恢复");
+        }
+
+        /// <summary>
+        /// E10 P1 的验收用例：A 绑定 → B 绑定 → B 解绑 ⇒ A 重新收到帧（并且状态是 A 自己的）。
+        /// 红态：旧实现（最后一次绑定者胜出，B 断开即 Unbind）下 A 永远不会再收到消息，
+        /// 且 `IsConnected` 变 false、槽位表为空。
+        /// </summary>
+        [Test]
+        public void ABindThenBBindThenBUnbindRestoresAForFramesAndSlots()
+        {
+            var a = new FakeWire { Generation = 5L };
+            var transport = CreateTransport(a, droppedReportIntervalMs: 0);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+            int aBefore = a.Controls.Count;
+            Assert.IsTrue(transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId));
+
+            var b = new FakeWire { Generation = 9L };
+            transport.Bind(b);
+            Assert.AreEqual(5L, transport.ConnectionGeneration, "代次锚定会话所属者：临时连接压栈不改变会话代次");
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+            Assert.AreEqual(1, b.Controls.Count, "活动连接是 B：消息只走 B");
+            Assert.AreEqual(aBefore, a.Controls.Count, "被压栈的 A 不再收到消息");
+
+            b.RaiseClosed();
+
+            Assert.IsTrue(transport.IsConnected, "B 断开后 A 仍然可用");
+            Assert.AreEqual(5L, transport.ConnectionGeneration, "回到 A 的代次");
+            Assert.IsTrue(transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId),
+                "A 的槽位表随绑定存档恢复");
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, (ushort)(InstanceSlot + 1));
+            Assert.AreEqual(aBefore + 1, a.Controls.Count, "A 重新收到控制消息（帧/描述）");
+            Assert.AreEqual(1, b.Controls.Count, "B 已断开，不再收消息");
+        }
+
+        /// <summary>
+        /// A 绑定 → B 绑定 → A 断开（仍被压栈）→ B 断开：栈里没有存活连接，整体断连并清空状态。
+        /// 红态：旧实现在 B 断开时同样 Unbind，因此这条只保护"出栈时跳过死连接"的分支。
+        /// </summary>
+        [Test]
+        public void UnbindingSkipsDeadConnectionsAndResetsWhenNoneAreAlive()
+        {
+            var a = new FakeWire();
+            var transport = CreateTransport(a, droppedReportIntervalMs: 0);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+
+            var b = new FakeWire();
+            transport.Bind(b);
+            a.RaiseClosed();
+            Assert.IsTrue(transport.IsConnected, "A 已断开但 B 仍活动");
+
+            b.RaiseClosed();
             Assert.IsFalse(transport.IsConnected);
+            Assert.AreEqual(0L, transport.ConnectionGeneration);
+            Assert.IsFalse(transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId));
+        }
+
+        /// <summary>
+        /// 被压栈的 wire 不能把入站帧/节拍带进活动连接（E10 源校验）：退订与回调存在竞争，
+        /// 被压栈连接在途的一次回调仍可能落到传输层，必须整帧丢弃（不进解析、不回包）；
+        /// 它的节拍也不能刷新活动连接的 dropped 上报。
+        /// 红态（去掉 <c>OnFrameReceived</c>/<c>OnWireTick</c> 的源校验）：下面的断言会看到非法请求计数或多余控制帧。
+        /// </summary>
+        [Test]
+        public void ABuriedWireCannotInjectInboundFramesOrTicks()
+        {
+            var a = new FakeWire();
+            var transport = CreateTransport(a, droppedReportIntervalMs: 0);
+            // 退订前抓一份订阅者快照：模拟"退订之后仍有一次在途回调"（真实 socket 读线程会这样竞争）。
+            a.CaptureSubscribers();
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+
+            var b = new FakeWire();
+            transport.Bind(b);
+            int aControls = a.Controls.Count;
+            int bControls = b.Controls.Count;
+
+            // 入站帧：被压栈的 A 的在途回调必须整帧丢弃（不进解析、不计数、不回包）。
+            a.RaiseStaleFrame(VisualBridgePayloadKind.Json, Encoding.UTF8.GetBytes("{not json"));
+            Assert.AreEqual(0, transport.GetDroppedSnapshot().InvalidRequest,
+                "被压栈连接的入站帧必须被丢弃，不能进入解析");
+            Assert.AreEqual(bControls, b.Controls.Count, "丢弃入站帧也不能给活动连接回包");
+            Assert.AreEqual(aControls, a.Controls.Count, "被压栈连接不会收到任何回包");
+
+            // 节拍：A 的在途 tick 不能触发活动连接 B 的 dropped 上报（用 B 自己的 overflow 计数制造快照变化）。
+            b.OverflowDroppedMessages = 5;
+            a.RaiseStaleTick();
+            Assert.AreEqual(bControls, b.Controls.Count, "被压栈连接的节拍不能刷新活动连接的上报");
+            b.RaiseTick();
+            Assert.AreEqual(bControls + 1, b.Controls.Count, "活动连接的节拍照常上报");
+            StringAssert.Contains("\"queueOverflow\":5", Text(b.Controls[b.Controls.Count - 1]));
+
+            // 同样的入站帧经活动连接进来才算数：证明上面的 0 是"被源校验挡住"，不是路径没接上。
+            b.RaiseFrameReceived(VisualBridgePayloadKind.Json, Encoding.UTF8.GetBytes("{not json"));
+            Assert.AreEqual(1, transport.GetDroppedSnapshot().InvalidRequest);
+        }
+
+        /// <summary>
+        /// 同一条活动 wire 重复 <c>Bind</c> 必须幂等（E10）：不清槽位、不重复订阅事件。
+        /// 红态（把幂等判断去掉）：重复订阅会让一次 tick 发两条 dropped 上报。
+        /// </summary>
+        [Test]
+        public void RebindingTheActiveWireIsIdempotent()
+        {
+            var a = new FakeWire();
+            var transport = CreateTransport(a, droppedReportIntervalMs: 0);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+            Assert.IsTrue(transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId));
+            int controlsBefore = a.Controls.Count;
+
+            transport.Bind(a);
+
+            Assert.IsTrue(transport.IsConnected);
+            Assert.AreEqual(1L, transport.ConnectionGeneration);
+            Assert.IsTrue(transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId),
+                "重复 Bind 不能清掉活动连接的槽位表");
+            Assert.AreEqual(controlsBefore, a.Controls.Count, "准入帧不发控制消息");
+            Assert.AreEqual(0, transport.GetDroppedSnapshot().UnknownSlot);
+
+            // 一次 tick 只允许一条 dropped 上报：重复订阅会发两条。
+            a.OverflowDroppedMessages = 3;
+            a.RaiseTick();
+            Assert.AreEqual(controlsBefore + 1, a.Controls.Count, "重复 Bind 会让 tick 处理器挂两次");
+            StringAssert.Contains("\"queueOverflow\":3", Text(a.Controls[a.Controls.Count - 1]));
+        }
+
+        /// <summary>
+        /// 显式 <c>Unbind()</c> 必须清空**整栈**（E10）：槽位/计数/代次归零，所有 wire 摘掉且不再被恢复。
+        /// 红态（只弹栈顶）：B 断开后 A 会被恢复，<c>IsConnected</c> 与槽位断言失败。
+        /// </summary>
+        [Test]
+        public void ExplicitUnbindClearsTheWholeStack()
+        {
+            var a = new FakeWire();
+            var transport = CreateTransport(a, droppedReportIntervalMs: 0);
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+            var b = new FakeWire();
+            var c = new FakeWire();
+            transport.Bind(b);
+            transport.Bind(c);
+            int aControls = a.Controls.Count;
+            int bControls = b.Controls.Count;
+            int cControls = c.Controls.Count;
+
+            transport.Unbind();
+
+            Assert.IsFalse(transport.IsConnected);
+            Assert.AreEqual(0L, transport.ConnectionGeneration);
+            Assert.IsFalse(transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId),
+                "Unbind 必须清空槽位表");
+            Assert.IsFalse(transport.SendCreate(InstanceId, Category, "R", string.Empty, (ushort)(InstanceSlot + 1)),
+                "Unbind 之后没有可写连接");
+
+            // 三条连接都摘掉了：再关闭它们不会恢复任何状态，也不会重复结算。
+            a.RaiseClosed();
+            b.RaiseClosed();
+            c.RaiseClosed();
+            Assert.IsFalse(transport.IsConnected);
+            Assert.AreEqual(aControls, a.Controls.Count);
+            Assert.AreEqual(bControls, b.Controls.Count);
+            Assert.AreEqual(cControls, c.Controls.Count);
+        }
+
+        /// <summary>
+        /// 先连者（会话所属者）断开不能改变会话代次（E10）。若代次切到后连者，下一次
+        /// <c>RefreshConnectionLocked</c> 会把仍连着的面板当成「没观察到断连的重连」→ 整个会话被重置
+        /// （面板连着却看不到任何实例）——与 P0 是同一个用户可见症状，只是触发顺序相反。
+        /// 退订竞争窗口：<c>Bind</c> 先加栈、后 <c>Unsubscribe</c>，先连者的读线程可能在这条缝里送来
+        /// <c>Closed</c>；用例重放那次在途回调来稳定复现（不依赖"事件不再触发"）。
+        /// 红态（代次锚定当前栈底）：栈底换成 B，代次 5→9，<c>Finish</c> 因会话被重置而失败。
+        /// </summary>
+        [Test]
+        public void ClosingTheOwnerConnectionKeepsTheGenerationAndTheSessionUsable()
+        {
+            var a = new FakeWire { Generation = 5L };
+            var transport = CreateTransport(a, droppedReportIntervalMs: 0);
+            VisualBridgeDebugBridge.Install(transport);
+            VisualBridgeDebug.SetEncoder(new VisualBridgeDebugJsonEncoder());
+            Assert.IsTrue(VisualBridgeDebug.Create("owner-gen-a", Category, "R", string.Empty));
+            a.CaptureSubscribers();
+
+            var b = new FakeWire { Generation = 9L };
+            transport.Bind(b);
+            VisualBridgeDebugBridge.Attach();
+            int bControls = b.Controls.Count;
+
+            // 先连者断开：B 仍在、仍是活动连接。
+            a.RaiseStaleClosed();
+
+            Assert.IsTrue(transport.IsConnected, "B 仍在，传输层必须仍然连接");
+            var generationAfter = transport.ConnectionGeneration;
+            var attachedAfter = VisualBridgeDebugSession.IsAttachedAndConnected;
+            var ownerInstanceSurvived = VisualBridgeDebug.Finish("owner-gen-a");
+            Assert.IsTrue(generationAfter == 5L && attachedAfter && ownerInstanceSurvived,
+                $"先连者断开后：generation={generationAfter}（期望 5）、attached={attachedAfter}（期望 True）、"
+                + $"会话实例仍在={ownerInstanceSurvived}（期望 True）—— 代次若换给后连者，"
+                + "会话层会把面板当成新会话并重置整个实例表（面板连着却看不到数据）");
+            Assert.IsTrue(VisualBridgeDebug.Create("owner-gen-b", Category, "R", string.Empty));
+            Assert.Greater(b.Controls.Count, bControls, "B 必须继续收到新消息");
         }
 
         private static VisualBridgeDebugEncodedMessage FrameMessage(long frame)
@@ -984,6 +1186,38 @@ namespace VisualBridge.Editor.Tests
             {
                 IsOpen = false;
                 Closed?.Invoke();
+            }
+
+            private Action<VisualBridgePayloadKind, byte[]> staleFrameReceived;
+            private Action staleTick;
+            private Action staleClosed;
+
+            /// <summary>
+            /// 抓一份当前订阅者快照：退订只摘委托，真实读线程可能已经把一次回调排在路上。
+            /// 用例用它在"被压栈之后"重放这次在途回调，验证传输层的源校验（而不是依赖事件不再触发）。
+            /// </summary>
+            public void CaptureSubscribers()
+            {
+                staleFrameReceived = FrameReceived;
+                staleTick = Tick;
+                staleClosed = Closed;
+            }
+
+            public void RaiseStaleFrame(VisualBridgePayloadKind payloadKind, byte[] payload)
+            {
+                staleFrameReceived?.Invoke(payloadKind, payload);
+            }
+
+            public void RaiseStaleTick()
+            {
+                staleTick?.Invoke();
+            }
+
+            /// <summary>重放被压栈连接在途的 Closed（退订竞争窗口）：连接真的断了，但事件已不在订阅表里。</summary>
+            public void RaiseStaleClosed()
+            {
+                IsOpen = false;
+                staleClosed?.Invoke();
             }
         }
 

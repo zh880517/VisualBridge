@@ -28,11 +28,13 @@ import { DebugEnableSwitch, DEBUG_ENABLE_TIMEOUT_MS, type DebugEnableMode } from
 import {
   DebugPanelModel,
   EMPTY_DEBUG_FACET_SNAPSHOT,
+  mergeDebugPanelConnection,
   type DebugPanelConnection,
   type DebugPanelQueryNotice,
   type DebugPanelQueryState,
   type DebugPanelRecordingState,
   type DebugPanelReplayState,
+  type DebugPanelRuntimeLeg,
   type DebugPanelSnapshot,
   type DebugPanelSource,
 } from "./debugPanelState";
@@ -103,6 +105,16 @@ export interface DebugPanelControllerOptions {
   readonly log?: (message: string) => void;
   readonly enableTimeoutMs?: number;
   readonly refreshMs?: number;
+  /**
+   * 面板打开时按需建立的 Runtime 腿连接（E10）。宿主注入共享 `RuntimeBridgeService` 的确保流程；
+   * **不 await**：Unity 未开时探测失败也不能阻塞面板。重开面板/点"重试连接"会再次调用。
+   */
+  readonly ensureRuntimeConnection?: (reason: string) => void;
+  /**
+   * Runtime 腿的实时状态（E10）：状态栏据此区分"Editor 腿 / Runtime 腿 / 两者 / 都不在"。
+   * 缺省（未接线）时退回旧行为：只看 Editor 腿。
+   */
+  readonly runtimeConnection?: () => DebugPanelRuntimeLeg | undefined;
 }
 
 interface DebugPanelCommandMessage {
@@ -204,6 +216,13 @@ export class DebugPanelController implements vscode.Disposable {
   public async open(): Promise<DebugPanelSnapshot> {
     if (this.disposed) {
       throw new Error("The debug panel controller is disposed.");
+    }
+
+    // E10：面板打开（含重开）就等于"用户要看 Runtime 数据"，按需建立共享 Runtime 桥连接。
+    // 不 await：Unity 未开时探测要 2 s 左右，必须让面板先出来并显示"未连接 + 原因"。
+    // 回看不建立实时连接（回看的数据来自文件，且面板可能根本没打开过）。
+    if (this.replay === undefined) {
+      this.requestRuntimeConnection("debugPanel.open");
     }
 
     if (this.panel !== undefined) {
@@ -406,6 +425,15 @@ export class DebugPanelController implements vscode.Disposable {
         break;
       case "enable":
         this.model.requestEnabled(payload.value === true);
+        break;
+      case "retryConnection":
+        // E10：连接失败后可重试（不弹模态框、不改 UI 状态机；失败原因由下一次快照刷新）。
+        if (this.isReplaying) {
+          this.options.log?.("[debug] connection retry ignored: the panel is showing a replay.");
+          break;
+        }
+
+        this.requestRuntimeConnection("debugPanel.retry");
         break;
       case "query":
         // 异步：先返回当前快照（按钮立即进入"在途"提示），结算后再推一次状态。
@@ -616,12 +644,27 @@ export class DebugPanelController implements vscode.Disposable {
       this.replay === undefined ? DEBUG_PANEL_TITLE : `${DEBUG_PANEL_TITLE} — 回看 ${basename(this.replay.session.filePath)}`;
   }
 
+  /**
+   * 触发"按需连接 Runtime 腿"（E10）。触发器是**尽力而为**：抛错只进日志，
+   * 绝不让面板打开/命令失败（Unity 未开是正常状态，不是异常）。
+   */
+  private requestRuntimeConnection(reason: string): void {
+    try {
+      this.options.ensureRuntimeConnection?.(reason);
+    } catch (errorValue) {
+      this.options.log?.(`[debug] runtime connection trigger failed (${reason}): ${formatError(errorValue)}`);
+    }
+  }
+
   private currentConnection(): DebugPanelConnection {
     const replay = this.replay;
     if (replay !== undefined) {
       // 回看没有实时连接：状态固定 disconnected，但保留文件头里的会话身份，供面板显示。
       return {
         state: "disconnected",
+        sources: { editor: false, runtime: false },
+        canRequestEnable: false,
+        detail: undefined,
         endpointId: replay.session.header.endpointId,
         target: `回看 ${basename(replay.session.filePath)}`,
         connectType: replay.session.header.connectType,
@@ -629,17 +672,15 @@ export class DebugPanelController implements vscode.Disposable {
       };
     }
 
-    const reporting = this.options.bridge()?.debugReporting;
     // 连接类型只有一个真源（A.3 的 connectType）；`modeOverride` 是宿主测试的注入点，
     // 必须在这里也生效，否则 `snapshot()` 里的 setMode 会把覆盖结果又刷回 editor。
-    const connectType = this.modeOverride ?? reporting?.connectType;
-    return {
-      state: reporting?.available === true ? "connected" : "disconnected",
-      endpointId: reporting?.endpointId,
-      target: reporting?.target,
-      connectType,
+    // E10：合并两条腿，状态栏按**实际收帧来源**显示，而不是只读 Editor 腿。
+    return mergeDebugPanelConnection({
+      editor: this.options.bridge()?.debugReporting,
+      runtime: this.options.runtimeConnection?.(),
+      ...(this.modeOverride === undefined ? {} : { connectTypeOverride: this.modeOverride }),
       frame: this.options.bridge()?.debug.currentFrame ?? -1,
-    };
+    });
   }
 
   private async ensureAssets(): Promise<UnpackedModuleWebview & { readonly directoryUri: vscode.Uri }> {
@@ -743,6 +784,10 @@ export class DebugPanelController implements vscode.Disposable {
 
 function asGranularity(value: unknown): DebugCursorGranularity {
   return value === "frame" ? "frame" : "record";
+}
+
+function formatError(value: unknown): string {
+  return value instanceof Error ? value.message : String(value);
 }
 
 /** 供测试与命令层复用的方向归一（`-1` / `1`）。 */

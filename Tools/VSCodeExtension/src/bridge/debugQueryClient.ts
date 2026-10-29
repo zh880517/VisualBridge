@@ -65,6 +65,7 @@ export const DEBUG_QUERY_ERROR_MESSAGES: Readonly<Record<DebugQueryErrorCode, st
 export type DebugQueryLocalErrorCode =
   | "local.notConnected"
   | "local.noConnection"
+  | "local.noOwner"
   | "local.sendFailed"
   | "local.instanceNotFound"
   | "local.instanceFinished"
@@ -77,7 +78,9 @@ export type DebugQueryLocalErrorCode =
 const LOCAL_ERROR_MESSAGES: Readonly<Record<DebugQueryLocalErrorCode, string>> = {
   "local.notConnected": "没有可用的调试连接：查询没有发出。",
   "local.noConnection":
-    "无法确定该实例属于哪条调试连接（多连接同时在线时不会猜）：请先在面板里选中该实例，或断开其它连接后重试。",
+    "无法确定该实例属于哪条调试连接（多条调试连接同时在线时不会猜）：请先在面板里选中该实例，或断开其它连接后重试。",
+  "local.noOwner":
+    "该实例没有任何存活的调试连接持有（原连接已断开或实例已失效）：请重新连接、或让实例重新上报后重试。",
   "local.sendFailed": "查询请求发送失败（连接已关闭或队列拒绝）：请检查连接后重试。",
   "local.instanceNotFound": "实例不存在：请重新选择实例。",
   "local.instanceFinished": "实例已结束：本次查询已取消，不会重试。",
@@ -685,6 +688,7 @@ export function debugQueryOwnsInstance(
  * - 唯一归属 → 该连接；多个归属 → `ambiguous`（不猜，服务端回 `local.noConnection`）；
  * - 实例没有任何存活连接的槽位绑定 → `noOwner`（**即使只剩一条连接也不回退**：
  *   实例的原连接可能已断、实例可能是别的连接的，猜一条就会把查询发错连接）；
+ *   这与"多连接歧义"是两回事，服务端回 `local.noOwner`（文案不同，排障时能区分）；
  * - 没有连接 → `noOwner`（调用方按 `local.notConnected` 报错）；
  * - 面板还没选中实例（`instance === undefined`）且只有一条连接时，用于全局状态展示。
  */
@@ -748,4 +752,14 @@ export function isKnownDebugQueryMessage(code: string): boolean {
 /** 构造一个本地条件错误（服务端等宿主侧需要不经过查询就拒绝时用）。 */
 export function debugQueryLocalError(code: DebugQueryLocalErrorCode): DebugQueryError {
   return new DebugQueryError(code, LOCAL_ERROR_MESSAGES[code], { generatedBy: "client" });
+}
+
+/**
+ * "实例无法归属到某条连接"的两种原因映射到**不同**本地码（E10）：
+ * - `noOwner`：实例没有任何存活连接持有（原连接断开/实例失效）；
+ * - `ambiguous`：多条调试连接同时在线、都声称持有该实例。
+ * 混成一句会把排障带偏：实测单连接、实例无主时旧文案却说"多连接同时在线"。
+ */
+export function debugQueryUnresolvedError(reason: "ambiguous" | "noOwner"): DebugQueryError {
+  return reason === "noOwner" ? debugQueryLocalError("local.noOwner") : debugQueryLocalError("local.noConnection");
 }

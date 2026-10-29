@@ -27,6 +27,7 @@ await Promise.all([mkdir(userDataPath, { recursive: true }), mkdir(extensionsPat
 
 console.log("[runtime-e2e] launching the real Unity Editor in hosted play mode");
 const unityLogPath = path.join(temporaryPath, "unity.log");
+const controlPath = path.join(temporaryPath, "e2e-control.txt");
 const unity = spawn(UNITY_EDITOR, [
   "-batchmode",
   "-nographics",
@@ -40,6 +41,9 @@ const unity = spawn(UNITY_EDITOR, [
   env: {
     ...process.env,
     VISUALBRIDGE_RUNTIME_E2E_QUIT: quitPath,
+    // E2E 的指令通道（当前只支持 `create <instanceId>`）：测试进程写文件，Unity 侧在 Play 模式下执行
+    // 并把结果追加到 `<control>.result`。E10 用它验证"临时连接关闭后会话仍可写"。
+    VISUALBRIDGE_RUNTIME_E2E_CONTROL: controlPath,
     // 让 Play 模式 server 按 Player 的端口段规则监听（附录 A.8），
     // 从而让 VS Code 侧的端口段探测（并发 8 / 300 ms）成为真实链路而不是单测桩。
     VISUALBRIDGE_RUNTIME_E2E_PORT_RANGE: process.env.VISUALBRIDGE_RUNTIME_E2E_PORT_RANGE ?? "28300-28349",
@@ -60,6 +64,9 @@ try {
     extensionTestsPath: path.join(testDirectory, "runtimeE2ESuite.cjs"),
     extensionTestsEnv: {
       VISUALBRIDGE_REPOSITORY_ROOT: repositoryPath,
+      VISUALBRIDGE_RUNTIME_E2E_CONTROL: controlPath,
+      // 用例读 Unity 自己的日志做因果正控（stacked / session kept），只读、不参与运行控制。
+      VISUALBRIDGE_RUNTIME_E2E_LOG: unityLogPath,
     },
     launchArgs: [
       unityProjectPath,
@@ -74,10 +81,11 @@ try {
 
   console.log("[runtime-e2e] VS Code suite finished; signalling the Unity Editor to stop");
   await writeFile(quitPath, "quit\nn", "utf8");
-  const unityCode = await Promise.race([
+  const unityCode = await withTimeout(
     unityExit,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`Unity Editor did not exit after the runtime E2E run. Unity log tail: ${readFileSyncTail(unityLogPath)}`)), 180_000)),
-  ]);
+    180_000,
+    () => `Unity Editor did not exit after the runtime E2E run. Unity log tail: ${readFileSyncTail(unityLogPath)}`,
+  );
 
   if (unityCode !== 0) {
     throw new Error(`Unity Editor hosted play mode exited with code ${unityCode}.`);
@@ -96,6 +104,24 @@ try {
   }
 
   await rm(temporaryPath, { recursive: true, force: true }).catch(() => undefined);
+}
+
+/**
+ * 给一个 Promise 加超时，并保证计时器一定被清掉：`Promise.race` 不会取消落败的那一支，
+ * 未清掉的 180s 兜底计时器会让进程在用例结束后继续挂到它触发为止（实测 18s 的用例变成 ~200s）。
+ */
+async function withTimeout(promise, timeoutMilliseconds, message) {
+  let handle;
+  const timeout = new Promise((_, reject) => {
+    handle = setTimeout(() => {
+      reject(new Error(typeof message === "function" ? message() : message));
+    }, timeoutMilliseconds);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(handle);
+  }
 }
 
 function readFileSyncTail(filePath) {

@@ -39,11 +39,25 @@ namespace VisualBridge.Diagnostics.Bridge
         private readonly object gate = new object();
         private readonly object droppedGate = new object();
         private readonly Dictionary<ushort, Slot> slots = new Dictionary<ushort, Slot>();
+        /// <summary>
+        /// 连接栈（E10）：<c>Bind</c> 压栈，断连/解绑出栈并**恢复到上一条仍然存活的连接**。
+        /// 背景：Runtime Bridge 允许同时存在多条连接（Editor Play、Player、MCP 的每次工具调用临时连接），
+        /// 而通道 1 的调试流只有一条活动 wire。旧实现是「最后一次绑定者胜出」，MCP 的临时连接一断，
+        /// Editor/Player 的槽位与实例表就永久失效（要等重连）。栈语义让临时连接退出后自动回到原连接。
+        /// 只有栈顶（活动连接）订阅事件；被压栈的连接退订但不 Dispose，它的槽位/计数随绑定存档，
+        /// 恢复时原样取回（见 <see cref="WireBinding"/>）。
+        /// </summary>
+        private readonly List<WireBinding> wireStack = new List<WireBinding>();
         private readonly ConnectType connectType;
         private readonly Action<string> log;
         private readonly int droppedReportIntervalMs;
 
         private IVisualBridgeDebugWire wire;
+        /// <summary>
+        /// 会话所属者的连接代次：本会话**第一条**连上来的那条（栈从空变非空时赋值），
+        /// 整栈清空时归零。栈内任何一条连接断开都不改变它（见 <see cref="ConnectionGeneration"/>）。
+        /// </summary>
+        private long ownerGeneration;
         private VisualBridgeDebugPayloadFormat format;
         private HashSet<string> categoryFilter;
         private HashSet<string> instanceFilter;
@@ -69,13 +83,24 @@ namespace VisualBridge.Diagnostics.Bridge
             this.droppedReportIntervalMs = droppedReportIntervalMs < 0 ? 0 : droppedReportIntervalMs;
         }
 
-        /// <summary>当前连接代次；未绑定时为 0（附录 B.1.3 允许传输层恒返回 0，此时由宿主显式 Detach）。</summary>
+        /// <summary>
+        /// 当前连接代次：锚定**会话所属者**（本会话建立时的第一条连接），而不是"当前栈底"、
+        /// 更不是活动连接（E10）。
+        /// 理由：MCP 的临时连接压栈/出栈期间代次必须不变，否则会话层的 <c>RefreshConnectionLocked</c>
+        /// 会把实例表当成「没观察到断连的重连」清空。若锚定"当前栈底"，先连者（MCP）断开时栈底会换成
+        /// 后连的面板 ⇒ 代次跳变 ⇒ 面板连接着却丢掉整个会话——与 E10 要消灭的症状同源，只是触发顺序相反。
+        /// 因此 <c>ownerGeneration</c> 只在**栈从空变非空**时（新会话开始）赋值，整栈清空时归零；
+        /// 栈内任何一条连接断开都不改变它。真正的重连（栈空后再连）会拿到新的连接代次 ⇒ 仍会触发会话重置。
+        /// 未绑定时为 0（附录 B.1.3 允许传输层恒返回 0，此时由宿主显式 Detach）。
+        /// </summary>
         public long ConnectionGeneration
         {
             get
             {
-                var current = VolatileWire;
-                return current == null ? 0L : current.Generation;
+                lock (gate)
+                {
+                    return wireStack.Count == 0 ? 0L : ownerGeneration;
+                }
             }
         }
 
@@ -114,8 +139,10 @@ namespace VisualBridge.Diagnostics.Bridge
         }
 
         /// <summary>
-        /// 绑定一条新连接：清空槽位映射与计数（每次连接重新开始），并订阅该连接的入站帧、关闭与心跳节拍。
-        /// 宿主在握手完成后调用；重复绑定以最后一次为准。
+        /// 绑定一条新连接（压栈）：当前连接的状态（槽位、计数、dropped 上报基线）存档，
+        /// 新连接从零开始（附录 A.9：每次连接重新开始），并订阅该连接的入站帧、关闭与心跳节拍。
+        /// 宿主在握手完成后调用；同一条连接重复绑定是幂等的（不重置状态）。
+        /// 断连时经 <see cref="OnWireClosed"/> 出栈，并恢复到上一条仍然存活的连接。
         /// </summary>
         public void Bind(IVisualBridgeDebugWire target)
         {
@@ -125,36 +152,64 @@ namespace VisualBridge.Diagnostics.Bridge
                 return;
             }
 
-            IVisualBridgeDebugWire previous;
+            WireBinding previous = null;
+            WireBinding binding;
             lock (gate)
             {
-                previous = wire;
-                wire = null;
-                ResetConnectionStateLocked();
+                var active = ActiveWireLocked;
+                if (active != null && ReferenceEquals(active.Wire, target))
+                {
+                    return;
+                }
+
+                if (active != null)
+                {
+                    // 存档活动连接的状态：它被压栈后仍可能恢复（E10 的栈语义）。
+                    CaptureStateLocked(active);
+                    previous = active;
+                }
+
+                binding = new WireBinding(
+                    target,
+                    (kind, payload) => OnFrameReceived(target, kind, payload),
+                    () => OnWireClosed(target),
+                    () => OnWireTick(target));
+                // ResetConnectionStateLocked 会连带清掉代次；压栈不算新会话，必须把会话所属者带过去。
+                var newSession = wireStack.Count == 0;
+                var previousOwner = ownerGeneration;
+                wireStack.Add(binding);
                 wire = target;
+                ResetConnectionStateLocked();
+                ownerGeneration = newSession ? target.Generation : previousOwner;
             }
 
-            if (!ReferenceEquals(previous, target))
-            {
-                Detach(previous);
-                target.FrameReceived += OnFrameReceived;
-                target.Closed += OnWireClosed;
-                target.Tick += OnWireTick;
-            }
+            // 只有栈顶订阅；被压栈的连接退订但不 Dispose（它的状态留给出栈恢复）。
+            Unsubscribe(previous);
+            Subscribe(binding);
         }
 
-        /// <summary>解绑（断连）：槽位立即失效，计数归零；不 Dispose 传输实现本身（可再次 Bind）。</summary>
+        /// <summary>
+        /// 显式解绑**全部**连接（断连即重置：槽位/计数/实例表全部作废）。
+        /// 生产调用者是 <see cref="Dispose"/>（Play 会话/宿主回收）；<c>Bind(null)</c> 也走这里，
+        /// 但当前没有调用者。宿主处理单条连接的 `link.Closed` 时**不**走这里——那走
+        /// <see cref="OnWireClosed"/>（只弹断开的那一条，并在还有存活连接时恢复上一条）；
+        /// 会话是否 Detach 由宿主按「传输层是否还有存活连接」决定。测试可直接调用来验证整栈清空。
+        /// </summary>
         public void Unbind()
         {
-            IVisualBridgeDebugWire previous;
+            WireBinding[] removed;
             lock (gate)
             {
-                previous = wire;
+                removed = wireStack.ToArray();
+                wireStack.Clear();
                 wire = null;
                 ResetConnectionStateLocked();
             }
 
-            Detach(previous);
+            for (int index = 0; index < removed.Length; index++)
+            {
+                Detach(removed[index]);
+            }
         }
 
         public void SetPayloadFormat(VisualBridgeDebugPayloadFormat value)
@@ -526,6 +581,7 @@ namespace VisualBridge.Diagnostics.Bridge
         private void ResetConnectionStateLocked()
         {
             slots.Clear();
+            ownerGeneration = 0L;
             filteredByServer = 0;
             unknownMethod = 0;
             unknownSlot = 0;
@@ -537,33 +593,180 @@ namespace VisualBridge.Diagnostics.Bridge
             droppedDirty = false;
         }
 
-        private void Detach(IVisualBridgeDebugWire target)
+        private void CaptureStateLocked(WireBinding binding)
         {
-            if (target == null)
+            binding.Slots = new Dictionary<ushort, Slot>(slots);
+            binding.FilteredByServer = filteredByServer;
+            binding.UnknownMethod = unknownMethod;
+            binding.UnknownSlot = unknownSlot;
+            binding.InvalidRequest = invalidRequest;
+            binding.OwnEncodeFailed = ownEncodeFailed;
+            binding.OwnOversize = ownOversize;
+            binding.LastReported = lastReported;
+            binding.LastReportedAtMs = lastReportedAtMs;
+            binding.DroppedDirty = droppedDirty;
+        }
+
+        private void RestoreStateLocked(WireBinding binding)
+        {
+            slots.Clear();
+            foreach (var pair in binding.Slots)
+            {
+                slots[pair.Key] = pair.Value;
+            }
+
+            filteredByServer = binding.FilteredByServer;
+            unknownMethod = binding.UnknownMethod;
+            unknownSlot = binding.UnknownSlot;
+            invalidRequest = binding.InvalidRequest;
+            ownEncodeFailed = binding.OwnEncodeFailed;
+            ownOversize = binding.OwnOversize;
+            lastReported = binding.LastReported;
+            lastReportedAtMs = binding.LastReportedAtMs;
+            droppedDirty = binding.DroppedDirty;
+        }
+
+        private WireBinding ActiveWireLocked => wireStack.Count == 0 ? null : wireStack[wireStack.Count - 1];
+
+        private void Subscribe(WireBinding binding)
+        {
+            binding.Wire.FrameReceived += binding.FrameHandler;
+            binding.Wire.Closed += binding.ClosedHandler;
+            binding.Wire.Tick += binding.TickHandler;
+        }
+
+        private void Unsubscribe(WireBinding binding)
+        {
+            if (binding == null)
             {
                 return;
             }
 
-            target.FrameReceived -= OnFrameReceived;
-            target.Closed -= OnWireClosed;
-            target.Tick -= OnWireTick;
+            // 只退订，不能 Dispose：被压栈的连接出栈后还要继续用。
+            binding.Wire.FrameReceived -= binding.FrameHandler;
+            binding.Wire.Closed -= binding.ClosedHandler;
+            binding.Wire.Tick -= binding.TickHandler;
+        }
+
+        private void Detach(WireBinding binding)
+        {
+            if (binding == null)
+            {
+                return;
+            }
+
+            var target = binding.Wire;
+            target.FrameReceived -= binding.FrameHandler;
+            target.Closed -= binding.ClosedHandler;
+            target.Tick -= binding.TickHandler;
             // 适配器（VisualBridgeRuntimeDebugWire）由传输层负责收起；宿主创建的裸实现不需要释放。
             (target as IDisposable)?.Dispose();
         }
 
-        private void OnWireClosed()
+        /// <summary>
+        /// 一条连接断开（E10）：只弹出它自己；若它正是活动连接，则恢复到栈内上一条仍然存活的连接，
+        /// 没有存活连接时才真正断连（槽位/计数归零，会话层据此重置）。
+        /// </summary>
+        private void OnWireClosed(IVisualBridgeDebugWire source)
         {
-            // 断连：槽位立即失效（附录 A.9），计数归零；传输实现保留以便重连后重新 Bind。
-            Unbind();
+            WireBinding closed;
+            WireBinding restored = null;
+            var dropped = new List<WireBinding>();
+            lock (gate)
+            {
+                int index = IndexOfLocked(source);
+                if (index < 0)
+                {
+                    // 已经出栈（重复 Closed / 显式 Unbind 之后）：不重复结算。
+                    return;
+                }
+
+                closed = wireStack[index];
+                bool wasActive = index == wireStack.Count - 1;
+                wireStack.RemoveAt(index);
+                if (!wasActive)
+                {
+                    // 只有活动连接订阅事件；被压栈的连接断开时活动连接不受影响。
+                    wire = ActiveWireLocked?.Wire;
+                }
+                else
+                {
+                    // 栈顶断开：向下找最后一条仍打开的连接；已关闭的中间连接一并收起（永远不会恢复）。
+                    while (wireStack.Count > 0)
+                    {
+                        var candidate = wireStack[wireStack.Count - 1];
+                        if (candidate.Wire.IsOpen)
+                        {
+                            restored = candidate;
+                            break;
+                        }
+
+                        wireStack.RemoveAt(wireStack.Count - 1);
+                        dropped.Add(candidate);
+                    }
+
+                    wire = restored?.Wire;
+                    if (restored != null)
+                    {
+                        RestoreStateLocked(restored);
+                    }
+                    else
+                    {
+                        ResetConnectionStateLocked();
+                    }
+                }
+            }
+
+            Detach(closed);
+            for (int index = 0; index < dropped.Count; index++)
+            {
+                Detach(dropped[index]);
+            }
+
+            if (restored != null)
+            {
+                Subscribe(restored);
+            }
         }
 
-        private void OnWireTick()
+        private int IndexOfLocked(IVisualBridgeDebugWire source)
         {
+            for (int index = 0; index < wireStack.Count; index++)
+            {
+                if (ReferenceEquals(wireStack[index].Wire, source))
+                {
+                    return index;
+                }
+            }
+
+            return -1;
+        }
+
+        private void OnWireTick(IVisualBridgeDebugWire source)
+        {
+            lock (gate)
+            {
+                if (!ReferenceEquals(wire, source))
+                {
+                    // 被压栈的连接（理论上已退订）：它的节拍不属于当前活动连接。
+                    return;
+                }
+            }
+
             FlushDroppedFromTick();
         }
 
-        private void OnFrameReceived(VisualBridgePayloadKind payloadKind, byte[] payload)
+        private void OnFrameReceived(IVisualBridgeDebugWire source, VisualBridgePayloadKind payloadKind, byte[] payload)
         {
+            lock (gate)
+            {
+                if (!ReferenceEquals(wire, source))
+                {
+                    // 被压栈的连接（理论上已退订）：丢弃它的入站帧，绝不让非活动连接执行业务查询。
+                    return;
+                }
+            }
+
             if (payloadKind == VisualBridgePayloadKind.Json)
             {
                 if (!VisualBridgeDebugRequestReader.TryRead(payload, out var request, out string error))
@@ -714,6 +917,52 @@ namespace VisualBridge.Diagnostics.Bridge
             }
 
             return payload.ToArray();
+        }
+
+        /// <summary>
+        /// 一条连接的绑定与**它自己的**状态存档（E10 的栈语义）：被压栈时把槽位/计数/上报基线存在这里，
+        /// 出栈恢复到它时原样取回。事件处理器按 wire 捕获，避免"所有连接共用一个 handler"时分不清是谁。
+        /// </summary>
+        private sealed class WireBinding
+        {
+            internal WireBinding(IVisualBridgeDebugWire wire,
+                Action<VisualBridgePayloadKind, byte[]> frameHandler,
+                Action closedHandler,
+                Action tickHandler)
+            {
+                Wire = wire;
+                FrameHandler = frameHandler;
+                ClosedHandler = closedHandler;
+                TickHandler = tickHandler;
+            }
+
+            internal IVisualBridgeDebugWire Wire { get; }
+
+            internal Action<VisualBridgePayloadKind, byte[]> FrameHandler { get; }
+
+            internal Action ClosedHandler { get; }
+
+            internal Action TickHandler { get; }
+
+            internal Dictionary<ushort, Slot> Slots;
+
+            internal long FilteredByServer;
+
+            internal long UnknownMethod;
+
+            internal long UnknownSlot;
+
+            internal long InvalidRequest;
+
+            internal long OwnEncodeFailed;
+
+            internal long OwnOversize;
+
+            internal VisualBridgeDebugDroppedSnapshot LastReported;
+
+            internal int LastReportedAtMs;
+
+            internal bool DroppedDirty;
         }
 
         private sealed class Slot

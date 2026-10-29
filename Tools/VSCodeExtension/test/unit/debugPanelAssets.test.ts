@@ -534,6 +534,7 @@ function snapshot(overrides: {
   readonly replay?: DebugPanelSnapshot["replay"];
   readonly query?: DebugPanelSnapshot["query"];
   readonly facetWindows?: DebugPanelSnapshot["facets"]["windows"];
+  readonly connection?: DebugPanelSnapshot["connection"];
 }): DebugPanelSnapshot {
   const historyMissing = overrides.historyMissing ?? false;
   return {
@@ -553,7 +554,7 @@ function snapshot(overrides: {
       canToggle: overrides.canToggle ?? true,
       timeoutMs: 4_000,
     },
-    connection: EDITOR_CONNECTION,
+    connection: overrides.connection ?? EDITOR_CONNECTION,
     instances: [{
       key: "graph\u0000hero",
       category: "graph",
@@ -651,3 +652,73 @@ function snapshot(overrides: {
     status: { records: 3, bytes: 72, keyframes: 0, frame: 7 },
   };
 }
+
+test("the status bar names the real frame source and offers a retry when disconnected (E10)", () => {
+  const webview = mountPanel();
+
+  // 只有 Runtime 腿在线：状态栏必须显示"已连接 · 来源 Runtime"，不能是"未连接"。
+  webview.render(snapshot({
+    connection: {
+      ...EDITOR_CONNECTION,
+      sources: { editor: false, runtime: true },
+      canRequestEnable: false,
+      endpointId: "editor-99",
+      target: "127.0.0.1:28301",
+      connectType: "editor-player",
+    },
+  }));
+  const connected = webview.byId("status").textContent;
+  assert.match(connected, /^已连接/u);
+  assert.match(connected, /来源 Runtime/u);
+  assert.equal(webview.byId("retry-connection").hidden, true, "已连接时不该出现重试按钮");
+
+  // 只有 Runtime 腿时上报开关必然置灰：悬停提示必须说明它只对 Editor 桥生效（E10）。
+  webview.render(snapshot({
+    canToggle: false,
+    connection: {
+      ...EDITOR_CONNECTION,
+      sources: { editor: false, runtime: true },
+      canRequestEnable: false,
+      endpointId: "editor-99",
+      target: "127.0.0.1:28301",
+      connectType: "editor-player",
+    },
+  }));
+  const greyedEnable = webview.byId("enable");
+  assert.equal(greyedEnable.disabled, true, "只剩 Runtime 腿时上报开关置灰");
+  assert.match(greyedEnable.title, /只对 Editor 桥生效/u,
+    "置灰原因必须说明上报开关只对 Editor 桥生效，而不是「向 Unity 发送 debugSetEnabled」");
+  assert.doesNotMatch(greyedEnable.title, /^向 Unity 发送 debugSetEnabled/u);
+
+  // 两条腿都在：来源写 Editor+Runtime。
+  webview.render(snapshot({
+    connection: { ...EDITOR_CONNECTION, sources: { editor: true, runtime: true } },
+  }));
+  assert.match(webview.byId("status").textContent, /来源 Editor\+Runtime/u);
+
+  // 都没连上：显示原因 + 重试按钮，点一下发出 retryConnection（不弹任何模态框）。
+  webview.render(snapshot({
+    connection: {
+      state: "disconnected",
+      sources: { editor: false, runtime: false },
+      canRequestEnable: false,
+      detail: "未找到 Runtime 端点：Unity 未进入 Play 或 Player 未启动（已探测 127.0.0.1:28300-28349）",
+      endpointId: undefined,
+      target: undefined,
+      connectType: undefined,
+      frame: -1,
+    },
+  }));
+  const disconnected = webview.byId("status").textContent;
+  assert.match(disconnected, /^未连接/u);
+  assert.match(disconnected, /来源 无/u);
+  assert.match(disconnected, /未找到 Runtime 端点/u, "未连接时必须把失败原因显示出来");
+
+  const retry = webview.byId("retry-connection");
+  assert.equal(retry.hidden, false, "未连接时提供重试入口");
+  assert.equal(retry.disabled, false);
+  assert.match(retry.title, /未找到 Runtime 端点/u, "悬停提示复用失败原因");
+
+  webview.click("retry-connection");
+  assert.deepEqual(webview.posted.at(-1), { type: "command", command: "retryConnection" });
+});

@@ -39,6 +39,8 @@ namespace VisualBridge.Editor
 
         private const string HostedActiveKey = "VisualBridge.RuntimeBridgeHostedE2E.Active";
         private const string HostedQuitPathKey = "VisualBridge.RuntimeBridgeHostedE2E.QuitPath";
+        private const string HostedControlPathKey = "VisualBridge.RuntimeBridgeHostedE2E.ControlPath";
+        private const string HostedControlConsumedKey = "VisualBridge.RuntimeBridgeHostedE2E.ControlConsumed";
         private const string HostedDeadlineKey = "VisualBridge.RuntimeBridgeHostedE2E.DeadlineTicks";
         private const string HostedStoppingKey = "VisualBridge.RuntimeBridgeHostedE2E.Stopping";
 
@@ -111,6 +113,13 @@ namespace VisualBridge.Editor
 
             SessionState.SetBool(HostedActiveKey, true);
             SessionState.SetString(HostedQuitPathKey, quitPath);
+            var controlPath = Environment.GetEnvironmentVariable("VISUALBRIDGE_RUNTIME_E2E_CONTROL");
+            if (!string.IsNullOrEmpty(controlPath))
+            {
+                SessionState.SetString(HostedControlPathKey, controlPath);
+                SessionState.SetInt(HostedControlConsumedKey, 0);
+            }
+
             SessionState.SetString(HostedDeadlineKey, DateTime.UtcNow.AddMilliseconds(120_000).Ticks.ToString());
             ConfigurePortRangeFromEnvironment();
             EditorApplication.update += HostedStep;
@@ -189,8 +198,78 @@ namespace VisualBridge.Editor
 
             if (EditorApplication.isPlaying)
             {
+                StepControlFile();
                 StepExecutionSimulator();
                 StepDebugChannelSimulator();
+            }
+        }
+
+        /// <summary>
+        /// 托管 E2E 的控制文件（仅 batchmode 托管运行使用）：测试进程追加一行命令，本进程执行后把结果
+        /// 追加到 <c>&lt;control&gt;.result</c>。目前只有 <c>create &lt;instanceId&gt;</c>：
+        /// E10 需要"临时连接关闭之后让探针**新建**一个实例"，用来断言会话仍可写（Detach 时 Create 会被挡）。
+        /// 用文件而不是新协议：E2E 编排进程与 Unity 之间没有其它命令通道，且此入口不进入生产路径。
+        /// </summary>
+        private static void StepControlFile()
+        {
+            var controlPath = SessionState.GetString(HostedControlPathKey, null);
+            if (string.IsNullOrEmpty(controlPath) || !File.Exists(controlPath))
+            {
+                return;
+            }
+
+            string[] lines;
+            try
+            {
+                lines = File.ReadAllLines(controlPath);
+            }
+            catch (IOException)
+            {
+                // 测试进程正在写：下一帧再读。
+                return;
+            }
+
+            var consumed = SessionState.GetInt(HostedControlConsumedKey, 0);
+            if (lines.Length <= consumed)
+            {
+                return;
+            }
+
+            for (var index = consumed; index < lines.Length; index++)
+            {
+                var line = lines[index].Trim();
+                if (line.Length == 0)
+                {
+                    continue;
+                }
+
+                var space = line.IndexOf(' ');
+                var command = space < 0 ? line : line.Substring(0, space);
+                var argument = space < 0 ? string.Empty : line.Substring(space + 1).Trim();
+                if (!string.Equals(command, "create", StringComparison.Ordinal) || argument.Length == 0)
+                {
+                    AppendControlResult(controlPath, "error unknown-command " + line);
+                    continue;
+                }
+
+                var created = VisualBridge.Diagnostics.VisualBridgeDebug.Create(
+                    argument, DebugSimCategory, "E9RuntimeProbe", "E10 临时连接关闭后的新实例");
+                var generation = VisualBridgeRuntimeBridgeHost.InstalledDebugTransport?.ConnectionGeneration ?? -1;
+                AppendControlResult(controlPath, "create " + argument + " ok=" + created + " generation=" + generation);
+            }
+
+            SessionState.SetInt(HostedControlConsumedKey, lines.Length);
+        }
+
+        private static void AppendControlResult(string controlPath, string line)
+        {
+            try
+            {
+                File.AppendAllText(controlPath + ".result", line + "\n");
+            }
+            catch (IOException exception)
+            {
+                UnityEngine.Debug.LogWarning("[runtime-bridge] control result append failed: " + exception.Message);
             }
         }
 

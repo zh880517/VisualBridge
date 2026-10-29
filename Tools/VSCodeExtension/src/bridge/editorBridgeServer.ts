@@ -46,6 +46,7 @@ import { DebugInstanceManager, type DebugInstanceView } from "./debugInstanceMan
 import {
   debugQueryAvailability,
   debugQueryLocalError,
+  debugQueryUnresolvedError,
   resolveDebugQueryClient,
   type DebugQueryClient,
   type DebugQueryConnection,
@@ -359,7 +360,7 @@ export class EditorBridgeServer implements vscode.Disposable {
     | { readonly status: "notConnected" }
     | { readonly status: "instanceNotFound" }
     | { readonly status: "instanceFinished" }
-    | { readonly status: "unresolved" } {
+    | { readonly status: "unresolved"; readonly reason: "ambiguous" | "noOwner" } {
     const connections = this.activeDebugQueryConnections();
     if (connections.length === 0) {
       return { status: "notConnected" };
@@ -378,7 +379,7 @@ export class EditorBridgeServer implements vscode.Disposable {
     const route = resolveDebugQueryClient(view, connections);
     return route.status === "ready"
       ? { status: "ready", queries: route.client, view, frame: route.frame }
-      : { status: "unresolved" };
+      : { status: "unresolved", reason: route.status };
   }
 
   /**
@@ -402,7 +403,9 @@ export class EditorBridgeServer implements vscode.Disposable {
    * 发起一次调试查询（附录 C.1）：结果以 `kind: "queryResult"` 记录插入时间轴，
    * `frame` 固定为**发起时**的当前帧（P1）。失败 reject `DebugQueryError`，**不重试**。
    *
-   * 路由按实例所属连接；多连接无法确定归属时回 `local.noConnection`（不猜、不发错连接）。
+   * 路由按实例所属连接；**没有存活连接持有**该实例时回 `local.noOwner`，多条连接**互相歧义**时回
+   * `local.noConnection`（不猜、不发错连接）。两者文案不同：前者是"实例已无主"（原连接断了/实例失效），
+   * 后者是"多条连接同时在线"。混成一句会把排障带偏（E10 实测：单连接、实例无主也报"多连接"）。
    */
   public queryDebug(
     instanceKey: string,
@@ -421,7 +424,7 @@ export class EditorBridgeServer implements vscode.Disposable {
         // 实例可能在结果前 `Finish`（验收 P1）：明确提示已结束，不重试、不发请求。
         return Promise.reject(debugQueryLocalError("local.instanceFinished"));
       case "unresolved":
-        return Promise.reject(debugQueryLocalError("local.noConnection"));
+        return Promise.reject(debugQueryUnresolvedError(route.reason));
       default:
         // 帧号取**实例所属腿**自己的当前帧（E9）：两条腿并行时，用共享实例表的帧号会把结果
         // 盖到另一条腿的时间轴上（F6 的 P1）。单腿时两者相同。

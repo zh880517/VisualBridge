@@ -14,6 +14,9 @@ import { DebugPanelModel, type DebugPanelConnection, type DebugPanelQueryState, 
 
 export const EDITOR_CONNECTION: DebugPanelConnection = {
   state: "connected",
+  sources: { editor: true, runtime: false },
+  canRequestEnable: true,
+  detail: undefined,
   endpointId: "unity-1",
   target: "127.0.0.1:4040",
   connectType: "editor",

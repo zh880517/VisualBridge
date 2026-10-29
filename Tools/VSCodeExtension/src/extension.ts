@@ -49,6 +49,7 @@ import { BridgeProtocolError, parseBridgeMessage, parseDiscoveryRecord } from ".
 import { RuntimeDebugAdapter } from "./debug/runtimeDebugAdapter";
 import { RuntimeDebugConfigurationProvider, RUNTIME_DEBUG_TYPE } from "./debug/runtimeDebugConfigurationProvider";
 import { DebugPanelController } from "./debug/debugPanelController";
+import { RuntimePanelConnection } from "./debug/runtimePanelConnection";
 import { DebugRecordingService } from "./debug/debugRecordingService";
 import { DebugReplaySession } from "./bridge/debugReplaySession";
 import { DebugFacetHost } from "./debug/debugFacetRouter";
@@ -940,6 +941,47 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     output.appendLine(`[bridge] Editor Bridge server failed to start: ${String(errorValue)}`);
   }
 
+  // Runtime 腿的调试接线（E9）：ch1 帧接进与 Editor 腿**同一个**实例表与录制宿主；
+  // 查询归属由 F6 的 `resolveDebugQueryClient` 按实例解析（两条腿各一条连接，不按腿分支）。
+  const runtimeBridge = new RuntimeBridgeService((message) => output.appendLine(`[runtime] ${message}`), {
+    debug: {
+      manager: bridgeServer.debug,
+      resolveContracts: (contractHash) => bridgeServer.contractSnapshots.snapshotForHash(contractHash),
+      recording: debugRecordingHost,
+    },
+  });
+  context.subscriptions.push(
+    { dispose: () => runtimeBridge.disconnect() },
+    bridgeServer.registerDebugQuerySource(() => runtimeBridge.debugQueryConnections),
+  );
+
+  /**
+   * 面板 Runtime 腿的生产连接触发（E10）。**只复用上面那一个 `runtimeBridge` 实例**：
+   * 多一个服务实例就是多一条会抢 Unity 侧 ch1 的连接。
+   *
+   * DAP 与面板的并发处置（写在这里，避免后来者再发明第二套生命周期）：
+   * - DAP attach 仍由 `RuntimeDebugAdapter` 调 `service.connect(...)`（并持租约）；面板是观察者、不取租约。
+   *   两者共用同一实例，所以 DAP attach 只是把连接换到它选的实例，面板随后继续从**同一个** manager 收帧。
+   * - DAP 断开时会 `service.disconnect()`，面板随之显示"未连接"（不静默换成别的实例）；
+   *   面板"重试连接"或重开面板即重新 ensure。
+   * - 面板关闭**不断开**：面板关闭保留模型与已缓存记录（F3 既有语义），而断开会让 Unity 侧
+   *   `ResetSessionLocked` 清空实例/槽位；连接由扩展停用或 DAP 负责收尾。
+   */
+  const runtimePanelDiscovery = process.env.VISUALBRIDGE_TEST_RUNTIME_DIR;
+  // 宿主机隔离探针地址（只在非 Production 读）：宿主测试把它指向 TEST-NET-1，
+  // 这样「没有 Runtime 端点」这条失败路径既不会连到开发者本机真实 Play 会话，也不会被占用的端口干扰。
+  const runtimePanelProbeHost = context.extensionMode === vscode.ExtensionMode.Production
+    ? undefined
+    : process.env.VISUALBRIDGE_TEST_RUNTIME_PROBE_HOST;
+  const runtimePanelConnection = new RuntimePanelConnection({
+    service: () => runtimeBridge,
+    log: (message) => output.appendLine(`[runtime] panel: ${message}`),
+    // 与 DAP 工厂一致：宿主测试用这个环境变量指向隔离的发现记录目录。
+    ...(runtimePanelDiscovery === undefined ? {} : { discoveryDirectory: runtimePanelDiscovery }),
+    ...(runtimePanelProbeHost === undefined ? {} : { probe: { host: runtimePanelProbeHost } }),
+  });
+  context.subscriptions.push({ dispose: () => runtimePanelConnection.dispose() });
+
   // 独立 Debug 面板（F3）：数据只来自 `bridgeServer.debug`，开关状态只来自 welcome 与广播。
   // 模块 debug facet（F4）：宿主把分类路由到已装载模块，通用视图始终是观察者（C.5）。
   const debugFacetHost = new DebugFacetHost({
@@ -1010,8 +1052,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return host;
     },
     log: (message) => output.appendLine(message),
+    // E10：面板打开时按需建立 Runtime 腿连接（复用上面那一个 `runtimeBridge`），
+    // 并让状态栏读两条腿的真实状态（不再只读 Editor 腿）。
+    ensureRuntimeConnection: (reason) => {
+      void runtimePanelConnection.ensureConnected(reason);
+    },
+    runtimeConnection: () => runtimePanelConnection.status,
   });
   context.subscriptions.push(debugPanel);
+
+  // E10：打开图页面也按需连接（G1a 之后图调试数据只从 Runtime 腿来）。只对 graph 编辑器触发，
+  // 其余文档类型打开时不去探测端口，避免每次开文档都白跑一轮 2 s 的端口段探测。
+  // 尽力而为：`resolveCustomTextEditor` 的 catch 会 dispose 并 rethrow，监听器同步抛出会让图页面打不开，
+  // 所以这里必须自己吞掉（与 debugPanelController 的 requestRuntimeConnection 同一套处置）。
+  context.subscriptions.push(editorProvider.onDidOpenDocument((match) => {
+    if (match.documentType.editor !== "graph") {
+      return;
+    }
+
+    try {
+      void runtimePanelConnection.ensureConnected("graph.editor.open");
+    } catch (errorValue) {
+      output.appendLine(`[runtime] graph page runtime connection trigger failed: ${String(errorValue)}`);
+    }
+  }));
   /**
    * 回看入口：大文件重放要占住宿主线程，给一个可见的进度提示（不可取消：解析没有中断点）。
    *
@@ -1071,20 +1135,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
       await openRecordingWithProgress(filePath);
     }),
-  );
-
-  // Runtime 腿的调试接线（E9）：ch1 帧接进与 Editor 腿**同一个**实例表与录制宿主；
-  // 查询归属由 F6 的 `resolveDebugQueryClient` 按实例解析（两条腿各一条连接，不按腿分支）。
-  const runtimeBridge = new RuntimeBridgeService((message) => output.appendLine(`[runtime] ${message}`), {
-    debug: {
-      manager: bridgeServer.debug,
-      resolveContracts: (contractHash) => bridgeServer.contractSnapshots.snapshotForHash(contractHash),
-      recording: debugRecordingHost,
-    },
-  });
-  context.subscriptions.push(
-    { dispose: () => runtimeBridge.disconnect() },
-    bridgeServer.registerDebugQuerySource(() => runtimeBridge.debugQueryConnections),
   );
 
   // Runtime 只检查 DAP 会话（VB-UX-11）：inline 适配器，一切状态经 Runtime Bridge 协议获取。

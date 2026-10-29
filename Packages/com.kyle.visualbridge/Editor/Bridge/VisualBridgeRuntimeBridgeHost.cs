@@ -31,6 +31,12 @@ namespace VisualBridge.Editor
         private static bool lifecycleHooked;
         private static bool shuttingDown;
         private static VisualBridge.Diagnostics.Bridge.VisualBridgeDebugTransport debugTransport;
+        /// <summary>
+        /// 保护 <see cref="debugTransport"/> 的「身份比较 + Detach」/安装/卸载不被打断（E10 的 TOCTOU）：
+        /// server 重启与旧连接迟到的 <c>Closed</c> 交错时，不能拿旧 transport 去 Detach 新会话。
+        /// 与 <see cref="Gate"/> 无关（那把锁保护生命周期），锁序恒为 debugTransportGate → 会话 Gate。
+        /// </summary>
+        private static readonly object debugTransportGate = new object();
 
         static VisualBridgeRuntimeBridgeHost()
         {
@@ -193,12 +199,14 @@ namespace VisualBridge.Editor
         /// <summary>
         /// 注入调试传输实现（附录 A.9）：每个 Play 会话一个传输实例，握手完成的连接经
         /// <see cref="VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer.DebugLinkOpened"/> 绑定上来。
-        /// 绑定后必须显式 <c>Attach</c>（A.5：连接建立后立即 flush 当前帧与待发描述），
-        /// 连接关闭时先解绑再 <c>Detach</c>（按断连语义重置会话）。
+        /// 绑定后必须显式 <c>Attach</c>（A.5：连接建立后立即 flush 当前帧与待发描述）。
+        /// 连接关闭走 <see cref="OnDebugLinkClosed"/>：只有传输层再没有存活连接时才 <c>Detach</c>
+        /// （按断连语义重置会话）；若还有被压栈的存活连接（MCP/临时连接退出），会话保持挂接，
+        /// 传输层弹回的那条连接继续收帧——否则面板会「TCP 还连着却一个帧都收不到」。
         /// 载荷格式固定 JSON：契约指纹为空时协商结果必然是 <c>["json"]</c>（E2 的降级规则），
         /// 二进制协商留给 E5 统一 welcome 字段后再切换。
         /// </summary>
-        private static void InstallDebugTransport(VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer server)
+        internal static void InstallDebugTransport(VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer server)
         {
             RemoveDebugTransport();
             var transport = new VisualBridge.Diagnostics.Bridge.VisualBridgeDebugTransport(
@@ -208,22 +216,77 @@ namespace VisualBridge.Editor
             server.DebugLinkOpened += link =>
             {
                 transport.Bind(new VisualBridge.Diagnostics.Bridge.VisualBridgeRuntimeDebugWire(link));
+                // 观察点（E10）：日志里能看到"两条连接叠起来"，E2E 用它做因果正控；生产排障同样需要。
+                UnityEngine.Debug.Log("[runtime-bridge] debug link stacked (generation="
+                    + transport.ConnectionGeneration + ")");
                 VisualBridge.Diagnostics.Bridge.VisualBridgeDebugBridge.Attach();
-                link.Closed += VisualBridge.Diagnostics.Bridge.VisualBridgeDebugBridge.Detach;
+                link.Closed += () => OnDebugLinkClosed(transport);
             };
             VisualBridge.Diagnostics.Bridge.VisualBridgeDebugBridge.Install(transport);
-            debugTransport = transport;
+            lock (debugTransportGate)
+            {
+                debugTransport = transport;
+            }
         }
 
-        private static void RemoveDebugTransport()
+        /// <summary>当前装配的传输实例；供 EditMode 用例观察/驱动真实装配路径（不参与生产逻辑）。</summary>
+        internal static VisualBridge.Diagnostics.Bridge.VisualBridgeDebugTransport InstalledDebugTransport
         {
-            var transport = debugTransport;
+            get
+            {
+                lock (debugTransportGate)
+                {
+                    return debugTransport;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 一条 debug 连接关闭（E10）：传输层还有存活连接时**不能** Detach。
+        /// 时序：<see cref="VisualBridge.Diagnostics.Bridge.VisualBridgeRuntimeDebugWire"/> 构造时先订阅
+        /// <c>link.Closed</c>，本处理器后订阅，所以进入这里时传输层的出栈/恢复已经完成；
+        /// <c>IsConnected</c> 看的是弹回后的活动连接（它自己的 <c>IsOpen</c>）。
+        /// 「是不是当前安装的 transport」与「Detach」必须在同一把锁内完成（TOCTOU）：否则
+        /// Remove/Install 落在比较与 Detach 之间，就会拿旧连接把**新**会话 Detach 掉。
+        /// 锁序固定为 debugTransportGate → 会话 Gate（Detach 内部只取会话 Gate；会话侧不会回调宿主），
+        /// 且安装/卸载在锁外调用 debug bridge，因此不会反向持锁。
+        /// </summary>
+        internal static void OnDebugLinkClosed(VisualBridge.Diagnostics.Bridge.VisualBridgeDebugTransport transport)
+        {
+            lock (debugTransportGate)
+            {
+                if (!ReferenceEquals(transport, debugTransport))
+                {
+                    UnityEngine.Debug.Log("[runtime-bridge] debug link closed (stale transport: ignored)");
+                    return;
+                }
+
+                if (transport.IsConnected)
+                {
+                    // 被压栈的连接出栈后回到仍存活的那条：会话保持挂接（E10 的核心不变量）。
+                    UnityEngine.Debug.Log("[runtime-bridge] debug link closed (session kept: another link is live)");
+                    return;
+                }
+
+                UnityEngine.Debug.Log("[runtime-bridge] debug link closed (session detached: no live link left)");
+                VisualBridge.Diagnostics.Bridge.VisualBridgeDebugBridge.Detach();
+            }
+        }
+
+        internal static void RemoveDebugTransport()
+        {
+            VisualBridge.Diagnostics.Bridge.VisualBridgeDebugTransport transport;
+            lock (debugTransportGate)
+            {
+                transport = debugTransport;
+                debugTransport = null;
+            }
+
             if (transport == null)
             {
                 return;
             }
 
-            debugTransport = null;
             VisualBridge.Diagnostics.Bridge.VisualBridgeDebugBridge.Uninstall();
             transport.Dispose();
         }
