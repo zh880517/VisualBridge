@@ -53,6 +53,7 @@ import { RuntimePanelConnection } from "./debug/runtimePanelConnection";
 import { DebugRecordingService } from "./debug/debugRecordingService";
 import { DebugReplaySession } from "./bridge/debugReplaySession";
 import { DebugFacetHost } from "./debug/debugFacetRouter";
+import { DebugFacetWindowBridge } from "./debug/debugFacetWindowBridge";
 import { collectDebugFacetSources } from "./debug/debugFacetSources";
 import type { DebugEnvelope } from "./bridge/debugIngress";
 
@@ -461,6 +462,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.commands.registerCommand(
         "visualbridge.test.sendGraphEditorDebugMessage",
         (uri: vscode.Uri, message: unknown) => editorProvider.sendGraphEditorDebugMessage(uri, message),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.getGraphEditorFacetDebugState",
+        (uri: vscode.Uri) => editorProvider.getGraphEditorFacetDebugState(uri),
+      ),
+      vscode.commands.registerCommand(
+        "visualbridge.test.debugFacetUpdates",
+        (category: string) => ({
+          updates: debugFacetHost.updatesFor(category),
+          truncated: debugFacetHost.isHistoryTruncated(category),
+          window: debugFacetHost.windowSource(category),
+        }),
       ),
       vscode.commands.registerCommand(
         "visualbridge.test.getEntityEditorState",
@@ -994,6 +1007,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     log: (message) => output.appendLine(message),
   });
   context.subscriptions.push(debugFacetHost);
+  // 模块 Webview 的调试窗口（G1a）：facet 的逐条渲染增量 → 该 editor 的已打开 Webview。
+  // 先于 `rebuildDebugFacets()` 装配，保证模块重载/首次重放时增量不会丢。
+  const debugFacetWindows = new DebugFacetWindowBridge({
+    facets: debugFacetHost,
+    broadcast: (editor, message) => editorProvider.broadcastDebugFacet(editor, message),
+    log: (message) => output.appendLine(message),
+  });
+  context.subscriptions.push(debugFacetWindows);
+  editorProvider.attachDebugFacetWindowBridge(debugFacetWindows);
   // 录制（F5）：真正的写盘在 bridge 层；这里只负责路径选择与 UI 反馈。
   const debugRecording = new DebugRecordingService({
     storageUri: context.globalStorageUri,
@@ -1284,6 +1306,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         records: ingestDebugForTest(envelopes),
         state: debugPanel.getStateForTest(),
       })),
+      // 新会话边界：manager.reset() → router.reset() → facet 消费者 reset("session")，
+      // 桥据此丢掉旧时间轴。用例用它构造不依赖前序用例水化历史的起点。
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.resetDebugSession", () => {
+        bridgeServer.debug.reset();
+        return true;
+      }),
       vscode.commands.registerCommand("visualbridge.test.debugPanel.debugReporting", () => bridgeServer.debugReporting),
       vscode.commands.registerCommand("visualbridge.test.debugPanel.facets", () => debugFacetHost.snapshot()),
       vscode.commands.registerCommand("visualbridge.test.debugPanel.facetRoutes", () => debugFacetHost.routeSummaryForTest()),

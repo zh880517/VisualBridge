@@ -29,7 +29,7 @@ import type {
   ModuleLogFunction,
 } from "@visualbridge/module-sdk";
 import type { DebugCategoryReplayResult } from "../bridge/debugInstanceManager";
-import type { DebugConsumer, DebugRouter } from "../bridge/debugRouter";
+import type { DebugConsumer, DebugResetReason, DebugRouter } from "../bridge/debugRouter";
 import type { DebugRecord as HostDebugRecord } from "../bridge/debugStore";
 import { assertDebugFacetCode, type DebugFacetErrorCode } from "./debugFacetDiagnostics";
 
@@ -90,6 +90,42 @@ export interface DebugFacetDiagnostic {
   /** 定位：`modules[i].editors[j].debug`（或 `...debug.categories[k]`）。 */
   readonly path: string;
 }
+
+/**
+ * 一条已投递给模块、并成功产出的渲染增量（G1a）。
+ *
+ * 与窗口快照的 `content`（只保留最后一条）不同，这里逐条保留，供模块自己的 Webview
+ * （Graph 执行调试窗口）消费：宿主拥有数据面，模块 Webview 只消费增量，不解析调试流。
+ */
+export interface DebugFacetRenderEvent {
+  readonly category: string;
+  readonly moduleId: string;
+  readonly editor: string;
+  /** `onRecord` 的返回值（已做 JSON 收口与大小校验）。 */
+  readonly update: JsonValue;
+}
+
+/** 分类级重建/清空：模块 Webview 必须丢掉本地累积状态，随后会收到重放的增量。 */
+export interface DebugFacetResetEvent {
+  readonly category: string;
+  readonly moduleId: string;
+  readonly editor: string;
+  /**
+   * `reload`：模块重载/重新授权，facet 侧历史被清空但执行仍在，桥要补回自己保留的时间轴；
+   * `replay`：从头重放，同样保留；`session`：调试会话作废，旧时间轴必须一起清掉（C.3）。
+   */
+  readonly reason: "reload" | DebugResetReason;
+}
+
+/**
+ * 每个分类保留多少条历史渲染增量（G1a）。
+ *
+ * 与 C.4 的每实例 20000 条上限同量级但不相等：增量只是时间轴投影（每条几十字节），
+ * 保留窗口用于"Webview 晚打开/重载后水化"，超出部分标 `truncated`。选 5000 是 20000 的 1/4：
+ * 一次水化约 1–2 MB，远低于 `DEBUG_FACET_CONTENT_MAX_BYTES` × 单批的宿主预算，
+ * 同时覆盖常见的单次执行长度；更长的执行仍能从当前时刻继续追加。
+ */
+export const DEBUG_FACET_HISTORY_LIMIT = 5000;
 
 /** 一次显式分类级重建的结果（`partial` 必须展示，不能被吞掉）。 */
 export interface DebugFacetReplayView {
@@ -181,6 +217,12 @@ export interface DebugFacetHostOptions {
   readonly batchLimit?: number;
   /** 每投递一批回调一次（测试断言"每批 ≤ 上限"与批次数；生产可接诊断）。 */
   readonly onBatch?: (category: string, size: number) => void;
+  /** 每条成功产出的渲染增量（G1a：转发给模块 Webview）。 */
+  readonly onRender?: (event: DebugFacetRenderEvent) => void;
+  /** 分类级重置（重建/清空；G1a：模块 Webview 丢掉本地累积）。 */
+  readonly onReset?: (event: DebugFacetResetEvent) => void;
+  /** 历史增量保留上限；缺省 {@link DEBUG_FACET_HISTORY_LIMIT}。 */
+  readonly historyLimit?: number;
   readonly setTimer?: (callback: () => void) => unknown;
   readonly clearTimer?: (handle: unknown) => void;
   readonly now?: () => number;
@@ -199,6 +241,8 @@ const defaultClearTimer = (handle: unknown): void => {
 
 interface FacetConsumerOptions {
   readonly batchLimit: number;
+  /** 历史增量保留上限（G1a）。 */
+  readonly historyLimit: number;
   readonly sessionId: () => string;
   readonly now: () => number;
   readonly setTimer: (callback: () => void) => unknown;
@@ -206,6 +250,10 @@ interface FacetConsumerOptions {
   readonly onFailure: (category: string, diagnostic: DebugFacetDiagnostic) => void;
   readonly shouldThrowForTest: (record: HostDebugRecord) => boolean;
   readonly onBatch: (category: string, size: number) => void;
+  /** 每条成功渲染的增量（G1a）。 */
+  readonly onRender: (event: DebugFacetRenderEvent) => void;
+  /** 分类级重置（G1a）。 */
+  readonly onReset: (event: DebugFacetResetEvent) => void;
   /** 注销后仍被投递（只用于验收 A 的"没调用已销毁模块"断言）。 */
   readonly onLateRecord: () => void;
 }
@@ -225,6 +273,9 @@ class ModuleDebugFacetConsumer implements DebugConsumer {
   private disposed = false;
   private contentValue: JsonValue | undefined;
   private updatedAtValue: number | undefined;
+  /** 逐条渲染增量（G1a，供模块 Webview 水化；超出上限丢最旧）。 */
+  private historyValue: { readonly seq: number; readonly update: JsonValue }[] = [];
+  private historyTruncatedValue = false;
   private deliveredValue = 0;
   private batchesValue = 0;
   private failureValue: DebugFacetDiagnostic | undefined;
@@ -254,14 +305,19 @@ class ModuleDebugFacetConsumer implements DebugConsumer {
   }
 
   /** 从头重放前清空自身状态（D.4 没有 facet 级 reset，宿主按"重建消费者"处理）。 */
-  public reset(): void {
+  public reset(reason: DebugResetReason = "session"): void {
     this.cancelTimer();
     this.pendingRecords = [];
     this.contentValue = undefined;
     this.updatedAtValue = undefined;
+    this.historyValue = [];
+    this.historyTruncatedValue = false;
     this.deliveredValue = 0;
     this.batchesValue = 0;
     this.failureValue = undefined;
+    for (const category of this.categories) {
+      this.options.onReset(this.resetEventFor(category, reason));
+    }
   }
 
   /**
@@ -329,6 +385,16 @@ class ModuleDebugFacetConsumer implements DebugConsumer {
 
   public get updatedAt(): number | undefined {
     return this.updatedAtValue;
+  }
+
+  /** 逐条增量（升序 `seq`）；返回浅拷贝数组，调用方改不动内部结构。 */
+  public get history(): readonly { readonly seq: number; readonly update: JsonValue }[] {
+    return [...this.historyValue];
+  }
+
+  /** 历史窗口是否丢过最旧增量（水化时必须标注 `truncated`）。 */
+  public get historyTruncated(): boolean {
+    return this.historyTruncatedValue;
   }
 
   public get failure(): DebugFacetDiagnostic | undefined {
@@ -411,8 +477,33 @@ class ModuleDebugFacetConsumer implements DebugConsumer {
 
         this.contentValue = rendered.value;
         this.updatedAtValue = this.options.now();
+        this.pushHistory(record.arrivalSeq, rendered.value);
+        this.options.onRender({
+          category: record.category,
+          moduleId: this.source.moduleId,
+          editor: this.source.editor,
+          update: rendered.value,
+        });
       }
     }
+  }
+
+  /** 追加一条历史增量；超过上限丢最旧并标记 `truncated`。 */
+  private pushHistory(seq: number, update: JsonValue): void {
+    this.historyValue.push({ seq, update });
+    while (this.historyValue.length > this.options.historyLimit) {
+      this.historyValue.shift();
+      this.historyTruncatedValue = true;
+    }
+  }
+
+  private resetEventFor(category: string, reason: DebugResetReason): DebugFacetResetEvent {
+    return {
+      category,
+      moduleId: this.source.moduleId,
+      editor: this.source.editor,
+      reason,
+    };
   }
 
   private fail(record: HostDebugRecord, code: DebugFacetDiagnosticCode, detail: string): void {
@@ -445,6 +536,8 @@ export class DebugFacetHost {
   private readonly conflicts = new Map<string, DebugFacetDiagnostic>();
   private readonly lastReplay = new Map<string, DebugFacetReplayView>();
   private readonly unregister: (() => void)[] = [];
+  private readonly renderListeners = new Set<(event: DebugFacetRenderEvent) => void>();
+  private readonly resetListeners = new Set<(event: DebugFacetResetEvent) => void>();
   private sourcesValue: readonly DebugFacetSource[] = [];
   private faultCategory: string | undefined;
   private totalFailures = 0;
@@ -452,6 +545,38 @@ export class DebugFacetHost {
 
   public constructor(options: DebugFacetHostOptions) {
     this.options = options;
+  }
+
+  /** 订阅逐条渲染增量（G1a）；返回注销函数。监听器抛错只记日志，不影响投递。 */
+  public onDidRender(listener: (event: DebugFacetRenderEvent) => void): () => void {
+    this.renderListeners.add(listener);
+    return () => {
+      this.renderListeners.delete(listener);
+    };
+  }
+
+  /** 订阅分类级重置（G1a）；返回注销函数。 */
+  public onDidReset(listener: (event: DebugFacetResetEvent) => void): () => void {
+    this.resetListeners.add(listener);
+    return () => {
+      this.resetListeners.delete(listener);
+    };
+  }
+
+  /** 某分类当前保留的历史增量（水化用）；没有消费者时为空数组。 */
+  public updatesFor(category: string): readonly { readonly seq: number; readonly update: JsonValue }[] {
+    return this.consumers.get(category)?.history ?? [];
+  }
+
+  /** 该分类的历史窗口是否已丢过最旧增量。 */
+  public isHistoryTruncated(category: string): boolean {
+    return this.consumers.get(category)?.historyTruncated ?? false;
+  }
+
+  /** 分类 → 归属信息（水化消息的 `moduleId` / `editor`）；没有消费者时 `undefined`。 */
+  public windowSource(category: string): { readonly moduleId: string; readonly editor: string } | undefined {
+    const source = this.consumers.get(category)?.sourceRef;
+    return source === undefined ? undefined : { moduleId: source.moduleId, editor: source.editor };
   }
 
   /**
@@ -468,6 +593,12 @@ export class DebugFacetHost {
       }
     }
 
+    // 先通知模块 Webview"本地累积失效"，再注销/重建消费者；随后 replay 会重放增量。
+    // 顺序不能反：若先重放，Webview 会在清空时把刚收到的重放一起丢掉。
+    for (const category of categories) {
+      this.emitReset(this.consumerResetEvent(category));
+    }
+
     this.dropConsumers();
     this.sourcesValue = [...sources];
     this.conflicts.clear();
@@ -476,6 +607,7 @@ export class DebugFacetHost {
     for (const source of sources) {
       const consumer = new ModuleDebugFacetConsumer(source, {
         batchLimit: this.batchLimit(),
+        historyLimit: this.historyLimit(),
         sessionId: this.options.sessionId ?? (() => ""),
         now: this.options.now ?? (() => Date.now()),
         setTimer: this.options.setTimer ?? defaultSetTimer,
@@ -483,6 +615,8 @@ export class DebugFacetHost {
         onFailure: (category, diagnostic) => this.handleFailure(category, diagnostic),
         shouldThrowForTest: (record) => this.faultCategory !== undefined && record.category === this.faultCategory,
         onBatch: (category, size) => this.options.onBatch?.(category, size),
+        onRender: (event) => this.emitRender(event),
+        onReset: (event) => this.emitReset(event),
         onLateRecord: () => {
           this.lateRecordsValue += 1;
         },
@@ -616,6 +750,48 @@ export class DebugFacetHost {
     return normalizeBatchLimit(this.options.batchLimit);
   }
 
+  /** 归一后的历史增量上限。 */
+  private historyLimit(): number {
+    return normalizeHistoryLimit(this.options.historyLimit);
+  }
+
+  private consumerResetEvent(category: string): DebugFacetResetEvent {
+    const source = this.consumers.get(category)?.sourceRef;
+    return {
+      category,
+      moduleId: source?.moduleId ?? "",
+      editor: source?.editor ?? "",
+      reason: "reload",
+    };
+  }
+
+  private emitRender(event: DebugFacetRenderEvent): void {
+    if (this.options.onRender !== undefined) {
+      this.callSafely(() => this.options.onRender?.(event), "onRender");
+    }
+    for (const listener of [...this.renderListeners]) {
+      this.callSafely(() => listener(event), "onDidRender listener");
+    }
+  }
+
+  private emitReset(event: DebugFacetResetEvent): void {
+    if (this.options.onReset !== undefined) {
+      this.callSafely(() => this.options.onReset?.(event), "onReset");
+    }
+    for (const listener of [...this.resetListeners]) {
+      this.callSafely(() => listener(event), "onDidReset listener");
+    }
+  }
+
+  /** 订阅方（扩展的 Webview 转发）出错不能影响调试投递与记录保存。 */
+  private callSafely(action: () => void, label: string): void {
+    try {
+      action();
+    } catch (errorValue) {
+      this.options.log?.(`[debug] ${label} failed: ${String(errorValue)}`);
+    }
+  }
+
   public snapshot(): DebugFacetSnapshot {
     const router = this.options.router;
     const categories = new Set<string>();
@@ -737,7 +913,9 @@ export class DebugFacetHost {
  *
  * - `seq` 用全局应用序 `arrivalSeq`（跨实例唯一、与关键帧回放的增量过滤同源）；
  * - `params` 优先用契约补齐后的 `named`，缺契约时退回 `args`（键为 `name` 或 `arg#tag`）；
- * - `at` 用接收时间；`sessionId` 由宿主 bridge 会话提供。
+ * - `at` 用接收时间；`sessionId` 由宿主 bridge 会话提供；
+ * - `kind` 原样带出（`event` / `queryResult`，G1a/P0-2）：查询结果与调试事件共用时间轴，
+ *   模块侧要能区分。字段在 SDK 里是**可选**的，因此这是 additive 追加，不破坏既有 facet。
  *
  * `params` 是**每次调用新造的独立对象**，嵌套 JSON 值也会深拷贝（P2-5）：模块拿到的记录与
  * store/通用视图不共享任何可变引用，改自己的副本不会污染宿主。深拷贝复用 Core 的
@@ -765,6 +943,7 @@ export function toPublicRecord(record: HostDebugRecord, sessionId: string): Publ
     params,
     wireBytes: record.wireBytes,
     at: record.receivedAt,
+    kind: record.kind,
   };
 }
 
@@ -851,6 +1030,16 @@ function normalizeBatchLimit(limit: number | undefined): number {
   const value = limit ?? DEBUG_FACET_BATCH_LIMIT;
   if (!Number.isFinite(value)) {
     return DEBUG_FACET_BATCH_LIMIT;
+  }
+
+  return Math.max(1, Math.floor(value));
+}
+
+/** 历史增量上限归一：至少 1，非有限值回退默认。 */
+function normalizeHistoryLimit(limit: number | undefined): number {
+  const value = limit ?? DEBUG_FACET_HISTORY_LIMIT;
+  if (!Number.isFinite(value)) {
+    return DEBUG_FACET_HISTORY_LIMIT;
   }
 
   return Math.max(1, Math.floor(value));

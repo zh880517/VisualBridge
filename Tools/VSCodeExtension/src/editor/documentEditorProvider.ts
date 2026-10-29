@@ -20,6 +20,7 @@ import { SOURCES_EDITOR_VIEW_TYPE } from "../document/moduleSourcesEditorProvide
 import { loadModuleEditorFacets, type ModuleEditorFacets } from "./moduleEditorFacets";
 import { ModuleTextEditorSession } from "./moduleTextEditorSession";
 import { createReadonlyShellHtml, readonlyShellTitle } from "./readonlyShell";
+import type { DebugFacetWindowBridge, DebugFacetWindowMessage } from "../debug/debugFacetWindowBridge";
 
 export const DEFAULT_EDITOR_VIEW_TYPE = "visualbridge.documentEditor";
 export const OPTIONAL_EDITOR_VIEW_TYPE = "visualbridge.documentEditor.option";
@@ -40,6 +41,8 @@ interface ReadonlyShell {
 
 export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
   private readonly textSessions = new Map<string, Set<ModuleTextEditorSession>>();
+  /** 调试 facet 增量的 Webview 转发桥（G1a）；在扩展激活装配完后由 `attachDebugFacetWindowBridge` 注入。 */
+  private debugFacetWindow: DebugFacetWindowBridge | undefined;
   private readonly pendingReveals = new Map<string, unknown>();
   private readonly initializedPanels = new Map<string, Set<vscode.WebviewPanel>>();
   /** 同一文档可以开多个只读 Shell（split），每个面板各自维护原因文案。 */
@@ -121,6 +124,8 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
       facets,
       controller: facets.createController(),
       options: moduleOptions(match, availability.moduleId),
+      onWebviewReady: () => this.hydrateDebugFacetSession(session),
+      onDebugFacetResync: (message) => this.debugFacetWindow?.handleWebviewMessage(facets.editor, message).replies ?? [],
     });
     const uriKey = document.uri.toString();
     let sessions = this.textSessions.get(uriKey);
@@ -256,6 +261,53 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     const session = [...this.textSessions.get(uri.toString()) ?? []][0];
     if (session === undefined) throw new Error("No active graph editor session was found.");
     await session.sendDebugMessageForTest(message);
+  }
+
+  /** 装配调试 facet 的 Webview 转发桥（G1a；必须在 `DebugFacetHost.rebuild` 之前调用）。 */
+  public attachDebugFacetWindowBridge(bridge: DebugFacetWindowBridge): void {
+    this.debugFacetWindow = bridge;
+    for (const sessions of this.textSessions.values()) {
+      for (const session of sessions) {
+        this.hydrateDebugFacetSession(session);
+      }
+    }
+  }
+
+  /** 向某 editor 的全部已打开 Webview 广播（桥的 `broadcast` 回调）。 */
+  public broadcastDebugFacet(editor: string, message: DebugFacetWindowMessage): number {
+    let posted = 0;
+    for (const sessions of this.textSessions.values()) {
+      for (const session of sessions) {
+        if (!session.matchesEditor(editor)) continue;
+        void session.postHostMessage(message);
+        posted += 1;
+      }
+    }
+
+    return posted;
+  }
+
+  /** Graph 执行调试窗口的 facet 状态（G1a 宿主测试；与旧 `getGraphEditorDebugState` 分开）。 */
+  public getGraphEditorFacetDebugState(uri: vscode.Uri): {
+    readonly sessions: readonly unknown[];
+    readonly lastAck?: unknown;
+  } {
+    const sessions = [...this.textSessions.get(uri.toString()) ?? []];
+    const lastAck = sessions
+      .map((session) => session.debugFacetTestState.lastAck)
+      .find((ack) => ack !== undefined);
+    return {
+      sessions: sessions.map((session) => session.debugFacetTestState),
+      ...(lastAck === undefined ? {} : { lastAck }),
+    };
+  }
+
+  private hydrateDebugFacetSession(session: ModuleTextEditorSession): void {
+    const bridge = this.debugFacetWindow;
+    if (bridge === undefined || !session.isReady) return;
+    for (const message of bridge.snapshotMessages(session.editorName)) {
+      void session.postHostMessage(message);
+    }
   }
 
   public getEntityEditorTestState(uri: vscode.Uri): {

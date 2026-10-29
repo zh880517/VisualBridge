@@ -10,6 +10,12 @@ export interface GraphExecutionDebugTestState {
   readonly stopped: boolean;
   readonly instanceCount: number;
   readonly instanceIds: readonly string[];
+  /**
+   * 已记录的旧路径事件（G1a 迁移对比测试的旧路径一侧）。
+   *
+   * 只读快照；控制器仍按原顺序把同一批事件转发给 Webview（旧路径行为不变）。
+   */
+  readonly recordedEvents: readonly RecordedGraphExecutionEvent[];
   readonly lastWebviewAck?: {
     readonly eventCount: number;
     readonly cursor: number;
@@ -93,6 +99,7 @@ export class GraphExecutionDebugController {
       stopped: recording?.isStopped ?? false,
       instanceCount: this.instanceIds.length,
       instanceIds: this.instanceIds,
+      recordedEvents: (recording?.recordedEvents ?? []).map((event) => ({ ...event })),
       ...(this.lastWebviewAck === undefined ? {} : { lastWebviewAck: this.lastWebviewAck }),
     };
   }

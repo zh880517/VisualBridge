@@ -1,34 +1,40 @@
 import { useCallback, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { vscode } from "../runtime";
-import { computeGraphDebugView, nextGraphDebugRequestId } from "../debug/GraphDebugPanel";
-import type { GraphDebugEvent, GraphDebugExecution } from "../types";
+import { computeGraphDebugView } from "../debug/GraphDebugPanel";
+import {
+  graphDebugEvents,
+  graphDebugInstances,
+  mergeGraphDebugRecords,
+  selectGraphDebugInstance,
+} from "../../debug/graphDebugRecords";
+import type {
+  DebugFacetHistoryEntry,
+  GraphDebugEvent,
+  GraphDebugFacetRecord,
+  GraphDebugInstance,
+} from "../types";
+
+export { graphDebugEvents, graphDebugInstances, mergeGraphDebugRecords } from "../../debug/graphDebugRecords";
 
 export interface GraphDebugFlash {
   readonly keys: ReadonlySet<string>;
   readonly nodeIds: ReadonlySet<string>;
 }
 
+/** Graph 调试窗口的取数入口（G1a：只消费 facet 渲染增量，不再发 `graphExecution*` 消息）。 */
 export interface GraphDebugController {
   readonly debugDrawerOpen: boolean;
   readonly setDebugDrawerOpen: Dispatch<SetStateAction<boolean>>;
-  readonly debugInstances: readonly GraphDebugExecution[];
-  readonly setDebugInstances: Dispatch<SetStateAction<readonly GraphDebugExecution[]>>;
+  readonly debugInstances: readonly GraphDebugInstance[];
   readonly debugRuntimeConnected: boolean;
-  readonly setDebugRuntimeConnected: Dispatch<SetStateAction<boolean>>;
   readonly debugRuntimeInstanceId: string | undefined;
-  readonly setDebugRuntimeInstanceId: Dispatch<SetStateAction<string | undefined>>;
-  readonly debugExecution: GraphDebugExecution | undefined;
-  readonly setDebugExecution: Dispatch<SetStateAction<GraphDebugExecution | undefined>>;
+  readonly debugExecution: GraphDebugInstance | undefined;
   readonly debugEvents: readonly GraphDebugEvent[];
-  readonly setDebugEvents: Dispatch<SetStateAction<readonly GraphDebugEvent[]>>;
   readonly debugStopped: boolean;
-  readonly setDebugStopped: Dispatch<SetStateAction<boolean>>;
   readonly debugCursor: number;
-  readonly setDebugCursor: Dispatch<SetStateAction<number>>;
   readonly debugFollow: boolean;
-  readonly setDebugFollow: Dispatch<SetStateAction<boolean>>;
+  readonly debugHistoryTruncated: boolean;
   readonly debugFlash: GraphDebugFlash | undefined;
-  readonly setDebugFlash: Dispatch<SetStateAction<GraphDebugFlash | undefined>>;
   readonly debugEventsRef: RefObject<readonly GraphDebugEvent[]>;
   readonly debugCursorRef: RefObject<number>;
   readonly debugFollowRef: RefObject<boolean>;
@@ -40,36 +46,66 @@ export interface GraphDebugController {
   readonly unsubscribeDebugExecution: () => void;
   readonly enterDebugReplay: (cursor: number) => void;
   readonly enterDebugFollow: () => void;
+  readonly applyDebugFacetUpdates: (updates: readonly DebugFacetHistoryEntry[]) => void;
+  readonly applyDebugFacetSnapshot: (
+    updates: readonly DebugFacetHistoryEntry[],
+    state: "active" | "unavailable",
+    truncated: boolean,
+  ) => void;
+  readonly applyDebugFacetReset: () => void;
 }
+
 
 export function useGraphDebug(): GraphDebugController {
   // 执行调试状态（§19.5）：光标仅在回放态有意义，实时态恒等于事件末尾。
   const [debugDrawerOpen, setDebugDrawerOpen] = useState(false);
-  const [debugInstances, setDebugInstances] = useState<readonly GraphDebugExecution[]>([]);
+  const [debugInstances, setDebugInstances] = useState<readonly GraphDebugInstance[]>([]);
   const [debugRuntimeConnected, setDebugRuntimeConnected] = useState(false);
   const [debugRuntimeInstanceId, setDebugRuntimeInstanceId] = useState<string>();
-  const [debugExecution, setDebugExecution] = useState<GraphDebugExecution>();
+  const [debugExecution, setDebugExecution] = useState<GraphDebugInstance>();
   const [debugEvents, setDebugEvents] = useState<readonly GraphDebugEvent[]>([]);
   const [debugStopped, setDebugStopped] = useState(false);
   const [debugCursor, setDebugCursor] = useState(-1);
   const [debugFollow, setDebugFollow] = useState(true);
   const [debugFlash, setDebugFlash] = useState<GraphDebugFlash>();
+  const [debugHistoryTruncated, setDebugHistoryTruncated] = useState(false);
+  const debugInstancesRef = useRef<readonly GraphDebugInstance[]>([]);
+  const debugExecutionRef = useRef<GraphDebugInstance | undefined>(undefined);
   const debugEventsRef = useRef<readonly GraphDebugEvent[]>([]);
   const debugCursorRef = useRef(-1);
   const debugFollowRef = useRef(true);
   const debugFlashTimerRef = useRef<number | undefined>(undefined);
+  const updateCountRef = useRef(0);
+  const recordsRef = useRef<readonly GraphDebugFacetRecord[]>([]);
+  const sessionRef = useRef<string | undefined>(undefined);
+
+  const postAckWith = useCallback((
+    mode: "follow" | "replay",
+    events: readonly GraphDebugEvent[],
+    cursor: number,
+    instanceId: string | undefined,
+  ): void => {
+    const execution = debugExecutionRef.current;
+    vscode.postMessage({
+      type: "debugFacetAck",
+      category: "graph",
+      state: mode,
+      eventCount: events.length,
+      cursor,
+      executingNodeId: computeGraphDebugView(events, cursor).executingNodeId,
+      instanceCount: debugInstancesRef.current.length,
+      currentNodeId: execution?.currentNodeId ?? null,
+      frameIndex: execution?.frameIndex ?? 0,
+      updateCount: updateCountRef.current,
+      ...(instanceId === undefined ? {} : { instanceId }),
+    });
+  }, []);
 
   const postDebugAck = useCallback((mode: "follow" | "replay"): void => {
     const events = debugEventsRef.current;
     const cursor = debugFollowRef.current ? events.length - 1 : debugCursorRef.current;
-    vscode.postMessage({
-      type: "graphDebugAck",
-      eventCount: events.length,
-      cursor,
-      executingNodeId: computeGraphDebugView(events, cursor).executingNodeId,
-      mode,
-    });
-  }, []);
+    postAckWith(mode, events, cursor, debugExecutionRef.current?.instanceId);
+  }, [postAckWith]);
 
   // 实时态边流光：最近一批 nodeOutput/edgeValueChanged 事件在短窗口内点亮对应边。
   const applyDebugFlash = useCallback((events: readonly GraphDebugEvent[]): void => {
@@ -96,55 +132,162 @@ export function useGraphDebug(): GraphDebugController {
     }, 600);
   }, []);
 
+  /** 把"记录 → 实例/事件/光标/高亮"一次性推进，避免 React 批处理期间回执读到旧值。 */
+  const publishRecords = useCallback((
+    nextRecords: readonly GraphDebugFacetRecord[],
+    options: { readonly flash: readonly GraphDebugEvent[] | undefined; readonly preferInstance?: string },
+  ): void => {
+    recordsRef.current = nextRecords;
+    const instances = graphDebugInstances(nextRecords);
+    debugInstancesRef.current = instances;
+    setDebugInstances(instances);
+
+    let selected = selectGraphDebugInstance(
+      instances,
+      debugExecutionRef.current?.instanceId,
+      options.preferInstance,
+    );
+    if (selected === undefined || !instances.some((instance) => instance.instanceId === selected)) {
+      // 选择已经消失（截断/会话替换）时才回到最新实例；否则保持粘性。
+      selected = instances[instances.length - 1]?.instanceId;
+    }
+    const execution = instances.find((instance) => instance.instanceId === selected);
+    debugExecutionRef.current = execution;
+    setDebugExecution(execution);
+
+    const events = graphDebugEvents(nextRecords, selected);
+    debugEventsRef.current = events;
+    setDebugEvents(events);
+    setDebugStopped(execution?.state === "stopped");
+
+    const sessionId = nextRecords[0]?.sessionId;
+    sessionRef.current = sessionId;
+    setDebugRuntimeConnected(instances.length > 0);
+    setDebugRuntimeInstanceId(sessionId);
+
+    if (debugFollowRef.current) {
+      debugCursorRef.current = events.length - 1;
+      setDebugCursor(debugCursorRef.current);
+      if (options.flash !== undefined) {
+        applyDebugFlash(options.flash);
+      }
+    } else {
+      debugCursorRef.current = Math.max(0, Math.min(debugCursorRef.current, events.length - 1));
+      setDebugCursor(debugCursorRef.current);
+    }
+
+    postAckWith(debugFollowRef.current ? "follow" : "replay", events, debugCursorRef.current, selected);
+  }, [applyDebugFlash, postAckWith]);
+
+  const applyDebugFacetUpdates = useCallback((updates: readonly DebugFacetHistoryEntry[]): void => {
+    if (updates.length === 0) return;
+    updateCountRef.current += 1;
+    const next = mergeGraphDebugRecords(recordsRef.current, updates);
+    const flash: GraphDebugEvent[] = [];
+    for (const entry of updates) {
+      const record = entry.update;
+      if (record.recordKind === "queryResult") continue;
+      flash.push({
+        index: flash.length,
+        frameIndex: record.frame,
+        kind: record.eventKind,
+        ...(record.nodeId === undefined ? {} : { nodeId: record.nodeId }),
+        ...(record.outputIndex === undefined ? {} : { outputIndex: record.outputIndex }),
+        ...(record.value === undefined ? {} : { value: record.value }),
+      });
+    }
+    publishRecords(next, { flash });
+  }, [publishRecords]);
+
+  const applyDebugFacetSnapshot = useCallback((
+    updates: readonly DebugFacetHistoryEntry[],
+    state: "active" | "unavailable",
+    truncated: boolean,
+  ): void => {
+    const next = mergeGraphDebugRecords([], updates);
+    setDebugHistoryTruncated(truncated);
+    publishRecords(next, { flash: undefined });
+    if (state === "unavailable" && next.length === 0) {
+      setDebugRuntimeConnected(false);
+    }
+  }, [publishRecords]);
+
+  const applyDebugFacetReset = useCallback((): void => {
+    recordsRef.current = [];
+    debugEventsRef.current = [];
+    debugCursorRef.current = -1;
+    debugFollowRef.current = true;
+    updateCountRef.current = 0;
+    setDebugHistoryTruncated(false);
+    setDebugEvents([]);
+    setDebugInstances([]);
+    setDebugExecution(undefined);
+    debugExecutionRef.current = undefined;
+    setDebugCursor(-1);
+    setDebugFollow(true);
+    setDebugStopped(false);
+    setDebugFlash(undefined);
+    setDebugRuntimeConnected(false);
+  }, []);
+
   const requestDebugInstances = useCallback((): void => {
-    vscode.postMessage({ type: "requestGraphExecutionInstances", requestId: nextGraphDebugRequestId() });
+    vscode.postMessage({ type: "debugFacetResync", category: "graph" });
   }, []);
 
   const subscribeDebugExecution = useCallback((executionId: string): void => {
-    vscode.postMessage({
-      type: "subscribeGraphExecution",
-      requestId: nextGraphDebugRequestId(),
-      executionId,
-    });
-  }, []);
+    const instances = debugInstancesRef.current;
+    const found = instances.some((instance) => instance.instanceId === executionId);
+    if (!found) {
+      publishRecords(recordsRef.current, { flash: undefined });
+      return;
+    }
+    debugFollowRef.current = true;
+    publishRecords(recordsRef.current, { flash: undefined, preferInstance: executionId });
+  }, [publishRecords]);
 
   const unsubscribeDebugExecution = useCallback((): void => {
-    vscode.postMessage({ type: "unsubscribeGraphExecution", requestId: nextGraphDebugRequestId() });
-  }, []);
+    debugExecutionRef.current = undefined;
+    debugEventsRef.current = [];
+    debugCursorRef.current = -1;
+    debugFollowRef.current = true;
+    setDebugExecution(undefined);
+    setDebugEvents([]);
+    setDebugCursor(-1);
+    setDebugFollow(true);
+    setDebugStopped(false);
+    setDebugFlash(undefined);
+    postAckWith("follow", [], -1, undefined);
+  }, [postAckWith]);
 
   const enterDebugReplay = useCallback((cursor: number): void => {
     debugFollowRef.current = false;
     debugCursorRef.current = cursor;
     setDebugFollow(false);
     setDebugCursor(cursor);
-  }, []);
+    postAckWith("replay", debugEventsRef.current, cursor, debugExecutionRef.current?.instanceId);
+  }, [postAckWith]);
 
   const enterDebugFollow = useCallback((): void => {
     debugFollowRef.current = true;
+    debugCursorRef.current = debugEventsRef.current.length - 1;
     setDebugFollow(true);
-  }, []);
+    setDebugCursor(debugCursorRef.current);
+    postAckWith("follow", debugEventsRef.current, debugCursorRef.current, debugExecutionRef.current?.instanceId);
+  }, [postAckWith]);
 
   return {
     debugDrawerOpen,
     setDebugDrawerOpen,
     debugInstances,
-    setDebugInstances,
     debugRuntimeConnected,
-    setDebugRuntimeConnected,
     debugRuntimeInstanceId,
-    setDebugRuntimeInstanceId,
     debugExecution,
-    setDebugExecution,
     debugEvents,
-    setDebugEvents,
     debugStopped,
-    setDebugStopped,
     debugCursor,
-    setDebugCursor,
     debugFollow,
-    setDebugFollow,
+    debugHistoryTruncated,
     debugFlash,
-    setDebugFlash,
     debugEventsRef,
     debugCursorRef,
     debugFollowRef,
@@ -156,5 +299,8 @@ export function useGraphDebug(): GraphDebugController {
     unsubscribeDebugExecution,
     enterDebugReplay,
     enterDebugFollow,
+    applyDebugFacetUpdates,
+    applyDebugFacetSnapshot,
+    applyDebugFacetReset,
   };
 }

@@ -8,6 +8,7 @@ import type {
 } from "@visualbridge/module-sdk";
 import { DebugRouter } from "../../src/bridge/debugRouter";
 import { debugInstanceKey, type DebugCategoryReplayResult } from "../../src/bridge/debugInstanceManager";
+import { BridgePayloadKind } from "../../src/bridge/framing";
 import type { DebugFacetSource } from "../../src/debug/debugFacetRouter";
 import {
   DEBUG_FACET_BATCH_LIMIT,
@@ -90,6 +91,7 @@ function hostFor(router: DebugRouter, options: {
   readonly stale?: (category: string) => boolean;
   readonly hasReplayableRecords?: (category: string) => boolean;
   readonly batchLimit?: number;
+  readonly historyLimit?: number;
   readonly onBatch?: (category: string, size: number) => void;
 } = {}): DebugFacetHost {
   return new DebugFacetHost({
@@ -99,6 +101,7 @@ function hostFor(router: DebugRouter, options: {
     ...(options.stale === undefined ? {} : { isCategoryStale: options.stale }),
     ...(options.hasReplayableRecords === undefined ? {} : { hasReplayableRecords: options.hasReplayableRecords }),
     ...(options.batchLimit === undefined ? {} : { batchLimit: options.batchLimit }),
+    ...(options.historyLimit === undefined ? {} : { historyLimit: options.historyLimit }),
     ...(options.onBatch === undefined ? {} : { onBatch: options.onBatch }),
     sessionId: () => "window#boot",
   });
@@ -142,18 +145,132 @@ test("public DebugRecord is the D.4 shape: no raw bytes or host internals", () =
     "category",
     "frame",
     "instanceId",
+    "kind",
     "method",
     "params",
     "seq",
     "sessionId",
     "wireBytes",
   ]);
+  assert.equal(publicRecord.kind, "event", "普通调试事件必须带 kind=event（P0-2）");
   assert.equal(publicRecord.seq, internal.arrivalSeq);
   assert.equal(publicRecord.sessionId, "window#boot");
   assert.equal(publicRecord.params.nodeId, "node-4");
   assert.ok(!("args" in publicRecord));
   assert.ok(!("contractState" in publicRecord));
   assert.ok(!("arrivalSeq" in publicRecord));
+});
+
+test("public DebugRecord kind distinguishes queryResult from events (P0-2)", () => {
+  const router = new DebugRouter();
+  const manager = createManager({ router });
+  createInstance(manager, "graph", "hero");
+  ingestEvents(manager, [{ frame: 4, instance: "hero", value: "node-4" }]);
+  const result = manager.appendQueryResult({
+    type: "debugResult",
+    frame: 4,
+    wireBytes: 12,
+    payloadKind: BridgePayloadKind.Json,
+    category: "graph",
+    instance: "hero",
+    interfaceId: "IGraphQuery",
+    method: "Query",
+    methodId: 12,
+    instanceSlot: 1,
+    requestId: "42",
+    args: [{ tag: 1, name: "outputIndex", type: "int", value: 0 }],
+    contractState: "unknown-interface",
+  }, undefined, 4);
+  assert.ok(result !== undefined);
+
+  const eventRecord = toPublicRecord(
+    manager.storeFor(debugInstanceKey("graph", "hero"))!.recordsFrom(0).records[0]!,
+    "window#boot",
+  );
+  const resultRecord = toPublicRecord(result, "window#boot");
+  assert.equal(eventRecord.kind, "event");
+  assert.equal(resultRecord.kind, "queryResult");
+  assert.notEqual(eventRecord.kind, resultRecord.kind);
+  assert.equal(resultRecord.method, "Query");
+});
+
+test("facet render updates are emitted per record, in order, and retained for hydration (G1a)", () => {
+  const router = new DebugRouter();
+  const manager = createManager({ router });
+  const graph = recordingFacet("graph");
+  const host = hostFor(router);
+  const rendered: number[] = [];
+  const resets: string[] = [];
+  host.onDidRender((event) => {
+    assert.equal(event.category, "graph");
+    assert.equal(event.moduleId, "m");
+    assert.equal(event.editor, "graph");
+    rendered.push((event.update as { readonly seq: number }).seq);
+  });
+  host.onDidReset((event) => resets.push(event.category));
+  host.rebuild([source("m", 0, "graph", graph)]);
+
+  createInstance(manager, "graph", "hero");
+  ingestEvents(manager, [
+    { frame: 1, instance: "hero", value: "n1" },
+    { frame: 2, instance: "hero", value: "n2" },
+  ]);
+  host.flushForTest();
+
+  assert.deepEqual(rendered, graph.seen.map((record) => record.seq));
+  assert.deepEqual(host.updatesFor("graph").map((entry) => entry.seq), rendered);
+  assert.equal(host.isHistoryTruncated("graph"), false);
+  assert.deepEqual(host.windowSource("graph"), { moduleId: "m", editor: "graph" });
+
+  // 重建 = 分类级重置：先通知 Webview 丢累积，再清空历史（重放由 replay 负责）。
+  host.rebuild([source("m", 0, "graph", graph)]);
+  assert.deepEqual(resets, ["graph"]);
+  assert.deepEqual(host.updatesFor("graph"), []);
+});
+
+test("facet reset distinguishes module reload from session invalidation", () => {
+  const router = new DebugRouter();
+  const manager = createManager({ router });
+  const host = hostFor(router);
+  const reasons: string[] = [];
+  host.onDidReset((event) => reasons.push(`${event.category}:${event.reason}`));
+  host.rebuild([source("m", 0, "graph", recordingFacet("graph"))]);
+
+  createInstance(manager, "graph", "hero");
+  ingestEvents(manager, [{ frame: 1, instance: "hero", value: "n1" }]);
+  host.flushForTest();
+  assert.equal(host.updatesFor("graph").length, 1);
+
+  host.rebuild([source("m", 0, "graph", recordingFacet("graph"))]);
+  assert.deepEqual(reasons, ["graph:reload"]);
+
+  ingestEvents(manager, [{ frame: 2, instance: "hero", value: "n2" }]);
+  host.flushForTest();
+  assert.equal(host.updatesFor("graph").length, 1);
+
+  manager.reset();
+  assert.deepEqual(reasons, ["graph:reload", "graph:session"]);
+  assert.deepEqual(host.updatesFor("graph"), [], "会话作废必须清掉 facet 侧历史");
+});
+
+test("facet history is bounded and marks truncation (G1a)", () => {
+  const router = new DebugRouter();
+  const manager = createManager({ router });
+  const host = hostFor(router, { historyLimit: 2 });
+  host.rebuild([source("m", 0, "graph", recordingFacet("graph"))]);
+
+  createInstance(manager, "graph", "hero");
+  ingestEvents(manager, [
+    { frame: 1, instance: "hero", value: "n1" },
+    { frame: 2, instance: "hero", value: "n2" },
+    { frame: 3, instance: "hero", value: "n3" },
+  ]);
+  host.flushForTest();
+
+  const history = host.updatesFor("graph");
+  assert.equal(history.length, 2);
+  assert.equal(host.isHistoryTruncated("graph"), true);
+  assert.deepEqual(history.map((entry) => (entry.update as { readonly seq: number }).seq), [2, 3]);
 });
 
 test("two modules claiming one category: first in modules order wins, second is disabled with a located diagnostic", () => {

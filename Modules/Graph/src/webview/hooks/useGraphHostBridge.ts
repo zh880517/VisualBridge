@@ -13,7 +13,6 @@ import {
   vscode,
   webviewInstanceId,
 } from "../runtime";
-import { nextGraphDebugRequestId } from "../debug/GraphDebugPanel";
 import {
   consumeSelectionHistory,
   keepValidSelection,
@@ -119,21 +118,11 @@ export function useGraphHostBridge({
   setRevealedElement,
 }: GraphHostBridgeOptions): void {
   const {
-    setDebugInstances,
-    setDebugRuntimeConnected,
-    setDebugRuntimeInstanceId,
-    setDebugEvents,
-    setDebugCursor,
-    setDebugFollow,
-    setDebugStopped,
-    setDebugExecution,
-    setDebugFlash,
+    applyDebugFacetReset,
+    applyDebugFacetSnapshot,
+    applyDebugFacetUpdates,
     debugEventsRef,
-    debugCursorRef,
-    debugFollowRef,
     debugFlashTimerRef,
-    applyDebugFlash,
-    postDebugAck,
   } = debug;
 
   useEffect(() => {
@@ -142,73 +131,19 @@ export function useGraphHostBridge({
       if (message.type === "requestReady") {
         setWebviewToken(message.webviewToken);
         vscode.postMessage({ type: "ready", instanceId: webviewInstanceId });
-        // epoch 重置后全量再水化执行调试状态（§19.5 断开语义）。
-        vscode.postMessage({ type: "requestGraphExecutionDebugState", requestId: nextGraphDebugRequestId() });
+        // epoch 重置后由宿主在 `onWebviewReady` 推 `debugFacetSnapshot` 水化；这里不再请求旧执行状态。
         return;
       }
-      if (message.type === "graphExecutionInstances") {
-        setDebugInstances(message.executions);
-        setDebugRuntimeConnected(message.runtimeConnected);
-        setDebugRuntimeInstanceId(message.runtimeInstanceId);
+      if (message.type === "debugFacetReset") {
+        applyDebugFacetReset();
         return;
       }
-      if (message.type === "graphExecutionSubscribed") {
-        if (message.ok) {
-          debugEventsRef.current = [];
-          debugCursorRef.current = -1;
-          debugFollowRef.current = true;
-          setDebugEvents([]);
-          setDebugCursor(-1);
-          setDebugFollow(true);
-          setDebugStopped(false);
-          setDebugExecution(message.execution);
-        } else {
-          setStatus({ message: `执行调试订阅失败：${message.error ?? "未知错误"}`, error: true });
-        }
+      if (message.type === "debugFacetSnapshot") {
+        applyDebugFacetSnapshot(message.updates, message.state, message.truncated);
         return;
       }
-      if (message.type === "graphExecutionUnsubscribed") {
-        debugEventsRef.current = [];
-        debugCursorRef.current = -1;
-        debugFollowRef.current = true;
-        setDebugEvents([]);
-        setDebugCursor(-1);
-        setDebugFollow(true);
-        setDebugStopped(false);
-        setDebugExecution(undefined);
-        setDebugFlash(undefined);
-        return;
-      }
-      if (message.type === "graphExecutionEvents") {
-        debugEventsRef.current = [...debugEventsRef.current, ...message.events];
-        setDebugEvents(debugEventsRef.current);
-        if (message.stopped) {
-          setDebugStopped(true);
-        }
-        if (debugFollowRef.current) {
-          applyDebugFlash(message.events);
-        }
-        postDebugAck(debugFollowRef.current ? "follow" : "replay");
-        return;
-      }
-      if (message.type === "graphExecutionStopped") {
-        // 实例停止：自动停在记录末尾，可从实例列表切换新实例。
-        setDebugStopped(true);
-        debugFollowRef.current = true;
-        setDebugFollow(true);
-        postDebugAck("follow");
-        return;
-      }
-      if (message.type === "graphExecutionDebugState") {
-        debugEventsRef.current = message.subscribed ? message.events : [];
-        debugCursorRef.current = -1;
-        debugFollowRef.current = true;
-        setDebugEvents(debugEventsRef.current);
-        setDebugCursor(-1);
-        setDebugFollow(true);
-        setDebugStopped(message.stopped);
-        setDebugExecution(message.subscribed ? message.execution : undefined);
-        postDebugAck("follow");
+      if (message.type === "debugFacetUpdate") {
+        applyDebugFacetUpdates([{ seq: message.update.seq, update: message.update }]);
         return;
       }
       if (referenceBridge.handleMessage(message)) {
@@ -395,16 +330,16 @@ export function useGraphHostBridge({
     };
   }, [
     activeGraphIdRef,
-    applyDebugFlash,
+    applyDebugFacetReset,
+    applyDebugFacetSnapshot,
+    applyDebugFacetUpdates,
     applyingRevealRequestIdRef,
     autoLayoutFitViewRef,
     catalogReadyRef,
     catalogRegistryRef,
     currentRevealRequestIdRef,
-    debugCursorRef,
     debugEventsRef,
     debugFlashTimerRef,
-    debugFollowRef,
     documentRef,
     documentVersionRef,
     handshakeProposalSentRef,
@@ -412,7 +347,6 @@ export function useGraphHostBridge({
     pasteClipboardPayload,
     pendingRef,
     pendingSelectionHistoryRef,
-    postDebugAck,
     redoSelectionHistoryRef,
     revealTimerRef,
     selectedRef,
@@ -421,15 +355,6 @@ export function useGraphHostBridge({
     setCatalogReady,
     setCatalogRegistry,
     setContextMenu,
-    setDebugCursor,
-    setDebugEvents,
-    setDebugExecution,
-    setDebugFlash,
-    setDebugFollow,
-    setDebugInstances,
-    setDebugRuntimeConnected,
-    setDebugRuntimeInstanceId,
-    setDebugStopped,
     setDocumentDirty,
     setFlowEdges,
     setFlowNodes,

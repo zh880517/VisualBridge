@@ -388,40 +388,55 @@ export type HostMessage =
   | { readonly type: "operationRejected"; readonly message: string }
   | { readonly type: "requestReady"; readonly webviewToken: string }
   | {
-      readonly type: "graphExecutionInstances";
-      readonly requestId: string;
-      readonly executions: readonly GraphDebugExecution[];
-      readonly runtimeConnected: boolean;
-      readonly runtimeInstanceId?: string;
+      readonly type: "debugFacetSnapshot";
+      readonly category: string;
+      readonly moduleId: string;
+      readonly state: "active" | "unavailable";
+      readonly truncated: boolean;
+      readonly updates: readonly DebugFacetHistoryEntry[];
     }
   | {
-      readonly type: "graphExecutionSubscribed";
-      readonly requestId: string;
-      readonly ok: boolean;
-      readonly execution?: GraphDebugExecution;
-      readonly error?: string;
+      readonly type: "debugFacetUpdate";
+      readonly category: string;
+      readonly moduleId: string;
+      readonly update: GraphDebugFacetRecord;
     }
-  | { readonly type: "graphExecutionUnsubscribed"; readonly requestId: string }
-  | { readonly type: "graphExecutionEvents"; readonly events: readonly GraphDebugEvent[]; readonly totalEvents: number; readonly stopped: boolean }
-  | { readonly type: "graphExecutionStopped"; readonly executionId: string; readonly totalEvents: number }
-  | {
-      readonly type: "graphExecutionDebugState";
-      readonly requestId: string;
-      readonly subscribed: boolean;
-      readonly execution?: GraphDebugExecution;
-      readonly events: readonly GraphDebugEvent[];
-      readonly stopped: boolean;
-    }
+  | { readonly type: "debugFacetReset"; readonly category: string }
   | GraphRevealRequest;
 
-/** 执行实例浅描述（§19.5 实例选择器数据）。 */
-export interface GraphDebugExecution {
-  readonly executionId: string;
-  readonly documentTypeId: string;
-  readonly documentId: string;
-  readonly graphName: string;
-  readonly debugKey: string;
-  readonly state: string;
+/**
+ * Graph 调试 facet 的渲染增量（G1a）。
+ *
+ * 字段对应宿主 `DebugFacetHost` 里 `graphDebugFacet.onRecord` 的返回值；Webview 不解析原始调试
+ * 帧，只消费这份已归一的数据。`recordKind === "queryResult"` 的记录不进入事件时间轴。
+ */
+export interface GraphDebugFacetRecord {
+  readonly kind: "graph.debug";
+  readonly category: string;
+  readonly seq: number;
+  readonly sessionId?: string;
+  readonly instanceId: string;
+  readonly frame: number;
+  readonly method: string;
+  readonly wireBytes?: number;
+  readonly at?: number;
+  readonly recordKind?: "event" | "queryResult";
+  readonly eventKind: string;
+  readonly nodeId?: string;
+  readonly outputIndex?: number;
+  readonly value?: string;
+}
+
+/** 一条历史增量（`seq` 是宿主 `DebugRecord.seq`，单调；用于水化去重）。 */
+export interface DebugFacetHistoryEntry {
+  readonly seq: number;
+  readonly update: GraphDebugFacetRecord;
+}
+
+/** 一个执行实例的展示模型（由增量按 `instanceId` 聚合；不再来自 `graphExecution` 消息）。 */
+export interface GraphDebugInstance {
+  readonly instanceId: string;
+  readonly state: "running" | "stopped";
   readonly currentNodeId: string | null;
   readonly frameIndex: number;
 }

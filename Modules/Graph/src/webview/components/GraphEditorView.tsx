@@ -51,7 +51,7 @@ import type {
   GraphContextMenuState,
   DocumentDiagnostic,
   GraphDebugEvent,
-  GraphDebugExecution,
+  GraphDebugInstance,
   GraphDebugHighlight,
   GraphDefinition,
   GraphDocument,
@@ -102,11 +102,12 @@ export interface GraphEditorViewProps {
   readonly debugDrawerOpen: boolean;
   readonly debugRuntimeConnected: boolean;
   readonly debugRuntimeInstanceId: string | undefined;
-  readonly debugInstances: readonly GraphDebugExecution[];
-  readonly debugExecution: GraphDebugExecution | undefined;
+  readonly debugInstances: readonly GraphDebugInstance[];
+  readonly debugExecution: GraphDebugInstance | undefined;
   readonly debugEvents: readonly GraphDebugEvent[];
   readonly debugStopped: boolean;
   readonly debugFollow: boolean;
+  readonly debugHistoryTruncated: boolean;
   readonly debugCursor: number;
   readonly debugExecutingNodeId: string | null;
   readonly debugHighlight: GraphDebugHighlight;
@@ -188,6 +189,7 @@ export function GraphEditorView({
   debugEvents,
   debugStopped,
   debugFollow,
+  debugHistoryTruncated,
   debugCursor,
   debugExecutingNodeId,
   debugHighlight,
@@ -443,6 +445,7 @@ export function GraphEditorView({
                   events={debugEvents}
                   stopped={debugStopped}
                   follow={debugFollow}
+                  historyTruncated={debugHistoryTruncated}
                   cursor={debugCursor}
                   executingNodeId={debugExecutingNodeId}
                   onRefresh={requestDebugInstances}

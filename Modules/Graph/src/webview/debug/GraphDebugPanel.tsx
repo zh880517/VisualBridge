@@ -1,10 +1,4 @@
-import type { GraphDebugEvent, GraphDebugExecution } from "../types";
-
-let graphDebugRequestIdCounter = 0;
-
-export function nextGraphDebugRequestId(): string {
-  return `graph-debug-${++graphDebugRequestIdCounter}`;
-}
+import type { GraphDebugEvent, GraphDebugInstance } from "../types";
 
 const GRAPH_DEBUG_EXECUTING_KINDS = new Set(["nodeStart", "nodeOutput", "dataNode", "edgeValueChanged"]);
 
@@ -78,6 +72,7 @@ export function GraphDebugPanel({
   events,
   stopped,
   follow,
+  historyTruncated,
   cursor,
   executingNodeId,
   onRefresh,
@@ -88,11 +83,12 @@ export function GraphDebugPanel({
 }: {
   readonly runtimeConnected: boolean;
   readonly runtimeInstanceId?: string | undefined;
-  readonly instances: readonly GraphDebugExecution[];
-  readonly execution?: GraphDebugExecution | undefined;
+  readonly instances: readonly GraphDebugInstance[];
+  readonly execution?: GraphDebugInstance | undefined;
   readonly events: readonly GraphDebugEvent[];
   readonly stopped: boolean;
   readonly follow: boolean;
+  readonly historyTruncated: boolean;
   readonly cursor: number;
   readonly executingNodeId: string | null;
   readonly onRefresh: () => void;
@@ -113,15 +109,20 @@ export function GraphDebugPanel({
         </span>
         <button type="button" className="secondary" onClick={onRefresh}>刷新</button>
       </header>
+      {historyTruncated && (
+        <div className="graph-debug-stats" role="status">
+          <span title="宿主只保留最近一段增量，更早的时间轴已丢弃">历史已截断，仅显示最近增量</span>
+        </div>
+      )}
       {execution === undefined ? (
         <div className="graph-debug-section">
           <div className="graph-debug-section-title">实例列表</div>
           {instances.length === 0
             ? <div className="graph-debug-empty">当前图暂无执行实例</div>
             : instances.map((instance) => (
-              <div key={instance.executionId} className="graph-debug-instance">
-                <span className="graph-debug-instance-key" title={instance.executionId}>
-                  {instance.debugKey || instance.executionId}
+              <div key={instance.instanceId} className="graph-debug-instance">
+                <span className="graph-debug-instance-key" title={instance.instanceId}>
+                  {instance.instanceId}
                 </span>
                 <span className="graph-debug-instance-state">{instance.state}</span>
                 <span className="graph-debug-instance-node" title="当前节点">
@@ -132,7 +133,7 @@ export function GraphDebugPanel({
                   type="button"
                   className="secondary"
                   disabled={instance.state !== "running"}
-                  onClick={() => onSubscribe(instance.executionId)}
+                  onClick={() => onSubscribe(instance.instanceId)}
                 >
                   跟踪
                 </button>
@@ -142,8 +143,7 @@ export function GraphDebugPanel({
       ) : (
         <div className="graph-debug-section">
           <div className="graph-debug-section-title">
-            跟踪中 · {execution.graphName || execution.executionId}
-            {execution.debugKey.length > 0 ? ` · ${execution.debugKey}` : ""}
+            跟踪中 · {execution.instanceId}
           </div>
           <div className="graph-debug-stats">
             <span title="当前执行节点">当前节点：{executingNodeId ?? "—"}</span>
@@ -158,13 +158,13 @@ export function GraphDebugPanel({
               <div className="graph-debug-instance-list">
                 {instances.map((instance) => (
                   <button
-                    key={instance.executionId}
+                    key={instance.instanceId}
                     type="button"
                     className="secondary"
                     disabled={instance.state !== "running"}
-                    onClick={() => onSubscribe(instance.executionId)}
+                    onClick={() => onSubscribe(instance.instanceId)}
                   >
-                    {instance.debugKey || instance.executionId}
+                    {instance.instanceId}
                   </button>
                 ))}
               </div>

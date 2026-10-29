@@ -121,6 +121,7 @@ export function GraphEditorApp(): React.JSX.Element {
     debugStopped,
     debugCursor,
     debugFollow,
+    debugHistoryTruncated,
     debugFlash,
     requestDebugInstances,
     subscribeDebugExecution,
@@ -729,6 +730,7 @@ export function GraphEditorApp(): React.JSX.Element {
       debugEvents={debugEvents}
       debugStopped={debugStopped}
       debugFollow={debugFollow}
+      debugHistoryTruncated={debugHistoryTruncated}
       debugCursor={debugCursorEffective}
       debugExecutingNodeId={debugView.executingNodeId}
       debugHighlight={debugHighlight}

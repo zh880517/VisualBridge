@@ -261,6 +261,14 @@ export type SessionEffect =
       readonly message: string;
     };
 
+/**
+ * 记录种类（C.2 / F6）：查询结果与普通调试事件共用同一时间轴，模块必须能区分。
+ *
+ * G1a 追加为**可选**字段（additive）：既有 facet 不读它时行为不变；但一旦做累积视图
+ * （例如把查询结果当成"节点事件"推进高亮）就会错，所以宿主投影必须带上。
+ */
+export type DebugRecordKind = "event" | "queryResult";
+
 /** 调试记录；模块只消费已解码记录，拿不到原始字节。 */
 export interface DebugRecord {
   readonly seq: number;
@@ -272,6 +280,8 @@ export interface DebugRecord {
   readonly params: Readonly<Record<string, JsonValue>>;
   readonly wireBytes: number;
   readonly at: number;
+  /** 记录种类；缺省视为 `"event"`（旧宿主/旧录制没有这个字段）。 */
+  readonly kind?: DebugRecordKind;
 }
 
 export type DebugRenderUpdate = JsonObject;

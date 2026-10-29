@@ -21,6 +21,9 @@ import type { DebugRecord } from "./debugStore";
  * 两者都可选——不实现即退化为"重置 + 从头重放"（结果正确、只是丢掉增量的省算优势），
  * 因此既有消费者不需要改动。正式文档（C.5）的回填属 G2 的文档工作，不在本任务范围内。
  */
+/** 消费者被重置的原因：新会话（丢弃旧累积）或从头重放（保留可重放基线）。 */
+export type DebugResetReason = "session" | "replay";
+
 export interface DebugConsumer {
   /** 认领的分类（精确匹配）；空数组表示不认领任何分类（观察者）。 */
   readonly categories: readonly string[];
@@ -28,7 +31,7 @@ export interface DebugConsumer {
   accepts(record: DebugRecord): boolean;
   consume(record: DebugRecord): void;
   /** 新会话/从头重放前清空自身状态。 */
-  reset?(): void;
+  reset?(reason?: DebugResetReason): void;
   /** 关键帧快照（C.4 的"从关键帧 + 增量"）；不实现表示该消费者不参与关键帧。 */
   captureState?(): unknown;
   /** 恢复关键帧快照；返回是否成功（`false` 时调用方必须从头重放）。 */
@@ -258,15 +261,15 @@ export class DebugRouter {
       return false;
     }
 
-    this.resetConsumer(main);
+    this.resetConsumer(main, "replay");
     return true;
   }
 
   /** 重置全部消费者（新会话）并清空路由统计。 */
   public reset(): void {
-    this.resetConsumer(this.observer);
+    this.resetConsumer(this.observer, "session");
     for (const entry of this.registered) {
-      this.resetConsumer(entry.consumer);
+      this.resetConsumer(entry.consumer, "session");
     }
 
     this.fallback.clear();
@@ -360,9 +363,9 @@ export class DebugRouter {
     }
   }
 
-  private resetConsumer(consumer: DebugConsumer): void {
+  private resetConsumer(consumer: DebugConsumer, reason: DebugResetReason): void {
     try {
-      consumer.reset?.();
+      consumer.reset?.(reason);
     } catch (errorValue) {
       this.errorsValue += 1;
       this.log(`[debug] consumer '${this.describe(consumer)}' threw from reset(): ${String(errorValue)}`);

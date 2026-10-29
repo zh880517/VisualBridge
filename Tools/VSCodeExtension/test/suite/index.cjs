@@ -4497,8 +4497,9 @@ exports.run = async function run() {
     }
   });
 
-  await test("drives graph execution debug through the Graph editor session", async () => {
-    // 真实 Graph 编辑器 + 假 Runtime 实例：页面执行调试链路（§19.5）端到端。
+  await test("drives the legacy graph execution controller through the Graph editor session", async () => {
+    // 真实 Graph 编辑器 + 假 Runtime 实例：旧执行调试链路（§19.5）的控制器/录制仍然可用。
+    // G1a 起 Webview 只消费 facet 增量，本用例只断言宿主的旧路径（录制序）不变，作为迁移对比的参照。
     const graphUri = vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "Graph", "SemanticSample.vbgraph"));
     // 实例 ID 必须符合 editor-<pid> 约定（发现记录解析会拒绝其他形态）。
     const instanceId = `editor-${process.pid}`;
@@ -4625,7 +4626,7 @@ exports.run = async function run() {
       assert.equal(listed.runtimeInstanceId, instanceId);
       assert.equal(listed.subscribedExecutionId, undefined);
 
-      // 订阅：合成 instanceStarted 开流，随后事件驱动 Webview 高亮并回执 ack。
+      // 订阅：合成 instanceStarted 开流，随后事件按到达序进入旧录制。
       await vscode.commands.executeCommand("visualbridge.test.sendGraphEditorDebugMessage", graphUri, {
         type: "subscribeGraphExecution",
         requestId: "graph-debug-sub-1",
@@ -4638,32 +4639,37 @@ exports.run = async function run() {
         "The debug controller did not subscribe to the execution instance.",
       );
       pushBatch([{ executionId: "exec-1", frameIndex: 3, kind: "nodeStart", nodeId: "step_a" }]);
-      const liveAck = await waitForAsync(
+      const live = await waitForAsync(
         () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorDebugState", graphUri),
-        (state) => state?.lastWebviewAck !== undefined
-          && state.lastWebviewAck.executingNodeId === "step_a"
-          && state.lastWebviewAck.mode === "follow",
+        (state) => state?.totalEvents >= 2,
         20_000,
-        "The Webview did not acknowledge the live execution events.",
+        "The legacy recording did not receive the live execution event.",
       );
-      assert.equal(liveAck.subscribedExecutionId, "exec-1");
-      assert.ok(liveAck.lastWebviewAck.eventCount >= 2, "The acknowledged event count must include the open-stream marker.");
-      assert.ok(liveAck.lastWebviewAck.cursor === liveAck.lastWebviewAck.eventCount - 1,
-        "The follow-mode cursor must track the latest event.");
+      assert.equal(live.subscribedExecutionId, "exec-1");
+      assert.deepEqual(
+        live.recordedEvents.map((event) => event.kind),
+        ["instanceStarted", "nodeStart"],
+      );
+      assert.deepEqual(
+        live.recordedEvents.map((event) => event.frameIndex),
+        [0, 3],
+      );
 
-      // 再推一批：实时态光标继续跟随事件末尾。
+      // 再推一批：旧路径按到达序累计，不退化为"只保留最后一条"。
       pushBatch([
         { executionId: "exec-1", frameIndex: 4, kind: "nodeOutput", nodeId: "step_a", outputIndex: 0 },
         { executionId: "exec-1", frameIndex: 5, kind: "nodeStart", nodeId: "step_b" },
       ]);
       const followed = await waitForAsync(
         () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorDebugState", graphUri),
-        (state) => state?.lastWebviewAck?.executingNodeId === "step_b" && state.lastWebviewAck.eventCount >= 4,
+        (state) => state?.totalEvents >= 4,
         20_000,
-        "The Webview did not follow the subsequent execution events.",
+        "The legacy recording did not record the subsequent execution events.",
       );
-      assert.equal(followed.lastWebviewAck.mode, "follow");
-      assert.equal(followed.lastWebviewAck.cursor, followed.lastWebviewAck.eventCount - 1);
+      assert.deepEqual(
+        followed.recordedEvents.map((event) => `${event.kind}:${event.nodeId ?? ""}`),
+        ["instanceStarted:", "nodeStart:step_a", "nodeOutput:step_a", "nodeStart:step_b"],
+      );
 
       // 退订：会话摘除订阅并断开控制器的 Runtime 连接；服务端收到 unsubscribe。
       await vscode.commands.executeCommand("visualbridge.test.sendGraphEditorDebugMessage", graphUri, {
@@ -4788,6 +4794,22 @@ exports.run = async function run() {
     instanceSlot: 1,
     resName: `${instance}-res`,
     debugInfo: "",
+  });
+  /** 查询应答（C.1 的 `debugResult`）：与事件共用时间轴，但记录种类是 `queryResult`。 */
+  const debugResult = (category, instance, frame, nodeId) => ({
+    type: "debugResult",
+    frame,
+    wireBytes: 32,
+    payloadKind: 1,
+    category,
+    instance,
+    interfaceId: "IGraphDebuger",
+    method: "Query",
+    methodId: 11,
+    instanceSlot: 1,
+    requestId: "req-g1a-query",
+    args: [{ tag: 1, name: "nodeId", type: "string", value: nodeId }],
+    contractState: "unknown-interface",
   });
   const facetSnapshot = () => vscode.commands.executeCommand("visualbridge.test.debugPanel.facets");
   const flushFacetBatch = () => vscode.commands.executeCommand("visualbridge.test.debugPanel.flushFacets");
@@ -5395,10 +5417,14 @@ exports.run = async function run() {
       kind: "graph.debug",
       category: "graph",
       seq: window.content.seq,
+      sessionId: window.content.sessionId,
       instanceId: "facet-hero",
       frame: 2,
       method: "NodeFinished",
       wireBytes: 24,
+      at: window.content.at,
+      recordKind: "event",
+      eventKind: "NodeFinished",
       nodeId: "node-b",
     });
     // 验收 B：同一批记录 facet 与通用观察者都收到。
@@ -5638,6 +5664,295 @@ exports.run = async function run() {
       "the record stored while unloaded must be delivered to the new facet",
     );
     assert.equal(replayed.generic.records, genericBefore + 1, "replay must not feed the generic observer twice");
+  });
+  // ==== G1a：新数据面（facet 渲染增量）与旧 graphExecution 录制的迁移对比 ====
+
+  await test("G1a keeps facet render increments equivalent to the legacy graphExecution event sequence", async () => {
+    // 同一段执行分别喂两条真实路径：旧路径 = GraphExecutionDebugController + GraphExecutionRecording
+    // （假 Runtime 实例），新路径 = 真实 DebugInstanceManager → DebugRouter → Graph 模块 facet →
+    // DebugFacetWindowBridge → 真实 Graph Webview。两边都由真实产品代码产出事件序列，再做逐条归一对比。
+    const graphUri = vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "Graph", "SemanticSample.vbgraph"));
+    const instanceId = `editor-${process.pid}`;
+    const discoveryDirectory = await mkdtemp(path.join(tmpdir(), "visualbridge-g1a-compare-"));
+    const recordPath = path.join(discoveryDirectory, `${instanceId}.json`);
+    const token = createHash("sha256").update(`g1a-compare-${instanceId}`).digest("hex");
+    const startedAt = new Date().toISOString();
+    const capabilities = ["snapshot", "events", "lease", "sources", "graphExecution"];
+    const executionInstance = {
+      executionId: "exec-7",
+      documentTypeId: "logicGraph",
+      documentId: "semantic-sample",
+      graphName: "Semantic Sample",
+      debugKey: "g1a",
+      state: "running",
+      currentNodeId: null,
+      frameIndex: 0,
+    };
+    // 迁移对比的规范事件序列（旧路径的 kind 与本轮 Graph facet 的 eventKind 必须一一对应）。
+    const canonical = [
+      { frameIndex: 0, kind: "instanceStarted" },
+      { frameIndex: 1, kind: "nodeStart", nodeId: "step_a" },
+      { frameIndex: 1, kind: "nodeOutput", nodeId: "step_a", outputIndex: 0 },
+      { frameIndex: 2, kind: "dataNode", nodeId: "data_b" },
+      { frameIndex: 2, kind: "edgeValueChanged", nodeId: "data_b", outputIndex: 1, value: "42" },
+      { frameIndex: 3, kind: "instanceStopped" },
+    ];
+    const subscribers = new Set();
+    const send = (socket, message) => sendJson(socket, message);
+    const withExecutionId = (events) => events.map((event) => ({ executionId: executionInstance.executionId, ...event }));
+    const pushBatch = (events) => {
+      for (const socket of subscribers) {
+        send(socket, { type: "event", event: "graphExecution", executionEvents: withExecutionId(events) });
+      }
+    };
+    const server = net.createServer((socket) => {
+      let handshake = false;
+      attachJsonReader(socket, (message) => {
+        if (!handshake) {
+          if (message.type === "hello" && message.token === token && message.protocolVersion === 4
+            && message.role === "vscode" && Array.isArray(message.payloads)) {
+            handshake = true;
+            send(socket, createRuntimeWelcome({ instanceId, startedAt }));
+          } else {
+            send(socket, { type: "error", code: "runtime.invalidToken" });
+            socket.destroy();
+          }
+          return;
+        }
+        if (message.type !== "request") return;
+        if (message.action === "getGraphExecutionInstances") {
+          send(socket, {
+            type: "response",
+            requestId: message.requestId,
+            status: "ok",
+            executions: message.documentId === undefined || message.documentId === executionInstance.documentId
+              ? [executionInstance]
+              : [],
+          });
+        } else if (message.action === "getGraphExecutionSnapshot") {
+          send(socket, { type: "response", requestId: message.requestId, status: "ok", execution: executionInstance });
+        } else if (message.action === "subscribeGraphExecution") {
+          subscribers.add(socket);
+          send(socket, { type: "response", requestId: message.requestId, status: "ok" });
+          send(socket, { type: "event", event: "graphExecution", executionEvents: withExecutionId([canonical[0]]) });
+        } else if (message.action === "unsubscribeGraphExecution") {
+          subscribers.delete(socket);
+          send(socket, { type: "response", requestId: message.requestId, status: "ok" });
+        } else {
+          send(socket, { type: "response", requestId: message.requestId, status: "error", error: "runtime.unknownRequest" });
+        }
+      });
+      socket.on("close", () => subscribers.delete(socket));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const tcpPort = server.address().port;
+    const writeRecord = () => writeFile(recordPath, `${JSON.stringify({
+      formatVersion: 1,
+      protocolVersion: 4,
+      coreVersion: 1,
+      instanceId,
+      kind: "editor-play",
+      capabilities,
+      tcpPort,
+      token,
+      pid: process.pid,
+      generation: 1,
+      startedAt,
+    })}\n`, "utf8");
+    await writeRecord();
+    const heartbeat = setInterval(() => {
+      void writeRecord();
+    }, 2000);
+
+    /** 旧路径事件 → 统一调试信封（契约方法名与真实 C# 约定一致，PascalCase）。 */
+    const methodOf = new Map([
+      ["instanceStarted", "InstanceStarted"],
+      ["instanceStopped", "InstanceStopped"],
+      ["nodeStart", "NodeStarted"],
+      ["nodeOutput", "NodeOutput"],
+      ["dataNode", "DataNode"],
+      ["edgeValueChanged", "EdgeValueChanged"],
+    ]);
+    const envelopeOf = (event) => ({
+      type: "debug",
+      frame: event.frameIndex,
+      wireBytes: 24,
+      payloadKind: 1,
+      category: "graph",
+      instance: executionInstance.executionId,
+      interfaceId: "IGraphDebuger",
+      method: methodOf.get(event.kind),
+      methodId: 10,
+      instanceSlot: 1,
+      args: [
+        ...(event.nodeId === undefined ? [] : [{ tag: 1, name: "nodeId", type: "string", value: event.nodeId }]),
+        ...(event.outputIndex === undefined ? [] : [{ tag: 2, name: "outputIndex", type: "int", value: event.outputIndex }]),
+        ...(event.value === undefined ? [] : [{ tag: 3, name: "value", type: "string", value: event.value }]),
+      ],
+      contractState: "unknown-interface",
+    });
+    const normalizeLegacy = (event) => ({
+      frameIndex: event.frameIndex,
+      kind: event.kind,
+      nodeId: event.nodeId ?? null,
+      outputIndex: event.outputIndex ?? null,
+      value: event.value ?? null,
+    });
+    const normalizeFacet = (update) => ({
+      frameIndex: update.frame,
+      kind: update.eventKind,
+      nodeId: update.nodeId ?? null,
+      outputIndex: update.outputIndex ?? null,
+      value: update.value ?? null,
+    });
+
+    const previousRuntimeDirectory = process.env.VISUALBRIDGE_TEST_RUNTIME_DIR;
+    process.env.VISUALBRIDGE_TEST_RUNTIME_DIR = discoveryDirectory;
+    try {
+      // 自足起点：显式作废上一用例留下的调试会话（manager.reset → router.reset("session")），
+      // 桥据此丢掉旧时间轴；随后 Webview 只消费本用例注入的增量，不依赖前序用例的水化历史。
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.resetDebugSession");
+      await vscode.commands.executeCommand("vscode.openWith", graphUri, "visualbridge.documentEditor");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.isEditorReady", graphUri),
+        (ready) => ready === true,
+        20_000,
+        "The Graph editor did not become ready for the G1a comparison.",
+      );
+      // 只等 Webview 完成 ready 握手，不等"首次 facet 快照"：桥里还没有本分类历史时
+      // 不会发快照，等 lastAck 会把本用例绑到前面用例的水化顺序上（F10）。
+      // 新路径自己的 ack 在末尾断言，它才是本用例真正需要的水化屏障。
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorFacetDebugState", graphUri),
+        (state) => state?.sessions?.[0]?.ready === true,
+        20_000,
+        "The Graph Webview did not complete its ready handshake for the G1a comparison.",
+      );
+
+      // 旧路径：真实 RuntimeBridgeService 连接假运行时 → 订阅 → 服务端先发 instanceStarted，
+      // 再推剩余事件；`activeRecording` 就是 GraphExecutionDebugController 使用的同一份录制。
+      const discovered = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.enumerateRuntimeInstances"),
+        (instances) => Array.isArray(instances) && instances.some((entry) => entry.instanceId === instanceId),
+        20_000,
+        "The fake runtime instance was not enumerated for the G1a comparison.",
+      );
+      const runtimeInstance = discovered.find((entry) => entry.instanceId === instanceId);
+      assert.ok(runtimeInstance, "The fake runtime instance record must be discoverable.");
+      await vscode.commands.executeCommand("visualbridge.test.connectRuntimeInstance", runtimeInstance);
+      const listedInstances = await vscode.commands.executeCommand(
+        "visualbridge.test.getGraphExecutionInstances",
+        executionInstance.documentId,
+      );
+      assert.ok(listedInstances.some((instance) => instance.executionId === executionInstance.executionId));
+      await vscode.commands.executeCommand("visualbridge.test.subscribeGraphExecution", executionInstance.executionId);
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphExecutionRecording"),
+        (recording) => recording?.eventCount >= 1,
+        20_000,
+        "The legacy recording did not start for the G1a comparison.",
+      );
+      pushBatch(canonical.slice(1));
+      const legacy = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphExecutionRecording"),
+        (recording) => recording?.eventCount === canonical.length,
+        20_000,
+        "The legacy recording did not receive the full canonical sequence.",
+      );
+      assert.equal(legacy.events.length, canonical.length);
+
+      // 新路径：同一段执行走真实调试数据面（manager → router → Graph facet）。
+      // 旧路径的 `instanceStarted` 是服务端订阅时合成的开流标记；新数据面把它当作一条普通
+      // `InstanceStarted` 调试事件重放，二者才能逐条对齐。
+      await ingestDebug([
+        debugCreate("graph", executionInstance.executionId),
+        ...canonical.map(envelopeOf),
+      ]);
+      const flushed = await flushFacetBatch();
+      const graphWindow = graphWindowOf(flushed);
+      assert.ok(graphWindow, "The Graph facet window must exist after the debug ingest.");
+      assert.equal(graphWindow.state, "active");
+
+      const facet = await vscode.commands.executeCommand("visualbridge.test.debugFacetUpdates", "graph");
+      const updates = facet.updates
+        .map((entry) => entry.update)
+        .filter((update) => update.instanceId === executionInstance.executionId);
+      assert.equal(updates.length, canonical.length, "the new path must produce one render update per record");
+      assert.deepEqual(updates.map((update) => update.seq), [...updates.map((update) => update.seq)].sort((a, b) => a - b));
+
+      // P0-1 的核心断言：两条真实路径的逐条序列（节点/种类/顺序/帧号/输出/值）完全一致。
+      assert.deepEqual(updates.map(normalizeFacet), legacy.events.map(normalizeLegacy));
+
+      // Webview 侧也消费到了同一序列：回执的条数/光标/高亮节点与时间轴末尾一致。
+      const acknowledged = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorFacetDebugState", graphUri),
+        (state) => state?.lastAck?.eventCount === canonical.length
+          && state.lastAck.executingNodeId === "data_b"
+          && state.lastAck.instanceId === executionInstance.executionId,
+        20_000,
+        "The Graph Webview did not acknowledge the facet render increments.",
+      );
+      assert.equal(acknowledged.lastAck.cursor, canonical.length - 1);
+      assert.equal(acknowledged.lastAck.state, "follow");
+      assert.equal(acknowledged.lastAck.category, "graph");
+
+      // P0-2 端到端：查询应答（kind: queryResult）也走真实 manager → facet → bridge → Webview，
+      // 但不得新增实例、不得进时间轴、不得推进当前节点/帧。`updateCount` 是屏障：它证明
+      // 这条增量已被 Webview 处理，而不是"还没到"。
+      const beforeQuery = acknowledged.lastAck;
+      assert.equal(beforeQuery.instanceCount, 1, "G1a 执行只应有一个实例");
+      await ingestDebug([
+        debugResult("graph", executionInstance.executionId, 9, "query-only-node"),
+      ]);
+      await flushFacetBatch();
+      const afterQuery = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorFacetDebugState", graphUri),
+        (state) => state?.lastAck?.updateCount === (beforeQuery.updateCount ?? 0) + 1
+          && state.lastAck?.instanceId === executionInstance.executionId,
+        20_000,
+        "The Graph Webview did not process the queryResult increment.",
+      );
+      assert.equal(afterQuery.lastAck.eventCount, canonical.length, "queryResult 不得进入时间轴");
+      assert.equal(afterQuery.lastAck.instanceCount, beforeQuery.instanceCount, "queryResult 不得新增实例");
+      assert.equal(afterQuery.lastAck.currentNodeId, beforeQuery.currentNodeId, "queryResult 的 nodeId 不得推进当前节点");
+      assert.equal(afterQuery.lastAck.frameIndex, beforeQuery.frameIndex, "queryResult 的 frame 不得推进实例帧");
+      assert.equal(afterQuery.lastAck.executingNodeId, "data_b");
+      assert.equal(afterQuery.lastAck.instanceId, executionInstance.executionId);
+
+      // 记录种类一路传到了 facet（不是被 ingress 提前吞掉），只是 Webview 选择不渲染。
+      const facetAfterQuery = await vscode.commands.executeCommand("visualbridge.test.debugFacetUpdates", "graph");
+      const queryUpdates = facetAfterQuery.updates
+        .map((entry) => entry.update)
+        .filter((update) => update.instanceId === executionInstance.executionId
+          && update.recordKind === "queryResult");
+      assert.equal(queryUpdates.length, 1, "queryResult 必须到达 facet");
+      assert.equal(queryUpdates[0].eventKind, "queryResult");
+
+      // 第二条查询应答来自"只出现在查询里"的实例：它绝不能伪造出第二个执行实例。
+      await ingestDebug([
+        debugResult("graph", "exec-query-ghost", 9, "query-ghost-node"),
+      ]);
+      await flushFacetBatch();
+      const afterGhost = await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorFacetDebugState", graphUri),
+        (state) => state?.lastAck?.updateCount === (afterQuery.lastAck.updateCount ?? 0) + 1
+          && state.lastAck?.instanceId === executionInstance.executionId,
+        20_000,
+        "The Graph Webview did not process the ghost queryResult increment.",
+      );
+      assert.equal(afterGhost.lastAck.instanceCount, 1, "queryResult 不得伪造实例");
+      assert.equal(afterGhost.lastAck.eventCount, canonical.length);
+      assert.equal(afterGhost.lastAck.instanceId, executionInstance.executionId);
+    } finally {
+      await vscode.commands.executeCommand("visualbridge.test.unsubscribeGraphExecution").catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.test.disconnectRuntimeInstance").catch(() => undefined);
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+      clearInterval(heartbeat);
+      if (previousRuntimeDirectory === undefined) delete process.env.VISUALBRIDGE_TEST_RUNTIME_DIR;
+      else process.env.VISUALBRIDGE_TEST_RUNTIME_DIR = previousRuntimeDirectory;
+      await new Promise((resolve) => server.close(resolve));
+      await rm(discoveryDirectory, { recursive: true, force: true });
+    }
   });
 };
 

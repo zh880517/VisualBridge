@@ -32,6 +32,11 @@ import type {
   ModuleSessionMessage,
   ModuleSessionStateEvent,
 } from "../document/moduleSessionContract";
+import {
+  DEBUG_FACET_ACK_MESSAGE,
+  DEBUG_FACET_RESYNC_MESSAGE,
+  type DebugFacetAck,
+} from "../debug/debugFacetWindowBridge";
 
 const OVERWRITE = "覆盖";
 const DISCARD_AND_RELOAD = "放弃并刷新";
@@ -64,6 +69,12 @@ export interface ModuleTextEditorSessionOptions {
   readonly facets: ModuleEditorFacets;
   readonly controller: ModuleSessionController;
   readonly options: ModuleSessionMessage | undefined;
+  /** Webview 完成 epoch 握手后回调（G1a：此时才投递调试 facet 水化快照）。 */
+  readonly onWebviewReady?: () => void | Promise<void>;
+  /** 调试 facet 的"重新同步"请求：返回要投回**本** Webview 的消息。 */
+  readonly onDebugFacetResync?: (
+    message: Readonly<Record<string, unknown>>,
+  ) => readonly unknown[] | Promise<readonly unknown[]>;
 }
 
 export class ModuleTextEditorSession {
@@ -88,6 +99,8 @@ export class ModuleTextEditorSession {
   private lastRejectionForTest: string | undefined;
   /** 最近一次 `operationCompleted`（宿主测试断言修订号盖章用）。 */
   private lastOperationCompletedForTest: Readonly<Record<string, unknown>> | undefined;
+  /** 调试 facet Webview 的最近回执（G1a；宿主测试据此断言增量内容与顺序）。 */
+  private lastDebugFacetAck: DebugFacetAck | undefined;
   private confirmExternalChangesTestHook: (() => Promise<void>) | undefined;
   private match: DocumentMatch;
   private readonly options: ModuleTextEditorSessionOptions;
@@ -216,6 +229,16 @@ export class ModuleTextEditorSession {
       && this.options.panel.visible;
   }
 
+  /** 该会话所属的 editor 面（调试 facet 广播按它过滤）。 */
+  public get editorName(): string {
+    return this.options.facets.editor;
+  }
+
+  /** 该会话是否属于给定 editor 面（同一文档可能被不同 editor 打开）。 */
+  public matchesEditor(editor: string): boolean {
+    return this.options.facets.editor === editor;
+  }
+
   public assertOperationsAllowedForTest(operations: unknown): void {
     const message = this.options.controller.checkOperations?.(operations);
     if (message !== undefined) throw new Error(message);
@@ -289,6 +312,24 @@ export class ModuleTextEditorSession {
     return this.hostMessageHandler?.testState;
   }
 
+  /** Graph 执行调试窗口的 facet 状态（G1a；与旧 `debugTestState` 分开，旧路径测试不受影响）。 */
+  public get debugFacetTestState(): {
+    readonly lastAck?: DebugFacetAck;
+    readonly ready: boolean;
+    readonly visible: boolean;
+  } {
+    return {
+      ready: this.webviewReady && this.webviewEpoch.isReady && !this.disposed,
+      visible: this.options.panel.visible,
+      ...(this.lastDebugFacetAck === undefined ? {} : { lastAck: this.lastDebugFacetAck }),
+    };
+  }
+
+  /** 分类级调试 facet 消息（水化/增量/重置）；由宿主桥构造后投到本会话 Webview。 */
+  public async postHostMessage(message: unknown): Promise<boolean> {
+    return this.postMessage(message);
+  }
+
   public get testState(): {
     readonly ready: boolean;
     readonly readyGeneration: number;
@@ -330,6 +371,17 @@ export class ModuleTextEditorSession {
       this.match.project,
       this.options.references,
     )) {
+      return;
+    }
+    if (message.type === DEBUG_FACET_ACK_MESSAGE) {
+      this.recordDebugFacetAck(message);
+      return;
+    }
+    if (message.type === DEBUG_FACET_RESYNC_MESSAGE) {
+      const replies = await this.options.onDebugFacetResync?.(message) ?? [];
+      for (const reply of replies) {
+        await this.postMessage(reply);
+      }
       return;
     }
     if (message.type === "writeClipboard") {
@@ -450,6 +502,25 @@ export class ModuleTextEditorSession {
       );
       await this.sendState();
     }
+  }
+
+  private recordDebugFacetAck(message: WebviewMessage): void {
+    if (typeof message.category !== "string" || message.category.length === 0) return;
+    if (typeof message.eventCount !== "number" || typeof message.cursor !== "number") return;
+    this.lastDebugFacetAck = {
+      category: message.category,
+      state: message.state === "replay" ? "replay" : "follow",
+      eventCount: message.eventCount,
+      cursor: message.cursor,
+      executingNodeId: typeof message.executingNodeId === "string" ? message.executingNodeId : null,
+      ...(typeof message.instanceId === "string" ? { instanceId: message.instanceId } : {}),
+      ...(typeof message.instanceCount === "number" ? { instanceCount: message.instanceCount } : {}),
+      ...(typeof message.currentNodeId === "string" || message.currentNodeId === null
+        ? { currentNodeId: message.currentNodeId }
+        : {}),
+      ...(typeof message.frameIndex === "number" ? { frameIndex: message.frameIndex } : {}),
+      ...(typeof message.updateCount === "number" ? { updateCount: message.updateCount } : {}),
+    };
   }
 
   private handleRevealResult(message: WebviewMessage): void {
@@ -692,6 +763,8 @@ export class ModuleTextEditorSession {
     this.readyExhausted = false;
     this.revealMailbox?.markReady();
     await this.sendPendingReveal();
+    // 调试 facet 水化必须在 `ready` 之后：早发会被 Webview 的 epoch 过滤掉。
+    await this.options.onWebviewReady?.();
   }
 
   private async requestWebviewReady(): Promise<void> {
