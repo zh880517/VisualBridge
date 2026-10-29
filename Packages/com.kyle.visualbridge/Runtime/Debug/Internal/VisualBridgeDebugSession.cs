@@ -706,6 +706,15 @@ namespace VisualBridge.Diagnostics
             }
         }
 
+        /// <summary>
+        /// 是否仍挂接（不要求连接存活）。只给宿主装配的 EditMode 用例用：<see cref="IsAttachedAndConnected"/>
+        /// 在"已挂接但无连接"与"已 Detach"两种状态下都是 false，区分不了"窗口内关闭有没有结算成 Detach"。
+        /// </summary>
+        internal static bool IsAttached
+        {
+            get { return Volatile.Read(ref s_attached); }
+        }
+
         /// <summary>实例是否存活（Create 加入、Finish 与断连移除）；一次 volatile 读快照。</summary>
         internal static bool IsInstanceAlive(string instanceId)
         {

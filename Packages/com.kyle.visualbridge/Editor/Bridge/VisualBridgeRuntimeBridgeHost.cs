@@ -208,11 +208,34 @@ namespace VisualBridge.Editor
         /// </summary>
         internal static void InstallDebugTransport(VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer server)
         {
+            InstallDebugTransport(server, null);
+        }
+
+        /// <summary>
+        /// 同上，另带一个 <paramref name="installWindowProbe"/> 探针；只有 EditMode 用例调用它。
+        /// </summary>
+        /// <param name="installWindowProbe">
+        /// **仅 EditMode 用例使用**（生产传 null）：在"<c>DebugLinkOpened</c> 已注册、会话尚未 Install"
+        /// 时立即回调，**只用于观察字段是否已发布**。位置必须卡在注册之后、Install 之前：HEAD 的回归顺序是
+        /// 注册 → Install → 发布，探针若放在 Install 之后就会读到一个已经发布的字段、用例恒真
+        /// （F9 评审 P0）。探针不得替生产调用 Install——那样用例就失去"生产路径真的装了会话"的判别力。
+        /// </param>
+        internal static void InstallDebugTransport(VisualBridge.Runtime.VisualBridgeRuntimeBridgeServer server,
+            Action<VisualBridge.Diagnostics.Bridge.VisualBridgeDebugTransport> installWindowProbe)
+        {
             RemoveDebugTransport();
             var transport = new VisualBridge.Diagnostics.Bridge.VisualBridgeDebugTransport(
                 VisualBridge.Diagnostics.ConnectType.EditorPlayer,
                 log: message => UnityEngine.Debug.Log(message));
             VisualBridge.Diagnostics.VisualBridgeDebug.SetEncoder(new VisualBridge.Diagnostics.VisualBridgeDebugJsonEncoder());
+            // 先发布字段、再注册 DebugLinkOpened（F9 §2）：注册之后随时可能有一条连接"开→关"，
+            // 而 OnDebugLinkClosed 的身份校验以"字段已发布"为前提。发布晚于注册时，窗口内的关闭会读到
+            // null ⇒ 当成陈旧传输忽略 ⇒ 会话停在 attached 且没有存活连接（旧实现无条件 Detach，没有这个窗口）。
+            lock (debugTransportGate)
+            {
+                debugTransport = transport;
+            }
+
             server.DebugLinkOpened += link =>
             {
                 transport.Bind(new VisualBridge.Diagnostics.Bridge.VisualBridgeRuntimeDebugWire(link));
@@ -222,11 +245,10 @@ namespace VisualBridge.Editor
                 VisualBridge.Diagnostics.Bridge.VisualBridgeDebugBridge.Attach();
                 link.Closed += () => OnDebugLinkClosed(transport);
             };
+            // 探针位置 = 注册之后、Install 之前（F9 §2 的判别点）：HEAD 顺序（注册 → Install → 发布）
+            // 在这里读到的字段是 null；发布前移之后才不是。探针只观察，不替生产 Install。
+            installWindowProbe?.Invoke(transport);
             VisualBridge.Diagnostics.Bridge.VisualBridgeDebugBridge.Install(transport);
-            lock (debugTransportGate)
-            {
-                debugTransport = transport;
-            }
         }
 
         /// <summary>当前装配的传输实例；供 EditMode 用例观察/驱动真实装配路径（不参与生产逻辑）。</summary>
@@ -245,7 +267,9 @@ namespace VisualBridge.Editor
         /// 一条 debug 连接关闭（E10）：传输层还有存活连接时**不能** Detach。
         /// 时序：<see cref="VisualBridge.Diagnostics.Bridge.VisualBridgeRuntimeDebugWire"/> 构造时先订阅
         /// <c>link.Closed</c>，本处理器后订阅，所以进入这里时传输层的出栈/恢复已经完成；
-        /// <c>IsConnected</c> 看的是弹回后的活动连接（它自己的 <c>IsOpen</c>）。
+        /// <c>IsConnected</c> 从 F9 起看的是"栈内任一绑定仍 <c>IsOpen</c>"，因此弹回窗口
+        /// （活动 wire 的 <c>IsOpen</c> 已 false、<c>Closed</c> 还没到）里只要被压栈的连接还开着，
+        /// 本处理器就不会把面板的会话 Detach 掉；整栈为空时它仍是 false ⇒ 照常 Detach（A.9）。
         /// 「是不是当前安装的 transport」与「Detach」必须在同一把锁内完成（TOCTOU）：否则
         /// Remove/Install 落在比较与 Detach 之间，就会拿旧连接把**新**会话 Detach 掉。
         /// 锁序固定为 debugTransportGate → 会话 Gate（Detach 内部只取会话 Gate；会话侧不会回调宿主），
@@ -273,6 +297,14 @@ namespace VisualBridge.Editor
             }
         }
 
+        /// <summary>
+        /// 卸载当前传输：先把字段置空、<c>Uninstall</c>（按断连语义清会话），再 <c>Dispose</c> 传输层。
+        /// 注意 <see cref="VisualBridge.Diagnostics.Bridge.VisualBridgeDebugTransport.Dispose"/> → <c>Unbind</c>
+        /// **只退订**各条 wire（<see cref="VisualBridge.Diagnostics.Bridge.VisualBridgeRuntimeDebugWire.Dispose"/>
+        /// 里也是 <c>-=</c>），**不触发** <c>link.Closed</c>，因此不会回调
+        /// <see cref="OnDebugLinkClosed"/>；卸载路径不靠"关闭事件"结算，也不会在这里发生重入 Detach。
+        /// （F9 §4 明确这一点：不要按"Dispose 会触发 Closed"去推断生命周期。）
+        /// </summary>
         internal static void RemoveDebugTransport()
         {
             VisualBridge.Diagnostics.Bridge.VisualBridgeDebugTransport transport;

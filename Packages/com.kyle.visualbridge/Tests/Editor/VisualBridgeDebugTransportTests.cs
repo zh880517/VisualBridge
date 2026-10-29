@@ -969,6 +969,133 @@ namespace VisualBridge.Editor.Tests
             Assert.Greater(b.Controls.Count, bControls, "B 必须继续收到新消息");
         }
 
+        /// <summary>
+        /// F9 §1①：弹回窗口内 <c>IsConnected</c> 必须仍为 true，且会话层不得走断连重置。
+        /// 窗口真实存在于连接层：<c>HandleConnectionEnd</c> 先把 <c>stopping = true</c>（<c>IsOpen</c> 翻 false），
+        /// 之后才 <c>NotifyClosed</c>；缝里活动 wire 已经算关，但被压栈的连接还开着。旧语义（活动 wire 的 IsOpen）
+        /// 会让 <c>RefreshConnectionLocked</c> 在缝里走断连分支、清空实例表——面板仍 attached 却看不到实例，
+        /// 与 E10 修掉的 P0 同型。
+        /// "会话未被重置"只断言**实例还在**，不断言任何发送的返回值：窗口内活动 wire 已 <c>stopping</c>，
+        /// 生产里发送必然失败（假实现不检查 <c>IsOpen</c>，断言发送成败会得到一个生产里不成立的结论）。
+        /// 红态（IsConnected 改回"活动 wire 的 IsOpen"）：`窗口内 A 仍开着…` 先失败；
+        /// 若会话层在窗口内被重置（例如让 Refresh 无条件 Reset），`会话未被重置…` 这条再红。
+        /// </summary>
+        [Test]
+        public void IsConnectedStaysTrueDuringTheBounceWindowAndTheSessionIsNotReset()
+        {
+            var a = new FakeWire { Generation = 5L };
+            var transport = CreateTransport(a, droppedReportIntervalMs: 0);
+            VisualBridgeDebugBridge.Install(transport);
+            VisualBridgeDebug.SetEncoder(new VisualBridgeDebugJsonEncoder());
+            Assert.IsTrue(VisualBridgeDebug.Create("bounce-a", Category, "R", string.Empty), "A 上建立实例");
+
+            var b = new FakeWire { Generation = 9L };
+            transport.Bind(b);
+            VisualBridgeDebugBridge.Attach();
+            Assert.IsTrue(VisualBridgeDebug.Create("bounce-b", Category, "R", string.Empty), "B 上建立实例");
+
+            // 弹回窗口：B 的 IsOpen 已 false，但 Closed 还没到（活动 wire 仍是 B）。
+            b.CloseWithoutNotifying();
+
+            Assert.IsTrue(transport.IsConnected, "窗口内 A 仍开着 ⇒ 传输层必须仍算连接（F9 §1）");
+            Assert.IsTrue(VisualBridgeDebugSession.IsAttachedAndConnected,
+                "面板视角：A 还连着，窗口内必须仍是「已连接」");
+
+            // 触发一次会话调用，让 RefreshConnectionLocked 在窗口内跑一遍——旧语义正是会在这里清空实例表。
+            // 传一个不存在的实例：这次调用不会发出任何消息，因此返回值与 wire 是否宽容无关（恒为 false），
+            // 这里只把它当作"刷新"的触发器，不对返回值下断言。
+            VisualBridgeDebug.Finish("bounce-missing");
+            Assert.IsTrue(VisualBridgeDebugSession.IsInstanceAlive("bounce-a"),
+                "会话未被重置：弹回窗口内实例必须还在（F9 §1①）");
+            Assert.IsTrue(VisualBridgeDebugSession.IsInstanceAlive("bounce-b"),
+                "会话未被重置：活动连接上建立的实例也必须还在（F9 §1①）");
+
+            // 窗口结束：B 的 Closed 到达，出栈恢复到 A。
+            b.RaiseClosed();
+            Assert.IsTrue(transport.IsConnected, "B 出栈后 A 仍是活动连接");
+            Assert.AreEqual(5L, transport.ConnectionGeneration, "代次仍锚定会话所属者 A");
+            int aBefore = a.Controls.Count;
+            Assert.IsTrue(VisualBridgeDebug.Create("bounce-a2", Category, "R", string.Empty));
+            Assert.AreEqual(aBefore + 1, a.Controls.Count, "恢复后的 A 继续收消息");
+        }
+
+        /// <summary>
+        /// F9 §1②：整栈清空后 <c>IsConnected</c> 仍然是 false，且会话按附录 A.9 **真的重置**
+        /// （最后一条连接关闭即断连）——放宽语义既不能守住已死的会话，也不能把"栈非空"当成连接。
+        /// 关后的会话层断言都要能区分"真重置"与"只是发送失败"：<c>IsInstanceAlive</c> 必须为 false
+        /// （实例表被清），且关后立即 <c>Create</c> 必须返回 true（走无连接 pending；若没重置，
+        /// 旧快照仍 Connected=true ⇒ Create 会尝试发送、失败回滚并返回 false）。
+        /// 红态：
+        /// - 把 <c>IsConnected</c> 放宽成 <c>!disposed</c>（"传输层还在"）⇒ 紧接
+        ///   <c>CloseWithoutNotifying</c> 的那条断言失败（"绑定还在栈里但已不存活…"）；
+        /// - 把 <c>IsConnected</c> 写成 <c>wireStack.Count &gt; 0</c>（"栈非空"）⇒ 紧接
+        ///   <c>CloseWithoutNotifying</c> 的那条断言失败；
+        /// - 删掉 <c>RefreshConnectionLocked</c> 断连分支里的 <c>ResetSessionLocked()</c> ⇒
+        ///   <c>IsInstanceAlive</c> 断言先失败；即使去掉它，关后 <c>Create</c> 那条也会失败。
+        /// </summary>
+        [Test]
+        public void IsConnectedIsFalseAndTheSessionResetsWhenTheWholeStackIsEmpty()
+        {
+            var wire = new FakeWire { Generation = 5L };
+            var transport = CreateTransport(wire, droppedReportIntervalMs: 0);
+            VisualBridgeDebugBridge.Install(transport);
+            VisualBridgeDebug.SetEncoder(new VisualBridgeDebugJsonEncoder());
+            VisualBridgeDebugBridge.Attach();
+            Assert.IsTrue(VisualBridgeDebug.Create("sole-connection", Category, "R", string.Empty));
+            Assert.IsTrue(VisualBridgeDebugSession.IsAttachedAndConnected);
+            Assert.AreEqual(5L, transport.ConnectionGeneration);
+
+            // 绑定还在栈里、但已经没有存活连接（IsOpen 已翻 false、Closed 还没到）：
+            // 语义是"任一绑定**仍 IsOpen**"，所以此刻就必须是未连接，而不是"栈非空即连接"。
+            wire.CloseWithoutNotifying();
+            Assert.IsFalse(transport.IsConnected,
+                "绑定还在栈里但已不存活 ⇒ 必须判未连接（'任一绑定'不是'栈非空'）");
+
+            wire.RaiseClosed();
+
+            Assert.IsFalse(transport.IsConnected, "整栈清空后必须判未连接（附录 A.9）");
+            Assert.AreEqual(0L, transport.ConnectionGeneration, "整栈清空后代次归零");
+            Assert.IsFalse(VisualBridgeDebugSession.IsAttachedAndConnected);
+
+            // 断连重置是惰性的（下一次会话调用才 Refresh）：先驱动一次，再断言实例表真的被清掉。
+            Assert.IsFalse(VisualBridgeDebug.Finish("sole-connection"),
+                "最后一条连接关闭后会话必须重置：实例表已作废，Finish 找不到实例");
+            Assert.IsFalse(VisualBridgeDebugSession.IsInstanceAlive("sole-connection"),
+                "会话必须真的重置（ResetSessionLocked 清实例表），而不是停在旧快照上发送失败");
+
+            // 真重置 ⇒ 关后 Create 走"无连接 pending"并返回 true；未重置 ⇒ 旧快照仍 Connected=true，
+            // Create 会尝试在空栈上发送、失败回滚并返回 false。
+            Assert.IsTrue(VisualBridgeDebug.Create("after-reset", Category, "R", string.Empty),
+                "关后 Create 必须走 pending（会话已重置），不能在旧连接态上发送失败回滚");
+        }
+
+        /// <summary>
+        /// F9 §5：被压栈的同一 wire 再次 <c>Bind</c> 会在栈里留下重复条目，但只有**最新**那条订阅了事件。
+        /// 关闭时必须弹出已订阅的那条并恢复到上一条存活连接；按栈底方向取首个会弹出未订阅的旧条目，
+        /// 真正订阅的条目就留成死栈顶（它再也收不到 <c>Closed</c>，永不 Detach）。
+        /// 红态（IndexOfLocked 改回自底向上）：A 关闭后活动 wire 仍指向已关闭的 A，B 收不到任何消息。
+        /// </summary>
+        [Test]
+        public void RebindingABuriedWirePopsTheSubscribedEntryAndRestoresThePreviousConnection()
+        {
+            var a = new FakeWire { Generation = 5L };
+            var transport = CreateTransport(a, droppedReportIntervalMs: 0);
+            var b = new FakeWire { Generation = 9L };
+            transport.Bind(b);
+            // 生产不可达（每条 link 只 Bind 一次），但 API 允许：A 已被压栈，再 Bind 会压入第二条引用 A 的条目。
+            transport.Bind(a);
+
+            int bBefore = b.Controls.Count;
+            a.RaiseClosed();
+
+            Assert.IsTrue(transport.IsConnected, "A 关闭后 B 仍开着：必须恢复到 B");
+            Assert.AreEqual(5L, transport.ConnectionGeneration, "代次仍锚定会话所属者 A");
+            transport.SendCreate(InstanceId, Category, "R", string.Empty, InstanceSlot);
+            Assert.AreEqual(bBefore + 1, b.Controls.Count, "恢复后的活动连接是 B：控制消息必须走 B");
+            Assert.IsTrue(transport.TryAdmitEvent(InstanceSlot, InstanceId, Category, MethodId),
+                "发出去的 Create 已经登记槽位");
+        }
+
         private static VisualBridgeDebugEncodedMessage FrameMessage(long frame)
         {
             return new VisualBridgeDebugEncodedMessage(VisualBridgeDebugPayloadFormat.Json,
@@ -1186,6 +1313,16 @@ namespace VisualBridge.Editor.Tests
             {
                 IsOpen = false;
                 Closed?.Invoke();
+            }
+
+            /// <summary>
+            /// 只把 <see cref="IsOpen"/> 翻成 false、**不**触发 <c>Closed</c>：重放连接层真实的弹回窗口
+            /// （<c>VisualBridgeBridgeSocket.HandleConnectionEnd</c> 先 <c>stopping = true</c>，之后才
+            /// <c>NotifyClosed</c>）。F9 §1 的用例需要在这个缝里观察 <c>IsConnected</c>。
+            /// </summary>
+            public void CloseWithoutNotifying()
+            {
+                IsOpen = false;
             }
 
             private Action<VisualBridgePayloadKind, byte[]> staleFrameReceived;

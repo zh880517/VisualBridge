@@ -303,6 +303,8 @@ namespace VisualBridge.Editor
                 return;
             }
 
+            // F9 §1：isConnected 看"栈内任一绑定仍存活"，弹回窗口内不会再闪成 false；因此这里不会
+            // 清 DebugSimCreatedKey、也不会做一次多余的重复 Create（会话与实例都还在）。
             var connected = VisualBridge.Diagnostics.VisualBridgeDebug.isConnected;
             if (connected != SessionState.GetBool(DebugSimConnectedKey, false))
             {

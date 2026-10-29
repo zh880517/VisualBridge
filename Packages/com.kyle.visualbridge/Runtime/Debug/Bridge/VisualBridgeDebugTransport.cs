@@ -104,12 +104,32 @@ namespace VisualBridge.Diagnostics.Bridge
             }
         }
 
+        /// <summary>
+        /// 传输层是否还有可用连接：**栈内任一绑定仍 <see cref="IVisualBridgeDebugWire.IsOpen"/>**（F9）。
+        /// 不是"活动 wire 的 IsOpen"：<see cref="VisualBridgeBridgeSocket"/> 在 <c>stopping = true</c>
+        /// （<c>HandleConnectionEnd</c>）时就把 <c>IsOpen</c> 翻 false，**早于** <c>NotifyClosed</c> 触发的
+        /// <c>Closed</c>；这条缝里活动 wire 已算关闭，但被压栈的连接还开着。旧语义会让会话层的
+        /// <c>RefreshConnectionLocked</c> 在缝里走断连分支、清空实例与槽位，
+        /// 而面板的 TCP 仍连着——与 E10 修掉的 P0 同型的窄窗口。
+        /// 整栈为空（或全部已关）时仍返回 false，附录 A.9 的"最后一条连接关闭即重置"不变。
+        /// 发送路径不变：仍只写活动 wire；缝里发送失败按丢弃结算，不再重置会话。
+        /// </summary>
         public bool IsConnected
         {
             get
             {
-                var current = VolatileWire;
-                return current != null && current.IsOpen;
+                lock (gate)
+                {
+                    for (int index = wireStack.Count - 1; index >= 0; index--)
+                    {
+                        if (wireStack[index].Wire.IsOpen)
+                        {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                }
             }
         }
 
@@ -141,7 +161,9 @@ namespace VisualBridge.Diagnostics.Bridge
         /// <summary>
         /// 绑定一条新连接（压栈）：当前连接的状态（槽位、计数、dropped 上报基线）存档，
         /// 新连接从零开始（附录 A.9：每次连接重新开始），并订阅该连接的入站帧、关闭与心跳节拍。
-        /// 宿主在握手完成后调用；同一条连接重复绑定是幂等的（不重置状态）。
+        /// 宿主在握手完成后调用；**活动 wire** 重复绑定是幂等的（不重置状态）。
+        /// 被压栈的同一 wire 再次绑定会再压一条（生产不可达：每条 link 只绑定一次）：栈里允许重复引用，
+        /// 但只有最新那条订阅事件，出栈因此必须自顶向下找（见 <see cref="IndexOfLocked"/>）。
         /// 断连时经 <see cref="OnWireClosed"/> 出栈，并恢复到上一条仍然存活的连接。
         /// </summary>
         public void Bind(IVisualBridgeDebugWire target)
@@ -729,9 +751,15 @@ namespace VisualBridge.Diagnostics.Bridge
             }
         }
 
+        /// <summary>
+        /// 自顶向下找绑定（F9）：同一条 wire 被重复 <c>Bind</c> 时栈里会出现多条引用同一对象的条目，
+        /// 但只有**最新**那条订阅了事件（<see cref="Bind"/> 只订阅新压栈的绑定）。
+        /// 取栈底方向的第一个匹配会弹出**未订阅**的旧条目，把真正订阅的条目留成死栈顶——
+        /// 它再也收不到 <c>Closed</c>，于是永远不会出栈，也无法恢复它下面的存活连接。
+        /// </summary>
         private int IndexOfLocked(IVisualBridgeDebugWire source)
         {
-            for (int index = 0; index < wireStack.Count; index++)
+            for (int index = wireStack.Count - 1; index >= 0; index--)
             {
                 if (ReferenceEquals(wireStack[index].Wire, source))
                 {

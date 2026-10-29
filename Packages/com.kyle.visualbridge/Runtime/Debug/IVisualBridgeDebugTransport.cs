@@ -14,7 +14,10 @@ namespace VisualBridge.Diagnostics
     /// </summary>
     public interface IVisualBridgeDebugTransport
     {
-        /// <summary>当前是否已建立可用连接。</summary>
+        /// <summary>
+        /// 当前是否还有可用连接（实现按"至少一条仍存活的绑定"判定，而不是只看最新那条连接：
+        /// 连接层的关闭状态先于关闭事件翻转，只看最新一条会在弹回窗口里把会话误判成断连）。
+        /// </summary>
         bool IsConnected { get; }
 
         /// <summary>运行环境类型；连接态之外的取值由传输层决定。</summary>

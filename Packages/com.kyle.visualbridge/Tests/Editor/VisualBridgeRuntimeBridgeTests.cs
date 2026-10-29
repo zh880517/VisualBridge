@@ -228,8 +228,8 @@ namespace VisualBridge.Editor.Tests
 
                         // 临时连接已关闭：不靠固定睡眠，轮询可观察状态——在 A 上 Create 一个探针实例，
                         // 只有 A 已经是活动 wire 时才能从 A 的 ch1 读回；读回即"出栈恢复"已完成。
-                        // B 的 socket 关闭到传输层出栈之间有一小段"活动 wire 仍指向已关连接"的过渡态，
-                        // 期间 IsAttachedAndConnected 短暂为 false：那是等状态，不是失败，继续轮询。
+                        // B 的 socket 关闭到传输层出栈之间，IsConnected 仍看得到 A（F9 §1 的"任一绑定存活"），
+                        // 所以这段轮询主要是等"出栈恢复"完成，而不是等连接态翻面。
                         string restored = null;
                         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
                         int probe = 0;
@@ -270,6 +270,17 @@ namespace VisualBridge.Editor.Tests
         /// <summary>
         /// 旧传输层迟到的 <c>link.Closed</c> 不得 Detach 当前会话（E10）：身份校验是"防误伤新会话"的
         /// 唯一防线，必须有直接用例——用一个**未安装**的 transport 调结算函数，会话必须保持挂接。
+        /// **本用例不覆盖原子性**：它只是在单线程里顺序调用，把 <c>OnDebugLinkClosed</c> 里的
+        /// <c>lock (debugTransportGate)</c> 删掉仍然通过——TOCTOU 窗口是"身份比较"与"Detach"之间的两条指令，
+        /// 单线程测试无法可靠插入第三方线程，EditMode 里也没有可控的挂起点（这里不引入测试专用断点钩子：
+        /// 钩子跑在同一线程上，锁可重入，等于把并发伪装成串行，反而给出假证据）。替代证据是结构性约束：
+        /// 身份比较与 Detach 同在一把私有锁内，安装/卸载也取同一把锁，锁序固定 debugTransportGate → 会话 Gate，
+        /// 且安装/卸载在锁外调用 debug bridge（不会反向持锁）——由代码评审与 <c>debugTransportGate</c> 的
+        /// 所有使用点共同背书（不写具体处数：它随重构变化，写死会过期）。
+        /// 判别力边界：本用例也**不能**区分"删掉 <c>IsConnected</c> 守卫"（former transport 连身份都不匹配），
+        /// 那半个矩阵由 <see cref="ClosingTheInstalledTransportWithNoLiveLinkDetachesTheSession"/>（必须 Detach）
+        /// 与 <see cref="ClosingATemporaryRuntimeLinkKeepsTheSessionAttachedAndTheRestoredLinkReceivesFrames"/>
+        /// （必须不 Detach）覆盖。
         /// </summary>
         [Test]
         public void ClosingALinkOfAFormerTransportDoesNotDetachTheCurrentSession()
@@ -310,6 +321,98 @@ namespace VisualBridge.Editor.Tests
                                 "former-transport-probe"),
                             Is.Not.Null, "the current session must still deliver ch1 messages after the stale close.");
                     }
+                }
+            }
+            finally
+            {
+                VisualBridgeRuntimeBridgeHost.RemoveDebugTransport();
+                VisualBridgeDebug.SetEncoder(null);
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        /// <summary>
+        /// F9 §2：安装期的发布窗口。`DebugLinkOpened` 一旦注册，随时可能有一条连接"开→关"；
+        /// 此刻当前传输必须**已经发布**，否则 <see cref="VisualBridgeRuntimeBridgeHost.OnDebugLinkClosed"/>
+        /// 会把这次关闭当成陈旧传输忽略。
+        /// 本用例只断言与生产相关的不变量，不模拟关闭（关闭→Detach 由
+        /// <see cref="ClosingTheInstalledTransportWithNoLiveLinkDetachesTheSession"/> 在真实安装路径上覆盖）：
+        /// ① 探针位置的字段已发布。探针在 `+=` **之后**、`Install` 之前，因此证据的边界只是
+        ///    "**注册完成后、`Install` 之前**字段已发布"：HEAD 的回归顺序是 注册 → Install → 发布，
+        ///    探针在这里读到 null ⇒ 红。
+        ///    若把发布挪到 `+=` 与探针之间，本用例仍会绿——**但那种顺序不构成缺陷**：`Install` 之前
+        ///    不会有 link 到达（握手要等 Play 会话真正建立），且此时会话还没拿到 transport
+        ///    （`s_transport` 为 null，handler 里的 `Attach()` 是空操作、`OnDebugLinkClosed` 也无从触发）；
+        ///    所以这里不再收紧，改名到与证据一致的粒度。
+        /// ② <c>InstallDebugTransport</c> 返回之后会话必须真的挂接：这是"生产路径确实装了会话"的判别点。
+        ///    探针**不能**替生产做这件事——旧写法在探针里调 Install，删掉生产那次 Install 用例仍全绿。
+        /// 另：`probeRan` 断言防"探针被静默摘除"——删掉探针调用时 ① 会随断言一起消失，本用例必须变红。
+        /// 本用例依赖隔离的静态会话态（前置 `IsAttached` 为 false）：若将来并行跑 EditMode，需要先确认这一点。
+        /// </summary>
+        [Test]
+        public void TheInstallPublishingWindowPublishesTheTransportBeforeInstallingTheSession()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-41015", generation: 4))
+                {
+                    var probeRan = false;
+                    VisualBridgeRuntimeBridgeHost.InstallDebugTransport(server, transport =>
+                    {
+                        probeRan = true;
+                        // 窗口位置：DebugLinkOpened 已注册、Install 还没走到。HEAD 顺序下这里是 null。
+                        Assert.That(VisualBridgeRuntimeBridgeHost.InstalledDebugTransport, Is.SameAs(transport),
+                            "注册 DebugLinkOpened 之后当前传输必须已经发布（F9 §2）");
+                    });
+
+                    Assert.That(probeRan, Is.True,
+                        "安装探针必须被调用（F9 §2）：删掉探针调用会让字段发布断言静默消失");
+                    // 兜底：探针的 SameAs 通过后这条恒真，不构成独立判别，只是防"字段从未发布"。
+                    Assert.That(VisualBridgeRuntimeBridgeHost.InstalledDebugTransport, Is.Not.Null);
+                    // 探针不 Install（它只观察发布顺序）：这条断言证明生产路径自己把会话装上了。
+                    Assert.That(VisualBridgeDebugSession.IsAttached, Is.True,
+                        "InstallDebugTransport 返回后会话必须已挂接（生产路径真的 Install 了会话）");
+                }
+            }
+            finally
+            {
+                VisualBridgeRuntimeBridgeHost.RemoveDebugTransport();
+                VisualBridgeDebug.SetEncoder(null);
+                Directory.Delete(artifactsRoot, true);
+            }
+        }
+
+        /// <summary>
+        /// F9 §3：**当前**已安装的 transport、<c>IsConnected == false</c> ⇒ 必须 Detach。
+        /// 原用例（former transport）被身份校验短路，区分不了"删掉 IsConnected 守卫"；本用例补第二个守卫的
+        /// 另一半判别力：当前 transport 但栈里没有存活连接时必须结算成断连（A.9），不能被"曾经连过"拖住。
+        /// 红态（把守卫写成 <c>if (!transport.IsConnected) return;</c>，即"还有存活连接"判断反了）：
+        /// 这次关闭被忽略，IsAttached 仍为 true。
+        /// </summary>
+        [Test]
+        public void ClosingTheInstalledTransportWithNoLiveLinkDetachesTheSession()
+        {
+            var artifactsRoot = CreateTempArtifactsRoot();
+            try
+            {
+                using (var server = StartServer(artifactsRoot, "editor-41016", generation: 2))
+                {
+                    VisualBridgeRuntimeBridgeHost.InstallDebugTransport(server);
+                    var transport = VisualBridgeRuntimeBridgeHost.InstalledDebugTransport;
+                    Assert.That(transport, Is.Not.Null);
+                    Assert.That(transport.IsConnected, Is.False, "前置：没有任何连接 ⇒ 传输层未连接");
+
+                    // 形状："连接建立过（会话已挂接），传输层里已经没有存活连接，关闭结算还没到"。
+                    VisualBridgeDebugBridge.Attach();
+                    Assert.That(VisualBridgeDebugSession.IsAttached, Is.True);
+                    Assert.That(VisualBridgeDebugSession.IsAttachedAndConnected, Is.False,
+                        "已挂接但无连接：这正是原用例覆盖不到的形态");
+
+                    VisualBridgeRuntimeBridgeHost.OnDebugLinkClosed(transport);
+
+                    Assert.That(VisualBridgeDebugSession.IsAttached, Is.False,
+                        "当前 transport 且无存活连接 ⇒ 必须 Detach（A.9）");
                 }
             }
             finally

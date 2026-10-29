@@ -9,7 +9,11 @@ namespace VisualBridge.Diagnostics.Bridge
     /// </summary>
     public interface IVisualBridgeDebugWire
     {
-        /// <summary>连接是否可用。</summary>
+        /// <summary>
+        /// 连接是否可用。实现必须**无锁、短小、不阻塞、不回调**：本属性会在传输层的
+        /// <c>gate</c> 内被调用（<c>IsConnected</c> 扫描连接栈、<c>OnWireClosed</c> 出栈后找可恢复的连接），
+        /// 在这里取锁或等待会把传输层的锁序拖进第三方实现。
+        /// </summary>
         bool IsOpen { get; }
 
         /// <summary>连接代次：每条新连接递增。</summary>
