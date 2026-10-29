@@ -121,8 +121,14 @@ export function useGraphHostBridge({
     applyDebugFacetReset,
     applyDebugFacetSnapshot,
     applyDebugFacetUpdates,
+    applyLegacyExecutionEvents,
+    applyLegacyExecutionState,
+    applyLegacyExecutionStopped,
+    applyLegacyExecutionSubscribed,
+    applyLegacyExecutionUnsubscribed,
     debugEventsRef,
     debugFlashTimerRef,
+    requestLegacyExecutionState,
   } = debug;
 
   useEffect(() => {
@@ -130,8 +136,43 @@ export function useGraphHostBridge({
       const message = event.data;
       if (message.type === "requestReady") {
         setWebviewToken(message.webviewToken);
+        // 两个握手各发一条、互不吞掉：
+        // - `ready` 让宿主在 `onWebviewReady` 推 `debugFacetSnapshot`（G1a 的渲染源）；
+        // - `requestGraphExecutionDebugState` 是旧路径的 epoch 后水化（5d8d3e7），
+        //   宿主仍会回 `graphExecutionDebugState`，Webview 回 `graphDebugAck`。G1b 删除后者。
         vscode.postMessage({ type: "ready", instanceId: webviewInstanceId });
-        // epoch 重置后由宿主在 `onWebviewReady` 推 `debugFacetSnapshot` 水化；这里不再请求旧执行状态。
+        requestLegacyExecutionState();
+        return;
+      }
+      // ==== 旧 `graphExecution*` 路径（G1b 删除）====
+      // 只维护回执所需的执行事件累计并回 `graphDebugAck`；面板/画布仍读 facet。
+      if (message.type === "graphExecutionInstances") {
+        // 旧实例列表已无消费者（面板的实例来自 facet 聚合），不再维护一份无人读的副本。
+        // 保留这个空分支是给 G1b 的**编译期警铃**：删除 `HostMessage` 里这个成员时，下面这行比较
+        // 会直接编译报错，把"还有残留消费点"变成编译期发现，而不是靠 grep 去猜。收到即止。
+        return;
+      }
+      if (message.type === "graphExecutionSubscribed") {
+        applyLegacyExecutionSubscribed(message.ok);
+        if (!message.ok) {
+          setStatus({ message: `执行调试订阅失败：${message.error ?? "未知错误"}`, error: true });
+        }
+        return;
+      }
+      if (message.type === "graphExecutionUnsubscribed") {
+        applyLegacyExecutionUnsubscribed();
+        return;
+      }
+      if (message.type === "graphExecutionEvents") {
+        applyLegacyExecutionEvents(message.events);
+        return;
+      }
+      if (message.type === "graphExecutionStopped") {
+        applyLegacyExecutionStopped();
+        return;
+      }
+      if (message.type === "graphExecutionDebugState") {
+        applyLegacyExecutionState(message.subscribed, message.events);
         return;
       }
       if (message.type === "debugFacetReset") {
@@ -333,6 +374,11 @@ export function useGraphHostBridge({
     applyDebugFacetReset,
     applyDebugFacetSnapshot,
     applyDebugFacetUpdates,
+    applyLegacyExecutionEvents,
+    applyLegacyExecutionState,
+    applyLegacyExecutionStopped,
+    applyLegacyExecutionSubscribed,
+    applyLegacyExecutionUnsubscribed,
     applyingRevealRequestIdRef,
     autoLayoutFitViewRef,
     catalogReadyRef,
@@ -348,6 +394,7 @@ export function useGraphHostBridge({
     pendingRef,
     pendingSelectionHistoryRef,
     redoSelectionHistoryRef,
+    requestLegacyExecutionState,
     revealTimerRef,
     selectedRef,
     setActiveGraphIdValue,

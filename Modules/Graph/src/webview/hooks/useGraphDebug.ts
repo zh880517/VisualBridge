@@ -53,8 +53,25 @@ export interface GraphDebugController {
     truncated: boolean,
   ) => void;
   readonly applyDebugFacetReset: () => void;
+
+  // ==== 旧 `graphExecution*` 路径（G1b 与旧消息一起删除）====
+  // 旧路径与上面的 facet 状态**互相隔离**：它只维护"要回给宿主的执行事件累计"，
+  // 不 setState、不参与渲染，所以不会覆盖 facet 派生出来的实例/事件/光标。
+  /** epoch 重置后主动请求旧路径的执行调试状态（5d8d3e7 的 ready 后水化）。 */
+  readonly requestLegacyExecutionState: () => void;
+  readonly applyLegacyExecutionSubscribed: (ok: boolean) => void;
+  readonly applyLegacyExecutionUnsubscribed: () => void;
+  readonly applyLegacyExecutionEvents: (events: readonly GraphDebugEvent[]) => void;
+  readonly applyLegacyExecutionStopped: () => void;
+  readonly applyLegacyExecutionState: (subscribed: boolean, events: readonly GraphDebugEvent[]) => void;
 }
 
+let legacyRequestIdCounter = 0;
+
+/** 旧 `graphExecution*` 请求的 requestId（5d8d3e7 由 `GraphDebugPanel` 提供同名工具）。 */
+function nextLegacyRequestId(): string {
+  return `graph-debug-${++legacyRequestIdCounter}`;
+}
 
 export function useGraphDebug(): GraphDebugController {
   // 执行调试状态（§19.5）：光标仅在回放态有意义，实时态恒等于事件末尾。
@@ -78,6 +95,11 @@ export function useGraphDebug(): GraphDebugController {
   const updateCountRef = useRef(0);
   const recordsRef = useRef<readonly GraphDebugFacetRecord[]>([]);
   const sessionRef = useRef<string | undefined>(undefined);
+
+  // 旧 `graphExecution*` 路径只维护"回执所需的事件累计"（G1b 删除）。
+  // 实例表/执行描述/停止标志/运行时连接都不留副本：自 G1a 起没有消费者，
+  // 面板的展示态全部来自上面的 facet 记录；留一份没人读的状态只会假装有功能。
+  const legacyEventsRef = useRef<readonly GraphDebugEvent[]>([]);
 
   const postAckWith = useCallback((
     mode: "follow" | "replay",
@@ -106,6 +128,70 @@ export function useGraphDebug(): GraphDebugController {
     const cursor = debugFollowRef.current ? events.length - 1 : debugCursorRef.current;
     postAckWith(mode, events, cursor, debugExecutionRef.current?.instanceId);
   }, [postAckWith]);
+
+  // ==== 旧 `graphExecution*` 消费（G1b 删除）====
+  /**
+   * 旧路径回执。
+   *
+   * `eventCount` 是**刚刚真实合并进 `legacyEventsRef` 的累计条数**，`executingNodeId` 由这批
+   * 事件的前缀推导（`computeGraphDebugView`）：两者都不是占位值，宿主断言的计数与高亮
+   * 取决于 Webview 是否真的消费了事件。
+   *
+   * 光标恒为末尾、模式恒为 `"follow"`：G1a 之后旧路径**不再与 facet 共享 follow 状态**——
+   * `enterDebugReplay`(:343，接在 `GraphEditorView` 时间轴的 `onCursorChange` 上) 只写 facet 的
+   * `debugFollowRef`，旧路径自身没有 replay 入口，所以这里直接写常量，而不是维护一份
+   * 只读不写的状态机。
+   *
+   * ⚠️ 已知且被接受的静默风险：若 G1b 之前有人重新给旧路径接 replay 入口，ack 会继续报
+   * `"follow"` 而**不会报错**；唯一防线就是这段注释。
+   */
+  const postLegacyExecutionAck = useCallback((): void => {
+    const events = legacyEventsRef.current;
+    const cursor = events.length - 1;
+    vscode.postMessage({
+      type: "graphDebugAck",
+      eventCount: events.length,
+      cursor,
+      executingNodeId: computeGraphDebugView(events, cursor).executingNodeId,
+      mode: "follow",
+    });
+  }, []);
+
+  const requestLegacyExecutionState = useCallback((): void => {
+    // 只请求状态、不主动连接运行时：旧实现同样在 ready 后走这条水化。
+    vscode.postMessage({ type: "requestGraphExecutionDebugState", requestId: nextLegacyRequestId() });
+  }, []);
+
+  const applyLegacyExecutionSubscribed = useCallback((ok: boolean): void => {
+    if (!ok) {
+      // 失败时保持累计不变（5d8d3e7 只写 status，提示由桥接层负责）。
+      return;
+    }
+    // 重新订阅 = 新录制：不复位会让旧事件累加，宿主那条"重订阅后 eventCount<=5"的断言即红。
+    legacyEventsRef.current = [];
+  }, []);
+
+  const applyLegacyExecutionUnsubscribed = useCallback((): void => {
+    legacyEventsRef.current = [];
+  }, []);
+
+  const applyLegacyExecutionEvents = useCallback((events: readonly GraphDebugEvent[]): void => {
+    legacyEventsRef.current = [...legacyEventsRef.current, ...events];
+    postLegacyExecutionAck();
+  }, [postLegacyExecutionAck]);
+
+  const applyLegacyExecutionStopped = useCallback((): void => {
+    // 旧实现在这里把光标钉到记录末尾再回执；光标本来就取末尾，故只需补一条回执。
+    postLegacyExecutionAck();
+  }, [postLegacyExecutionAck]);
+
+  const applyLegacyExecutionState = useCallback((
+    subscribed: boolean,
+    events: readonly GraphDebugEvent[],
+  ): void => {
+    legacyEventsRef.current = subscribed ? events : [];
+    postLegacyExecutionAck();
+  }, [postLegacyExecutionAck]);
 
   // 实时态边流光：最近一批 nodeOutput/edgeValueChanged 事件在短窗口内点亮对应边。
   const applyDebugFlash = useCallback((events: readonly GraphDebugEvent[]): void => {
@@ -302,5 +388,11 @@ export function useGraphDebug(): GraphDebugController {
     applyDebugFacetUpdates,
     applyDebugFacetSnapshot,
     applyDebugFacetReset,
+    requestLegacyExecutionState,
+    applyLegacyExecutionSubscribed,
+    applyLegacyExecutionUnsubscribed,
+    applyLegacyExecutionEvents,
+    applyLegacyExecutionStopped,
+    applyLegacyExecutionState,
   };
 }
