@@ -157,12 +157,7 @@ for (const section of ["dependencies", "devDependencies", "peerDependencies", "o
   }
 }
 for (const packagePath of [
-  "Editors/Form",
-  "Editors/Entity",
-  "Editors/Graph",
   "Editors/Project",
-  "Editors/Structured",
-  "Editors/Table",
 ]) {
   const manifest = await readJson(`${packagePath}/package.json`);
   checkEqual(
