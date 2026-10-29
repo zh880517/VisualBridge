@@ -5954,7 +5954,424 @@ exports.run = async function run() {
       await rm(discoveryDirectory, { recursive: true, force: true });
     }
   });
+  // ==== G1d：回看接桥 + 文档作用域 ====
+
+  await test("G1d replays facet increments into the Graph Webview and clears them when the replay closes", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "visualbridge-g1d-replay-"));
+    const filePath = path.join(directory, "g1d-replay.vbdrec");
+    const graphUri = vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "Graph", "SemanticSample.vbgraph"));
+    const facetState = () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorFacetDebugState", graphUri);
+    try {
+      // 录制从头开始（Create + InstanceStarted + 两个节点事件），InstanceStarted 的载荷带 documentId：
+      // 回看桥据此把增量投给 `semantic-sample` 这个文档的 Webview（G1d 作用域）。
+      await writeDebugRecording(filePath, [
+        { type: "debugCreate", category: "graph", instance: "g1d-replay", instanceSlot: 1, resName: "replay-res", debugInfo: "" },
+        { type: "debugFrame", frame: 0 },
+        recordedGraphDebugEvent("g1d-replay", "InstanceStarted", 0, [
+          { tag: 1, name: "documentTypeId", type: "string", value: "logicGraph" },
+          { tag: 2, name: "documentId", type: "string", value: "semantic-sample" },
+          { tag: 3, name: "graphName", type: "string", value: "Semantic Sample" },
+          { tag: 4, name: "debugKey", type: "string", value: "g1d" },
+          { tag: 5, name: "frameIndex", type: "int", value: 0 },
+        ]),
+        recordedGraphDebugEvent("g1d-replay", "NodeStarted", 1, [{ tag: 1, name: "nodeId", type: "string", value: "step_a" }]),
+        recordedGraphDebugEvent("g1d-replay", "NodeStarted", 2, [{ tag: 1, name: "nodeId", type: "string", value: "step_b" }]),
+      ]);
+
+      // 自足起点：先作废旧调试会话（在线桥清历史、Webview 收重置），再打开图页面。
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.resetDebugSession");
+      await vscode.commands.executeCommand("vscode.openWith", graphUri, "visualbridge.documentEditor");
+      const opened = await waitForAsync(
+        () => facetState(),
+        (state) => state?.sessions?.[0]?.ready === true,
+        20_000,
+        "The Graph Webview did not complete its ready handshake before the G1d replay.",
+      );
+      assert.equal(opened.lastAck?.eventCount ?? 0, 0, "回看前的 Webview 时间轴必须为空（在线会话已作废）");
+
+      const replay = await vscode.commands.executeCommand("visualbridge.test.debugPanel.openRecording", filePath);
+      assert.equal(replay.ok, true, String(replay.error));
+      assert.ok((await panelState()).replay, "必须真的进入回看态");
+
+      // P0：回看的 facet 增量必须真的到达**模块 Webview**（不是只让调试面板看到）。
+      const replayed = await waitForAsync(
+        () => facetState(),
+        (state) => state?.lastAck?.eventCount === 3 && state.lastAck.instanceId === "g1d-replay",
+        20_000,
+        "The Graph Webview never received the replay facet increments (G1d replay bridge).",
+      );
+      assert.equal(replayed.lastAck.category, "graph");
+      assert.equal(replayed.lastAck.state, "follow");
+      assert.equal(replayed.lastAck.cursor, 2, "回看时间轴必须停在最后一条");
+      assert.equal(replayed.lastAck.executingNodeId, "step_b", "回看必须点亮时间轴末端的节点");
+      assert.equal(replayed.lastAck.instanceCount, 1);
+    } finally {
+      await panelCommand("closeRecording").catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.close").catch(() => undefined);
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  await test("G1d clears the replay timeline and keeps live increments out of the Webview while replaying", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "visualbridge-g1d-replay-exit-"));
+    const filePath = path.join(directory, "g1d-replay-exit.vbdrec");
+    const graphUri = vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "Graph", "SemanticSample.vbgraph"));
+    const facetState = () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorFacetDebugState", graphUri);
+    try {
+      await writeDebugRecording(filePath, [
+        { type: "debugCreate", category: "graph", instance: "g1d-replay-exit", instanceSlot: 1, resName: "replay-res", debugInfo: "" },
+        { type: "debugFrame", frame: 0 },
+        recordedGraphDebugEvent("g1d-replay-exit", "InstanceStarted", 0, [
+          { tag: 1, name: "documentTypeId", type: "string", value: "logicGraph" },
+          { tag: 2, name: "documentId", type: "string", value: "semantic-sample" },
+          { tag: 3, name: "graphName", type: "string", value: "Semantic Sample" },
+          { tag: 4, name: "debugKey", type: "string", value: "g1d" },
+        ]),
+        recordedGraphDebugEvent("g1d-replay-exit", "NodeStarted", 1, [{ tag: 1, name: "nodeId", type: "string", value: "step_a" }]),
+      ]);
+
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.resetDebugSession");
+      await vscode.commands.executeCommand("vscode.openWith", graphUri, "visualbridge.documentEditor");
+      await waitForAsync(
+        () => facetState(),
+        (state) => state?.sessions?.[0]?.ready === true,
+        20_000,
+        "The Graph Webview did not become ready before the G1d replay-exit test.",
+      );
+      // 在线 manager 此刻是空的，因此"退出回看后清空"只能由 **reset** 实现（水化没有可发的内容）：
+      // 去掉退出时的清空 ⇒ 下面的 eventCount=0 断言必红。
+      const replay = await vscode.commands.executeCommand("visualbridge.test.debugPanel.openRecording", filePath);
+      assert.equal(replay.ok, true, String(replay.error));
+      const replaying = await waitForAsync(
+        () => facetState(),
+        (state) => state?.lastAck?.eventCount === 2 && state.lastAck.instanceId === "g1d-replay-exit",
+        20_000,
+        "The Graph Webview never received the replay facet increments.",
+      );
+
+      // 回看期间灌在线增量：它们可以进在线 store，但**不得**串进正在回看的 Webview。
+      await ingestDebug([
+        debugCreate("graph", "g1d-live"),
+        debugEvent("graph", "g1d-live", 1, "NodeStarted", "live-node"),
+        debugEvent("graph", "g1d-live", 2, "NodeStarted", "live-node-2"),
+      ]);
+      await flushFacetBatch();
+      await delay(400);
+      const duringReplay = await facetState();
+      assert.equal(
+        duringReplay.lastAck?.instanceId,
+        "g1d-replay-exit",
+        "回看期间 Webview 只能看到回看会话的增量（在线增量不得串进来）",
+      );
+      assert.equal(duringReplay.lastAck?.eventCount, replaying.lastAck.eventCount);
+
+      // 让在线历史为空：这样"退出回看后 eventCount=0"只能是退出时的重置造成的
+      // （水化没有可发的内容），去掉退出清空 ⇒ 下面的断言必红。
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.resetDebugSession");
+      await delay(100);
+
+      // 退出回看：回看时间轴必须被清掉。
+      await panelCommand("closeRecording");
+      const cleared = await waitForAsync(
+        () => facetState(),
+        (state) => state?.lastAck?.eventCount === 0,
+        20_000,
+        "Closing the replay left the replay timeline in the Graph Webview (G1d exit clear).",
+      );
+      assert.equal(cleared.lastAck.instanceId, undefined, "退出回看后不得再挂着回看实例");
+      assert.equal(cleared.lastAck.cursor, -1);
+      assert.equal(cleared.lastAck.state, "follow");
+
+      // 退出后在线增量重新可达：不只是"清了"，在线桥必须重新成为活动桥。
+      await ingestDebug([
+        debugCreate("graph", "g1d-after-replay"),
+        debugEvent("graph", "g1d-after-replay", 1, "NodeStarted", "after-node"),
+      ]);
+      await flushFacetBatch();
+      const live = await waitForAsync(
+        () => facetState(),
+        (state) => state?.lastAck?.instanceId === "g1d-after-replay",
+        20_000,
+        "Live facet increments did not reach the Webview after the replay closed.",
+      );
+      assert.equal(live.lastAck.eventCount, 1);
+      assert.equal(live.lastAck.executingNodeId, "after-node");
+    } finally {
+      await panelCommand("closeRecording").catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.close").catch(() => undefined);
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * G1d 评审补充 3：退出回看必须把**回看期间累积下来的在线历史**水化回 Webview。
+   *
+   * 前一条用例在退出前 `resetDebugSession`，只证明了"清空"，没证明"清完能恢复在线历史"。
+   * 这里保留在线历史（并在回看期间继续累积），断言退出后 Webview 收到的是在线实例的完整
+   * 时间轴。判据：`detachReplayDebugFacetWindowBridge` 漏掉 `resync(online)` ⇒ 这条必红。
+   */
+  await test("G1d restores the live timeline accumulated during the replay when the replay closes", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "visualbridge-g1d-replay-restore-"));
+    const filePath = path.join(directory, "g1d-replay-restore.vbdrec");
+    const graphUri = vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "Graph", "SemanticSample.vbgraph"));
+    const facetState = () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorFacetDebugState", graphUri);
+    try {
+      await writeDebugRecording(filePath, [
+        { type: "debugCreate", category: "graph", instance: "g1d-replay-restore", instanceSlot: 1, resName: "r", debugInfo: "" },
+        { type: "debugFrame", frame: 0 },
+        recordedGraphDebugEvent("g1d-replay-restore", "InstanceStarted", 0, [
+          { tag: 1, name: "documentTypeId", type: "string", value: "logicGraph" },
+          { tag: 2, name: "documentId", type: "string", value: "semantic-sample" },
+          { tag: 3, name: "graphName", type: "string", value: "Semantic Sample" },
+          { tag: 4, name: "debugKey", type: "string", value: "g1d" },
+        ]),
+        recordedGraphDebugEvent("g1d-replay-restore", "NodeStarted", 1, [{ tag: 1, name: "nodeId", type: "string", value: "step_a" }]),
+      ]);
+
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.resetDebugSession");
+      await vscode.commands.executeCommand("vscode.openWith", graphUri, "visualbridge.documentEditor");
+      await waitForAsync(
+        () => facetState(),
+        (state) => state?.sessions?.[0]?.ready === true,
+        20_000,
+        "The Graph Webview did not become ready before the replay-restore test.",
+      );
+
+      // 在线历史（回看前已有一条，回看期间再累积一条，**不 reset**）。
+      await ingestDebug([
+        debugCreate("graph", "g1d-live-history"),
+        debugEvent("graph", "g1d-live-history", 1, "NodeStarted", "live-node-1"),
+      ]);
+      await flushFacetBatch();
+      await waitForAsync(
+        () => facetState(),
+        (state) => state?.lastAck?.instanceId === "g1d-live-history" && state.lastAck.eventCount === 1,
+        20_000,
+        "The live timeline before the replay did not reach the Webview.",
+      );
+
+      const replay = await vscode.commands.executeCommand("visualbridge.test.debugPanel.openRecording", filePath);
+      assert.equal(replay.ok, true, String(replay.error));
+      await waitForAsync(
+        () => facetState(),
+        (state) => state?.lastAck?.instanceId === "g1d-replay-restore" && state.lastAck.eventCount === 2,
+        20_000,
+        "The Graph Webview did not switch to the replay timeline.",
+      );
+
+      // 回看期间在线增量继续进在线表（投递被压制），退出后必须能水化回来。
+      await ingestDebug([
+        debugEvent("graph", "g1d-live-history", 3, "NodeStarted", "live-node-2"),
+      ]);
+      await flushFacetBatch();
+      await delay(300);
+      const duringReplay = await facetState();
+      assert.equal(duringReplay.lastAck?.instanceId, "g1d-replay-restore", "回看期间不得混入在线增量");
+
+      await panelCommand("closeRecording");
+      const restored = await waitForAsync(
+        () => facetState(),
+        (state) => state?.lastAck?.instanceId === "g1d-live-history" && state.lastAck.eventCount === 2,
+        20_000,
+        "Closing the replay did not restore the live timeline accumulated while replaying (missing resync).",
+      );
+      assert.equal(restored.lastAck.executingNodeId, "live-node-2", "恢复的时间轴必须包含回看期间累积的最后一条");
+    } finally {
+      await panelCommand("closeRecording").catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.close").catch(() => undefined);
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * G1d 评审 P1：退出回看时必须在**置空回看桥之前**清窗口。
+   *
+   * 场景对齐评审给的可达路径——全新窗口里在线桥从未见过 `graph`：只有回看桥在 `render()` 里
+   * 写入 `categoryEditor`。因此"先置空再 clear"会拿不到该分类，`resync(online)` 也没有历史，
+   * Webview 里的回看时间轴原样残留。这里用测试命令清掉在线桥的分类记忆来构造同一状态
+   * （不依赖套件顺序），并把顺序改回去 ⇒ 这条用例必红。
+   *
+   * 用例顺序：排在"退出清空/恢复在线历史"两条之后，去掉退出 clear 时先红的是更早的那条，
+   * 这样两条失败模式可以分别取证（本轮三种红态各命中不同用例）。
+   */
+  await test("G1d clears the replay timeline even when the live bridge never saw the category", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "visualbridge-g1d-orphan-category-"));
+    const filePath = path.join(directory, "g1d-orphan-category.vbdrec");
+    const graphUri = vscode.Uri.file(path.join(workspacePath, "GraphSemanticProject", "Graph", "SemanticSample.vbgraph"));
+    const facetState = () => vscode.commands.executeCommand("visualbridge.test.getGraphEditorFacetDebugState", graphUri);
+    try {
+      await writeDebugRecording(filePath, [
+        { type: "debugCreate", category: "graph", instance: "g1d-orphan", instanceSlot: 1, resName: "orphan-res", debugInfo: "" },
+        { type: "debugFrame", frame: 0 },
+        recordedGraphDebugEvent("g1d-orphan", "InstanceStarted", 0, [
+          { tag: 1, name: "documentTypeId", type: "string", value: "logicGraph" },
+          { tag: 2, name: "documentId", type: "string", value: "semantic-sample" },
+          { tag: 3, name: "graphName", type: "string", value: "Semantic Sample" },
+          { tag: 4, name: "debugKey", type: "string", value: "g1d" },
+        ]),
+        recordedGraphDebugEvent("g1d-orphan", "NodeStarted", 1, [{ tag: 1, name: "nodeId", type: "string", value: "step_a" }]),
+      ]);
+
+      // 干净的起点与就绪的 Webview（此时在线桥仍有 graph 的分类记忆）。
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.resetDebugSession");
+      await vscode.commands.executeCommand("vscode.openWith", graphUri, "visualbridge.documentEditor");
+      await waitForAsync(
+        () => facetState(),
+        (state) => state?.sessions?.[0]?.ready === true,
+        20_000,
+        "The Graph Webview did not become ready before the orphan-category replay test.",
+      );
+
+      // 关键前置：抹掉在线桥的"分类 → editor"记忆 ⇒ 退出回看时只有回看桥知道 graph。
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.forgetFacetCategories");
+      const replay = await vscode.commands.executeCommand("visualbridge.test.debugPanel.openRecording", filePath);
+      assert.equal(replay.ok, true, String(replay.error));
+      await waitForAsync(
+        () => facetState(),
+        (state) => state?.lastAck?.eventCount === 2 && state.lastAck.instanceId === "g1d-orphan",
+        20_000,
+        "The Graph Webview never received the replay increments in the orphan-category test.",
+      );
+
+      // P1：关闭回看后时间轴必须被清（reset 只能来自回看桥；detach 顺序错了就拿不到它）。
+      await panelCommand("closeRecording");
+      const cleared = await waitForAsync(
+        () => facetState(),
+        (state) => state?.lastAck?.eventCount === 0,
+        20_000,
+        "Closing a replay whose category the live bridge never saw left the replay timeline in the Webview.",
+      );
+      assert.equal(cleared.lastAck.instanceId, undefined);
+      assert.equal(cleared.lastAck.cursor, -1);
+    } finally {
+      await panelCommand("closeRecording").catch(() => undefined);
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.close").catch(() => undefined);
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+      // 还原在线桥的分类记忆（本用例刻意抹掉过；后续用例的 reset 也会重建，这里显式收尾）。
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.resetDebugSession").catch(() => undefined);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  await test("G1d scopes facet increments to the Graph document that produced the instance", async () => {
+    const graphDirectory = path.join(workspacePath, "GraphSemanticProject", "Graph");
+    const primaryUri = vscode.Uri.file(path.join(graphDirectory, "SemanticSample.vbgraph"));
+    const copyUri = vscode.Uri.file(path.join(graphDirectory, "SemanticSampleCopy.vbgraph"));
+    const facetState = (uri) => vscode.commands.executeCommand("visualbridge.test.getGraphEditorFacetDebugState", uri);
+    const instanceStarted = (instance, documentId) => ({
+      type: "debug",
+      frame: 0,
+      wireBytes: 24,
+      payloadKind: 1,
+      category: "graph",
+      instance,
+      interfaceId: "IGraphDebuger",
+      method: "InstanceStarted",
+      methodId: 12,
+      instanceSlot: 1,
+      args: [
+        { tag: 1, name: "documentTypeId", type: "string", value: "logicGraph" },
+        { tag: 2, name: "documentId", type: "string", value: documentId },
+        { tag: 3, name: "graphName", type: "string", value: "Semantic Sample" },
+        { tag: 4, name: "debugKey", type: "string", value: "g1d-scope" },
+      ],
+      contractState: "unknown-interface",
+    });
+    try {
+      // 第二份合法的 Graph 文档（只改 `documentId`）：同 editor 两个文档才会暴露跨文档串扰。
+      const sample = JSON.parse(await readFile(path.join(graphDirectory, "SemanticSample.vbgraph"), "utf8"));
+      await writeFile(copyUri.fsPath, `${JSON.stringify({ ...sample, documentId: "semantic-sample-copy" }, undefined, 2)}\n`, "utf8");
+      await vscode.commands.executeCommand("visualbridge.refreshProjects");
+      await waitForAsync(
+        () => vscode.commands.executeCommand("visualbridge.test.resolveDocument", copyUri),
+        (match) => match !== undefined,
+        20_000,
+        "The copied Graph document was not resolved by the project registry.",
+      );
+
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.resetDebugSession");
+      // 两个文档分屏同时可见（隐藏的 Webview 会销毁上下文，用不可见的窗口断言"没收到"没有意义）。
+      await vscode.commands.executeCommand("vscode.openWith", primaryUri, "visualbridge.documentEditor", vscode.ViewColumn.One);
+      await waitForAsync(
+        () => facetState(primaryUri),
+        (state) => state?.sessions?.[0]?.ready === true,
+        20_000,
+        "The primary Graph Webview did not become ready.",
+      );
+      await vscode.commands.executeCommand("vscode.openWith", copyUri, "visualbridge.documentEditor", vscode.ViewColumn.Two);
+      const ready = await waitForAsync(
+        () => facetState(copyUri),
+        (state) => state?.sessions?.[0]?.ready === true,
+        20_000,
+        "The copied Graph Webview did not become ready.",
+      );
+      assert.ok(ready.sessions[0].ready);
+      // 两个 Webview 都就绪后再作废一次会话：清掉历史，两个视图都从 0 开始（作用域断言的基线）。
+      await vscode.commands.executeCommand("visualbridge.test.debugPanel.resetDebugSession");
+      await waitForAsync(
+        () => facetState(primaryUri),
+        (state) => (state?.lastAck?.eventCount ?? 0) === 0,
+        20_000,
+        "The primary Graph Webview did not clear after the debug session reset.",
+      );
+      const baseline = await facetState(copyUri);
+      assert.equal(baseline.lastAck?.eventCount ?? 0, 0, "复制文档的 Webview 基线必须为空");
+
+      // 实例属于 `semantic-sample`（主文档）：InstanceStarted 带 documentId，后续事件靠宿主的实例缓存。
+      await ingestDebug([
+        debugCreate("graph", "g1d-scope"),
+        instanceStarted("g1d-scope", "semantic-sample"),
+        debugEvent("graph", "g1d-scope", 1, "NodeStarted", "step_a"),
+        debugEvent("graph", "g1d-scope", 2, "NodeStarted", "step_b"),
+      ]);
+      await flushFacetBatch();
+
+      const primary = await waitForAsync(
+        () => facetState(primaryUri),
+        (state) => state?.lastAck?.eventCount === 3 && state.lastAck.instanceId === "g1d-scope",
+        20_000,
+        "The owning Graph Webview did not receive the scoped facet increments.",
+      );
+      assert.equal(primary.lastAck.executingNodeId, "step_b");
+      // P0：同一 editor 的另一个文档不得收到任何一条增量（作用域改回按 editor 广播 ⇒ 这里必红）。
+      const copy = await facetState(copyUri);
+      assert.equal(copy.lastAck?.eventCount ?? 0, 0, "同 editor 的另一个 Graph 文档不得收到别人的增量");
+      assert.equal(copy.lastAck?.instanceId, undefined);
+
+      // 快照/resync 必须与广播同一作用域：B 的 resync 只能拿到 B 自己的历史（空），不是 A 的时间轴。
+      await vscode.commands.executeCommand(
+        "visualbridge.test.sendGraphEditorDebugMessage",
+        copyUri,
+        { type: "debugFacetResync", category: "graph" },
+      );
+      // 没有任何更新可等（正确实现下 B 保持空），所以用一个短窗口确认它没有被别人的快照灌满。
+      await delay(300);
+      const afterResync = await facetState(copyUri);
+      assert.equal(
+        afterResync.lastAck?.eventCount ?? 0,
+        0,
+        "snapshot/resync 也必须按文档过滤（不能广播目标改了、快照还是按 editor）",
+      );
+      assert.equal(afterResync.lastAck?.instanceId, undefined);
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").catch(() => undefined);
+      await rm(copyUri.fsPath, { force: true }).catch(() => undefined);
+    }
+  });
 };
+
+/**
+ * G1d：录制文件里的 Graph 调试帧（**线上 JSON 形状**，与 `debugIngest` 解析的 `type: "debug"`
+ * 一致：`iface` + `method` + 带 `name` 的 args）。`documentId` 只随 `InstanceStarted`/`InstanceStopped`
+ * 的载荷出现，回看桥据此把增量投给产生该实例的文档。
+ */
+function recordedGraphDebugEvent(instance, method, frame, args) {
+  return { type: "debug", category: "graph", instance, iface: "IGraphDebuger", method, frame, args };
+}
 
 async function assertEditorRoute(workspacePath, segments, expectedViewType, openCommand) {
   const uri = vscode.Uri.file(path.join(workspacePath, ...segments));

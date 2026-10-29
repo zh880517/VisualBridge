@@ -20,7 +20,13 @@ import { SOURCES_EDITOR_VIEW_TYPE } from "../document/moduleSourcesEditorProvide
 import { loadModuleEditorFacets, type ModuleEditorFacets } from "./moduleEditorFacets";
 import { ModuleTextEditorSession } from "./moduleTextEditorSession";
 import { createReadonlyShellHtml, readonlyShellTitle } from "./readonlyShell";
-import type { DebugFacetWindowBridge, DebugFacetWindowMessage } from "../debug/debugFacetWindowBridge";
+import {
+  DEBUG_FACET_RESET_MESSAGE,
+  matchesDebugFacetDocument,
+  type DebugFacetWindowBridge,
+  type DebugFacetWindowMessage,
+  type DebugFacetWindowTarget,
+} from "../debug/debugFacetWindowBridge";
 
 export const DEFAULT_EDITOR_VIEW_TYPE = "visualbridge.documentEditor";
 export const OPTIONAL_EDITOR_VIEW_TYPE = "visualbridge.documentEditor.option";
@@ -43,6 +49,11 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
   private readonly textSessions = new Map<string, Set<ModuleTextEditorSession>>();
   /** 调试 facet 增量的 Webview 转发桥（G1a）；在扩展激活装配完后由 `attachDebugFacetWindowBridge` 注入。 */
   private debugFacetWindow: DebugFacetWindowBridge | undefined;
+  /**
+   * 回看会话的独立 facet 桥（G1d）：与回看会话同生命周期，挂上期间**在线桥只保留历史、不投递**，
+   * 因此两条时间轴不会互相污染；退出回看时解绑并清空 Webview（见 `detachReplayDebugFacetWindowBridge`）。
+   */
+  private replayDebugFacetWindow: DebugFacetWindowBridge | undefined;
   private readonly pendingReveals = new Map<string, unknown>();
   private readonly initializedPanels = new Map<string, Set<vscode.WebviewPanel>>();
   /** 同一文档可以开多个只读 Shell（split），每个面板各自维护原因文案。 */
@@ -125,7 +136,16 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
       controller: facets.createController(),
       options: moduleOptions(match, availability.moduleId),
       onWebviewReady: () => this.hydrateDebugFacetSession(session),
-      onDebugFacetResync: (message) => this.debugFacetWindow?.handleWebviewMessage(facets.editor, message).replies ?? [],
+      // G1d：resync 的回复只能投回**发起消息的那个 Webview**，且快照按该会话的文档过滤。
+      onDebugFacetResync: (message) => {
+        const bridge = this.activeDebugFacetWindow();
+        if (bridge === undefined) return [];
+        const target: DebugFacetWindowTarget = {
+          editor: facets.editor,
+          ...(session.documentId === undefined ? {} : { documentId: session.documentId }),
+        };
+        return bridge.handleWebviewMessage(target, message).replies;
+      },
     });
     const uriKey = document.uri.toString();
     let sessions = this.textSessions.get(uriKey);
@@ -266,6 +286,66 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
   /** 装配调试 facet 的 Webview 转发桥（G1a；必须在 `DebugFacetHost.rebuild` 之前调用）。 */
   public attachDebugFacetWindowBridge(bridge: DebugFacetWindowBridge): void {
     this.debugFacetWindow = bridge;
+    this.resyncDebugFacetSessions(bridge);
+  }
+
+  /**
+   * 挂上回看会话的 facet 桥（G1d）。
+   *
+   * 顺序不能反：先清掉 Webview 里的**在线**时间轴（回看不与在线混着看），再按回看桥水化。
+   * 回看桥此刻还没有历史（`rebuild` 紧随其后），随后到达的增量按文档作用域推送。
+   */
+  public attachReplayDebugFacetWindowBridge(bridge: DebugFacetWindowBridge): void {
+    this.replayDebugFacetWindow = bridge;
+    this.clearDebugFacetSessions([this.debugFacetWindow, bridge]);
+    this.resyncDebugFacetSessions(bridge);
+  }
+
+  /**
+   * 解绑回看桥并清空回看时间轴（G1d）。
+   *
+   * 只在解绑的确实是当前回看桥时才生效（避免旧会话的收尾清掉新会话的状态）。
+   * 清空之后按在线桥重新水化：回看期间在线桥仍在记录历史（只是不投递），
+   * 所以"退出回看"回到的是回看期间的实时状态，而不是丢失这段时间的数据。
+   *
+   * **顺序是硬约束（G1d 评审 P1）**：必须在置空 `replayDebugFacetWindow` **之前**用
+   * 仍带该桥的列表清窗口。否则回看桥独有的分类（在线桥从未见过它）拿不到 reset，
+   * 而 `resync(online)` 又没有该分类历史 ⇒ 回看时间轴原样残留。可达路径：全新窗口
+   * （无在线调试会话）→ 打开 Graph 文档 → 打开录制回看 → 关闭回看。
+   */
+  public detachReplayDebugFacetWindowBridge(bridge: DebugFacetWindowBridge): void {
+    if (this.replayDebugFacetWindow !== bridge) {
+      return;
+    }
+
+    this.clearDebugFacetSessions([this.debugFacetWindow, bridge]);
+    this.replayDebugFacetWindow = undefined;
+    this.resyncDebugFacetSessions(this.debugFacetWindow);
+  }
+
+  /**
+   * 桥 → Webview（G1d）：只有**活动桥**可以投递，且按 `target.documentId` 过滤。
+   *
+   * 在线/回看各有一条历史，若两条桥同时投递，同一条执行会在时间轴上出现两次或互相清空；
+   * 所以非活动桥的广播在这里被明确丢弃（而不是依赖桥自己判断）。
+   */
+  public broadcastDebugFacet(
+    bridge: DebugFacetWindowBridge | undefined,
+    target: DebugFacetWindowTarget,
+    message: DebugFacetWindowMessage,
+  ): number {
+    if (bridge === undefined || bridge !== this.activeDebugFacetWindow()) return 0;
+    return this.postDebugFacetMessage(target, message);
+  }
+
+  /**
+   * 按目标重新水化所有模块 Webview（桥的 `onSnapshotNeeded`；只对活动桥生效）。
+   *
+   * 快照必须逐会话生成：同 editor 的两个文档该收到不同的历史（G1d），所以桥只提供
+   * `snapshotMessages(target)`，会话表与投递在这里。
+   */
+  public resyncDebugFacetSessions(bridge: DebugFacetWindowBridge | undefined): void {
+    if (bridge === undefined || bridge !== this.activeDebugFacetWindow()) return;
     for (const sessions of this.textSessions.values()) {
       for (const session of sessions) {
         this.hydrateDebugFacetSession(session);
@@ -273,12 +353,39 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
     }
   }
 
-  /** 向某 editor 的全部已打开 Webview 广播（桥的 `broadcast` 回调）。 */
-  public broadcastDebugFacet(editor: string, message: DebugFacetWindowMessage): number {
+  private activeDebugFacetWindow(): DebugFacetWindowBridge | undefined {
+    return this.replayDebugFacetWindow ?? this.debugFacetWindow;
+  }
+
+  /**
+   * 清空 Webview 的本地 facet 累积（切换在线/回看时用）。
+   *
+   * 分类是 editor 面的生命周期单位（模块重建/会话作废），不是某个文档的数据，所以按 editor 面
+   * 广播重置；随后由 `resyncDebugFacetSessions` 按文档水化。历史本身不动——清的是 Webview 视图。
+   *
+   * `bridges` 由调用方**显式**给出：退出回看时必须在置空 `replayDebugFacetWindow` 之前调用，
+   * 否则回看桥独有的分类拿不到（G1d 评审 P1）。不要在这里回退读字段。
+   */
+  private clearDebugFacetSessions(
+    bridges: readonly (DebugFacetWindowBridge | undefined)[] = [this.debugFacetWindow, this.replayDebugFacetWindow],
+  ): void {
+    const seen = new Set<string>();
+    for (const bridge of bridges) {
+      for (const { category, editor } of bridge?.knownCategories() ?? []) {
+        const key = `${editor}\u0000${category}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        this.postDebugFacetMessage({ editor }, { type: DEBUG_FACET_RESET_MESSAGE, category });
+      }
+    }
+  }
+
+  private postDebugFacetMessage(target: DebugFacetWindowTarget, message: DebugFacetWindowMessage): number {
     let posted = 0;
     for (const sessions of this.textSessions.values()) {
       for (const session of sessions) {
-        if (!session.matchesEditor(editor)) continue;
+        if (!session.matchesEditor(target.editor)) continue;
+        if (!matchesDebugFacetDocument(session.documentId, target.documentId)) continue;
         void session.postHostMessage(message);
         posted += 1;
       }
@@ -303,9 +410,13 @@ export class DocumentEditorProvider implements vscode.CustomTextEditorProvider {
   }
 
   private hydrateDebugFacetSession(session: ModuleTextEditorSession): void {
-    const bridge = this.debugFacetWindow;
+    const bridge = this.activeDebugFacetWindow();
     if (bridge === undefined || !session.isReady) return;
-    for (const message of bridge.snapshotMessages(session.editorName)) {
+    const target: DebugFacetWindowTarget = {
+      editor: session.editorName,
+      ...(session.documentId === undefined ? {} : { documentId: session.documentId }),
+    };
+    for (const message of bridge.snapshotMessages(target)) {
       void session.postHostMessage(message);
     }
   }

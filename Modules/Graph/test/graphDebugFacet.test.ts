@@ -255,6 +255,32 @@ test("Graph debug facet passes options.debug through to the window content", () 
   assert.deepEqual(update?.options, { title: "Custom" });
 });
 
+/**
+ * G1d：`documentId` 只随 `InstanceStarted`/`InstanceStopped` 的载荷出现，facet 原样透传给宿主，
+ * 供 `DebugFacetWindowBridge` 把增量投给产生该实例的文档；其余事件不得凭空造出这个字段。
+ */
+test("Graph debug facet passes the instance documentId through for host-side scoping", () => {
+  const started: DebugRecord = {
+    ...record,
+    method: "InstanceStarted",
+    params: { documentTypeId: "logicGraph", documentId: "semantic-sample", graphName: "Sample", debugKey: "g1d" },
+  };
+  const startedUpdate = graphDebugFacet.onRecord(started, context(undefined));
+  assert.equal(startedUpdate?.documentId, "semantic-sample");
+
+  const stopped: DebugRecord = {
+    ...record,
+    method: "InstanceStopped",
+    params: { documentId: "semantic-sample" },
+  };
+  assert.equal(graphDebugFacet.onRecord(stopped, context(undefined))?.documentId, "semantic-sample");
+
+  // 其它事件没有 documentId：不能补，也不能沿用（facet 不累积状态，归属缓存由宿主负责）。
+  assert.equal(graphDebugFacet.onRecord(record, context(undefined))?.documentId, undefined);
+  const nonString: DebugRecord = { ...record, method: "InstanceStarted", params: { documentId: 42 } };
+  assert.equal(graphDebugFacet.onRecord(nonString, context(undefined))?.documentId, undefined);
+});
+
 test("Graph options validation locates options.debug with a JSON pointer", () => {
   assert.deepEqual(validateGraphOptions(undefined), []);
   assert.deepEqual(validateGraphOptions({ debug: { title: "ok" } }), []);

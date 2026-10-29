@@ -54,6 +54,7 @@ import { DebugRecordingService } from "./debug/debugRecordingService";
 import { DebugReplaySession } from "./bridge/debugReplaySession";
 import { DebugFacetHost } from "./debug/debugFacetRouter";
 import { DebugFacetWindowBridge } from "./debug/debugFacetWindowBridge";
+import { createReplayFacetEndpoint } from "./debug/replayFacetEndpoint";
 import { collectDebugFacetSources } from "./debug/debugFacetSources";
 import type { DebugEnvelope } from "./bridge/debugIngress";
 
@@ -1009,9 +1010,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(debugFacetHost);
   // 模块 Webview 的调试窗口（G1a）：facet 的逐条渲染增量 → 该 editor 的已打开 Webview。
   // 先于 `rebuildDebugFacets()` 装配，保证模块重载/首次重放时增量不会丢。
-  const debugFacetWindows = new DebugFacetWindowBridge({
+  // G1d：投递按 `documentId` 作用域（同 editor 的两个文档不串扰），桥身份用于"只有活动桥能投递"。
+  const debugFacetWindows: DebugFacetWindowBridge = new DebugFacetWindowBridge({
     facets: debugFacetHost,
-    broadcast: (editor, message) => editorProvider.broadcastDebugFacet(editor, message),
+    broadcast: (target, message) => editorProvider.broadcastDebugFacet(debugFacetWindows, target, message),
+    onSnapshotNeeded: (bridge) => editorProvider.resyncDebugFacetSessions(bridge),
     log: (message) => output.appendLine(message),
   });
   context.subscriptions.push(debugFacetWindows);
@@ -1056,6 +1059,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       },
     },
     // 回看的模块 facet 按回看 manager 新建，退出回看时由控制器释放（F4 的在线 host 不动）。
+    // G1d：回看也要驱动模块 Webview —— 建一个**与会话同生命周期**的独立桥，并接到同一批
+    // Webview 上。在线桥在回看期间只积累历史、不投递（`broadcastDebugFacet` 按活动桥过滤），
+    // 退出回看时 `dispose` 解绑、清空回看时间轴并按在线桥重新水化。
+    // 失败回退（评审补充 2）收敛在 `createReplayFacetEndpoint`：attach/rebuild 抛错时它先切回
+    // 在线桥再释放，回看桥不会永久占住"活动桥"。
     replayFacets: (session) => {
       const host = new DebugFacetHost({
         router: session.manager.router,
@@ -1066,12 +1074,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         sessionId: () => session.header.sessionId,
         log: (message) => output.appendLine(message),
       });
-      host.rebuild(collectDebugFacetSources(
-        projects.projects,
-        (project) => modules.modulesFor(project),
-        (moduleId, message) => output.appendLine(`[module:${moduleId}] ${message}`),
-      ));
-      return host;
+      const bridge: DebugFacetWindowBridge = new DebugFacetWindowBridge({
+        facets: host,
+        broadcast: (target, message) => editorProvider.broadcastDebugFacet(bridge, target, message),
+        onSnapshotNeeded: (source) => editorProvider.resyncDebugFacetSessions(source),
+        log: (message) => output.appendLine(message),
+      });
+      return createReplayFacetEndpoint({
+        host,
+        bridge,
+        attach: (value) => editorProvider.attachReplayDebugFacetWindowBridge(value),
+        detach: (value) => editorProvider.detachReplayDebugFacetWindowBridge(value),
+        // 先挂桥（清掉窗口里的在线时间轴），再 rebuild（回放增量按文档作用域推给 Webview）。
+        rebuild: () => host.rebuild(collectDebugFacetSources(
+          projects.projects,
+          (project) => modules.modulesFor(project),
+          (moduleId, message) => output.appendLine(`[module:${moduleId}] ${message}`),
+        )),
+        log: (message) => output.appendLine(message),
+      });
     },
     log: (message) => output.appendLine(message),
     // E10：面板打开时按需建立 Runtime 腿连接（复用上面那一个 `runtimeBridge`），
@@ -1313,6 +1334,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return true;
       }),
       vscode.commands.registerCommand("visualbridge.test.debugPanel.debugReporting", () => bridgeServer.debugReporting),
+      // G1d 评审 P1：构造"在线桥从未见过该分类"的窗口（全新窗口里只有回看桥知道 graph）。
+      // 只清路由记忆、不动历史；用例用它把 detach 的顺序缺陷（先置空再清）变成必红。
+      vscode.commands.registerCommand("visualbridge.test.debugPanel.forgetFacetCategories", () => {
+        debugFacetWindows.forgetCategoriesForTest();
+        return true;
+      }),
       vscode.commands.registerCommand("visualbridge.test.debugPanel.facets", () => debugFacetHost.snapshot()),
       vscode.commands.registerCommand("visualbridge.test.debugPanel.facetRoutes", () => debugFacetHost.routeSummaryForTest()),
       vscode.commands.registerCommand("visualbridge.test.debugPanel.flushFacets", () => {

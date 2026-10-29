@@ -199,6 +199,14 @@ export interface ModuleEditorFacets {
   readonly sources?: ModuleSourcesFacet;
   loadCatalog(match: DocumentMatch): Promise<ModuleSessionCatalog>;
   createController(): ModuleSessionController;
+  /**
+   * 从文档文本解析语义 `documentId`（G1d 的 facet 文档作用域）。
+   *
+   * 与旧 `graphExecution` 路径的 `getDocumentId()` 同源（模块 `parseText` → `document.documentId`），
+   * 因此"产生实例的文档"与"显示增量的 Webview"用的是同一个标识。解析失败/异步结果返回
+   * `undefined`（宿主按"身份未知"降级为 editor 面投递）。
+   */
+  readDocumentId(text: string, match: DocumentMatch): string | undefined;
   createHostMessageHandler?(context: ModuleHostMessageContext): ModuleHostMessageHandler | undefined;
 }
 
@@ -266,6 +274,8 @@ function createFacets(
     createController: (): ModuleSessionController => (
       editorRegistration.session.createController(undefined)
     ),
+    // 文档作用域（G1d）：宿主按需解析当前文本的 `documentId`，不引入第二套"文档身份"判定。
+    readDocumentId: (text, match) => documentIdOf(facet, match.project, match, text),
   } satisfies Omit<ModuleEditorFacets, "reveal" | "sources" | "createHostMessageHandler">;
 
   const reveal = editorRegistration.reveal;
@@ -455,7 +465,7 @@ function createRuntimeDebugHandler(
       if (typeof type !== "string" || !isGraphDebugMessage(type)) return false;
       controller ??= new GraphExecutionDebugController({
         postMessage: (outgoing) => context.postMessage(outgoing),
-        getDocumentId: () => documentIdOf(facet, context),
+        getDocumentId: () => documentIdOf(facet, context.match.project, context.match, context.getText()),
         output: (line) => context.log(line),
       });
       await controller.handleWebviewMessage(message);
@@ -471,14 +481,16 @@ function createRuntimeDebugHandler(
 /** 文档 id 是 Core 的通用约定（`documentId`），由模块自己的解析器给出。 */
 function documentIdOf(
   facet: DocumentFacet<unknown, unknown>,
-  context: ModuleHostMessageContext,
+  project: ProjectContext,
+  match: DocumentMatch,
+  text: string,
 ): string | undefined {
   if (facet.parseText === undefined) return undefined;
   // facet 边界：四个内置域的 `parseText` 都是同步的；契约允许 Promise，这里只接受同步结果。
-  const parsed = facet.parseText(context.getText(), facetContext(
-    context.match.project,
-    context.match.documentType.id,
-    [context.match.relativePath],
+  const parsed = facet.parseText(text, facetContext(
+    project,
+    match.documentType.id,
+    [match.relativePath],
     undefined,
   )) as DocumentFacetParseResult<unknown>;
   if (!parsed.success) return undefined;

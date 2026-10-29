@@ -12,6 +12,10 @@
  * 3. **事件种类从 `method` 归一**。旧 `graphExecution` 的 `kind`（`nodeStart` 等）在统一调试流里
  *    变成契约方法名（`NodeStarted` 等）；别名表是"同一执行、两种编码"的唯一定义，迁移对比测试
  *    （`test:vscode:host`）与契约守卫测试（`graphDebugFacet.test.ts`）都以它为准，G1b 删除旧路径时一并复核。
+ * 4. **`documentId` 只是给宿主的投递提示**。契约里 `InstanceStarted`/`InstanceStopped` 的载荷带
+ *    `documentId`，其余事件不带；facet 把记录里**恰好出现**的那个值原样透传（不缓存、不推断），
+ *    宿主 `DebugFacetWindowBridge` 据此把增量投给产生该实例的文档（G1d）。它不改变
+ *    `DebugRecord` 的形状，也不进入宿主内部状态，所以仍然保持"每条记录独立派生"。
  */
 import type {
   DebugFacet,
@@ -77,6 +81,9 @@ export const graphDebugFacet: DebugFacet = {
     const outputIndex = integerParam(record, "outputIndex")
       ?? (eventKind === "nodeOutput" || eventKind === "edgeValueChanged" ? 0 : undefined);
     const value = stringOrNumberParam(record, "value");
+    // 只有 `InstanceStarted`/`InstanceStopped` 的载荷带 `documentId`（契约 tag 2 / tag 1）；
+    // 其余事件没有就**不写**这个字段——宿主按"身份未知"处理，见文件头第 4 条。
+    const documentId = stringParam(record, "documentId");
     const update: Record<string, JsonValue> = {
       kind: GRAPH_DEBUG_UPDATE_KIND,
       category: record.category,
@@ -92,6 +99,7 @@ export const graphDebugFacet: DebugFacet = {
       ...(nodeId === undefined ? {} : { nodeId }),
       ...(outputIndex === undefined ? {} : { outputIndex }),
       ...(value === undefined ? {} : { value }),
+      ...(documentId === undefined ? {} : { documentId }),
     };
     const debugOptions = readDebugOptions(context);
     if (debugOptions !== undefined) {

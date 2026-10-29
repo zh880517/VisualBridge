@@ -459,6 +459,12 @@ export interface GraphDebugFacetRecord {
   readonly nodeId?: string;
   readonly outputIndex?: number;
   readonly value?: string;
+  /**
+   * 该增量所属的文档（G1d）。只有 `InstanceStarted`/`InstanceStopped` 的记录带这个值，
+   * 其余事件靠宿主按 `instanceId` 记住归属；Webview **不**用它做过滤（作用域在宿主侧完成），
+   * 保留字段只是为了诊断/调试时能看出是谁的数据。
+   */
+  readonly documentId?: string;
 }
 
 /** 一条历史增量（`seq` 是宿主 `DebugRecord.seq`，单调；用于水化去重）。 */

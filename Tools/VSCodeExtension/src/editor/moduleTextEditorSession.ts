@@ -99,6 +99,8 @@ export class ModuleTextEditorSession {
   private lastRejectionForTest: string | undefined;
   /** 最近一次 `operationCompleted`（宿主测试断言修订号盖章用）。 */
   private lastOperationCompletedForTest: Readonly<Record<string, unknown>> | undefined;
+  /** 当前文档的语义 `documentId` 缓存（G1d；按 `TextDocument.version` 失效）。 */
+  private documentIdCache: { readonly version: number; readonly value: string | undefined } | undefined;
   /** 调试 facet Webview 的最近回执（G1a；宿主测试据此断言增量内容与顺序）。 */
   private lastDebugFacetAck: DebugFacetAck | undefined;
   private confirmExternalChangesTestHook: (() => Promise<void>) | undefined;
@@ -237,6 +239,35 @@ export class ModuleTextEditorSession {
   /** 该会话是否属于给定 editor 面（同一文档可能被不同 editor 打开）。 */
   public matchesEditor(editor: string): boolean {
     return this.options.facets.editor === editor;
+  }
+
+  /**
+   * 当前文档的语义 `documentId`（G1d 的 facet 文档作用域）。
+   *
+   * 与旧 `graphExecution` 路径的 `getDocumentId()` 同源（模块 `parseText` → `document.documentId`），
+   * 解析失败为 `undefined`（宿主按"身份未知"降级为 editor 面投递）。广播按事件调用它，
+   * 因此按文档版本缓存：一次编辑只重新解析一次，而不是每条增量都解析。
+   */
+  public get documentId(): string | undefined {
+    const version = this.options.document.version;
+    const cached = this.documentIdCache;
+    if (cached !== undefined && cached.version === version) {
+      return cached.value;
+    }
+
+    let value: string | undefined;
+    try {
+      value = this.options.facets.readDocumentId(this.options.document.getText(), this.match);
+    } catch (errorValue) {
+      // 解析抛错是模块缺陷，但不能打断调试广播：按"身份未知"降级，并把原因留在 OutputChannel。
+      this.options.output.appendLine(
+        `[${this.options.facets.editor}] failed to resolve the document id for ${this.match.relativePath}: ${formatError(errorValue)}`,
+      );
+      value = undefined;
+    }
+
+    this.documentIdCache = { version, value };
+    return value;
   }
 
   public assertOperationsAllowedForTest(operations: unknown): void {

@@ -314,7 +314,10 @@ export function useGraphDebug(): GraphDebugController {
     setDebugStopped(false);
     setDebugFlash(undefined);
     setDebugRuntimeConnected(false);
-  }, []);
+    // 清空也必须回执（G1d）：宿主靠这条 ack 断言"退出回看/会话作废后 Webview 真的空了"。
+    // 不在这里回执的话，"重置没送到"与"送到了但视图还留着旧时间轴"在宿主侧无法区分。
+    postAckWith("follow", [], -1, undefined);
+  }, [postAckWith]);
 
   const requestDebugInstances = useCallback((): void => {
     vscode.postMessage({ type: "debugFacetResync", category: "graph" });

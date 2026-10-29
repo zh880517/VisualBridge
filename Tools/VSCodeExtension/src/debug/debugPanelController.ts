@@ -89,6 +89,11 @@ export interface DebugPanelFacets {
   replayCategory(category: string): DebugFacetReplayView | undefined;
   /** 回看结束时释放模块消费者（在线 host 由扩展生命周期管理，不需要）。 */
   dispose?(): void;
+  /**
+   * 模块 facet 区域**降级**了（G1d 评审补充 2）：回看本身可用（通用视图来自回看 manager），
+   * 但模块视图初始化失败、只显示空区域。`reason` 是给用户看的一行原因。
+   */
+  readonly degraded?: { readonly reason: string };
 }
 
 export interface DebugPanelControllerOptions {
@@ -331,10 +336,8 @@ export class DebugPanelController implements vscode.Disposable {
 
     const session = await DebugReplaySession.load(filePath);
     this.closeRecording();
-    this.replay = {
-      session,
-      facets: this.options.replayFacets?.(session),
-    };
+    const facets = this.options.replayFacets?.(session);
+    this.replay = { session, facets };
     // 回看有自己的一套实例键空间：存档在线视图（选中/暂停/跟随/接口缓存），回看从默认实例重来。
     this.model.enterReplayView();
     const footer = session.footer;
@@ -345,6 +348,9 @@ export class DebugPanelController implements vscode.Disposable {
     try {
       const snapshot = await this.open();
       this.sendState();
+      // G1d 评审补充 2：模块 facet 初始化失败时回看本身仍可用（通用视图来自回看 manager），
+      // 但不能让用户只从 OutputChannel 才知道"图区域为什么是空的"。
+      this.warnDegradedFacets(facets);
       return snapshot;
     } catch (errorValue) {
       // 面板资源不可用等失败：不能把数据源留在"打不开的回看"上。
@@ -370,6 +376,21 @@ export class DebugPanelController implements vscode.Disposable {
 
     this.updateTitle();
     this.sendState();
+  }
+
+  /**
+   * 模块 facet 区域降级时的可见提示（G1d 评审补充 2）。
+   *
+   * 只影响模块视图：回看数据（面板通用视图）仍可用，所以不给"打开失败"阻断，而是明确告诉用户
+   * "回看已打开、模块视图没加载"以及原因，避免用户误判成录制文件损坏。
+   */
+  private warnDegradedFacets(facets: DebugPanelFacets | undefined): void {
+    const reason = facets?.degraded?.reason;
+    if (reason === undefined) {
+      return;
+    }
+
+    void vscode.window.showWarningMessage(`回看已打开，但模块视图未能加载：${reason}`);
   }
 
   /** 逐条命令入口（Webview 与宿主测试共用）。 */
