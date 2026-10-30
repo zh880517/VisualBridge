@@ -39,8 +39,12 @@ namespace VisualBridge.Diagnostics
             new List<VisualBridgeDebugPendingCreate>();
 
         /// <summary>
-        /// **活跃实例登记**（E11）：与「会话快照」分开的一套状态，只有 <see cref="Finish"/> 与
-        /// 换传输（<see cref="SetTransport"/>/<see cref="ClearTransport"/>）才移除。
+        /// **活跃实例登记**（E11）：与「会话快照」分开的一套状态，只有 <see cref="Finish"/>、
+        /// 换传输（<see cref="SetTransport"/>/<see cref="ClearTransport"/>）与**没有宿主结算的惰性断连**
+        /// （<see cref="RefreshConnectionLocked"/> 观察到换代却没人 <see cref="Detach"/> 时走的
+        /// <see cref="ResetSessionLocked"/> 作废分支）才移除。宿主显式 <see cref="Detach"/> 结算过的断连
+        /// **保留**登记，重连后由 <see cref="ReplayRegistrationsLocked"/> 重放（口径同
+        /// <see cref="s_replayPending"/> 的注释）。
         ///
         /// 为什么需要它：宿主的断连结算（<see cref="Detach"/>，附录 A.9 的"最后一条连接关闭"）会清空
         /// 会话快照（实例、槽位、待发描述），但**实例本身还在跑**。旧实现把"快照清空"当成"实例消失"，
@@ -213,7 +217,9 @@ namespace VisualBridge.Diagnostics
         /// <summary>
         /// 显式解除挂接（附录 B.2）：按断连语义重置会话快照，但**保留仍然活着的登记**（E11）。
         /// 下一秒就可能有新连接压上来（探测落选、临时连接退出、面板重开），那时靠重放把实例
-        /// 描述送回去；只有 <see cref="Finish"/> 或换传输才会真正注销一条登记。
+        /// 描述送回去。登记只由 <see cref="Finish"/>、换传输，或**没有宿主结算的惰性断连**
+        /// （<see cref="RefreshConnectionLocked"/> 的作废分支：观察到换代却没人 <see cref="Detach"/>）
+        /// 注销；本方法自己不清登记。
         /// </summary>
         internal static void Detach()
         {
@@ -1474,7 +1480,8 @@ namespace VisualBridge.Diagnostics
         /// 一条"仍然活着"的实例登记（E11）：实例描述（会话复位后重放要用）+ **首选槽位**。
         /// 首选槽位是"这个实例最近一次被消费端看到时用的槽位"，重连后沿用它，
         /// 消费端按 (category, instanceId, instanceSlot) 建立的查询归属才不会被一次抖动切断。
-        /// 只有 <see cref="Finish"/> 与换传输会移除登记——**绝不**因为连接断开而移除。
+        /// 只有 <see cref="Finish"/>、换传输、以及**没有宿主结算的惰性断连**（<see cref="RefreshConnectionLocked"/>
+        /// 的作废分支）会移除登记；宿主结算过的断连（<see cref="Detach"/>）**不**移除，留着重放。
         /// </summary>
         private sealed class Registration
         {

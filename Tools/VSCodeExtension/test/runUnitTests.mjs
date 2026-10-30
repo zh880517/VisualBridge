@@ -9,7 +9,10 @@ const extensionRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
 const outputRoot = path.join(extensionRoot, ".test-dist");
 const tsc = path.resolve(extensionRoot, "..", "..", "node_modules", "typescript", "bin", "tsc");
 const compiledTestDirectory = path.join(outputRoot, "test", "unit");
-const supportTests = [path.join(extensionRoot, "test", "support", "removeIsolatedDirectory.test.mjs")];
+const supportTests = [
+  path.join(extensionRoot, "test", "support", "e2eOnlyFilter.test.mjs"),
+  path.join(extensionRoot, "test", "support", "removeIsolatedDirectory.test.mjs"),
+];
 
 await rm(outputRoot, { recursive: true, force: true });
 try {

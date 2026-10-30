@@ -135,22 +135,71 @@ function repositoryRoot(): string {
 
 /** 契约里声明了某个载荷参数的 graph 方法名（用于"从契约驱动"的断言，避免手抄清单）。 */
 function contractMethodsDeclaring(parameterName: string): string[] {
+  return contractScalarPayloadParameters()
+    .filter((entry) => entry.parameter.name === parameterName)
+    .map((entry) => entry.method);
+}
+
+/**
+ * 契约里全部 `optional: false` 的**标量**载荷参数（方法名 + 参数声明），供"按类型"的元断言使用。
+ *
+ * 如实口径：当前 graph 契约按类型枚举到 **18 个**（`string`×10 / `int`×8），其中
+ * **只有 2 个**（`NodeOutput.outputIndex`、`EdgeValueChanged.outputIndex`）真的断言了
+ * "缺席读到线上默认值"；其余 **16 个**走 presence 分支——facet 不产出该字段，
+ * 断言只锁"不得编造非默认值"。
+ *
+ * 新增一个 `int`/`string`/`bool` 载荷参数时，那条元断言会自动多枚举一条 presence 检查
+ * （遇到没登记过默认值的类型会直接失败，逼作者决定该类型的线上默认值），但**不会**自动
+ * 为它断言"必须补成默认值"：那要作者先判定缺席语义，再补一条逐参数用例。
+ */
+function contractScalarPayloadParameters(): readonly {
+  readonly method: string;
+  readonly parameter: { readonly name: string; readonly type: string };
+}[] {
   const path = join(repositoryRoot(), ...CONTRACT_FILE);
   const contract = JSON.parse(readFileSync(path, "utf8")) as {
     categories?: {
       name?: string;
-      interfaces?: { methods?: { name?: string; parameters?: { name?: string; role?: string }[] }[] }[];
+      interfaces?: {
+        methods?: {
+          name?: string;
+          parameters?: { name?: string; type?: string; role?: string; optional?: boolean }[];
+        }[];
+      }[];
     }[];
   };
   const category = contract.categories?.find((entry) => entry.name === "graph");
   assert.ok(category, "debug-contracts.json 里必须有 graph 类别");
   return (category.interfaces ?? []).flatMap((contractInterface) =>
-    (contractInterface.methods ?? [])
-      .filter((method) => (method.parameters ?? []).some(
-        (parameter) => parameter.name === parameterName && parameter.role === "payload"))
-      .map((method) => method.name ?? ""),
+    (contractInterface.methods ?? []).flatMap((method) =>
+      (method.parameters ?? [])
+        .filter((parameter) => parameter.role === "payload" && parameter.optional === false)
+        .map((parameter) => ({
+          method: method.name ?? "",
+          parameter: { name: parameter.name ?? "", type: parameter.type ?? "" },
+        }))),
   );
 }
+
+/** 线上默认值（附录 A.4/B.2：值为默认值的参数不进载荷 ⇒ 消费侧缺席即默认值）。 */
+const WIRE_DEFAULT_BY_TYPE: Readonly<Record<string, string | number | boolean>> = {
+  int: 0,
+  long: 0,
+  float: 0,
+  double: 0,
+  string: "",
+  bool: false,
+};
+
+/**
+ * **真的断言了线上默认值**的参数个数（精确值，G1c2 P2-1）。
+ *
+ * 契约里 18 个 `optional: false` 标量载荷参数中，只有 `NodeOutput.outputIndex` 与
+ * `EdgeValueChanged.outputIndex` 的缺席语义是"默认值 0"（逐参数用例见上）；其余 16 个是
+ * presence 语义（缺席就是"这个事件没有该参数"），只校验不得编造非默认值。这个数字被下面的
+ * 精确断言锁住：facet 一旦开始为第 3 个参数补默认值，用例就会红，逼作者显式做决定。
+ */
+const DEFAULTED_SCALAR_PARAMETER_COUNT = 2;
 
 function contractGraphMethods(): string[] {
   const path = join(repositoryRoot(), ...CONTRACT_FILE);
@@ -215,6 +264,9 @@ test("Graph debug facet treats a missing outputIndex as the wire default 0 for e
  * 契约里将来加第三个带 `outputIndex` 的方法时，这条断言会自动多枚举一个方法（不需要再手写用例）；
  * 反过来说，如果这条断言永远只枚举到两个方法，那说明它读错了字段名——它自己也会因此失去意义，
  * 所以下面同时断言枚举结果非空且与别名表里的方法名可对齐。
+ *
+ * **它按参数名枚举**，所以抓不到"新加一个别的标量参数"；按**类型**的那一半见紧随其后的
+ * `never invents a non-default value for a missing contract scalar`。
  */
 test("Graph debug facet defaults a missing outputIndex for every contract method that declares it", () => {
   const methods = contractMethodsDeclaring("outputIndex");
@@ -233,6 +285,75 @@ test("Graph debug facet defaults a missing outputIndex for every contract method
     assert.equal(graphDebugFacet.onRecord(missing, context(undefined))?.outputIndex, undefined,
       `${methodName} 未声明 outputIndex，不得补默认值`);
   }
+});
+
+/**
+ * 表 A 的**按类型**版本（G1c2）：从契约枚举**所有** `optional: false` 的标量载荷参数，
+ * 逐个断言"这条记录缺席该参数时，消费侧要么不写这个字段，要么写的是该类型的**线上默认值**"。
+ *
+ * 如实口径（别读成"类级自动覆盖"）：当前枚举到 18 个参数，其中 **2 个**（`NodeOutput` /
+ * `EdgeValueChanged` 的 `outputIndex`）真的断言了"缺席读到线上默认值"，其余 **16 个**走下面的
+ * `continue`（presence 语义），只校验"不得编造非默认值"。这条用例的牙齿因此分两半：
+ * ① 循环体锁"缺什么都不能造出非默认值"；② 末尾的**精确计数**锁"真的断言了默认值的参数个数"。
+ *
+ * 为什么还要这一条：上一条按**参数名** `outputIndex` 枚举，只能照顾"已经想到的那个参数"；
+ * 契约里新增一个 `count: int` 或 `label: string`（默认值也有语义）时，上一条不会变红；
+ * 这条按**类型**枚举 ⇒ 新参数自动多一条 presence 检查，若 facet 真的开始为它补默认值，则会被
+ * 末尾的精确计数抓住。遇到没登记默认值的类型也会直接失败，逼作者在 `WIRE_DEFAULT_BY_TYPE`
+ * 里把这个类型的线上默认值定下来。
+ *
+ * **已知限制（不许读成"类级自动覆盖"）**：契约只声明"类型 + optional:false"，**不声明**
+ * "这个参数缺席时代表 0，还是代表'这个事件没有该参数'"——那是消费侧的业务判断
+ * （`outputIndex` 缺席必须读成 0，而 `NodeStarted` 没有 `outputIndex` 就不能凭空补）。
+ * 所以"必须补成默认值"的那一半只能靠逐参数用例；新增"缺席有语义"的参数仍需**手工**在 facet
+ * 里实现语义并手工加一条用例（契约无法驱动这一层）。
+ */
+test("Graph debug facet never invents a non-default value for a missing contract scalar", () => {
+  const scalars = contractScalarPayloadParameters();
+  assert.ok(scalars.length >= 4, `graph 契约应声明若干标量载荷参数，实际枚举到 ${scalars.length} 个`);
+  let defaultedParameters = 0;
+  let presenceParameters = 0;
+  for (const { method, parameter } of scalars) {
+    const defaultValue = WIRE_DEFAULT_BY_TYPE[parameter.type];
+    assert.ok(
+      defaultValue !== undefined,
+      `${method}.${parameter.name} 的类型 ${JSON.stringify(parameter.type)} 没有登记线上默认值：`
+        + "请在 WIRE_DEFAULT_BY_TYPE 里补上，再让这条断言决定消费侧是否允许它出现",
+    );
+
+    // 整条记录缺席**全部**参数：facet 不得因"默认值是 0/空串"就编造任何非默认值。
+    const missing: DebugRecord = { ...record, method, params: {} };
+    const update = graphDebugFacet.onRecord(missing, context(undefined));
+    assert.ok(update !== undefined, `${method} 必须能产生渲染增量`);
+    const observed = update[parameter.name];
+    if (observed === undefined) {
+      // facet 不为这个参数产出字段：缺席就是缺席（presence 语义），不算违约。
+      presenceParameters += 1;
+      continue;
+    }
+
+    defaultedParameters += 1;
+    assert.deepEqual(
+      observed,
+      defaultValue,
+      `${method}.${parameter.name}（类型 ${parameter.type}）缺席时只能读成线上默认值 `
+        + `${JSON.stringify(defaultValue)}，实际读到 ${JSON.stringify(observed)}`,
+    );
+  }
+
+  // 精确计数（G1c2 P2-1）：真的断言了默认值的参数必须恰好 2 个，不许退回 `>= 2` 的空转守卫。
+  // 新增参数时**先判定它的缺席语义**再决定放哪一侧：
+  // - "缺席有默认值" ⇒ 在 facet 里补出默认值、加一条逐参数用例，并**有意识地**改这个数字；
+  // - "缺席就是没有该参数"（presence）⇒ 留在上面的 continue 分支。
+  // 如果 facet 悄悄开始为第 3 个参数补默认值，这条会红，逼作者显式做决定。
+  assert.equal(
+    defaultedParameters,
+    DEFAULTED_SCALAR_PARAMETER_COUNT,
+    `真的断言了线上默认值的参数必须恰好 ${DEFAULTED_SCALAR_PARAMETER_COUNT} 个`
+      + `（NodeOutput / EdgeValueChanged 的 outputIndex）；实际 ${defaultedParameters} 个，`
+      + `另 ${presenceParameters} 个走 presence 分支。若新增了"缺席有默认语义"的参数，`
+      + "请为它补一条逐参数用例，并在判定缺席语义后更新这个数字。",
+  );
 });
 
 test("Graph debug facet distinguishes query results from events (P0-2)", () => {

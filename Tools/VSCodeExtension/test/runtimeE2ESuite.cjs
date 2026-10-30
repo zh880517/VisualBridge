@@ -5,6 +5,7 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const vscode = require("vscode");
+const { createE2EOnlyFilter } = require("./support/e2eOnlyFilter.cjs");
 
 const EXTENSION_ID = "kyl.visualbridge";
 /** 协议连接层版本（`src/bridge/bridgeProtocol.ts` 的 BRIDGE_PROTOCOL_VERSION）。 */
@@ -13,8 +14,12 @@ const FRAME_HEADER_BYTES = 6;
 const FRAME_PAYLOAD_KIND_SHIFT = 29;
 /** E9 样例实例在面板里的键（`channel\u0000instance`）：多条用例共用，必须在文件顶部提前声明。 */
 const DEBUG_INSTANCE_KEY = "e9-channel\u0000e9-debug-instance";
-/** 单用例过滤（空串 = 跑全部）：只在显式设置 `VISUALBRIDGE_RUNTIME_E2E_ONLY` 时生效。 */
-const onlyFilter = process.env.VISUALBRIDGE_RUNTIME_E2E_ONLY ?? "";
+/**
+ * 单用例过滤 + 执行计数（空串 = 跑全部）：只在显式设置 `VISUALBRIDGE_RUNTIME_E2E_ONLY` 时生效。
+ * 计数与守卫在 `support/e2eOnlyFilter.cjs` 里（同一份实现被单测钉住）：过滤串不命中任何用例时，
+ * 一轮运行必须**非零退出**，否则"全部 SKIP + exit 0"就是新的假绿入口。
+ */
+const onlyFilter = createE2EOnlyFilter(process.env.VISUALBRIDGE_RUNTIME_E2E_ONLY);
 
 exports.run = async function run() {
   const repositoryRoot = requiredEnvironmentPath("VISUALBRIDGE_REPOSITORY_ROOT");
@@ -324,8 +329,14 @@ exports.run = async function run() {
     // 都失败时，旧连接仍会被断开（换链必须先断开，见 `probeAndConnect` 的注释）。
     // **本用例在门禁里走的是复用路径**：正向探活（TCP 只连不握手、之后再建唯一一条真连接）由
     // `runtimeBridgeService.test.ts` 的三条单元用例覆盖，E2E 不重复造它。
-    // 仍然显式 connect 一次：最后一步要覆盖"宿主结算断连 → 重连 → 重放 debugCreate"这条生产
-    // 路径（E11 §2/§3），并让后续用例从一条确定的新链上继续。
+    // 仍然显式 connect 一次：让后续用例从一条确定的新链上继续。
+    // **本用例不校验重放**（E11 终审结转）：这里只做一次（重）连接，既不读 `ReplayedCreates`，也不比对
+    // 重连前后 `debugCreate` 的条数/槽位。历史运行时日志里 `replayed …` 记录为 0 就是这条路径在本套件里
+    // 没有被真正观察到的证据。"宿主结算断连 → 重连 → 重放 debugCreate"（E11 §2/§3）的红态覆盖在
+    // C# EditMode 用例 `DetachKeepsLiveRegistrationsAndTheirSlotsForReplay` /
+    // `AttachWhileStillDisconnectedDefersTheReplayUntilTheLinkComesUp`
+    // （`Packages/com.kyle.visualbridge/Tests/Editor/VisualBridgeDebugContractTests.cs`）。
+    // 要在这里宣称覆盖，得先补一条"重连后 debugCreate 条数/槽位"的断言 —— 在那之前不要这么写。
     const restored = await vscode.commands.executeCommand("visualbridge.test.connectRuntimeInstance", instance);
     assert.equal(restored.instanceId, instance.instanceId);
   });
@@ -462,8 +473,16 @@ exports.run = async function run() {
       180_000,
       "No live editor-play runtime instance was discovered for the G1c case.",
     );
+    // "首次连接"必须可从产物里判定：先记下 `openDebugPanel` **之前**的桥状态。只跑本用例时
+    // 前序用例全部 SKIP，这里必须是 disconnected；反之若显示 reused，那句"connected after N ms"
+    // 就不能当成首连证据（G1c2 打回的正是这个 0 ms 假象）。
+    const bridgeBeforePanel = await vscode.commands.executeCommand("visualbridge.test.getRuntimeBridgeState");
     await vscode.commands.executeCommand("visualbridge.openDebugPanel");
     const waitedMs = await waitForRuntimeBridgeConnected(60_000);
+    console.log(
+      `[runtime-e2e] G1c precondition: bridge before openDebugPanel connected=${bridgeBeforePanel?.connected === true}`
+        + `${bridgeBeforePanel?.connected === true ? " (reused existing link)" : " (first connection)"}`,
+    );
     console.log(`[runtime-e2e] G1c precondition: runtime bridge connected after ${waitedMs} ms`);
     const contractsPath = path.join(
       repositoryRoot, "UnityProject", "Assets", "VisualBridgeGenerated", "Debug", "debug-contracts.json");
@@ -670,6 +689,11 @@ exports.run = async function run() {
     assert.equal(closed.leaseHeld, false);
   });
 
+  // 过滤守卫（P0）：`ONLY` 不命中任何用例时，上面的每条用例都会打印 SKIP、`run()` 正常返回 ⇒
+  // 进程 exit 0 —— 那是一个"看起来跑过门禁、其实一例没跑"的假绿入口。执行数必须是正的。
+  // 摘要放在守卫之前打印，跑了几条要能从 output.log 里直接读到（不靠数 PASS/FAIL 行）。
+  console.log(onlyFilter.summary());
+  onlyFilter.assertExecuted();
 };
 
 /**
@@ -705,11 +729,14 @@ async function waitForRuntimeBridgeConnected(timeoutMilliseconds) {
 async function test(name, action) {
   // 单用例过滤（排障/取证用，默认不启用）：`VISUALBRIDGE_RUNTIME_E2E_ONLY=<名字子串>` 时只执行名字
   // 匹配的用例，其余整体跳过（打印 SKIP）。用于不依赖前序用例的独立取证，例如 kill-switch 双向证据。
-  if (onlyFilter.length > 0 && !name.includes(onlyFilter)) {
+  // 实际执行数由 `onlyFilter` 统计，`run()` 收尾时执行数为 0 会让这次运行失败（见文件顶部注释）。
+  if (!onlyFilter.selected(name)) {
+    onlyFilter.recordSkipped();
     console.log(`[runtime-e2e] SKIP ${name}`);
     return;
   }
 
+  onlyFilter.recordExecuted();
   console.log(`[runtime-e2e] ${name}`);
   try {
     await action();
