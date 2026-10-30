@@ -72,8 +72,16 @@ namespace VisualBridge.Editor
         public bool ServerDebugEnabled { get; private set; }
 
         /// <summary>
+        /// 最近一次从对端读到字节的时刻（UTC），只作入站活动诊断与测试观察点。
+        /// Editor 腿<b>没有</b>入站空闲断链计时器：空闲上限是 Runtime/宿主连接层的职责，
+        /// 这里不据此判活或断链。测试用它确认保活帧确实被当作入站活动收下。
+        /// </summary>
+        internal DateTime LastInboundUtc { get; private set; }
+
+        /// <summary>
         /// 主线程节拍：把已到达的通道 0 控制帧非阻塞地读进来并处理服务端主动发来的消息
-        /// （附录 A.2 的 <c>debugSetEnabled</c>）。返回本次实际处理的消息数。
+        /// （附录 A.2 的 <c>debugSetEnabled</c>）。返回本次实际处理的帧数，含在连接层
+        /// 就地消化的保活帧（<c>ping</c> / <c>pong</c>），它们不进入业务分发。
         ///
         /// 不使用阻塞读：只在 <see cref="NetworkStream.DataAvailable"/> 为真时读，读不满一帧就留到下一拍
         /// （半帧不丢，也绝不因为"暂时没数据"把连接判死）。同步请求正在读同一条流时（<see cref="ioLock"/>
@@ -97,9 +105,13 @@ namespace VisualBridge.Editor
                 var handled = 0;
                 while (true)
                 {
-                    while (TryTakeEditorMessage(out var buffered))
+                    while (TryTakeEditorMessage(out var buffered, out var keepAlive))
                     {
-                        DispatchControlMessage(buffered);
+                        if (!keepAlive)
+                        {
+                            DispatchControlMessage(buffered);
+                        }
+
                         handled++;
                     }
 
@@ -115,6 +127,7 @@ namespace VisualBridge.Editor
                         return handled;
                     }
 
+                    LastInboundUtc = DateTime.UtcNow;
                     frameReader.Append(readBuffer, 0, read);
                 }
             }
@@ -382,9 +395,14 @@ namespace VisualBridge.Editor
 
         private void Write(string line)
         {
-            var bytes = Encoding.UTF8.GetBytes(line);
+            WriteControlPayload(Encoding.UTF8.GetBytes(line));
+        }
+
+        /// <summary>把一段通道 0 JSON 载荷编码成统一帧写出（保活 pong 与业务消息共用）。</summary>
+        private void WriteControlPayload(byte[] payload)
+        {
             var frame = VisualBridgeFraming.EncodeFrame(
-                VisualBridgeChannel.Editor, VisualBridgePayloadKind.Json, bytes);
+                VisualBridgeChannel.Editor, VisualBridgePayloadKind.Json, payload);
             var target = stream;
             if (target == null)
             {
@@ -407,8 +425,14 @@ namespace VisualBridge.Editor
             while (true)
             {
                 VisualBridgeBridgeMessage buffered;
-                if (TryTakeEditorMessage(out buffered))
+                if (TryTakeEditorMessage(out buffered, out var keepAlive))
                 {
+                    if (keepAlive)
+                    {
+                        // 保活帧已在连接层消化（ping 回 pong / pong 记活动），继续等业务消息。
+                        continue;
+                    }
+
                     return buffered;
                 }
 
@@ -436,18 +460,23 @@ namespace VisualBridge.Editor
                     throw VisualBridgeEditorBridgeValidator.Error("bridge.disconnected", "$", "Connection closed by the server.");
                 }
 
+                LastInboundUtc = DateTime.UtcNow;
                 frameReader.Append(readBuffer, 0, read);
             }
         }
 
         /// <summary>
-        /// 从已缓冲的字节里取出一条**通道 0** 消息；没有完整帧时返回 false（调用方继续读流）。
-        /// 这是"帧 → 消息"的唯一出口，请求循环与 <see cref="Pump"/> 共用：
-        /// CRC/分帧错误与畸形控制消息都按同一语义立即失败（<c>bridge.protocolViolation</c> /
-        /// <c>bridge.missingProperty</c> / <c>bridge.invalidMessage</c>），由 <see cref="VisualBridgeEditorBridgeService.Pump"/>
-        /// 统一断开连接——两侧都严格，不存在"某种控制消息可以宽容跳过"的特例。
+        /// 从已缓冲的字节里取出一条**通道 0** 帧；没有完整帧时返回 false（调用方继续读流）。
+        /// 这是"帧 → 消息"的唯一出口，请求循环与 <see cref="Pump"/> 共用。
+        /// 唯一的通融是附录 A.2/A.9 的保活帧：<c>ping</c> 在这里回 <c>pong</c>、<c>pong</c> 只记活动，
+        /// 两者都留在连接层、不进入业务分发：此时返回 true、<paramref name="message"/> 为 null、
+        /// <paramref name="keepAlive"/> 为 true，让调用方把它们计入"已处理帧"。
+        /// 除此之外 CRC/分帧错误与畸形控制消息都按同一语义
+        /// 立即失败（<c>bridge.protocolViolation</c> / <c>bridge.missingProperty</c> /
+        /// <c>bridge.invalidMessage</c> / <c>bridge.unknownMessageType</c>），由
+        /// <see cref="VisualBridgeEditorBridgeService.Pump"/> 统一断开连接——未知类型没有宽容例外。
         /// </summary>
-        private bool TryTakeEditorMessage(out VisualBridgeBridgeMessage message)
+        private bool TryTakeEditorMessage(out VisualBridgeBridgeMessage message, out bool keepAlive)
         {
             VisualBridgeFrame frame;
             while (true)
@@ -457,6 +486,7 @@ namespace VisualBridge.Editor
                     if (!frameReader.TryReadFrame(out frame))
                     {
                         message = null;
+                        keepAlive = false;
                         return false;
                     }
                 }
@@ -476,7 +506,33 @@ namespace VisualBridge.Editor
                     continue;
                 }
 
+                // 附录 A.2/A.9 的保活帧在连接层就地消化，判定必须早于 ValidateMessage：
+                // 否则 ping 会被当成 bridge.unknownMessageType（G3 实测空闲 10 s 即断链）。
+                // 语义与 Runtime/Bridge/VisualBridgeBridgeSocket.cs 的读循环同构：
+                //   ping ⇒ 回 pong，不分发；pong ⇒ 只算入站活动，不分发。
+                // 除 ping/pong 之外的未知类型仍原样交给严格校验（不在这里放宽）。
+                if (frame.PayloadKind == VisualBridgePayloadKind.Json)
+                {
+                    if (VisualBridgePingPayload.IsPing(frame.Payload))
+                    {
+                        WriteControlPayload(VisualBridgePingPayload.Pong);
+                        message = null;
+                        keepAlive = true;
+                        return true;
+                    }
+
+                    if (VisualBridgePingPayload.IsPong(frame.Payload))
+                    {
+                        // 字节在本方法入口的读取处已记为入站活动；这里显式再刷一次，语义与 Runtime 腿一致。
+                        LastInboundUtc = DateTime.UtcNow;
+                        message = null;
+                        keepAlive = true;
+                        return true;
+                    }
+                }
+
                 message = ParsePayload(frame.Payload);
+                keepAlive = false;
                 return true;
             }
         }

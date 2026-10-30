@@ -7,11 +7,13 @@ using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.TestTools;
 using VisualBridge.Diagnostics;
 using VisualBridge.Diagnostics.Bridge;
 using VisualBridge.Runtime;
@@ -121,6 +123,160 @@ namespace VisualBridge.Editor.Tests
                 Assert.That(received["type"].Value<string>(), Is.EqualTo("open"));
                 Assert.That(received["documentPath"].Value<string>(), Is.EqualTo("Config/Game.gamesettings"));
                 Assert.That(received["requestId"].Value<string>(), Is.EqualTo("req-open-1"));
+            }
+        }
+
+        [Test]
+        public void ClientConsumesKeepAliveFramesOnTheConnectionLayer()
+        {
+            // G3b：附录 A.9 的保活帧必须在 VisualBridgeEditorBridgeValidator 解析之前消化。
+            // 假服务端用真实 socket 在握手后发 ping：连接不得断、必须回 pong、之后业务仍然正常。
+            using (var server = BridgeTestServer.Start(Welcome(generation: 1)))
+            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "editor-1234", ""))
+            {
+                Assert.DoesNotThrow(() => client.Connect());
+                var pingSentAt = DateTime.UtcNow;
+
+                Assert.That(server.Push("{\"type\":\"ping\"}"), Is.True);
+                Assert.That(
+                    WaitForReceivedLine(server, "\"type\":\"pong\"", 5000, () => client.Pump()),
+                    Is.EqualTo("{\"type\":\"pong\"}"),
+                    "The client must answer a ping with a pong frame.");
+                Assert.That(client.State, Is.EqualTo(VisualBridgeBridgeConnectionState.Connected),
+                    "A keepalive ping must never drop the connection.");
+                Assert.That(client.LastInboundUtc, Is.GreaterThanOrEqualTo(pingSentAt),
+                    "Consuming the keepalive ping must register inbound activity after the frame was sent.");
+
+                var pong = server.GetReceivedFrames().Last(frame => frame.Line == "{\"type\":\"pong\"}");
+                Assert.That(pong.Channel, Is.EqualTo(VisualBridgeChannel.Editor), "The pong must travel on channel 0.");
+                Assert.That(pong.PayloadKind, Is.EqualTo(VisualBridgePayloadKind.Json), "The pong must be a JSON payload.");
+
+                // pong 同样不得进入业务分发（不抛违例、不产生任何业务效果）；Pump 必须把它计入处理帧数。
+                var pongSentAt = DateTime.UtcNow;
+                Assert.That(server.Push("{\"type\":\"pong\"}"), Is.True);
+                Assert.That(PumpUntilHandled(client, 1), Is.GreaterThanOrEqualTo(1),
+                    "Pump must count the keepalive pong it consumes in its handled-frame count.");
+                Assert.That(client.LastInboundUtc, Is.GreaterThanOrEqualTo(pongSentAt),
+                    "Consuming the keepalive pong must register inbound activity after the frame was sent.");
+
+                // 保活之后业务消息仍正常：同一连接上的 open 请求得到配对应答。
+                server.QueueResponse("{\"type\":\"response\",\"requestId\":\"req-after-ping\",\"status\":\"ok\"}");
+                var response = client.SendRequest(
+                    VisualBridgeEditorBridgeValidator.CreateOpen("req-after-ping", "Config/Game.gamesettings"),
+                    5000);
+                Assert.That(response.IsOk, Is.True);
+                Assert.That(client.State, Is.EqualTo(VisualBridgeBridgeConnectionState.Connected));
+            }
+        }
+
+        [Test]
+        public void EditorLegDoesNotSendKeepAlivePingsWhileIdleAndStaysConnected()
+        {
+            // 任务书 §已知限制 1：Editor 腿是否主动发 ping 必须实测。Editor 腿是请求/响应客户端，
+            // 没有 Runtime 腿写线程的 10 s 保活，空闲 11 s 不会主动发 ping；连接仍由后续请求证明存活。
+            using (var server = BridgeTestServer.Start(Welcome(generation: 1)))
+            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "editor-1234", ""))
+            {
+                Assert.DoesNotThrow(() => client.Connect());
+                var idleUntil = DateTime.UtcNow.AddSeconds(11.5);
+                while (DateTime.UtcNow < idleUntil)
+                {
+                    Assert.DoesNotThrow(() => client.Pump());
+                    Thread.Sleep(10);
+                }
+
+                Assert.That(client.State, Is.EqualTo(VisualBridgeBridgeConnectionState.Connected),
+                    "The connection must stay alive for more than the 10 s keepalive interval.");
+                Assert.That(server.GetReceivedFrames().Any(frame => frame.Line == "{\"type\":\"ping\"}"), Is.False,
+                    "Editor 腿只消化对端 ping，自己不发：空闲 11 s 后线上不应出现 ping。");
+
+                server.QueueResponse("{\"type\":\"response\",\"requestId\":\"req-after-idle\",\"status\":\"ok\"}");
+                var response = client.SendRequest(
+                    VisualBridgeEditorBridgeValidator.CreateOpen("req-after-idle", "Config/Game.gamesettings"),
+                    5000);
+                Assert.That(response.IsOk, Is.True, "Business messages must still work after a long idle period.");
+            }
+        }
+
+        [Test]
+        public void ClientStillRejectsUnknownMessageTypesAfterKeepAliveSupport()
+        {
+            // 不放宽严格性（F7）：只有 ping/pong 是连接层特例，其它未知类型仍必须报 unknownMessageType。
+            using (var server = BridgeTestServer.Start(Welcome(generation: 1)))
+            using (var client = new VisualBridgeEditorBridgeClient(TestWindow(server.Port), "editor-1234", ""))
+            {
+                Assert.DoesNotThrow(() => client.Connect());
+                Assert.That(server.Push("{\"type\":\"teleport\"}"), Is.True);
+
+                // 数据到达主线程有抖动：单次 Pump 可能恰好看到 DataAvailable=false（评审指出的潜在 flake）。
+                // 按 deadline 反复 Pump 直到异常出现；超时给出可读的失败信息，而不是靠一次 Sleep 碰运气。
+                var deadline = DateTime.UtcNow.AddSeconds(2);
+                VisualBridgeIntegrationException failure = null;
+                while (failure == null && DateTime.UtcNow < deadline)
+                {
+                    try
+                    {
+                        client.Pump();
+                    }
+                    catch (VisualBridgeIntegrationException exception)
+                    {
+                        failure = exception;
+                    }
+
+                    if (failure == null)
+                    {
+                        Thread.Sleep(10);
+                    }
+                }
+
+                Assert.That(failure, Is.Not.Null,
+                    "Expected bridge.unknownMessageType within 2000 ms of pushing 'teleport', but Pump never threw.");
+                Assert.That(failure.Code, Is.EqualTo("bridge.unknownMessageType"));
+                Assert.That(failure.Message, Does.Contain("'teleport'"));
+            }
+        }
+
+        [Test]
+        public void ServiceDropsTheConnectionAfterAnUnknownMessageType()
+        {
+            // 与上一条同源的断链证据：未知类型经服务层节拍必须归一成断连，而不是被保活分支吞掉。
+            // 断链原因必须钉死到 bridge.unknownMessageType：若只断言 IsConnected=False，
+            // 任何异常（例如校验器不再抛错后冒出的 NullReferenceException）都会让用例假绿（评审实证）。
+            VisualBridgeSessionState.Clear();
+            VisualBridgeDebugReporting.Reset();
+            var service = VisualBridgeEditorBridgeService.Instance;
+            try
+            {
+                using (var server = BridgeTestServer.Start(Welcome(generation: 1)))
+                {
+                    service.Disconnect();
+                    service.Connect(TestWindow(server.Port, 1));
+                    Assert.That(service.IsConnected, Is.True);
+
+                    LogAssert.Expect(
+                        LogType.Warning,
+                        new Regex(
+                            @"\[bridge\] dropping the connection after a control message failure: "
+                            + @"bridge\.unknownMessageType .*Unknown message type 'teleport'\."));
+
+                    Assert.That(server.Push("{\"type\":\"teleport\"}"), Is.True);
+
+                    var deadline = DateTime.UtcNow.AddSeconds(5);
+                    while (service.IsConnected && DateTime.UtcNow < deadline)
+                    {
+                        Assert.DoesNotThrow(() => service.Pump());
+                        Thread.Sleep(10);
+                    }
+
+                    Assert.That(service.IsConnected, Is.False,
+                        "A non-keepalive unknown message type must still drop the connection.");
+                }
+            }
+            finally
+            {
+                service.Disconnect();
+                VisualBridgeSessionState.Clear();
+                VisualBridgeDebugReporting.Reset();
             }
         }
 
@@ -487,11 +643,16 @@ namespace VisualBridge.Editor.Tests
             return count;
         }
 
-        private static string WaitForReceivedLine(BridgeTestServer server, string expectedFragment, int timeoutMs = 5000)
+        private static string WaitForReceivedLine(
+            BridgeTestServer server,
+            string expectedFragment,
+            int timeoutMs = 5000,
+            Action pump = null)
         {
             var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
             while (DateTime.UtcNow < deadline)
             {
+                pump?.Invoke();
                 foreach (var line in server.GetReceivedRequests())
                 {
                     if (line != null && line.Contains(expectedFragment))
@@ -1162,6 +1323,8 @@ namespace VisualBridge.Editor.Tests
             private readonly Queue<string> pending = new Queue<string>();
             private readonly Queue<string> pendingDebug = new Queue<string>();
             private readonly System.Collections.Concurrent.ConcurrentQueue<string> received = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            private readonly System.Collections.Concurrent.ConcurrentQueue<(string Line, VisualBridge.Runtime.VisualBridgeChannel Channel, VisualBridge.Runtime.VisualBridgePayloadKind PayloadKind)> receivedFrames =
+                new System.Collections.Concurrent.ConcurrentQueue<(string Line, VisualBridge.Runtime.VisualBridgeChannel Channel, VisualBridge.Runtime.VisualBridgePayloadKind PayloadKind)>();
             private readonly VisualBridge.Runtime.VisualBridgeFrameReader frameReader =
                 new VisualBridge.Runtime.VisualBridgeFrameReader();
             private TcpClient client;
@@ -1191,6 +1354,12 @@ namespace VisualBridge.Editor.Tests
             public string[] GetReceivedRequests()
             {
                 return received.ToArray();
+            }
+
+            /// <summary>收到的每一帧（含被请求队列忽略的通道），用于断言 pong 的通道与载荷种类。</summary>
+            public (string Line, VisualBridge.Runtime.VisualBridgeChannel Channel, VisualBridge.Runtime.VisualBridgePayloadKind PayloadKind)[] GetReceivedFrames()
+            {
+                return receivedFrames.ToArray();
             }
 
             public void QueueResponse(string line)
@@ -1320,12 +1489,14 @@ namespace VisualBridge.Editor.Tests
                 {
                     while (frameReader.TryReadFrame(out var frame))
                     {
+                        var line = Encoding.UTF8.GetString(frame.Payload);
+                        receivedFrames.Enqueue((line, frame.Channel, frame.PayloadKind));
                         if (frame.Channel != VisualBridge.Runtime.VisualBridgeChannel.Editor)
                         {
                             continue;
                         }
 
-                        return Encoding.UTF8.GetString(frame.Payload);
+                        return line;
                     }
 
                     var read = stream.Read(buffer, 0, buffer.Length);
