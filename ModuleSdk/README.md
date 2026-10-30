@@ -39,7 +39,9 @@ export function activate(host: ModuleHost): ModuleRegistration {
 
 ## 打包
 
-```json
+构建配置是 CLI 自己的 JSON 输入，不属于 Protocol 文档或 Schema 示例（因此用普通文本围栏，不做 Schema 校验）：
+
+```text
 {
   "entry": "src/module.ts",
   "outfile": "dist/example.vbmodule.js",

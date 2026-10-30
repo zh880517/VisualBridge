@@ -125,7 +125,7 @@ sequenceDiagram
 
 ## 6. VS Code 编辑器
 
-Structured Editor 复用 `Editors/Form` 的 `FieldsEditor` 与 Reference Bridge。数值、颜色、嵌套普通结构、List 拖动排序、增加、删除、引用选择和跳转与 Entity/Table 保持同一交互语义，不在字段下方重复显示类型文本。
+Structured Editor 复用 `Modules/Shared/Form` 的 `FieldsEditor` 与 Reference Bridge。数值、颜色、嵌套普通结构、List 拖动排序、增加、删除、引用选择和跳转与 Entity/Table 保持同一交互语义，不在字段下方重复显示类型文本。
 
 共享字段控件的类型、视觉、List 操作顺序、颜色弹层和引用桥接由 [`FormFieldEditor.md`](FormFieldEditor.md) 统一约束；这里不定义第二套 Structured 专用控件。
 

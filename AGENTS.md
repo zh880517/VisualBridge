@@ -2,7 +2,7 @@
 
 ## 项目结构与模块组织
 
-VisualBridge 是平台实现的 monorepo。`Core/` 存放与宿主无关的 TypeScript 领域逻辑，不得引用 VS Code、Webview DOM 或 Unity API。`Protocol/` 负责 Schema、消息与生成的跨语言契约。可复用的 Webview UI 放在 `Editors/`（跨领域共享层是 `Editors/Ui` 与 `Editors/Form`，其余按领域分包），内置文档类型在 `BuiltInExtensions/`。宿主集成位于 `Tools/VSCodeExtension/` 与 `Tools/VisualBridgeMcp/`，两者共用的 Project Transaction 实现在 `Tools/NodeHost/`。其余工具 workspace 各司一门门禁：`Tools/ProtocolContract/`（契约生成与一致性检查）、`Tools/Documentation/`（`check:docs` 文档门禁）、`Tools/SampleValidation/`（样例语义验证）、`Tools/LargeCorpus/`（确定性大工程语料与基准）；`Tools/DependencyPolicy/` 不是 workspace，只承载 `check:dependencies` 的策略脚本。固定 fixtures 在 `TestData/`，维护样例工程在 `Samples/PreUnityAuthoring/`。Unity Package 源码在 `Packages/com.kyle.visualbridge/`，分 `Runtime/`（`Metadata/` 的 attribute 与 `Bridge/` 的 Runtime Bridge、编译产物只读加载、Graph 执行采集门面，`noEngineReferences`、可进 Player 构建）与 `Editor/`（Profile、三域 Catalog Exporter、四域 Compiler、Editor Bridge 客户端、Runtime Bridge 的 Play 模式宿主与 batch 入口）；`UnityProject/` 只是它的开发宿主，Unity 资产在 `UnityProject/Assets/`。
+VisualBridge 是平台实现的 monorepo。`Core/` 存放与宿主无关的 TypeScript 领域逻辑，不得引用 VS Code、Webview DOM 或 Unity API。`Protocol/` 负责 Schema、消息与生成的跨语言契约。可复用的宿主侧 Webview UI 放在 `Editors/Ui`，Project 文件编辑逻辑在 `Editors/Project`；领域文档类型与编辑器实现放在 `Modules/<领域>`，由 `ModuleSdk/` 构建成 `Modules/*.vbmodule.js` bundle 分发（`Modules/Shared/{Ui,Form}` 是模块侧的共享层副本）。宿主集成位于 `Tools/VSCodeExtension/` 与 `Tools/VisualBridgeMcp/`，两者共用的 Project Transaction 实现在 `Tools/NodeHost/`。其余工具 workspace 各司一门门禁：`Tools/ProtocolContract/`（契约生成与一致性检查）、`Tools/Documentation/`（`check:docs` 文档门禁）、`Tools/SampleValidation/`（样例语义验证）、`Tools/LargeCorpus/`（确定性大工程语料与基准）；`Tools/DependencyPolicy/` 不是 workspace，只承载 `check:dependencies` 的策略脚本。固定 fixtures 在 `TestData/`，维护样例工程在 `Samples/PreUnityAuthoring/`。Unity Package 源码在 `Packages/com.kyle.visualbridge/`，分 `Runtime/`（`Metadata/` 的 attribute 与 `Bridge/` 的 Runtime Bridge、编译产物只读加载、Graph 执行采集门面，`noEngineReferences`、可进 Player 构建）与 `Editor/`（Profile、三域 Catalog Exporter、四域 Compiler、Editor Bridge 客户端、Runtime Bridge 的 Play 模式宿主与 batch 入口）；`UnityProject/` 只是它的开发宿主，Unity 资产在 `UnityProject/Assets/`。
 
 正式文档统一保存在 `Doc/`。任务计划与临时设计笔记放在 `Doc/Temp/`，任务完成后删除。修改模块边界前先阅读 `Doc/VisualBridgeArchitecture.md`（索引）及其核心领域、Authoring/扩展、宿主集成三份子文档。
 
@@ -18,7 +18,10 @@ VisualBridge 是平台实现的 monorepo。`Core/` 存放与宿主无关的 Type
 
 - `npm ci` — 按根 lockfile 安装确定的 monorepo 依赖。
 - `npm run check` — 依赖策略检查、Protocol 生成一致性检查，以及全部 workspace 的 TypeScript 类型检查。
-- `npm run build` — 编译 Core、NodeHost、四个内置扩展、各编辑器包、LargeCorpus、SampleValidation、VS Code 扩展与 MCP，并把扩展 bundle 到 `Tools/VSCodeExtension/dist/`。
+- `npm run build` — 先准备 `Modules/*.vbmodule.js`（`prepare:modules`），再编译 Core、ModuleSdk、NodeHost、`Modules/` 的四个领域包、`Editors/Ui` 与 `Editors/Project`、LargeCorpus、SampleValidation、VS Code 扩展与 MCP，并把扩展 bundle 到 `Tools/VSCodeExtension/dist/`。
+- `npm run build:modules` / `npm run build:bundles` — 按 `Modules/` 的独立 lockfile 安装依赖并构建/分发四个领域 bundle 到各工程 `Modules/` / 只重新生成 `Modules/*.vbmodule.js`。
+- `npm run build:sdk` / `npm run check:sdk` — 重新生成 / 校验 `Modules/Sdk/` 下的确定性 SDK tgz（字节基线；打包器不依赖 npm/tar）。
+- `npm run prepare:modules` — 确保 `Modules/` 依赖与 `Modules/*.vbmodule.js` 就位（存在即跳过；`check`、`test`、`check:docs` 都隐式依赖这些产物）。
 - `npm test` — 运行全部 workspace 测试：Core 与四个领域的语义套件、各编辑器包、NodeHost、MCP、Protocol 契约、扩展单元测试，以及两次隔离 Extension Host 自动化（trusted 与 Restricted Mode，会启动真实 VS Code）。
 - `npm run package:vscode` — 在 `Tools/VSCodeExtension/artifacts/` 下生成 VSIX。
 - `npm run install:vscode` — 打包 VSIX 并安装到本地 VS Code（需要 code CLI 在 PATH；可用 `CODE_CLI` 环境变量指定其它路径）。
@@ -60,7 +63,7 @@ Webview UI 优先使用维护中的开源 React 组件而非自研浏览器控�
 
 ## 测试指南
 
-`npm test` 运行固定的 Core、Graph、Entity、Structured、Table 与 MCP 语义套件，外加 NodeHost 事务、各编辑器包、Protocol 契约、扩展单元与两次隔离 Extension Host 自动化。宿主无关的测试放在对应内置扩展旁，可复用 fixtures 统一放在 `TestData/`。未设定覆盖率门槛。除非明确要求，不新增 Unity 测试。Unity 变更的门槛不止 `dotnet build`：`dotnet build` 只是快速编译证据，真实门槛是 Unity batchmode 的三域 Catalog Generate/Check、四域 Compile Generate/Check（退出码 `0`/`1`/`2`，`2` 表示 Check 发现 drift）与 EditMode `-runTests`，改动 Editor Bridge / Runtime Bridge 时还要跑 `npm run test:bridge-e2e` / `npm run test:runtime-e2e`；完整命令块见 `Doc/UnityIntegrationManual.md` 第 10 节。当生成工程文件或 Unity 程序集不可用导致验证受限时，如实报告。
+`npm test` 运行固定的 Core、Graph、Entity、Structured、Table 与 MCP 语义套件，外加 NodeHost 事务、各编辑器包、Protocol 契约、扩展单元与两次隔离 Extension Host 自动化。宿主无关的测试放在 `Core/` 或对应领域模块（`Modules/<领域>`）旁，可复用 fixtures 统一放在 `TestData/`。未设定覆盖率门槛。除非明确要求，不新增 Unity 测试。Unity 变更的门槛不止 `dotnet build`：`dotnet build` 只是快速编译证据，真实门槛是 Unity batchmode 的三域 Catalog Generate/Check、四域 Compile Generate/Check（退出码 `0`/`1`/`2`，`2` 表示 Check 发现 drift）与 EditMode `-runTests`，改动 Editor Bridge / Runtime Bridge 时还要跑 `npm run test:bridge-e2e` / `npm run test:runtime-e2e`；完整命令块见 `Doc/UnityIntegrationManual.md` 第 10 节。当生成工程文件或 Unity 程序集不可用导致验证受限时，如实报告。
 
 ## 提交与 Pull Request 指南
 

@@ -113,7 +113,7 @@ sequenceDiagram
   participant Field as Shared Field Editor
   participant Host as VS Code Host
   participant Ref as Reference Service
-  participant Provider as Built-in / Project Provider
+  participant Provider as 领域模块 / Project Provider
   participant Editor as Target Editor
   Field->>Host: search or reveal definition + stable value
   Host->>Ref: capture current Project semantic snapshot

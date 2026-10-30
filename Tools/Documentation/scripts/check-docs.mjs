@@ -64,7 +64,11 @@ if (errors.length > 0) {
   throw new Error(`Documentation contract check failed with ${errors.length} issue(s):\n${errors.map((error) => `- ${error}`).join("\n")}`);
 }
 
-console.log(`Checked ${documents.size} Markdown files, relative links/GitHub anchors, Mermaid and JSON fences, Doc coverage, 29 VS Code commands, 4 custom editors, 4 views, and 8 MCP tools.`);
+const vsCodeManifest = readJsonSync(path.join(repositoryRoot, "Tools", "VSCodeExtension", "package.json"));
+const contributedCommandCount = vsCodeManifest.contributes?.commands?.length ?? 0;
+const contributedEditorCount = vsCodeManifest.contributes?.customEditors?.length ?? 0;
+const contributedViewCount = Object.values(vsCodeManifest.contributes?.views ?? {}).flat().length;
+console.log(`Checked ${documents.size} Markdown files, relative links/GitHub anchors, Mermaid and JSON fences, Doc coverage, ${contributedCommandCount} VS Code commands (derived from manifest contributes.commands), ${contributedEditorCount} custom editors, ${contributedViewCount} views, and 8 MCP tools.`);
 
 function checkRequiredEntrypoints(allDocuments) {
   for (const entrypoint of [
@@ -514,7 +518,11 @@ async function checkVsCodeSurface(allDocuments) {
   const commands = contributions.commands?.map((entry) => entry.command) ?? [];
   const customEditors = contributions.customEditors?.map((entry) => entry.viewType) ?? [];
   const views = Object.values(contributions.views ?? {}).flat().map((entry) => entry.id);
-  if (commands.length !== 29) fail(`VS Code manifest must expose 29 commands; found ${commands.length}.`);
+  // 命令面没有独立的目标数字：唯一事实源是 manifest 的 `contributes.commands`，条数由它推导。
+  // 运行时注册、README 命令表与 manifest 必须同集合（下面的 assertSameSet 覆盖），
+  // 因此新增命令只需同步这三处，不会因某个硬编码条数而变红。
+  const commandCount = commands.length;
+  if (commandCount === 0) fail("VS Code manifest must contribute at least one command.");
   if (customEditors.length !== 4) fail(`VS Code manifest must expose 4 custom editors; found ${customEditors.length}.`);
   if (views.length !== 4) fail(`VS Code manifest must expose 4 views; found ${views.length}.`);
   assertUnique(commands, "VS Code commands");
@@ -527,11 +535,14 @@ async function checkVsCodeSurface(allDocuments) {
     if (entry.isFile() && entry.name.endsWith(".ts")) sourceFiles.push(absolutePath);
   });
   const source = (await Promise.all(sourceFiles.map((file) => readFile(file, "utf8")))).join("\n");
-  const constants = new Map([...source.matchAll(/\b(?:export\s+)?const\s+([A-Z][A-Z0-9_]*)\s*=\s*["']([^"']+)["']/gu)].map((match) => [match[1], match[2]]));
+  const constants = collectStaticConstants(source);
   const runtimeCommands = [...source.matchAll(/registerCommand\(\s*["']([^"']+)["']/gsu)]
     .map((match) => match[1])
     .filter((command) => !command.startsWith("visualbridge.test."));
-  assertSameSet(runtimeCommands, commands, "VS Code manifest/runtime commands");
+  if (new Set(runtimeCommands).size !== commandCount) {
+    fail(`VS Code manifest declares ${commandCount} commands but runtime registers ${new Set(runtimeCommands).size}.`);
+  }
+  assertSameSet(runtimeCommands, commands, `VS Code manifest/runtime commands (${commandCount} declared)`);
 
   const extensionGuide = allDocuments.get("Tools/VSCodeExtension/README.md");
   if (extensionGuide !== undefined) {
@@ -595,7 +606,11 @@ async function checkVsCodeSurface(allDocuments) {
   }
 
   const hostGuide = allDocuments.get("Doc/VSCodeHost.md")?.text ?? "";
-  if (!/29\s*条[^\n]*命令/u.test(hostGuide)) fail("Doc/VSCodeHost.md must state the 29-command public surface.");
+  // 条数不再写死在正文里：命令面由 manifest 的 `contributes.commands` 决定，
+  // 这里只校验文档仍然声明了这一事实来源，避免下一次增删命令时文档/门禁一起漂移。
+  if (!/`contributes\.commands`/u.test(hostGuide) || !/不重复计数/u.test(hostGuide)) {
+    fail("Doc/VSCodeHost.md must state that the public command surface is defined by manifest contributes.commands and is not restated as a fixed count.");
+  }
   if (!/4\s*个\s*Custom Editor/iu.test(hostGuide)) fail("Doc/VSCodeHost.md must state the four Custom Editor surface.");
   for (const id of [...customEditors, ...views]) {
     if (!hostGuide.includes(id)) fail(`Doc/VSCodeHost.md does not mention '${id}'.`);
@@ -635,6 +650,38 @@ function nodeText(node) {
 function readJsonSync(file) {
   const text = process.getBuiltinModule("node:fs").readFileSync(file, "utf8");
   return JSON.parse(text);
+}
+
+/**
+ * 静态字符串常量表。
+ *
+ * 除 `const NAME = "value"` 外，还要支持 TS 的再导出别名：
+ * `export { SOURCES_EDITOR_VIEW_TYPE as TABLE_EDITOR_VIEW_TYPE } from "..."`。
+ * 只解析 `export { … } from` 形式的别名（不是为门禁改源码命名）；别名按需迭代解析，
+ * 以支持"A 是 B 的别名、B 又是 C 的别名"这类链。
+ */
+function collectStaticConstants(source) {
+  const constants = new Map([...source.matchAll(/\b(?:export\s+)?const\s+([A-Z][A-Z0-9_]*)\s*=\s*["']([^"']+)["']/gu)]
+    .map((match) => [match[1], match[2]]));
+  const aliases = [];
+  for (const match of source.matchAll(/export\s*\{([^}]*)\}\s*from\s*["'][^"']+["']/gsu)) {
+    for (const specifier of match[1].split(",")) {
+      const alias = /^\s*([A-Za-z_$][\w$]*)\s+as\s+([A-Z][A-Z0-9_]*)\s*$/u.exec(specifier);
+      if (alias !== null) aliases.push([alias[2], alias[1]]);
+    }
+  }
+  for (let resolved = true; resolved;) {
+    resolved = false;
+    for (const [name, target] of aliases) {
+      if (constants.has(name)) continue;
+      const value = constants.get(target);
+      if (value !== undefined) {
+        constants.set(name, value);
+        resolved = true;
+      }
+    }
+  }
+  return constants;
 }
 
 function resolveStaticToken(token, constants) {

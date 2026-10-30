@@ -109,7 +109,7 @@ Catalog 可以由 Unity C#、外部配置或项目扩展生成。Document 不复
 
 ### AI 与人工使用同一核心
 
-VS Code 和 MCP 都依赖 VisualBridgeCore 与 Built-in 语义包，不分别实现 Parser、Catalog、Operation、Validator、Reference 或 Serializer。普通 VS Code 文本文档编辑使用 TextDocument / WorkspaceEdit 以保留 Undo/Redo；VS Code Lifecycle、Reference Refactor、Table 多来源保存与所有 MCP 写入通过 `Tools/NodeHost` 共用可恢复 Project Transaction。完整锁、Hash、journal 和恢复契约见 [`ProjectTransaction.md`](ProjectTransaction.md)。
+VS Code 和 MCP 都依赖 VisualBridgeCore 与领域模块（`Modules/`），不分别实现 Parser、Catalog、Operation、Validator、Reference 或 Serializer。普通 VS Code 文本文档编辑使用 TextDocument / WorkspaceEdit 以保留 Undo/Redo；VS Code Lifecycle、Reference Refactor、Table 多来源保存与所有 MCP 写入通过 `Tools/NodeHost` 共用可恢复 Project Transaction。完整锁、Hash、journal 和恢复契约见 [`ProjectTransaction.md`](ProjectTransaction.md)。
 
 ## 总体架构
 
@@ -121,14 +121,14 @@ flowchart TB
         Provider["optional Project Provider V2"]
     end
     Protocol["Protocol/Schema\nfrozen public transport contracts"]
-    Core["Core + BuiltInExtensions\nparse · operation · validate · reference"]
-    Ui["Editors/Ui\ntheme · shell · layout"]
-    Form["Editors/Form\nfield semantics"]
+    Core["Core + Modules\nparse · operation · validate · reference"]
+    Ui["Editors/Ui · Modules/Shared/Ui\ntheme · shell · layout"]
+    Form["Modules/Shared/Form\nfield semantics"]
     NodeHost["Tools/NodeHost\nProject Transaction"]
     VSCode["Tools/VSCodeExtension\nhuman authoring"]
     MCP["Tools/VisualBridgeMcp\nAI authoring"]
     UnityOffline["Unity Package\nStructured / Entity / Graph / Table offline export and compile"]
-    Bridge["Editor Bridge / Runtime Bridge\nloopback discovery, snapshot, lease, graph execution"]
+    Bridge["Editor Bridge / Runtime Bridge\ndiscovery, snapshot, lease; debug channel for graph execution"]
     Future["Future Player build wiring\nremote / device connection"]
 
     Sources --> Core

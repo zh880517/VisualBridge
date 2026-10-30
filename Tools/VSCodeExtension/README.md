@@ -1,8 +1,8 @@
 # VisualBridge VS Code Extension
 
-本包是 VisualBridge 的 VS Code Host Adapter。扩展只在本地工作区发现并验证 `VisualBridge.project.vbjson` 后建立 Project 功能；Graph、Entity、Structured 和 Table 的 Parser、Catalog、Operation、Validator、Reference 与 Serializer 来自共享 Core/Built-in 包，不在 Extension Host 中复制领域规则。
+本包是 VisualBridge 的 VS Code Host Adapter。扩展只在本地工作区发现并验证 `VisualBridge.project.vbjson` 后建立 Project 功能；Graph、Entity、Structured 和 Table 的 Parser、Catalog、Operation、Validator、Reference 与 Serializer 来自共享 Core 与各领域模块（`Modules/*.vbmodule.js`），不在 Extension Host 中复制领域规则。
 
-当前 VSIX 是私有 `UNLICENSED` 产物，不通过 Marketplace 分发。Unity 侧的离线领域链（Structured/Entity/Graph Catalog 生成，Structured/Entity/Graph/Table 编译产物生成与检查）、最小 Editor Bridge 与 Runtime Bridge 服务器已在 Unity Package 中实现；本扩展宿主承载 Editor Bridge 服务器（本机 NDJSON，open/reveal），并通过 Runtime Bridge 协议枚举/连接 Runtime 实例（快照、租约、Source 映射、Graph 执行观察）。Debug 面为 `visualbridge-runtime` DAP 只检查适配器（attach 型：单伪线程、文档快照变量树与漂移信息），能力声明如实为空：不支持断点/单步/求值——这是 VB-UX-11 冻结的设计边界，项目方已明确不做断点，Graph 执行过程只观察不中断；执行实例的实时跟踪与时间轴回放在 Graph 编辑器页内完成，不经 DAP。
+当前 VSIX 是私有 `UNLICENSED` 产物，不通过 Marketplace 分发。Unity 侧的离线领域链（Structured/Entity/Graph Catalog 生成，Structured/Entity/Graph/Table 编译产物生成与检查）、最小 Editor Bridge 与 Runtime Bridge 服务器已在 Unity Package 中实现；本扩展宿主承载 Editor Bridge 服务器（本机 NDJSON，open/reveal），并通过 Runtime Bridge 协议枚举/连接 Runtime 实例（快照、租约、Source 映射），Graph 执行观察经同一条连接的统一调试通道（ch1）。Debug 面为 `visualbridge-runtime` DAP 只检查适配器（attach 型：单伪线程、文档快照变量树与漂移信息），能力声明如实为空：不支持断点/单步/求值——这是 VB-UX-11 冻结的设计边界，项目方已明确不做断点，Graph 执行过程只观察不中断；执行实例的实时跟踪与时间轴回放在 Graph 编辑器页内完成，不经 DAP。
 
 ## 安装与首次使用
 
@@ -130,7 +130,7 @@ npm run build
 npm run test:vscode:host
 ```
 
-Runner 使用官方 `@vscode/test-electron` 和固定 VS Code `1.105.1`，把 `TestData` 复制到唯一临时工作区，并隔离 User Data/Extensions。它验证自动激活、Project 发现、manifest 全部 29 条公开命令与运行时注册的 `visualbridge.revealReference`、默认 Graph 和项目自定义 Entity/Structured/Table 路由、Project Settings、Catalog/Document Browser、Trusted/Restricted Provider 与 Provider 校验缓存、语义索引增量刷新与取消、隐藏 Webview 重新握手、定位请求、Lifecycle、Refactor、Table 多 panel、CSV family 原子保存与回滚、XLSX 无关状态保留、Editor Bridge 发现记录与握手/open/reveal、Runtime 只检查调试会话（实例枚举、租约、快照变量树与漂移）、Graph 执行调试链路（实例枚举、订阅、事件驱动高亮、退订）以及与 Schema/Unity 校验器共享的 parity fixture，不修改跟踪样例或用户 VS Code 配置。失败默认保留临时目录并输出路径；`VISUALBRIDGE_CLEAN_FAILED_TEST=1` 可要求失败后清理。
+Runner 使用官方 `@vscode/test-electron` 和固定 VS Code `1.105.1`，把 `TestData` 复制到唯一临时工作区，并隔离 User Data/Extensions。它验证自动激活、Project 发现、manifest 的全部公开命令（由 `contributes.commands` 决定）与运行时注册的 `visualbridge.revealReference`、默认 Graph 和项目自定义 Entity/Structured/Table 路由、Project Settings、Catalog/Document Browser、Trusted/Restricted Provider 与 Provider 校验缓存、语义索引增量刷新与取消、隐藏 Webview 重新握手、定位请求、Lifecycle、Refactor、Table 多 panel、CSV family 原子保存与回滚、XLSX 无关状态保留、Editor Bridge 发现记录与握手/open/reveal、Runtime 只检查调试会话（实例枚举、租约、快照变量树与漂移）、Debug 面板状态机（开关与 welcome/回滚、实例光标与粒度、关闭重开缓存、暂停不丢记录、录制回看）、模块 debug facet（选项重读与分类回退）以及与 Schema/Unity 校验器共享的 parity fixture，不修改跟踪样例或用户 VS Code 配置。失败默认保留临时目录并输出路径；`VISUALBRIDGE_CLEAN_FAILED_TEST=1` 可要求失败后清理。
 
 打包后的 VSIX 单独验证：
 

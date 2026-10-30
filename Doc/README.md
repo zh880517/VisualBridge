@@ -7,7 +7,7 @@
 - [安装与快速开始](GettingStarted.md)：固定工具链、VSIX 构建、隔离安装验证、样例、Project 发现、激活和任意扩展名路由。
 - [Authoring 使用手册](AuthoringUserGuide.md)：Graph、Entity、Structured、Table、Document Browser、Lifecycle、Reference/Refactor、Project Settings、Catalog Browser、冲突恢复和 Restricted Mode。
 - [项目接入与运维手册](IntegrationGuide.md)：Catalog、Document Type、任意扩展名、Provider、MCP、锁与 Hash、日志、授权和故障恢复。
-- [VS Code Extension README](../Tools/VSCodeExtension/README.md)：29 个生产 Command ID、4 个 Custom Editor viewType、4 个 View ID、安装和 Host 自动化。
+- [VS Code Extension README](../Tools/VSCodeExtension/README.md)：生产 Command ID（以 `contributes.commands` 为准）、4 个 Custom Editor viewType、4 个 View ID、安装和 Host 自动化。
 - [Unity 接入手册](UnityIntegrationManual.md)：环境与兼容矩阵、Integration Profile 配置、三领域 Catalog Export、四领域 Compile、Runtime Bridge、日志、冲突恢复和 Editor Bridge 使用。
 - [Unity Package README](../Packages/com.kyle.visualbridge/README.md)：`com.kyle.visualbridge` 的程序集边界、metadata 标注、Catalog Export 与四领域 Compile、Editor Bridge 与 Runtime Bridge、菜单/batch 入口和边界说明。
 - [Pre-Unity Authoring Sample](../Samples/PreUnityAuthoring/README.md)：四类 Authoring 文档、四类 Catalog 和可选 Provider V2 的维护样例。
@@ -23,6 +23,8 @@
   - [Editor Bridge 与冻结决策](UnityIntegrationArchitectureEditorBridge.md)：Editor Bridge spike/冻结设计、Unity Adapter API 决策、命令与验证层级、已冻结与待关闭决策。
   - [Runtime Bridge 与 Graph 执行观察](UnityIntegrationArchitectureRuntime.md)：Runtime 产物形态、实例发现、Runtime Bridge 协议、DAP 检查适配器与 Graph 执行过程可视化。
 - [VS Code Host](VSCodeHost.md)：激活、Project Registry、Custom Editor 路由、Webview epoch、保存/冲突、诊断、Trust，以及 Bridge 与调试注册的激活期接线。
+- [模块系统](ModuleSystem.md)：领域模块的 bundle 形态、Project 声明、授权与装载、构建与 SDK 升级、故障定位与 `module.*` 错误码表。
+- [调试架构](DebugArchitecture.md)：接口式调试契约、生成器、消息格式、宿主消费层、录制与回看边界、扩展方式，以及累积的已知限制与取舍。
 - [Form Field Editor](FormFieldEditor.md)：跨 Graph、Entity、Structured、Table 的共享字段语义、React 控件、Reference Bridge 和提交边界。
 - [Authoring 编辑器共享 UI](AuthoringEditorUi.md)：内置 Webview 的主题 Token、公共 Shell/布局/图标、属性密度、Graph 与属性面板视觉边界。
 - [Project Settings 与 Catalog Browser](ProjectCatalogManagement.md)：Project File、文件归属、Project Operation、Catalog 来源 Hash/过期状态和只读 Browser。

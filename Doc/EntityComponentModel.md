@@ -139,7 +139,7 @@ Component Type 描述可添加到 Entity 的运行时组件结构：
 
 ## 全项目共享字段模型
 
-字段不是 Entity 私有能力。`Core/Form` 定义宿主无关的字段语义，`Editors/Form` 提供可复用 React 控件；Graph 属性、Entity 根字段与 Component、Structured Document 和 Table 单元格已经复用同一字段定义、校验和 UI 组件。各编辑器仍把字段提交转换为自己的领域 Operation，不让 Form 直接写文档。递归 Object/List、Reference、颜色/数值控件和提交边界详见 [`FormFieldEditor.md`](FormFieldEditor.md)，VS Code 会话与持久化边界见 [`VSCodeHost.md`](VSCodeHost.md)。
+字段不是 Entity 私有能力。`Core/Form` 定义宿主无关的字段语义，`Modules/Shared/Form` 提供模块侧可复用的 React 控件；Graph 属性、Entity 根字段与 Component、Structured Document 和 Table 单元格已经复用同一字段定义、校验和 UI 组件。各编辑器仍把字段提交转换为自己的领域 Operation，不让 Form 直接写文档。递归 Object/List、Reference、颜色/数值控件和提交边界详见 [`FormFieldEditor.md`](FormFieldEditor.md)，VS Code 会话与持久化边界见 [`VSCodeHost.md`](VSCodeHost.md)。
 
 字段定义包含：
 

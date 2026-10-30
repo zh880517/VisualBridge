@@ -2,7 +2,7 @@
 
 ## 1. 文档定位
 
-本手册面向在 Unity 工程中使用 VisualBridge 的开发者，覆盖环境要求、Integration Profile 配置、四领域（Structured / Entity / Graph / Table）的 Catalog Export 与 Compile（Table 仅 Compile）、Runtime Bridge（Play 模式状态与事件）、日志、冲突恢复与 Editor Bridge 使用。设计与冻结决策以 [Unity Editor 接入架构](UnityIntegrationArchitecture.md) 为准；Editor 切片的历史任务顺序与验证门槛见已归档的 [Unity Editor 接入任务清单](Archive/UnityIntegrationRoadmap.md)，领域扩展与 Runtime 接入的历史任务进度见已归档的 [Unity 领域扩展与 Runtime 接入任务清单](Archive/UnityDomainAndRuntimeRoadmap.md)；当前未实现能力见 [Backlog](Backlog.md)。当前已落地范围为四领域 offline Catalog Export/Compile、Editor Bridge（open/reveal）与本机 Runtime Bridge（Play 模式产物快照、变更事件、调试租约、Source 映射与 Graph 执行观察）。
+本手册面向在 Unity 工程中使用 VisualBridge 的开发者，覆盖环境要求、Integration Profile 配置、四领域（Structured / Entity / Graph / Table）的 Catalog Export 与 Compile（Table 仅 Compile）、Runtime Bridge（Play 模式状态与事件）、日志、冲突恢复与 Editor Bridge 使用。设计与冻结决策以 [Unity Editor 接入架构](UnityIntegrationArchitecture.md) 为准；Editor 切片的历史任务顺序与验证门槛见已归档的 [Unity Editor 接入任务清单](Archive/UnityIntegrationRoadmap.md)，领域扩展与 Runtime 接入的历史任务进度见已归档的 [Unity 领域扩展与 Runtime 接入任务清单](Archive/UnityDomainAndRuntimeRoadmap.md)；当前未实现能力见 [Backlog](Backlog.md)。当前已落地范围为四领域 offline Catalog Export/Compile、Editor Bridge（open/reveal）与本机 Runtime Bridge（Play 模式产物快照、变更事件、调试租约与 Source 映射）；Graph 执行观察经统一调试通道，见 [`DebugArchitecture.md`](DebugArchitecture.md)。
 
 ## 2. 系统要求与兼容矩阵
 
@@ -16,7 +16,7 @@
 | `com.kyle.visualbridge` | `0.1.0` | Unity 集成包；依赖 `com.unity.nuget.newtonsoft-json` `3.2.2`。 |
 | Protocol 契约 | `manifestVersion 1` | `protocolContracts 1`、`graphDocument 3`、`graphCatalog 4`、`entityDocument/Catalog 1`、`structuredDocument/Catalog 1`、`tableCatalog 1`、`unityIntegrationProfile 1`、`editorBridge 1`、`runtimeBridge 1`、`documentLifecyclePlan 1`。 |
 | Editor Bridge 协议 | `protocolVersion 1` | 能力集固定 `open` / `reveal`；Schema 为 `visualbridge-editor-bridge.schema.json`。 |
-| Runtime Bridge 协议 | `protocolVersion 1`、`coreVersion 1` | 能力集 `snapshot` / `events` / `lease` / `sources` / `graphExecution`；实例 kind 为 `editor-play`（协议另保留 `player`，尚无 Player 宿主）；Schema 为 `visualbridge-runtime-bridge.schema.json`。 |
+| Runtime Bridge 协议 | `protocolVersion 1`、`coreVersion 1` | 能力集 `snapshot` / `events` / `lease` / `sources`；实例 kind 为 `editor-play`（协议另保留 `player`，尚无 Player 宿主）；Schema 为 `visualbridge-runtime-bridge.schema.json`。Graph 执行观察已改走统一调试通道（ch1，见 [`DebugArchitecture.md`](DebugArchitecture.md)），不再是 Runtime Bridge 能力。 |
 | 领域 Compiler（Structured / Entity / Table / Graph） | V1 | 输出根固定 `Library/VisualBridge/Compiled`（四个编译器共同校验，不符报 `compile.outputRootMismatch`），内部 Editor 格式；四域 manifest `manifest.json` / `manifest.entity.json` / `manifest.table.json` / `manifest.graph.json` 共存。 |
 
 升级约束：改变 Node、VS Code、Unity Editor 或 Newtonsoft 版本，或声明更低最低版本前，必须重新执行[完整验证门槛](#10-验证门槛命令)；Protocol 版本变更属于公开契约变更，须先更新 Schema/manifest 并重新生成 TypeScript/C# 契约。C# 契约只从 Schema 生成，Unity 侧消费生成产物，不引用 TypeScript Core。
@@ -153,13 +153,13 @@ Table 是纯消费方：Unity 侧没有 Table Exporter，catalog（`.vbtablecata
 进入 Play 模式后，Editor 侧的 Play 模式宿主（`VisualBridge.Editor`，Editor-only 程序集）自动拉起 `VisualBridge.Runtime` 的 Runtime Bridge 服务器，仅监听本机回环（发现层遵循架构文档第 17 章）：
 
 - 发现：`<临时目录>/visualbridge-runtime/<instanceId>.json`（instanceId 为 `editor-<pid>`，kind 为 `editor-play`；心跳每秒 touch 记录 mtime，陈旧判定 = 心跳 >5 秒或 pid 已死，VS Code 侧分别标记 `runtime.staleRecord` / `runtime.deadPid`）。同一 instanceId 复用磁盘记录时 `generation` 递增并优先重绑旧端口（占用则回退随机端口）；mid-play domain reload 后由 `[InitializeOnLoad]` 宿主兜底重启。VS Code 侧 `RuntimeBridgeService` 枚举发现记录；连接目标由调用方显式指定 `instanceId`，不设全局「当前实例」，也不弹实例选择 UI（Graph 执行调试页在需要时自动连接首个非陈旧实例）。
-- 协议：NDJSON 行分帧、仅回环 TCP（127.0.0.1）、token 首条消息认证、`protocolVersion 1` + `coreVersion 1` 共享核（与 Editor Bridge 同构但独立版本化）；消息集为 hello/welcome、request/response 配对（`getSnapshot`、`acquireLease`/`releaseLease`、`getDocumentSources`、`getGraphExecutionInstances`/`subscribeGraphExecution`/`unsubscribeGraphExecution`/`getGraphExecutionSnapshot`）、event（`artifactsChanged`、`graphExecution`）与连接级 error（`runtime.*`）；未知 action 是请求级错误（回 `runtime.unknownRequest`，连接保持）。
-- 能力：`snapshot`（读取 `Library/VisualBridge/Compiled` 下四域 manifest 登记的编译产物，可按 documentTypeIds 过滤）、`events`（客户端在 hello 的 `capabilities` 中声明即订阅；服务端每 1 秒轮询产物 digest——覆盖四域 manifest 与 documents 树——变化时推送 `artifactsChanged`）、`lease`/`sources`（调试语义：单控制者租约 + 文档级 Source 映射，见下）、`graphExecution`（Graph 执行观察，见末条）。产物根由调用方解析：Editor Play 宿主固定为 `<project>/Library/VisualBridge/Compiled`；Player 约定回退 `StreamingAssets/VisualBridge/Compiled`，但 Player 侧产物接线尚未落地（见第 11 节）。
+- 协议：NDJSON 行分帧、仅回环 TCP（127.0.0.1）、token 首条消息认证、`protocolVersion 1` + `coreVersion 1` 共享核（与 Editor Bridge 同构但独立版本化）；消息集为 hello/welcome、request/response 配对（`getSnapshot`、`acquireLease`/`releaseLease`、`getDocumentSources`）、event（`artifactsChanged`）与连接级 error（`runtime.*`）；未知 action 是请求级错误（回 `runtime.unknownRequest`，连接保持）。同一条连接上还承载统一调试通道的 ch1 帧（6 字节帧头与两条通道的成帧规则），Graph 执行观察经它传输。
+- 能力：`snapshot`（读取 `Library/VisualBridge/Compiled` 下四域 manifest 登记的编译产物，可按 documentTypeIds 过滤）、`events`（客户端在 hello 的 `capabilities` 中声明即订阅；服务端每 1 秒轮询产物 digest——覆盖四域 manifest 与 documents 树——变化时推送 `artifactsChanged`）、`lease`/`sources`（调试语义：单控制者租约 + 文档级 Source 映射，见下）。产物根由调用方解析：Editor Play 宿主固定为 `<project>/Library/VisualBridge/Compiled`；Player 约定回退 `StreamingAssets/VisualBridge/Compiled`，但 Player 侧产物接线尚未落地（见第 11 节）。
 - 调试语义（VB-UX-10）：`acquireLease`/`releaseLease` 管理单控制者租约（绑定连接、断开自动释放、他人持有时 `runtime.leaseDenied`）；`getDocumentSources`（需持租约）返回每个运行中文档的 Authoring 源路径与 SHA-256（structured/entity/graph 取产物 `inputs.document`，table 取其 sourceMapping 的 `sources[]`）；VS Code 侧对照工作区当前文档字节检测漂移——漂移必须显式呈现，防止把新 Authoring 身份映射到旧 Runtime 数据。断点/调用栈/变量求值消息按「不以占位 Schema 伪装成已完成能力」原则未进入协议：Graph 执行引擎出现后只冻结了执行**观察**语义（架构文档第 19 章），项目方明确不做断点，重开条件见架构文档 §18.3。
 - 菜单：**Tools / VisualBridge / Runtime Bridge / Start in Play Mode**（服务器实际由进入 Play 模式自动启动，未处于 Play 模式时该菜单只弹出提示）、**Status**（打印 instanceId / kind / port / generation / 记录路径 / 产物根）。E2E：`npm run test:runtime-e2e`（batchmode 托管 Play + 隔离 Extension Host，覆盖发现与连接、产物快照、租约与 Source 映射漂移、`artifactsChanged` 事件、DAP 检查会话与 Graph 执行调试）。
 - DAP 检查会话：VS Code 调试 UI 以 `visualbridge-runtime` 类型 attach 到 Runtime 实例（attach 时获取调试租约、断开时释放），会话为单伪线程，变量树展示运行时文档快照与 `__sourcePath`/`__sourceDrifted`；不支持断点/单步/求值，`setBreakpoints` 一律回 `verified: false`（只检查会话，见架构文档 §18.3/18.5）。
 - MCP 检查工具：stdio MCP Server 暴露只读的 `visualbridge_runtime` 工具（`listInstances` / `getSnapshot` / `getDocumentSources`），漂移由 MCP 侧对照工作区 Authoring 字节计算；每次调用独立连接、断开即释放租约，与 DAP 检查会话并存（并发时后来者得到 `runtime.leaseDenied`）。
-- Graph 执行观察（阶段 D，VB-UX-13~16）：服务端通告 `graphExecution` 能力；游戏侧引擎经 [`UnityGraphExecutionDebug.md`](UnityGraphExecutionDebug.md) 描述的采集门面 `VisualBridgeGraphExecutionCapture` 上报执行事件（执行实例 ID 形如 `exec-<n>`；实例生命周期追踪在服务端运行期间常开，节点级高频事件仅在存在订阅者时进缓冲，服务端执行泵按「满 64 条或 100ms」冲刷为 `graphExecution` 批量事件）。客户端订阅单个执行实例即可接收（观察者语义，不占租约；`getSnapshot` 与 Graph 执行观察都不受租约约束）；Graph 编辑器页内「执行调试」入口提供实例选择、实时高亮/边流光/数据边值显示与时间轴回放（事件级/帧级步进）。
+- Graph 执行观察（阶段 D 的现行形态）：不再走 Runtime Bridge 订阅——游戏侧引擎经 [`UnityGraphExecutionDebug.md`](UnityGraphExecutionDebug.md) 描述的采集门面 `VisualBridgeGraphExecutionCapture` 上报执行事件，UnityProject 的 `VisualBridgeGraphDebugEmitter` 把它们转成 `category = "graph"` 的调试契约事件，经调试通道 ch1 到达 VS Code；Graph 编辑器页内「执行调试」入口的实例列表、实时高亮/边流光/数据边值显示与时间轴回放（事件级/帧级步进）由 Graph 模块的 `debug` facet 提供。协议与已知边界见 [`DebugArchitecture.md`](DebugArchitecture.md)。
 
 ## 7. Editor Bridge 使用（open/reveal）
 
@@ -226,10 +226,10 @@ Node 侧配套门槛：`npm run check`、`npm test`、`npm run build`、`npm run
 
 ## 11. 已知限制
 
-- 四领域的 offline Catalog Export/Compile（第 5 节）、Editor Bridge（第 7 节）与本机 Runtime Bridge（第 6 节：Play 模式快照、产物事件、调试租约、Source 映射与 Graph 执行观察）均已落地；历史进度与冻结决策见已归档的 [Unity 领域扩展与 Runtime 接入任务清单](Archive/UnityDomainAndRuntimeRoadmap.md)（阶段 A/B/D 关闭，阶段 C 远程与设备连接由项目方推迟），当前未实现能力见 [Backlog](Backlog.md)。
+- 四领域的 offline Catalog Export/Compile（第 5 节）、Editor Bridge（第 7 节）与本机 Runtime Bridge（第 6 节：Play 模式快照、产物事件、调试租约与 Source 映射）均已落地；Graph 执行观察经统一调试通道（见 [`DebugArchitecture.md`](DebugArchitecture.md)），不再是 Runtime Bridge 能力。历史进度与冻结决策见已归档的 [Unity 领域扩展与 Runtime 接入任务清单](Archive/UnityDomainAndRuntimeRoadmap.md)（阶段 A/B/D 关闭，阶段 C 远程与设备连接由项目方推迟），当前未实现能力见 [Backlog](Backlog.md)。
 - 独立 Player 构建尚未接线：`StreamingAssets/VisualBridge/Compiled` 目前只是 `VisualBridgeRuntimeArtifactStore` 约定的 Player 产物根，实际路径由调用方解析，而唯一的宿主（Editor Play）固定解析 `<project>/Library/VisualBridge/Compiled`；协议保留的 `player` 实例 kind 尚无对应宿主实现。
 - `VisualBridge.Runtime` 已不只是 metadata marker：除 `Runtime/Metadata/` 的 attribute 外，`Runtime/Bridge/` 提供编译产物直读（`VisualBridgeRuntimeArtifactStore` 按四域 manifest 枚举并加载 `*.vbcompiled.json` 与 `.vbsource.json`）、Runtime Bridge 服务端/发现/严格校验器与 Graph 执行采集门面。程序集仍不依赖任何 Unity API（`noEngineReferences: true`、`references: []`，仅预编译引用 `Newtonsoft.Json.dll`），可进 Player 构建。其运行时加载能力的边界是：快照数据为未类型化 JSON，包内没有游戏侧类型化数据绑定或公开 Adapter API（VB-UX-03 决策：不建立公开 Unity Adapter API），产物格式仍是内部格式（`formatVersion`/`kind` 版本化，但未按公开跨语言契约冻结）。
-- 调试面只有「检查」语义：Runtime 协议刻意不含断点/调用栈/变量求值消息——`VisualBridge.Runtime` 自身是数据运行时（只加载编译产物快照），游戏侧 Graph 执行引擎也只暴露观察缝，且项目方明确不做断点；VS Code 的 `visualbridge-runtime` 会话因此是 attach 型只读检查，Graph 执行观察是事件回放而非断点式调试（重开条件见架构文档 §18.3）。
+- 调试面只有「检查」语义：Runtime 协议刻意不含断点/调用栈/变量求值消息——`VisualBridge.Runtime` 自身是数据运行时（只加载编译产物快照），游戏侧 Graph 执行引擎也只暴露观察缝，且项目方明确不做断点；VS Code 的 `visualbridge-runtime` 会话因此是 attach 型只读检查，Graph 执行观察（经统一调试通道）是事件回放而非断点式调试（重开条件见架构文档 §18.3）。
 - Editor Bridge 为 V1 最小范围（open/reveal），多窗口必须显式选择、绝不静默挑选；它与 Runtime Bridge 是两条独立通道（不同 Schema、不同发现目录），限制互不推导。
 - Table 的 XLSX 载体编译不在 V1 范围（`.xlsx` 以 `table.xlsxUnsupported` 拒绝，OOXML 解析不在依赖边界内）。
 - 本仓库验证环境若使用非声明 Node 版本（如 25.x），`npm ci` 会因 `engine-strict` 失败；正式 CI 必须使用 22.22.1。

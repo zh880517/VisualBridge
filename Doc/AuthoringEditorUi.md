@@ -8,14 +8,14 @@
 
 ## 包与依赖边界
 
-`Editors/Ui` 是 workspace 包 `@visualbridge/editor-ui`，拥有主题 Token、基础控件外观、编辑器外壳、布局、状态反馈和通用图标。`Editors/Form` 依赖它并继续拥有字段值语义、Reference、List、Object、Color 和 JSON 编辑。Graph、Entity、Structured、Table 与 Project Settings 组合这两个层级，不复制全局控件样式。
+`Editors/Ui` 是宿主侧 workspace 包 `@visualbridge/editor-ui`，拥有主题 Token、基础控件外观、编辑器外壳、布局、状态反馈和通用图标。`Modules/Shared/Ui` 是它的逐字节副本（`Modules/` 是独立 npm root，不能反向依赖主仓库），`Modules/Shared/Form`（`@visualbridge/form-editor`）在模块侧提供字段值语义、Reference、List、Object、Color 和 JSON 编辑。领域编辑器（`Modules/Graph`、`Entity`、`Structured`、`Table`）与宿主侧的 Project Settings（`Editors/Project`）组合这些层级，不复制全局控件样式。
 
 ```mermaid
 flowchart LR
     Ui["@visualbridge/editor-ui\n主题 / Shell / 布局 / 图标 / 反馈"]
     Form["@visualbridge/form-editor\n字段语义 / Reference / List / Color"]
-    Editors["Graph / Entity / Structured / Table / Project"]
-    Core["Core / BuiltInExtensions\nDocument / Operation / Catalog"]
+    Editors["Modules/Graph · Entity · Structured · Table\nEditors/Project"]
+    Core["Core + Modules\nDocument / Operation / Catalog"]
 
     Ui --> Form
     Ui --> Editors
@@ -24,7 +24,7 @@ flowchart LR
     Core --> Editors
 ```
 
-`@visualbridge/editor-ui` 不得依赖任何 `@visualbridge/*` 领域包、VS Code API、Webview Host 消息或 Document 状态。根依赖门禁检查这一方向，并要求所有内置编辑器显式依赖共享 UI 包。公共组件采用 children/slot 组合；它们不能自行发送 Operation。
+`@visualbridge/editor-ui` 不得依赖任何 `@visualbridge/*` 领域包、VS Code API、Webview Host 消息或 Document 状态。根依赖门禁检查这一方向，并要求 `Editors/Project` 显式依赖共享 UI 包；模块侧（`Modules/*`）的依赖由 `Modules/scripts/check-dependencies.mjs` 单独约束。公共组件采用 children/slot 组合；它们不能自行发送 Operation。
 
 ## 主题契约
 
@@ -52,7 +52,7 @@ Webview 不读取或缓存主题 ID。VS Code 在主题切换时更新 `--vscode
 - `CommonIcon`、`IconButton`、`ListItemActions`：通用图标与列表项操作顺序。
 - `FeedbackSurface`：Empty、Loading、Notice 和 Error 表面。
 
-公共 CSS 统一拥有 `body`、字体、Button、Focus、基础 Input Token、Shell、状态栏和 `.vb-field*` 布局。字段控件的 Object/List/Reference/Color 细节由 `Editors/Form` 拥有。领域 CSS 只保留 Canvas、卡片、记录导航、对话框和领域状态等特有结构。
+公共 CSS 统一拥有 `body`、字体、Button、Focus、基础 Input Token、Shell、状态栏和 `.vb-field*` 布局。字段控件的 Object/List/Reference/Color 细节由 `Modules/Shared/Form` 拥有（宿主侧由 `Editors/Project` 直接使用 `@visualbridge/editor-ui`）。领域 CSS 只保留 Canvas、卡片、记录导航、对话框和领域状态等特有结构。
 
 ## 属性密度
 

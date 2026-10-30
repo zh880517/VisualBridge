@@ -113,13 +113,13 @@
 
 #### [18.5 VS Code DAP 检查适配器（VB-UX-11，2026-08-31）](UnityIntegrationArchitectureRuntime.md#185-vs-code-dap-检查适配器vb-ux-112026-08-31)
 
-### [19. Graph 执行过程可视化（冻结设计，VB-UX-13~16，2026-08-31）](UnityIntegrationArchitectureRuntime.md#19-graph-执行过程可视化冻结设计vb-ux-13162026-08-31)
+### [19. Graph 执行过程可视化（现行实现：统一调试数据面）](UnityIntegrationArchitectureRuntime.md#19-graph-执行过程可视化现行实现统一调试数据面)
 
 #### [19.1 范围与定位](UnityIntegrationArchitectureRuntime.md#191-范围与定位)
 
 #### [19.2 事件与实例模型](UnityIntegrationArchitectureRuntime.md#192-事件与实例模型)
 
-#### [19.3 协议扩展（Runtime Bridge 纯增量）](UnityIntegrationArchitectureRuntime.md#193-协议扩展runtime-bridge-纯增量)
+#### [19.3 现行数据通道（G1b 之后）](UnityIntegrationArchitectureRuntime.md#193-现行数据通道g1b-之后)
 
 #### [19.4 Unity 侧采集缝](UnityIntegrationArchitectureRuntime.md#194-unity-侧采集缝)
 

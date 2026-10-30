@@ -55,7 +55,7 @@ VisualBridgeCore
 └─ MCP Adapter
 ```
 
-MCP 不自行重复实现文档规则。VisualBridgeCore 提供 Project、Document Adapter、Field、Reference 等宿主无关公共契约；Graph、Entity、Structured、Table Built-in 包提供各自的 Parser、Catalog Registry、Operation、Validator、Reference Collector 和 Serializer；MCP 只负责路由与 Host 事务。
+MCP 不自行重复实现文档规则。VisualBridgeCore 提供 Project、Document Adapter、Field、Reference 等宿主无关公共契约；`Modules/` 的四个领域模块提供各自的 Parser、Catalog Registry、Operation、Validator、Reference Collector 和 Serializer；MCP 只负责路由与 Host 事务。
 
 ### MCP Server 生命周期
 
@@ -72,7 +72,7 @@ AI Host
 
 当前已落地的 `Tools/VisualBridgeMcp` V2 是仅面向本地 Authoring Project 的 stdio 入口。它从进程工作目录或 `VISUALBRIDGE_WORKSPACE` 环境变量确定发现根目录，只保留 Project、Catalog、Document、Apply Operations、Document Lifecycle、Reference、Refactor 和 Runtime 检查八个稳定工具；旧的 Graph、Entity、Structured、Table 专用工具不保留兼容别名。Project read/listDocuments 会保留所有合法稳定 `editor` ID，并以 `adapterAvailable` 明确当前 MCP 是否注册对应 Adapter。除 Project discover 外，所有工具都按各自 strict Schema 显式携带 `projectFile`；Catalog、Document 与 Apply Operations 还必须携带 `documentTypeId` 和 `editor`，Reference、Refactor 与 Lifecycle 则使用各自的 kind/target 或 source/target 结构。最终领域 Adapter 仍由 Project Registry 解析出的 `DocumentType.editor` 决定；未注册 ID 的语义操作返回不支持，调用方也不能借请求字段绕过文件归属或自定义扩展名规则。
 
-Core 定义宿主无关的 `SemanticDocumentAdapter`、`DocumentCodec` 与 `CatalogAdapter` 契约，四个 Built-in 包只组合各自既有 Parser、Catalog Registry、Validator、Operation、Reference Collector 和 Serializer。MCP Host 的 Document Adapter Registry 负责路由；没有注册项时只在 Project 能力清单中报告 `adapterAvailable: false`，不会提供 Catalog、Document、Operation、Reference、Refactor 或 Lifecycle 语义。文件系统、安全路径、锁、Hash 和持久化仍留在 Host；Table 的 CSV family 与 XLSX 保持多来源/二进制 Codec，不伪装成单文本文件。MCP 支持按来源 `baseHash` 原子执行普通 Operation，并按完整依赖清单预览和提交 Document Lifecycle 与项目级引用重构。Project Provider V2 可在启动时授权后提供自定义 Reference 和 Validator，但不提供写能力。当前不提供独立 CLI，也不包含 Debug 能力；Runtime 集成仅限只读的 `visualbridge_runtime` 检查工具。具体工具、结果信封与写入流程见 [`VisualBridgeMcp.md`](VisualBridgeMcp.md)。
+Core 定义宿主无关的 `SemanticDocumentAdapter`、`DocumentCodec` 与 `CatalogAdapter` 契约，四个领域模块只组合各自既有 Parser、Catalog Registry、Validator、Operation、Reference Collector 和 Serializer。MCP Host 的 Document Adapter Registry 负责路由；没有注册项时只在 Project 能力清单中报告 `adapterAvailable: false`，不会提供 Catalog、Document、Operation、Reference、Refactor 或 Lifecycle 语义。文件系统、安全路径、锁、Hash 和持久化仍留在 Host；Table 的 CSV family 与 XLSX 保持多来源/二进制 Codec，不伪装成单文本文件。MCP 支持按来源 `baseHash` 原子执行普通 Operation，并按完整依赖清单预览和提交 Document Lifecycle 与项目级引用重构。Project Provider V2 可在启动时授权后提供自定义 Reference 和 Validator，但不提供写能力。当前不提供独立 CLI，也不包含 Debug 能力；Runtime 集成仅限只读的 `visualbridge_runtime` 检查工具。具体工具、结果信封与写入流程见 [`VisualBridgeMcp.md`](VisualBridgeMcp.md)。
 
 ### MCP 能力边界
 
@@ -150,17 +150,17 @@ VisualBridge/
 │  └─ Reference/
 ├─ Editors/
 │  ├─ Ui/
+│  └─ Project/
+├─ Modules/
 │  ├─ Graph/
 │  ├─ Entity/
-│  ├─ Form/
-│  ├─ Project/
 │  ├─ Structured/
-│  └─ Table/
-├─ BuiltInExtensions/
-│  ├─ Graph/
-│  ├─ Entity/
-│  ├─ StructuredConfig/
-│  └─ Table/
+│  ├─ Table/
+│  ├─ Shared/
+│  │  ├─ Ui/
+│  │  └─ Form/
+│  └─ Sdk/
+├─ ModuleSdk/
 ├─ Tools/
 │  ├─ DependencyPolicy/
 │  ├─ Documentation/

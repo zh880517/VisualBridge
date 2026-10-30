@@ -92,7 +92,7 @@ Catalog 属性的 `valueType: "number"` 只表示 JSON 数值和数值编辑器�
 5. 已完成分层创建菜单、悬空连线创建、同类型选择和 MiniMap。
 6. 已完成 Graph Catalog V4 多 Catalog Registry、Graph Type 支持 Catalog 和方向连接数量规则；Graph Document 继续保持 V3。
 7. 已完成 `Packages/com.kyle.visualbridge` 中的 C# Graph Catalog Exporter 与离线 Compiler（Generate/Check 菜单与 batchmode 入口，见 [`UnityIntegrationManual.md`](UnityIntegrationManual.md)）。旧 FlowGraph 资产的导入诊断仍未实现。
-8. 已完成 Graph 执行观察协议与 VS Code 侧「执行调试」页面（Runtime Bridge `graphExecution`，只观察、不做断点）；游戏侧执行引擎与产物导入器归游戏侧，VisualBridge 不实现执行器，见 [`UnityGraphExecutionDebug.md`](UnityGraphExecutionDebug.md)。
+8. 已完成 Graph 执行观察与 VS Code 侧「执行调试」页面（现行链路经统一调试数据面，只观察、不做断点；旧的 Runtime Bridge `graphExecution` 订阅通道已删除）；游戏侧执行引擎与产物导入器归游戏侧，VisualBridge 不实现执行器，见 [`UnityGraphExecutionDebug.md`](UnityGraphExecutionDebug.md) 与 [`DebugArchitecture.md`](DebugArchitecture.md)。
 
 Unity 导出器只依赖 Protocol/Catalog 契约并输出确定性 JSON；VS Code、MCP 与 Unity Compiler 共享同一套稳定 ID、连接和属性规则。
 

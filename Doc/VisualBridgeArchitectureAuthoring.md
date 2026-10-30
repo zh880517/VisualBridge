@@ -21,7 +21,7 @@ Dictionary 专用编辑器、通用 Diff Preview 和 Runtime Trace Overlay 尚�
 
 业务 Document Type 应优先组合原语，而不是为每种配置重新实现完整 Webview。
 
-共享视觉的实现包、依赖方向、主题运行时切换、高对比度和属性密度契约见 [`AuthoringEditorUi.md`](AuthoringEditorUi.md)。`Editors/Ui` 不拥有 Document、Operation 或 Host 消息；`Editors/Form` 在其上提供字段值语义。领域编辑器不得各自复制 `body/button/input` 与 `.vb-field*` 基础样式。
+共享视觉的实现包、依赖方向、主题运行时切换、高对比度和属性密度契约见 [`AuthoringEditorUi.md`](AuthoringEditorUi.md)。`Editors/Ui` 不拥有 Document、Operation 或 Host 消息；`Modules/Shared/Form` 在模块侧提供字段值语义（`Modules/Shared/Ui` 是 `Editors/Ui` 的副本）。领域编辑器不得各自复制 `body/button/input` 与 `.vb-field*` 基础样式。
 
 ## VS Code 基础插件
 
@@ -50,7 +50,7 @@ Unity 实例发现/连接和 Debug Adapter/DAP 属于后续 Unity/Debug 阶段�
 - 关闭 Webview 不终止其他文档或 Project 服务。
 - 不使用全局 `currentProject`、`currentUnity` 或 `currentDocument`。
 
-当前 VSIX 把 Core、Built-in Host Adapter 和各编辑器 Provider 静态打包；激活时建立 Project Registry、Workspace Index、Reference/Provider Service 并注册命令、视图和 Custom Editor。打开具体文件时才建立该文件的 DocumentSession 并加载对应 Webview UI bundle。每个文件拥有独立会话、脏状态和 Undo/Redo；多个文件共享当前窗口的 Extension Host，不为每个文件启动一份扩展进程。
+当前 VSIX 把 Core、宿主适配器与 Project 编辑器静态打包；领域编辑器以 Project 内的 `Modules/*.vbmodule.js` 交付，由宿主的 `ModuleLoader` 在装载时求值。激活时建立 Project Registry、Workspace Index、Reference/Provider Service 并注册命令、视图和 Custom Editor。打开具体文件时才建立该文件的 DocumentSession 并加载对应 Webview UI bundle。每个文件拥有独立会话、脏状态和 Undo/Redo；多个文件共享当前窗口的 Extension Host，不为每个文件启动一份扩展进程。
 
 VS Code 扩展一旦在某个窗口内激活，通常持续到该窗口关闭或重新加载。关闭编辑器时释放该面板的会话、监听和 Webview 资源；Project Registry、Workspace Index 与共享服务继续随 ExtensionContext 存活，Table Document 按 VS Code Custom Document 生命周期释放。Project Provider 子进程按 Project/Host 生命周期管理，不由某类 Webview 的最后一个面板决定。当前没有编辑器 Worker 或运行时订阅。不同 VS Code 窗口拥有独立的 Extension Host、共享服务和文档会话。
 

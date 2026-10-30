@@ -2,7 +2,7 @@
 
 ## 文档定位
 
-本文定义 VisualBridge 已落地的共享字段模型和 React 字段编辑器。`Core/Form` 拥有宿主无关的字段定义、默认值、校验、引用遍历和确定性序列化；`Editors/Form` 只负责把这些语义呈现为 Webview 控件并把一次用户提交上送给领域编辑器。Graph、Entity、Structured 和 Table 四类编辑器都复用这套能力，但各自仍拥有自己的 Document Operation、领域校验和持久化边界。
+本文定义 VisualBridge 已落地的共享字段模型和 React 字段编辑器。`Core/Form` 拥有宿主无关的字段定义、默认值、校验、引用遍历和确定性序列化；`Modules/Shared/Form` 只负责把这些语义呈现为 Webview 控件并把一次用户提交上送给领域编辑器。Graph、Entity、Structured 和 Table 四类编辑器都复用这套能力，但各自仍拥有自己的 Document Operation、领域校验和持久化边界。
 
 共享 Form 不是独立文档格式，也不直接访问 VS Code、文件系统或 MCP。宿主集成见 [`VSCodeHost.md`](VSCodeHost.md)，领域与宿主事务分层见 [`VisualBridgeArchitecture.md`](VisualBridgeArchitecture.md)。
 
@@ -11,13 +11,13 @@
 ```mermaid
 flowchart LR
     Catalog["Catalog / FieldDefinition"] --> Core["Core/Form\nparse · default · validate\nreference · serialize"]
-    Core --> UI["Editors/Form\nFieldEditor"]
+    Core --> UI["Modules/Shared/Form\nFieldEditor"]
     UI --> Domain["Graph / Entity / Structured / Table\nDocument Operation"]
     Domain --> Host["VS Code or MCP Host\nversion · conflict · persistence"]
 ```
 
 - `Core/Form` 不依赖 React、DOM、VS Code 或 Unity，决定字段值是否有效以及引用如何收集、替换。
-- `Editors/Form` 使用 React 组件渲染字段，维护输入草稿、弹层和拖拽等短期 UI 状态。
+- `Modules/Shared/Form` 使用 React 组件渲染字段，维护输入草稿、弹层和拖拽等短期 UI 状态。
 - 领域编辑器把 `onCommit` 转换为正式 Operation，并负责原子应用、领域级 Validator 和 Serializer。
 - Host 在 Operation 之外检查文档版本、Webview epoch、磁盘基线和 Project Transaction 前置条件。
 
@@ -84,7 +84,7 @@ JSON 文本只有成功解析后才提交；解析失败只保留控件错误状
 ```mermaid
 sequenceDiagram
     participant User as User
-    participant Form as Editors/Form
+    participant Form as Modules/Shared/Form
     participant Domain as Domain Editor
     participant Core as Core Operation/Validator
     participant Host as VS Code or MCP Host

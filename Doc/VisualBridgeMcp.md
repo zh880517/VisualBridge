@@ -35,7 +35,7 @@ flowchart LR
   S --> Core
   T --> Core
   Provider --> Core
-  G --> Domains[Built-in Parser / Catalog / Validator / Operation / Serializer]
+  G --> Domains[领域模块 Parser / Catalog / Validator / Operation / Serializer]
   E --> Domains
   S --> Domains
   T --> Domains
@@ -44,7 +44,7 @@ flowchart LR
   Persistence --> Carriers[CSV family / XLSX workbook]
 ```
 
-Core 的 `SemanticDocumentAdapter`、`DocumentCodec` 和 `CatalogAdapter` 只描述宿主无关语义。Built-in 包把已有 Parser、Registry、Validator、Operation、Reference Collector 与 Serializer 组合成 Adapter。MCP Host Registry 按 Project 已解析出的 `DocumentType.editor` 选择 Adapter；请求中的 `editor` 只是显式选择约束，不能绕过 Project 的 `include` / `exclude`、自定义扩展名或唯一 Document Type 匹配。
+Core 的 `SemanticDocumentAdapter`、`DocumentCodec` 和 `CatalogAdapter` 只描述宿主无关语义。领域模块把已有 Parser、Registry、Validator、Operation、Reference Collector 与 Serializer 组合成 Adapter。MCP Host Registry 按 Project 已解析出的 `DocumentType.editor` 选择 Adapter；请求中的 `editor` 只是显式选择约束，不能绕过 Project 的 `include` / `exclude`、自定义扩展名或唯一 Document Type 匹配。
 
 文件系统发现、安全路径、symlink 越界拒绝、Hash、锁和持久化属于 MCP Host。Table 保留多物理来源和二进制 Codec，不被降级为单文本文件。
 
@@ -488,7 +488,7 @@ sequenceDiagram
 }
 ```
 
-Operation Schema 保证每项至少有稳定 `type`，具体字段由对应 Built-in Operation Parser 严格校验。批次保持输入顺序，在副本上完整执行；后段失败、产生新领域错误或产生新 Reference error 时返回 `invalid`，权威字节不变。
+Operation Schema 保证每项至少有稳定 `type`，具体字段由对应领域模块的 Operation Parser 严格校验。批次保持输入顺序，在副本上完整执行；后段失败、产生新领域错误或产生新 Reference error 时返回 `invalid`，权威字节不变。
 
 四类 Operation 的正式字段定义与约束：
 

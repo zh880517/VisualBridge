@@ -109,9 +109,9 @@ Reference 字段的选择按钮调用共享 Reference Picker，跳转按钮定�
 2. 对处于 `running` 状态的实例点击 **跟踪** 订阅。一次只跟踪一个执行实例，事件按实例分流，不会聚合混显。
 3. 实时态下画布持续高亮当前执行节点，刚经过的边短暂流光，数据边旁显示最近一次值变化的结果；时间轴默认跟随最新事件。
 4. 拖动时间轴或使用 **上一帧 / 上一事件 / 下一事件 / 下一帧** 进入回放态，按事件级或帧级步进（同帧事件保持原始到达顺序）；**回到实时** 恢复跟随。事件记录由扩展宿主在本会话内存中留存，不落盘。
-5. 实例停止时面板标记“实例已停止”，时间轴停在记录末尾，并可直接从列表切换到新实例。点击 **停止调试** 或关闭 Graph 编辑器页面即退订，Unity 侧采集随之停止，记录随会话丢弃。
+5. 实例停止时面板标记“实例已停止”，时间轴停在记录末尾，并可直接从列表切换到新实例。点击 **停止调试** 只清空面板的跟踪状态；关闭 Graph 编辑器页面**不会**停止 Unity 侧采集（采集在 Play 模式期间常开），也**不会**断开调试连接，面板记录由宿主按分类保留，供重新打开时水化。
 
-执行观察是观察者语义，不占用 Runtime 的单控制者租约，因此可以与 `visualbridge-runtime` 检查会话和 MCP 的 `visualbridge_runtime` 工具并行使用，互不影响。设计语义冻结在 [Unity Editor 接入架构](UnityIntegrationArchitecture.md) 第 19 章（§19.5 为页面交互），Runtime Bridge 的发现、能力与租约见 [Unity 接入手册](UnityIntegrationManual.md)，页内交互与自动布局的编辑器边界见 [VS Code Graph Editor](VSCodeGraphEditor.md)。
+执行观察走统一调试通道（`category = "graph"`），不占用 Runtime 的单控制者调试租约；但它与 `visualbridge-runtime` 检查会话、MCP 的 `visualbridge_runtime` 工具共用 Runtime Bridge 连接，同一时刻只有一条活动调试连接，后连者压栈、断开后弹回（细节见 [调试架构](DebugArchitecture.md)）。设计语义与页面交互见 [Unity Editor 接入架构](UnityIntegrationArchitecture.md) 第 19 章，Runtime Bridge 的发现、能力与租约见 [Unity 接入手册](UnityIntegrationManual.md)，页内交互与自动布局的编辑器边界见 [VS Code Graph Editor](VSCodeGraphEditor.md)。
 
 ## 5. Entity V1
 

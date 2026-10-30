@@ -29,10 +29,10 @@ flowchart TD
 接入过程必须保持以下依赖方向：
 
 ```text
-Protocol -> Core -> BuiltInExtensions -> VS Code / MCP Host
+Protocol -> Core -> Modules -> VS Code / MCP Host
 ```
 
-Catalog、Parser、Validator、Operation、Reference 和 Serializer 只在 Core / Built-in 语义包中实现一次。VS Code 与 MCP 仅提供宿主生命周期和持久化适配；Provider 只能增加 Reference kind 与 Validator，不能复制或绕过领域 Operation。
+Catalog、Parser、Validator、Operation、Reference 和 Serializer 只在 Core / 领域模块（`Modules/`）中实现一次。VS Code 与 MCP 仅提供宿主生命周期和持久化适配；Provider 只能增加 Reference kind 与 Validator，不能复制或绕过领域 Operation。
 
 ## 3. Project File 与文件路由
 
@@ -94,7 +94,7 @@ VS Code 只有在本地文件工作区已信任时启动 Project 声明的入口
 sequenceDiagram
   participant Client as AI / MCP Client
   participant MCP as VisualBridge MCP
-  participant Core as Core + Built-in Adapter
+  participant Core as Core + 领域模块
   participant Tx as Project Transaction
   Client->>MCP: discover/read/search/validate
   MCP->>Core: parse Project, Catalog and Document snapshot

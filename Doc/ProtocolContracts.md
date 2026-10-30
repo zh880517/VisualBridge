@@ -51,10 +51,10 @@ Protocol/contract-manifest.json
 | `visualbridge-authoring-contracts` | Reference、Refactor、Lifecycle、Transaction 与统一 Document transport。 |
 | `visualbridge-unity-integration-profile` | Unity Project 内固定 Profile V1；显式关联一个 Authoring Project、Structured Catalog export units 与 `Library/VisualBridge/Compiled` 派生输出根。语义权威在 Unity Profile loader。 |
 | `visualbridge-editor-bridge` | 最小 Editor Bridge V1：Unity Editor 客户端与 VS Code 扩展宿主服务器间的 NDJSON 消息（hello/welcome、open/reveal、response/error）与 per-window discovery 记录。首版只有 open/reveal 能力；传输与信任边界冻结在 Unity 接入架构第 12 章。 |
-| `visualbridge-runtime-bridge` | Runtime Bridge V1：Unity Runtime 实例与宿主客户端间的 NDJSON 消息（hello/welcome、快照/租约/Source 映射请求响应、artifactsChanged 事件、连接级 error）与 per-instance 发现记录；Graph 执行观察为能力门控的纯增量扩展（`graphExecution` 能力：执行实例枚举/订阅/浅快照请求与 `graphExecution` 批量事件，不做断点）。语义冻结在 Unity 接入架构第 17/18/19 章。 |
+| `visualbridge-runtime-bridge` | Runtime Bridge V1：Unity Runtime 实例与宿主客户端间的 NDJSON 消息（hello/welcome、快照/租约/Source 映射请求响应、artifactsChanged 事件、连接级 error）与 per-instance 发现记录。Graph 执行观察**不在本协议内**：G1b 已删除旧的 `graphExecution` 能力/事件，现行链路经同一条连接的调试通道 ch1，见 [`DebugArchitecture.md`](DebugArchitecture.md)。语义冻结在 Unity 接入架构第 17/18 章。 |
 | `visualbridge-mcp-tools` | 八个 stdio MCP Tool 的严格输入/输出信封。 |
 
-Graph、Entity、Structured、Table Catalog 中重复出现的 Field/value-shape 序列化定义是冻结后的公共 wire shape；编辑器语义只有一份，权威实现位于 Core Form model 和 `Editors/Form`。Schema parity 不是四个文件的文本或 bytes 相等检查：生成器会把四个 Catalog 的 10 个共享 `$defs` 解析后做结构 `deepEqual`，还会以同一组正反例行为矩阵分别执行四个 validator。最小 scalar、递归 object/array、结构化 select 和 number Reference 等正例必须全部接受；空白标题、重复 alias、错误递归 shape、缺失 select option 等反例必须全部拒绝。结构不同或任一 validator 的接受/拒绝结果不同都构成 drift。Host 或 Unity 不得据此复制另一套字段编辑规则。Table 的语义传输仍是 JSON 值，但 CSV family 与 XLSX 是 Host Codec 边界，其物理格式不由 JSON Schema 描述。
+Graph、Entity、Structured、Table Catalog 中重复出现的 Field/value-shape 序列化定义是冻结后的公共 wire shape；编辑器语义只有一份，权威字段模型位于 Core Form model，共享控件实现位于 `Modules/Shared/Form`（原 `Editors` 下的领域编辑器包已随领域实现搬到 `Modules/`）。Schema parity 不是四个文件的文本或 bytes 相等检查：生成器会把四个 Catalog 的 10 个共享 `$defs` 解析后做结构 `deepEqual`，还会以同一组正反例行为矩阵分别执行四个 validator。最小 scalar、递归 object/array、结构化 select 和 number Reference 等正例必须全部接受；空白标题、重复 alias、错误递归 shape、缺失 select option 等反例必须全部拒绝。结构不同或任一 validator 的接受/拒绝结果不同都构成 drift。Host 或 Unity 不得据此复制另一套字段编辑规则。Table 的语义传输仍是 JSON 值，但 CSV family 与 XLSX 是 Host Codec 边界，其物理格式不由 JSON Schema 描述。
 
 ## 3. 通用 primitive
 
@@ -74,7 +74,7 @@ Graph、Entity、Structured、Table Catalog 中重复出现的 Field/value-shape
 
 所有需要稳定顺序的键、路径、候选和 target manifest 使用 UTF-16 code-unit ordinal 比较，不使用当前区域设置。Canonical JSON 递归按该顺序排列 object key；array 顺序保持其领域含义。协议 Hash 统一使用 SHA-256、64 个小写十六进制字符，但每个 Hash 的输入域不同，不能互换：
 
-TypeScript 实现只以 Core `Ordering/ordinal.ts` 导出的 `compareUtf16CodeUnits` 为权威；Core、Built-in、Node Host、MCP 和 VS Code Host 不得各自复制 comparator，也不得以 `localeCompare`、ICU 或无 comparator 的 `sort()` 生成协议结果。Webview 可以按本地化标题排列临时菜单或 Picker，但该展示顺序不得进入 Operation、序列化、Hash、cursor、plan 或 source manifest。
+TypeScript 实现只以 Core `Ordering/ordinal.ts` 导出的 `compareUtf16CodeUnits` 为权威；Core、领域模块、Node Host、MCP 和 VS Code Host 不得各自复制 comparator，也不得以 `localeCompare`、ICU 或无 comparator 的 `sort()` 生成协议结果。Webview 可以按本地化标题排列临时菜单或 Picker，但该展示顺序不得进入 Operation、序列化、Hash、cursor、plan 或 source manifest。
 
 | Hash | 输入域与用途 |
 | --- | --- |

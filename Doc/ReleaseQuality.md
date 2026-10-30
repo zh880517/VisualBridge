@@ -12,7 +12,7 @@
 - `package-lock.json` lockfile 版本 3 由 npm 10.9.4 生成，是唯一被接受的安装输入。发布与 CI 安装使用 `npm ci`，绝不使用会更新 lockfile 的安装。
 - VS Code 兼容性声明保持 `^1.105.1`，而 Extension Host 运行时单独固定为 `1.105.1`，`@types/vscode` 固定为 `1.105.0`，`@vscode/test-electron` 固定为 `3.1.0`。
 
-`npm run check:dependencies` 对根和每个声明的 npm 工作区强制执行这些不变量。它还检查每个包都是 private 且 `UNLICENSED`，校验 `.nvmrc`、`engines.node`、`packageManager` 与 `config.visualbridgeVersions` 一致，校验 lockfile 版本与 importer、override 解析、扩展的 `engines.vscode` 与 `@types/vscode`、`@vscode/test-electron` 版本、VS Code 测试运行器默认值，以及 `virtualWorkspaces.supported=false`。UI 分层也在同一门槛内：`Editors/Ui` 不得依赖任何 `@visualbridge/*` 包，而 `Editors/Form`、`Editors/Entity`、`Editors/Graph`、`Editors/Project`、`Editors/Structured` 与 `Editors/Table` 必须把 `@visualbridge/editor-ui` 声明为 `*`。新增工作区会自动纳入该策略。`npm run audit:dependencies` 是独立的联网门槛，遇到中等级及以上的安全通告即失败。
+`npm run check:dependencies` 对根和每个声明的 npm 工作区强制执行这些不变量。它还检查每个包都是 private 且 `UNLICENSED`，校验 `.nvmrc`、`engines.node`、`packageManager` 与 `config.visualbridgeVersions` 一致，校验 lockfile 版本与 importer、override 解析、扩展的 `engines.vscode` 与 `@types/vscode`、`@vscode/test-electron` 版本、VS Code 测试运行器默认值，以及 `virtualWorkspaces.supported=false`。UI 分层也在同一门槛内：`Editors/Ui` 不得依赖任何 `@visualbridge/*` 包，`Editors/Project` 必须把 `@visualbridge/editor-ui` 声明为 `*`。`Modules/` 是独立 npm root，其依赖（`@visualbridge/module-sdk` 必须指向 `Modules/Sdk/` 下那一个 tgz、外部包必须声明）由 `Modules/scripts/check-dependencies.mjs` 单独约束。新增工作区会自动纳入对应策略。`npm run audit:dependencies` 是独立的联网门槛，遇到中等级及以上的安全通告即失败。
 
 ## 本地干净复现
 

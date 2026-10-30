@@ -423,7 +423,7 @@ Exit criteria：
 
 范围：
 
-- Graph 编辑器页（`BuiltInExtensions/Graph` webview）「执行调试」入口：活跃实例选择器（debugKey、运行状态、当前节点、frameIndex）。
+- Graph 编辑器页（`Modules/Graph` webview；归档时的旧路径已随领域模块搬迁）「执行调试」入口：活跃实例选择器（debugKey、运行状态、当前节点、frameIndex）。
 - 实时态（当前节点高亮、经过边流光、数据边最近值）与回放态（时间轴、事件级/帧级步进、回到实时、实例停止收尾与切换）；Webview 组件选型遵循仓库规范（AGENTS.md）。
 - 停止调试/关闭页面即退订。
 
