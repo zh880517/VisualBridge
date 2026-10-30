@@ -53,6 +53,16 @@
 - [VisualBridge MCP Server V2](VisualBridgeMcp.md)：八个稳定工具、发现、查询、Operation、Lifecycle、Refactor、Runtime 检查、并发控制和原子写入。
 - [VisualBridge 协议契约](ProtocolContracts.md)：16 份 Schema/manifest 单一事实源、TypeScript/C# 四个生成产物、版本、Hash、Cursor、状态、错误和生成一致性。
 
+## 附录（契约与决策记录）
+
+五份附录中，**附录 A–D 是规范性契约**（协议、调试、消费、模块平台），**附录 E 是决策记录**；章节编号（A.1–E.5）被代码注释直接引用，不得改号。附录与实现冲突时，以**修订后的契约**与 `Protocol/Schema` 为准并修正对应文档；决策记录只解释“为什么这样设计”，不单独作为实现依据。
+
+- [附录 A · 线上协议契约](Contracts/Appendix-A-Protocol.md)：6 字节帧头与 CRC16、通道与消息表、握手字段与拒绝层级、二进制载荷与 type 码表、语义消息与 `dropped` 计数、错误码、发现记录、配置默认值、队列与筛选。
+- [附录 B · Unity 调试契约](Contracts/Appendix-B-DebugContract.md)：特性、枚举与宏边界、`VisualBridgeDebug` 静态 API、实例与槽位、编码器接口、生成器产物、查询运行期与错误码。
+- [附录 C · VS Code 消费契约](Contracts/Appendix-C-Consumption.md)：数据源与传输接口、归一化记录、实例与包络不变式、容量淘汰与游标、路由与消费者、`.vbdrec` 容器、面板规范、契约解析。
+- [附录 D · 模块平台契约](Contracts/Appendix-D-ModulePlatform.md)：Project File v2、bundle 形态与装载、注册契约与 facet 职责、调试 facet、会话控制器与 effect、授权与工程布局。
+- [附录 E · 决策记录](Contracts/Appendix-E-Decisions.md)：工程与模块、调试契约、传输与连接、展示与消费的决策依据，以及已否决/延后的备选。
+
 ## 验证、发布与路线图
 
 - [Release Quality](ReleaseQuality.md)：Node/npm/依赖锁定、Windows CI、真实 VSIX 激活、空缓存复现、依赖本机 Unity Editor 的两个端到端门槛、私有分发边界和正式样例。

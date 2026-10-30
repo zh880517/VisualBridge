@@ -185,6 +185,7 @@ Graph 的分类是 `graph`，facet 在 [`Modules/Graph/src/graphDebugFacet.ts`](
 | --- | --- | --- | --- |
 | “真实 Unity 事件 → Graph Webview ack”没有单条端到端用例 | G1c 用例止于面板记录，G1d 用例止于合成 ingest | 链路的真实末端（Webview 回执）只能靠分段用例推断 | G3 端到端验收待补 |
 | 没有反向守卫覆盖“换名复活旧事件” | 守卫锁的是“contract 方法名 = 别名表键”，两侧同时改就一致 | 有人改回旧方法名并同步改别名表时没有用例会红 | G1c 记录、待办 |
+| `NO_SELF_HEAL` 关侧没有 E2E 证据 | E2E 可达的断连都由宿主 `Detach` 结算，首连又走待发刷新（`FlushPendingLocked`）；唯一需要自愈的“无宿主结算的惰性断连”不在 E2E 的动作集合里 | 关掉自愈（`VISUALBRIDGE_GRAPH_DEBUG_NO_SELF_HEAL=1`）后 E2E 三种跑法仍全绿（`ONLY=G1c` 1/1、全量 12/12、`ONLY=graph` 2/2，`unity.log` 里确有 `selfHeal=False`），而 EditMode 关侧 402→401、唯一失败 `RecreatesTheInstanceWhenTheDisconnectWasNotSettledByTheHost`（G1c2 时点；G3b 后基线为 406）——破坏自愈逻辑也不会让 E2E 变红 | EditMode 层已双向取证；E2E 层缺口待补，**不能据此说“E2E 已验证 kill-switch 双向”** |
 
 ### 8.6 连接稳定性（E11 交付时接受）
 
@@ -202,24 +203,25 @@ Graph 的分类是 `graph`，facet 在 [`Modules/Graph/src/graphDebugFacet.ts`](
 
 | 现象 | 原因 | 后果 | 归属 |
 | --- | --- | --- | --- |
-| 二进制查询应答在回看里无法归属到请求 | `.vbdrec` 只录 Unity→VS Code 的帧，没有请求侧；`debug` / `debugResult` 在字节上同构、无类型位 | 回看只能计 `unattributableBinaryFrames`，不能给出“哪条结果对应哪次查询” | 录制格式的既有边界，接受 |
+| 二进制查询应答在回看里无法归属到请求 | `.vbdrec` 只录 Unity→VS Code 的帧，没有请求侧；`debug` / `debugResult` 在字节上同构、无类型位 | 回看只能计 `unattributableBinaryFrames`，不能给出“哪条结果对应哪次查询”；当前 Runtime 腿只通告 JSON、`SetPayloadFormat` 零调用者，真实链路上没有二进制帧，该计数是**结构性 0**，不能读成“二进制已验证” | 录制格式的既有边界，接受 |
+| 录制文件版本不匹配直接拒绝、不做迁移 | 文件头 `recordVersion` 与 `DEBUG_RECORD_VERSION` **不等即拒绝**：`parseRecordingHeader` 直接比较后抛 `recording.unsupportedVersion`（`Tools/VSCodeExtension/src/bridge/debugRecordingFormat.ts`），没有迁移或兼容路径 | 读跨版本 `.vbdrec` 报 `recording.unsupportedVersion`，该文件无法回看 | 录制格式的既有边界，接受（与模块 `apiVersion` 不等即置 `disabled` 同属“不做跨版本兼容”） |
 | JSON `debugResult` 在回看按“到达帧”、在线按“发起帧”落位 | 录制没有请求侧，两种口径无法对齐 | 同一结果在回看与在线的帧号可能不同 | 接受 |
 | `footer.records` 被当成“业务记录数” | 它统计的是落盘帧数（含 `debugCreate` / `debugFinish` / `debugFrame`） | 用业务记录数解释会偏大；界面应说“帧” | 协议语义，接受 |
 | 关键帧上限按“每分类 64”而不是“每实例” | 关键帧注册表按分类保存 | 实例更多的分类不会得到更多关键帧，回看精度按分类均分 | 宿主容量策略，接受 |
 
 ### 8.8 用户可见的运行边界
 
-1. **会话一次只服务一条活动连接，但可恢复（栈）**：新连接接管 ch1，其断开后自动回到上一条仍存活的连接；只有最后一条也断开才 `Detach` 并重置会话。**不做多播**——被压栈期间原消费方收不到帧（面板暂停更新，对方断开后恢复）；**压栈期间新建的实例**，其 `debugCreate` 只发给临时连接，恢复后对原消费方不可见（按 `unknownSlot` 丢弃），需应用重新注册。排查：看谁最后连上（MCP 每次工具调用都会建一条临时连接）。
-2. **重连后存活实例的可见性（协议留白，部分收敛）**：协议只规定“断连使槽位立即失效”，没有规定重连后存活实例如何重新可见。E11 起，宿主 `Detach` 结算的断连会保留登记并按原槽位重放 `debugCreate`；**剩余边界**：静默换代清空登记、`InstanceStarted` 不重发。用户恢复步骤：重启 Play 模式、让应用重新注册、或点面板「重试连接」。
+1. **会话一次只服务一条活动连接，但可恢复（栈）**：新连接接管 ch1，其断开后自动回到上一条仍存活的连接；只有最后一条也断开才 `Detach` 并重置会话。**不做多播**——被压栈期间原消费方收不到帧（面板暂停更新，对方断开后恢复）；**压栈期间新建的实例**，其 `debugCreate` 只发给栈顶的临时连接，**原消费方从未得知该实例**——不是“收到后按 `unknownSlot` 丢弃”，因此也不存在可“被丢弃”的帧，`unknownSlot` 计数不会因它增长（而且没有任何 test 命令暴露该计数）。恢复方式：应用重新注册，或等一次宿主 `Detach` 结算后的重连重放（实测那次重放会把这类实例一起带回来）。排查：看谁最后连上（MCP 每次工具调用都会建一条临时连接）；面板快照不暴露 `slot`，槽位只能靠 Unity 日志的 `(slot-preserving)` 与源码间接证明。
+2. **重连后存活实例的可见性（协议留白，部分收敛）**：协议只规定“断连使槽位立即失效”，没有规定重连后存活实例如何重新可见。E11 起，宿主 `Detach` 结算的断连会保留登记并按原槽位重放 `debugCreate`；**剩余边界**：静默换代清空登记、`InstanceStarted` 不重发。两条实测结论：① **窗口重载不会让面板或实例自动回来**——全仓没有 `registerWebviewPanelSerializer`，VS Code 不恢复 webview 面板，也就没有代码去建 Runtime 连接，重放语义永远不会发生；必须**重新打开面板**（生产命令 `visualbridge.openDebugPanel`），重开后约 106–109 ms 按原 key 回来，**不需要重启 Play、不需要应用重新注册**。② **两条腿共用同一个实例管理器**——Editor 腿的非续接握手（`resumed=false`）会 `debugManager.reset()` 掉 Runtime 腿的实例，约 1.03–1.05 s 后同一批 key 以 `descriptorMissing=true` 的**占位实例**重现（描述与历史丢失），等一次 Runtime 重放才恢复。用户恢复步骤：窗口重载后重新打开面板（或打开图页面）；其余情形重启 Play 模式、让应用重新注册。
 3. **编辑模式不产生调试数据**：Unity 只在 Play/Player 通过 runtime 桥发送 ch1；Editor 桥连接**不安装调试传输**，`VisualBridgeDebugSession.Create` 在 `s_transport == null` 时直接返回 `false`。未进入 Play 时面板在线实例为空是正常现象，不是故障。
 4. **面板自动连接失败不阻塞、不弹窗**：Unity 未开或端口无响应时面板照常打开并显示原因，用户可点「重试连接」；不会后台无限重试。
 5. **状态栏同时反映两条腿**：显示来源 Editor / Runtime / Editor+Runtime / 无；只有 Runtime 腿在线不再显示“未连接”，并给出失败原因与重试。边界：“已连接”来自宿主侧 TCP 与会话状态（同源），**不保证对端一定在产数据**；**关闭面板不断开连接**（只收 UI、保留模型与缓存，断开会让 Unity 侧重置会话并清空实例），连接收尾归扩展停用与 DAP。
-6. **两条腿共享同一个实例管理器**：Editor 腿收到“非续接”握手会 `debugManager.reset()`，会**连带清掉 Runtime 腿的实例**；两个 Unity 侧同时在线时可能看到实例“消失又出现”。
+6. **两条腿共享同一个实例管理器**：Editor 腿收到“非续接”握手会 `debugManager.reset()`，会**连带清掉 Runtime 腿的实例**；实测不是“永久消失”，而是约 1.03–1.05 s 后以 `descriptorMissing=true` 的占位实例重现（细节见 #2）。两个 Unity 侧同时在线时因此可能看到实例“消失又出现”。
 7. **跨腿同名实例合并成一条时间轴**：`DebugInstanceManager` 按 `(category, instanceId)` 合并，`origin` 只保留**首条**来源，来源冲突时标 `originConflict`。同一 id 在两条腿各报一次**不会**得到两行，而是**一行 + 冲突标记**；实例行来源是“首条来源”，不是“唯一来源”，当前没有按腿分开看的能力。
 8. **同机多开时连“最近启动”的 Unity**：自动连接按 `editor-play` + 最新 `startedAt` 选择，没有项目身份可匹配（协议未携带项目指纹）；同机多开时请确认连的是哪一个（既有策略，与旧 Graph controller 相同）。
 9. **录制按第一个可用源绑定（Editor 腿优先）**：两条腿同时在线时录制落在 Editor 腿，暂无源选择器；Runtime 腿的 `.vbdrec` 只覆盖 ch1，`controlFrames` 语义与 Editor 腿不对等。
 
-归属：以上均为既有运行边界（单连接模型、协议未规定重连后存活实例如何重新可见、两腿共用实例管理器）；#1 的压栈缺口与 #2 的剩余边界是已接受的取舍，恢复步骤已给出，无新增待办。
+归属：以上均为既有运行边界（单连接模型、协议未规定重连后存活实例如何重新可见、两腿共用实例管理器）；#1 的压栈缺口与 #2 的剩余边界是已接受的取舍，恢复步骤已给出。**本章节范围内未排任务的缺口只有 #2① 的面板恢复**：重载后必须重开面板，建议另开任务补 `WebviewPanelSerializer`（让它自动重连并触发重放）。
 
 ### 8.9 `local.*` 错误码命名空间
 

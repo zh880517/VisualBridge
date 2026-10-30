@@ -2,7 +2,7 @@
 
 这里放**可以整体拷出仓库**的四个领域模块（graph / entity / structured / table）。工作区的唯一
 对外依赖是 `Sdk/visualbridge-module-sdk-<version>.tgz`：模块源码只 `import "@visualbridge/module-sdk"`，
-不 import 仓库里任何其它包。契约见 `Doc/Temp/dev-tasks/Appendix-D-ModulePlatform.md` §D.2 / §D.3。
+不 import 仓库里任何其它包。契约见 `Doc/Contracts/Appendix-D-ModulePlatform.md` §D.2 / §D.3。
 
 ## 布局
 

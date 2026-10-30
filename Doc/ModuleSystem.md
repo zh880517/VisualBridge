@@ -155,3 +155,4 @@ npm run check:sdk          # 校验 SDK tgz 与声明一致
 4. **editor 归属按状态优先级**：同一 editor 被多个**已加载**模块声明时，loader 把后声明者判 `disabled` 并报 `module.editorConflict`，同一 editor 只有一个可用 owner；宿主组装归属时**已加载模块优先**于 failed/disabled/untrusted 的同名声明，因此先声明但失败的模块不会遮蔽后面真正可用的模块，失败的那一方回退只读 Shell 并给出原因。
 5. **模块 options 的校验归模块**：宿主只保证它是 JSON 对象并转发给 `validateOptions`；没有 `validateOptions` 的模块，`options` 写错不会报错，只会在运行期表现为默认行为。
 6. **SDK tgz 的 `src` 不自包含**：打包的源码含指向主仓库 `Protocol/Generated/contracts` 的相对路径；把 SDK 装到仓库外只做类型检查时，需要同时提供该目录或改用声明产物。
+7. **不做模块市场、签名与远程下载，也不做热替换**：模块只能由 Project File 声明、从工作区内的 `.vbmodule.js` 装载，信任判据是 Workspace Trust（VS Code）与 `VISUALBRIDGE_MODULES_ENABLED` + 路径边界（MCP），没有签名校验、没有远程分发；bundle 改动只能重新装载（先标 `stale`），没有运行期热替换；跨 `apiVersion` 也不做兼容（§6）。原因：第一版只解决"可拆、可加载"，多一套分发与签名会连带引入新的信任模型。后果：换模块版本必须改 Project 声明并重新加载工程。归属：模块平台设计边界，不是待办。
